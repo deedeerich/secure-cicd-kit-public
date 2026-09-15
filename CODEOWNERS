@@ -1,0 +1,56 @@
+# Who must approve what.
+#
+# THE POINT OF THIS FILE is separation of duties. Three DIFFERENT questions need three DIFFERENT
+# approvers, and collapsing any two of them makes the control self-referential:
+#
+#   pipeline-maintainers   "What does the control do?"        -- owns the machinery
+#   security-approvers     "May this finding pass?"           -- owns exceptions ONLY
+#   deploy-approvers       "May this change reach prod?"      -- owns promotion
+#
+# WHY THEY CANNOT BE THE SAME TEAM
+#
+# An earlier version of this file gave security-approvers both `/dispositions/` AND
+# `reusable-security.yml`. That is self-referential authority: if you can edit the gate, you never
+# need a disposition -- you simply make it pass. The exception process becomes theatre, because the
+# people governing it can redefine what "secure" means instead of requesting an exception to it.
+#
+# Likewise deploy approval must NOT implicitly grant a security exception. "This change may reach
+# prod" and "this finding may pass" are different claims with different evidence.
+#
+# ROLES, NEVER PEOPLE. A pipeline routed to an individual becomes an undocumented API and needs
+# reconstructive surgery when that person moves on. Populate the team; never hardcode a name. One
+# person may occupy several roles in a small estate -- but that collapse must be DELIBERATE and
+# visible here, not an accident of who happened to have permissions.
+#
+# ⚠️ THIS FILE ENFORCES NOTHING ON ITS OWN. CODEOWNERS *requests* a reviewer. Branch protection must
+# REQUIRE review from code owners, or this is documentation pretending to be a control -- the same
+# declared-versus-enforced gap this kit exists to eliminate. Verify it, do not assume it.
+
+# ── The machinery: what the control DOES ────────────────────────────────────────
+# Changing these changes what "secure" means for every consumer.
+/.github/workflows/          @YOUR_ORG/pipeline-maintainers
+/assurance-taxonomy.yaml     @YOUR_ORG/pipeline-maintainers
+/scripts/                    @YOUR_ORG/pipeline-maintainers
+/tests/                      @YOUR_ORG/pipeline-maintainers
+
+# ── Policy: how hard it enforces ────────────────────────────────────────────────
+# Profiles decide adoption-vs-strict and which capabilities are required. That is a security
+# decision about enforcement posture, so BOTH teams sign: maintainers for correctness, security for
+# whether the posture is acceptable.
+/profiles/                   @YOUR_ORG/pipeline-maintainers @YOUR_ORG/security-approvers
+
+# ── Exceptions: may THIS finding pass ───────────────────────────────────────────
+# Security approves exceptions and NOTHING ELSE. Deliberately no ownership of the gate itself.
+/dispositions/                             @YOUR_ORG/security-approvers
+/schemas/disposition.schema.json           @YOUR_ORG/security-approvers
+/schemas/disposition-request.schema.json   @YOUR_ORG/security-approvers
+
+# Requests are NOT owned by security -- anyone may open one. They are reviewed, not gate-kept at
+# authorship. Gate-keeping the request instead of the approval just stops people asking, and a team
+# that cannot ask for a review disables the workflow instead.
+
+# ── Promotion: may this change reach an environment ─────────────────────────────
+# Environment protection rules are configured in repository settings, not here. deploy-approvers is
+# named as the required reviewer THERE. Listed in this comment so the third role is visible in the
+# same place as the other two rather than living only in a settings page nobody reads.
+#   @YOUR_ORG/deploy-approvers  -> required reviewers on the `prod` environment

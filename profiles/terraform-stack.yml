@@ -1,0 +1,22 @@
+# Infrastructure-as-code repository. No container build, no application deploy —
+# the artifact is the plan, and the gates are IaC-shaped.
+profile: terraform-stack
+description: Terraform stack repository where the reviewable artifact is a plan rather than a container image.
+language: none
+
+security:
+  enable_iac: true
+  soft_fail_sast: true           # Semgrep adds little over Checkov here; report only
+  fail_on_severity: "CRITICAL,HIGH"
+  required_gates:
+    - secret-scan
+    - iac-scan
+    - workflow-policy
+
+supply_chain:
+  sbom: false                    # no image produced
+  image_scan_gate: false
+  require_sha_pinned_actions: true
+
+deploy:
+  target: none

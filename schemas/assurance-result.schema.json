@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://secure-cicd-kit/schemas/assurance-result.schema.json",
+  "title": "Assurance Result",
+  "description": "THE MACHINE CONTRACT for a security run. Emitted as assurance-result.json alongside every run and summarised into workflow outputs.\n\nWHY IT EXISTS: the assurance workflows exposed no outputs, so every consumer had to infer state from job colour or scrape artifacts. The internal control was richer than the external contract, which meant PARTIAL, UNAVAILABLE, advisory-vs-enforcing, discovery state and publication degradation all died at the workflow boundary.\n\nEvery enum here is drawn from assurance-taxonomy.yaml. THERE IS NO SECOND VOCABULARY AT THE API BOUNDARY. Future consumers -- multi-repo orchestration, dashboards, correlation, work-item creation, release gating -- must bind to this rather than each inventing its own interpretation of 'green'.",
+  "type": "object",
+  "required": [
+    "schema_version", "assurance_state", "enforcement_state", "discovery_state",
+    "evidence_state", "scanners", "provenance"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+
+    "assurance_state": {
+      "description": "What this run ESTABLISHED about the code. Distinct from whether it blocked.",
+      "enum": ["PASS", "FINDINGS", "PARTIAL", "UNDETERMINED"],
+      "$comment": "UNDETERMINED is not PASS. A consumer must never read 'did not block' as 'safe'."
+    },
+
+    "enforcement_state": {
+      "description": "What the gate DID about it. Separate from what was established, deliberately.",
+      "enum": ["BLOCKED", "ALLOWED", "ADVISORY"],
+      "$comment": "ADVISORY means findings existed and were not blocked. It is not PASS."
+    },
+
+    "secret_gate": {
+      "description": "Evaluated separately and NEVER suppressed by advisory mode. A consumer reading only enforcement_state would miss that secrets are unconditional.",
+      "enum": ["PASS", "FAIL", "NOT_APPLICABLE"]
+    },
+
+    "discovery_state": {
+      "description": "Whether applicability could be established at all.",
+      "enum": ["COMPLETE", "DISCOVERY_PARTIAL", "DISCOVERY_UNAVAILABLE"],
+      "$comment": "DISCOVERY_UNAVAILABLE must never present as a tidy set of NOT_APPLICABLE."
+    },
+
+    "evidence_state": {
+      "description": "Whether canonical, identity-bound evidence was produced. Separate from whether it was published.",
+      "enum": ["CANONICAL", "PARTIAL", "UNAVAILABLE"]
+    },
+
+    "publication_state": {
+      "description": "Publication is a PRESENTATION channel, never the security engine. Degradation must not fail a scan.",
+      "enum": ["PUBLISHED", "PUBLICATION_DEGRADED", "NOT_ATTEMPTED"]
+    },
+
+    "evidence_artifact_name": {
+      "type": "string",
+      "description": "Run artifact holding the persisted evidence. Findings survive here even when publication is unavailable."
+    },
+
+    "scanners": {
+      "type": "array",
+      "description": "One entry per scanner. A job-level result must NEVER stand in for these: after consolidation job != scanner.",
+      "items": {
+        "type": "object",
+        "required": ["id", "state"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "version": { "type": "string" },
+          "state": {
+            "enum": ["PASS", "FINDINGS", "PARTIAL", "NOT_APPLICABLE",
+                     "FAILED", "UNAVAILABLE", "COLLECTION_FAILED"]
+          },
+          "reason": {
+            "description": "REQUIRED when state is UNAVAILABLE. All of these mean 'posture undeterminable' and every one has different remediation.",
+            "enum": ["BILLING_EXECUTION_REFUSED", "ACTION_ACQUISITION_FAILURE", "POLICY_REFUSED",
+                     "EXECUTION_TIMEOUT", "DEPENDENCY_ACQUISITION_UNAVAILABLE",
+                     "DISCOVERY_UNAVAILABLE", "INFRASTRUCTURE_UNKNOWN"]
+          },
+          "prerequisite_readiness": {
+            "enum": ["READY", "ACQUIRED_AND_READY", "PREREQUISITE_UNAVAILABLE",
+                     "ACQUISITION_UNAVAILABLE", "FITNESS_FAILED", "REMEDIATION_FAILED"]
+          },
+          "component_roots": {
+            "type": "array", "items": { "type": "string" },
+            "description": "Which discovered roots this scanner actually covered. Coverage that stops at the first match is a defect this field makes visible."
+          },
+          "evidence_ref": { "type": "string" }
+        }
+      }
+    },
+
+    "findings": {
+      "type": "object",
+      "description": "Counts only. NEVER paths, snippets or rule detail -- an aggregate is safe to project where a finding is not.",
+      "additionalProperties": false,
+      "properties": {
+        "critical": { "type": "integer", "minimum": 0 },
+        "high":     { "type": "integer", "minimum": 0 },
+        "medium":   { "type": "integer", "minimum": 0 },
+        "low":      { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "dispositions": {
+      "type": "object",
+      "description": "What authorized decisions changed about ENFORCEMENT. A disposition never mutates evidence.",
+      "additionalProperties": false,
+      "properties": {
+        "applied":    { "type": "integer", "minimum": 0 },
+        "expired":    { "type": "integer", "minimum": 0,
+                        "$comment": "Expired dispositions stop matching. Silence never renews one." },
+        "invalidated":{ "type": "integer", "minimum": 0,
+                        "$comment": "e.g. a REMEDIATED disposition whose finding still reproduces -- self-invalidating." },
+        "by_type": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "FALSE_POSITIVE": { "type": "integer", "minimum": 0 },
+            "ACCEPTED_RISK":  { "type": "integer", "minimum": 0 },
+            "MITIGATED":      { "type": "integer", "minimum": 0 },
+            "REMEDIATED":     { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+
+    "provenance": {
+      "type": "object",
+      "description": "Identity BOUND AT CAPTURE. Once lost it cannot be reconstructed -- proven twice, by gosec and by Trivy.",
+      "required": ["repository", "commit_sha", "run_id", "capture_state"],
+      "additionalProperties": false,
+      "properties": {
+        "organization":  { "type": "string" },
+        "repository":    { "type": "string" },
+        "repository_id": { "type": "string" },
+        "commit_sha":    { "type": "string" },
+        "ref":           { "type": "string" },
+        "run_id":        { "type": "string" },
+        "capture_state": {
+          "description": "Whether identity was fully bound. PARTIAL means downstream must NOT merge or correlate this evidence with anything else.",
+          "enum": ["BOUND", "PARTIAL", "UNBOUND"]
+        }
+      }
+    }
+  }
+}

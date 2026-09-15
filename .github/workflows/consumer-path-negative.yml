@@ -1,0 +1,42 @@
+name: Consumer path — negative (EXPECTED TO FAIL)
+
+# This workflow is SUPPOSED to end red. Do not "fix" it.
+#
+# It calls reusable-security.yml exactly as a consumer would, pointed at a fixture carrying
+# known HIGH/CRITICAL dependency advisories. A successful run here means the gate did NOT
+# block on a real finding, which is the single worst failure this kit can have: the control
+# reports clean while the condition it exists to catch is present.
+#
+# `consumer-path-test.yml` dispatches this and asserts it FAILED. It is dispatch-only so it
+# never adds red to the default branch's status on its own.
+#
+# Why a separate workflow at all: GitHub does not permit `continue-on-error` on a job that
+# calls a reusable workflow, so an "expected failure" cannot be absorbed inline.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  seeded:
+    name: Seeded findings MUST block the caller
+    uses: ./.github/workflows/reusable-security.yml
+    permissions:
+      contents: read
+      security-events: write
+    with:
+      # The FULL multi-language fixture, so one run proves two things at once: that the gate
+      # blocks, and that every seeded signal is actually detected through the consumer path.
+      # 17 expected signals — Python, Node, .NET/C#, Java, Go, C/C++, Terraform, Dockerfile,
+      # three Azure/Entra credential classes, and a negative control that must NOT fire.
+      language: multi
+      paths: tests/consumer-fixture/full
+      enable_iac: true
+      enable_sbom: true
+      enable_malicious_pkg_scan: true
+      # Defaults to true, which would let SAST findings pass without blocking. The point of
+      # this run is to prove the gate blocks, so enforcement has to be on.
+      soft_fail_sast: false
+    secrets: inherit

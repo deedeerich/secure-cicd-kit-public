@@ -1,0 +1,65 @@
+# NVD deep scan — the kit calling its own reusable workflow.
+#
+# WHY THIS FILE EXISTS
+#
+# `reusable-nvd-cve.yml` declares `on: workflow_call:` and nothing else. Nothing called it, so it
+# had never executed — not once, since it was written. It was not "waiting to be validated", it was
+# **unvalidatable by construction**: no dispatch trigger, no caller, no path to a runner. The
+# validation plan in VALIDATION_DEBT said to run it via `workflow_dispatch`, which the workflow does
+# not have.
+#
+# This is the caller. It also instantiates `templates/nvd-cve.yml` against the kit itself, so the
+# template a consumer is told to copy is exercised rather than merely published.
+#
+# DELIBERATELY NOT SCHEDULED YET. A cold NVD database pass is expensive and this workflow has never
+# produced a single run of evidence. Prove it works and measure it, then decide the cadence — adding
+# a cron to something unproven is how a metered account funds a nightly experiment.
+name: NVD deep scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      github_environment:
+        description: "Environment supplying NVD_API_KEY. Without it the DB update is rate-limited (20-40 min)."
+        type: string
+        required: false
+        default: prod
+      enable_dependency_check:
+        description: "Run OWASP Dependency-Check (the slow, deep pass). Uncheck to test the Trivy path alone."
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+  security-events: write
+
+# Validation class: a superseded answer is worth nothing, and killing it saves metered minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nvd:
+    name: NVD deep scan (self)
+    uses: ./.github/workflows/reusable-nvd-cve.yml
+    with:
+      github_environment: ${{ inputs.github_environment }}
+      project_name: secure-cicd-kit
+      # NOT ".". The repository root includes tests/consumer-fixture/, which is DELIBERATELY
+      # vulnerable and deliberately malformed -- that is the whole point of a seeded fixture.
+      # Scanning it here tells us nothing about the kit's own dependencies and actively breaks the
+      # scan: Dependency-Check's Go analyzer failed parsing the fixture's go.mod and escalated to
+      # exit 14, killing a run that had just spent ~50 minutes building the NVD database.
+      # A detection fixture is INPUT to the test suite, never a subject of the kit's own posture.
+      scan_paths: ".github scripts tests/reconcile_validation.py templates profiles"
+      enable_dependency_check: ${{ inputs.enable_dependency_check }}
+      # 11 = never fail. FIRST RUNS EXIST TO PRODUCE EVIDENCE, NOT TO GATE. This workflow has no
+      # observed behaviour at all yet; gating on a scanner whose output nobody has seen would tell
+      # us only that it can fail. Raise this deliberately once the baseline is understood.
+      fail_on_cvss: 11
+      trivy_fail_severities: ""
+    # `inherit` is required, not stylistic: NVD_API_KEY is an ENVIRONMENT secret, and a caller job
+    # that `uses:` a reusable workflow cannot declare an environment of its own. The secret resolves
+    # inside the called workflow, because ITS job carries `environment: ${{ inputs.github_environment }}`.
+    secrets: inherit

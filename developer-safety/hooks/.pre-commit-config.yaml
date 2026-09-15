@@ -1,0 +1,81 @@
+# Baseline pre-commit config — early feedback, NOT enforcement.
+# Hooks can be bypassed with --no-verify. CI is the authoritative gate.
+# Install:  pip install pre-commit && pre-commit install && pre-commit install --hook-type pre-push
+
+repos:
+  # ---- Secrets: the one class where the cost of a miss is unrecoverable ------
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+        # Azure/Entra credential classes are NOT covered by the default ruleset alone.
+        args: ["--config", "developer-safety/hooks/gitleaks-azure.toml"]
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ["--baseline", ".secrets.baseline"]
+        exclude: package-lock.json|yarn.lock|poetry.lock
+
+  # ---- Sensitive file classes and accidents ---------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: detect-private-key
+      - id: detect-aws-credentials
+        args: ["--allow-missing-credentials"]
+      # NOTE: pre-commit-hooks ships AWS detection but has no Azure equivalent.
+      # Azure/Entra coverage comes from the gitleaks config above — do not assume
+      # detect-aws-credentials provides it.
+      - id: check-added-large-files
+        args: ["--maxkb=2048"]
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+
+  # ---- Structured file validity (cheap, catches real breakage) --------------
+      - id: check-yaml
+        args: ["--allow-multiple-documents"]
+      - id: check-json
+      - id: check-toml
+
+  # ---- Language linting (cheap only; heavy analysis belongs in CI) ----------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.7.4
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format
+
+  - repo: https://github.com/koalaman/shellcheck-precommit
+    rev: v0.10.0
+    hooks:
+      - id: shellcheck
+
+  # ---- IaC ------------------------------------------------------------------
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.96.2
+    hooks:
+      - id: terraform_fmt
+      - id: terraform_validate
+
+  # ---- Workflow syntax ------------------------------------------------------
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.4
+    hooks:
+      - id: actionlint
+
+  # ---- Pre-push: broader, slower ---------------------------------------------
+  - repo: local
+    hooks:
+      - id: pytest-fast
+        name: pytest (fast subset)
+        entry: pytest -q -m "not slow"
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+        verbose: true

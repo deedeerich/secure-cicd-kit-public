@@ -1,0 +1,170 @@
+name: "Kit: Docker Build + SBOM + Scan"
+# Employer-neutral build reusable. OIDC login, buildx build, Trivy gate BEFORE push,
+# Syft SPDX SBOM, digest-pinned push. Logic is INLINED (not `uses: ./`) so it resolves
+# correctly when called cross-repo. The equivalent composite actions ship separately
+# (.github/actions/*) for repos that build inside their own workflows.
+
+on:
+  workflow_call:
+    inputs:
+      github_environment:
+        description: >-
+          GitHub Environment supplying the Azure secrets and subscription context. REQUIRED when
+          push is true, because the OIDC subject and the target subscription both come from it.
+          Leave empty for build-only runs (no registry, no Azure auth) — useful on feature branches.
+        type: string
+        required: false
+        default: ""
+      acr_login_server:
+        description: "ACR login server FQDN"
+        type: string
+        required: true
+      image_repository:
+        description: "Image repository name"
+        type: string
+        required: true
+      dockerfile:
+        description: "Path to the Dockerfile"
+        type: string
+        required: false
+        default: "Dockerfile"
+      context:
+        description: "Docker build context"
+        type: string
+        required: false
+        default: "."
+      image_tag:
+        description: "Image tag (defaults to commit SHA)"
+        type: string
+        required: false
+        default: ""
+      trivy_severity:
+        description: "Container severities that FAIL the build before the image is pushed"
+        type: string
+        required: false
+        default: "HIGH,CRITICAL"
+      push:
+        description: "Push the image after a clean scan (false = build-and-scan only)"
+        type: boolean
+        required: false
+        default: true
+      cloud:
+        description: "commercial | gov"
+        type: string
+        required: false
+        default: "commercial"
+    secrets:
+      AZURE_TENANT_ID:
+        description: "Entra tenant ID for OIDC federated login. Not a secret value in the cryptographic sense, but org-identifying — keep it in secrets."
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        description: "Target Azure subscription ID for OIDC federated login."
+        required: true
+      AZURE_CLIENT_ID:
+        description: "Client ID of the federated app registration / user-assigned identity used for OIDC login. No client secret is used."
+        required: true
+    outputs:
+      image_digest:
+        description: "SHA256 digest of the pushed image"
+        value: ${{ jobs.build.outputs.image_digest }}
+      sbom_sha256:
+        description: "SHA256 of the SPDX SBOM"
+        value: ${{ jobs.build.outputs.sbom_sha256 }}
+
+# Concurrency for a CHANGE workflow is the opposite of concurrency for a validation
+# workflow. Validation cancels the superseded run — the answer is stale, killing it costs
+# nothing. A deployment must NEVER be cancelled mid-mutation: the run dies between the
+# change and its verification, leaving a half-applied state with no rollback and no record
+# of what it owned. See docs/architecture/ROLLBACK_CONTRACT.md — a cancelled run cannot honour a
+# contract that depends on completing its own change manifest.
+#
+# So: serialize per target, never cancel in flight. GitHub keeps at most one run PENDING
+# per group and discards older pending ones, which is safe — a pending run has mutated
+# nothing.
+concurrency:
+  group: build-push-${{ inputs.github_environment }}-${{ inputs.acr_login_server }}-${{ inputs.image_repository }}-${{ inputs.image_tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write   # OIDC
+
+jobs:
+  build:
+    # Declaring the environment is what makes GitHub send the ENVIRONMENT OIDC subject and
+    # expose that environment's secrets — including its AZURE_SUBSCRIPTION_ID, which is how
+    # dev physically cannot reach the prod subscription. Empty = build-only, no Azure auth.
+    environment: ${{ inputs.github_environment }}
+    runs-on: ubuntu-latest
+    outputs:
+      image_digest: ${{ steps.push.outputs.digest }}
+      sbom_sha256: ${{ steps.sbom.outputs.sha256 }}
+    env:
+      IMAGE: ${{ inputs.acr_login_server }}/${{ inputs.image_repository }}:${{ inputs.image_tag != '' && inputs.image_tag || github.sha }}
+    steps:
+      - name: Guard — push requires an environment
+        if: inputs.push && inputs.github_environment == ''
+        run: |
+          echo "::error title=push=true requires github_environment::Pushing needs Azure OIDC, and"
+          echo "the federated credential subject is environment-scoped. Without github_environment"
+          echo "this run would present a BRANCH subject and fail with AADSTS700213 after doing all"
+          echo "the build work. Failing now instead."
+          echo ""
+          echo "Either pass github_environment, or set push: false for a build-only run."
+          exit 1
+
+      - uses: actions/checkout@v7
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
+
+      - name: ACR login
+        run: az acr login --name "$(echo '${{ inputs.acr_login_server }}' | cut -d. -f1)"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build (load locally for scan)
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          load: true
+          tags: ${{ env.IMAGE }}
+
+      - name: Trivy image scan (gate before push)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          severity: ${{ inputs.trivy_severity }}
+          exit-code: "1"
+          ignore-unfixed: "true"
+
+      - name: SBOM (Syft, SPDX JSON)
+        id: sbom
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          syft "${{ env.IMAGE }}" -o spdx-json=sbom.spdx.json
+          echo "sha256=$(sha256sum sbom.spdx.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Push (digest-pinned)
+        id: push
+        if: inputs.push
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          push: true
+          tags: ${{ env.IMAGE }}
+
+      - name: Upload SBOM
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom.spdx.json
+          if-no-files-found: warn

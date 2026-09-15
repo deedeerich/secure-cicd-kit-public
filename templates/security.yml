@@ -1,0 +1,26 @@
+# Starter: drop this into a calling repo at .github/workflows/security.yml
+# Replace YOUR_ORG and pin @v1 to a released tag once the kit repo is tagged.
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  security:
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-security.yml@v1
+    with:
+      language: python        # python | node | multi
+      enable_iac: true        # set true if the repo contains Terraform / IaC
+      # semgrep_config: "p/default p/owasp-top-ten p/python"
+      # fail_on_severity: "CRITICAL,HIGH"
+      # soft_fail_sast: true  # SAST reports SARIF but doesn't block; flip to false to enforce
+    secrets:
+      SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}   # optional; remove if unused

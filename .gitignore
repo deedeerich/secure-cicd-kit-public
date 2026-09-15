@@ -1,0 +1,14 @@
+
+__pycache__/
+*.pyc
+
+# Generated evidence from an inventory run. Regenerable via scripts/inventory_consumers.py;
+# it belongs with the run that produced it, not in the repo the scanner then scans.
+consumer-coverage.json
+
+# GENERATED SECRET FIXTURES. tests/make_fixture.py says, in its own docstring, that the fixture is
+# "generated at validation time and never committed as source, so nobody inherits it, forks it, or
+# mistakes deliberate vulnerabilities for negligence." Four of its outputs were committed anyway --
+# document said one thing, tree did another, and GitHub push protection is what found it when the
+# neutral mirror was first published. Regenerate with:  python tests/make_fixture.py --out <dir>
+tests/consumer-fixture/full/secrets/

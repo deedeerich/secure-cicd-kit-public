@@ -1,0 +1,33 @@
+# FIXTURE -- deliberately defective. Not a real workflow; `.sample` keeps it out of the main scan.
+# One case per known form of the family. check_shell_continuations.py --self-test asserts it finds
+# every one of them, and that the correctly-formed continuation at the bottom is NOT flagged.
+#
+# A checker that cannot detect its own defect class is decoration. This fixture is what makes the
+# PASS checkable by someone other than whoever wrote the regex.
+run: |
+  # FORM 1 -- continuation followed by a comment. Shipped in four scanner invocations, 2026-09-02.
+  semgrep scan --config p/csharp \
+    # suppression: this comment swallows the continuation
+    --sarif --output out.sarif --metrics=off "$scope" || true
+
+  # FORM 1 again -- worst case: the container received no arguments whatsoever.
+  docker run --rm -v "$PWD":/src securego/gosec:2.28.0 \
+    # another swallowed continuation
+    -no-fail -fmt sarif -out /src/gosec.sarif ./... || true
+
+  # FORM 2 -- continuation followed by a blank line. Command ends early, silently.
+  trivy fs --format sarif \
+
+    --output trivy.sarif "$scope" || true
+
+  # FORM 3 -- backslash then trailing whitespace. Escapes the SPACE, not the newline. Invisible.
+  bandit -r -f sarif \ 
+    -o bandit.sarif "$scope" || true
+
+  # FORM 4 -- literal two-character backslash-n. Shipped 2026-09-01; apt installed a package `n`.
+  sudo apt-get install -y \n --no-install-recommends flawfinder cppcheck
+
+  # CORRECTLY FORMED -- must NOT be flagged. Without this line the fixture cannot distinguish a
+  # working detector from one that flags every continuation it sees.
+  semgrep scan --config p/java \
+    --sarif --output java.sarif "$scope" || true

@@ -1,0 +1,92 @@
+[
+  {
+    "path": "secrets/azure_storage.txt",
+    "expected_signal": "secret:azure-storage-connection-string"
+  },
+  {
+    "path": "secrets/entra.env",
+    "expected_signal": "secret:entra-client-secret"
+  },
+  {
+    "path": "secrets/servicebus.txt",
+    "expected_signal": "secret:azure-shared-access-key"
+  },
+  {
+    "path": "secrets/negative_controls.md",
+    "expected_signal": "negative:no-false-positive"
+  },
+  {
+    "path": "python/requirements.txt",
+    "expected_signal": "deps:python-cve"
+  },
+  {
+    "path": "python/vuln.py",
+    "expected_signal": "sast:python-bandit"
+  },
+  {
+    "path": "node/package-lock.json",
+    "expected_signal": "deps:node-cve"
+  },
+  {
+    "path": "node/vuln.js",
+    "expected_signal": "sast:node-semgrep"
+  },
+  {
+    "path": "dotnet/Fixture.csproj",
+    "expected_signal": "deps:dotnet-vulnerable"
+  },
+  {
+    "path": "dotnet/Vuln.cs",
+    "expected_signal": "sast:dotnet-semgrep"
+  },
+  {
+    "path": "java/pom.xml",
+    "expected_signal": "deps:java-cve"
+  },
+  {
+    "path": "java/Vuln.java",
+    "expected_signal": "sast:java-semgrep"
+  },
+  {
+    "path": "services/api/package-lock.json",
+    "expected_signal": "deps:node-cve-second-root"
+  },
+  {
+    "path": "services/api/vuln.js",
+    "expected_signal": "sast:node-semgrep-second-root"
+  },
+  {
+    "path": "services/worker/vuln.go",
+    "expected_signal": "sast:go-gosec-second-root",
+    "tool": "gosec"
+  },
+  {
+    "path": "go/go.mod",
+    "expected_signal": "deps:go-cve"
+  },
+  {
+    "path": "go/vuln.go",
+    "expected_signal": "sast:go-gosec",
+    "tool": "gosec"
+  },
+  {
+    "path": "cpp/vuln.c",
+    "expected_signal": "sast:cpp-flawfinder",
+    "tool": "flawfinder"
+  },
+  {
+    "path": "infra/main.tf",
+    "expected_signal": "iac:checkov",
+    "tool": "checkov"
+  },
+  {
+    "path": "infra/Dockerfile",
+    "expected_signal": "iac:dockerfile",
+    "tool": "trivy-iac"
+  },
+  {
+    "path": "cpp/vuln.c",
+    "expected_signal": "sast:cpp-cppcheck",
+    "tool": "cppcheck"
+  }
+]

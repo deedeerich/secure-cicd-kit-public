@@ -1,0 +1,138 @@
+# Gitleaks config — Azure / Entra credential classes.
+#
+# WHY THIS EXISTS: the baseline hook set carried `detect-aws-credentials` and nothing equivalent for
+# Azure. Generic high-entropy detection MAY catch some Azure secrets. "May catch" is not deliberate
+# coverage of the credential classes you actually use.
+#
+# SCOPE: this is a DEVELOPER GUARDRAIL. It is bypassable with --no-verify and is not the security
+# boundary. Repository/organization secret scanning in CI is the authoritative layer. Both should
+# exist; neither substitutes for the other.
+#
+# Usage:  gitleaks detect --config developer-safety/hooks/gitleaks-azure.toml --source .
+# Extend: [extend] useDefault = true  pulls in gitleaks' built-in rules as well.
+
+title = "Azure / Entra credential detection"
+
+[extend]
+useDefault = true
+
+# --- Storage ------------------------------------------------------------------
+
+[[rules]]
+id = "azure-storage-connection-string"
+description = "Azure Storage connection string containing an account key"
+regex = '''DefaultEndpointsProtocol=https?;.*AccountKey=[A-Za-z0-9+/=]{80,}'''
+tags = ["azure", "storage", "connection-string"]
+
+[[rules]]
+id = "azure-storage-account-key"
+description = "Azure Storage account key (88-char base64 ending in ==)"
+regex = '''(?i)(accountkey|storage[_-]?key|primary[_-]?key)\s*[:=]\s*['\"]?([A-Za-z0-9+/]{86}==)'''
+secretGroup = 2
+tags = ["azure", "storage"]
+
+[[rules]]
+id = "azure-sas-token"
+description = "Azure Shared Access Signature token"
+regex = '''[?&]sv=\d{4}-\d{2}-\d{2}&(?:[a-z]{2}=[^&\s'\"]*&){1,8}sig=[A-Za-z0-9%+/=]{20,}'''
+tags = ["azure", "sas"]
+
+# --- Messaging ----------------------------------------------------------------
+
+[[rules]]
+id = "azure-shared-access-key"
+description = "Service Bus / Event Hub / Relay / IoT Hub SharedAccessKey"
+regex = '''(?i)Endpoint=sb://[^;]+;SharedAccessKeyName=[^;]+;SharedAccessKey=[A-Za-z0-9+/=]{20,}'''
+tags = ["azure", "servicebus", "eventhub"]
+
+[[rules]]
+id = "azure-iothub-connection-string"
+description = "IoT Hub connection string"
+regex = '''HostName=[^;]+\.azure-devices\.net;.*SharedAccessKey=[A-Za-z0-9+/=]{20,}'''
+tags = ["azure", "iot"]
+
+# --- Data ---------------------------------------------------------------------
+
+[[rules]]
+id = "azure-cosmos-key"
+description = "Cosmos DB account key or connection string"
+regex = '''(?i)(AccountEndpoint=https://[^;]+\.documents\.azure\.com[^;]*;AccountKey=|cosmos[_-]?key\s*[:=]\s*['\"]?)([A-Za-z0-9+/]{86}==)'''
+secretGroup = 2
+tags = ["azure", "cosmos"]
+
+[[rules]]
+id = "azure-sql-connection-string"
+description = "Azure SQL connection string with an inline password"
+regex = '''(?i)Server=tcp:[^;]+\.database\.windows\.net.*(Password|Pwd)=[^;\s'\"]{6,}'''
+tags = ["azure", "sql"]
+
+[[rules]]
+id = "azure-redis-key"
+description = "Azure Cache for Redis connection string with a password"
+regex = '''(?i)[a-z0-9-]+\.redis\.cache\.windows\.net:\d+,password=[A-Za-z0-9+/=]{20,}'''
+tags = ["azure", "redis"]
+
+# --- Entra / identity ---------------------------------------------------------
+
+[[rules]]
+id = "entra-client-secret-value"
+description = "Entra app registration client secret (newer value format)"
+regex = '''\b[A-Za-z0-9~._-]{3}8Q~[A-Za-z0-9~._-]{31,34}\b'''
+tags = ["azure", "entra", "client-secret"]
+
+[[rules]]
+id = "entra-client-secret-assignment"
+description = "Client secret assigned to a variable or config key"
+regex = '''(?i)(client[_-]?secret|app[_-]?secret|azure[_-]?client[_-]?secret|arm[_-]?client[_-]?secret)\s*[:=]\s*['\"]([A-Za-z0-9~._@#$%^&*+/=-]{20,})['\"]'''
+secretGroup = 2
+tags = ["azure", "entra"]
+
+[[rules]]
+id = "azure-service-principal-password-cli"
+description = "Service principal credential printed or passed on a CLI"
+regex = '''(?i)az\s+(ad\s+sp|login).*--password\s+['\"]?[^\s'\"]{8,}'''
+tags = ["azure", "entra", "cli"]
+
+# --- DevOps / platform --------------------------------------------------------
+
+[[rules]]
+id = "azure-devops-pat"
+description = "Azure DevOps personal access token"
+regex = '''(?i)(azure[_-]?devops|ado|vsts|system[_-]?accesstoken)[_-]?(pat|token)?\s*[:=]\s*['\"]?([a-z2-7]{52})['\"]?'''
+secretGroup = 3
+tags = ["azure", "devops", "pat"]
+
+[[rules]]
+id = "azure-subscription-key"
+description = "API Management / Cognitive Services subscription key"
+regex = '''(?i)(ocp-apim-subscription-key|subscription[_-]?key|api[_-]?key)\s*[:=]\s*['\"]?([a-f0-9]{32})['\"]?'''
+secretGroup = 2
+tags = ["azure", "apim"]
+
+[[rules]]
+id = "azure-publish-settings"
+description = "App Service publish profile containing userPWD"
+regex = '''userPWD=['\"][^'\"]{8,}['\"]'''
+tags = ["azure", "appservice"]
+
+# --- Allowlist ----------------------------------------------------------------
+# Placeholders, docs and test fixtures. Extend locally — do not weaken the rules to silence noise.
+
+[allowlist]
+description = "Documentation placeholders and obvious non-secrets"
+regexes = [
+  '''00000000-0000-0000-0000-000000000000''',
+  '''(?i)(your|my|the|example|sample|dummy|placeholder|redacted|changeme|xxx+|<[^>]+>)[_-]?(secret|key|password|token)''',
+  '''(?i)accountkey=[A-Za-z0-9+/]{0,20}(example|test|fake|dummy)''',
+]
+paths = [
+  # DO NOT allowlist .md / .rst / .txt wholesale. Secrets land in runbooks, notes and
+  # READMEs constantly, and a doc-wide exemption makes every one of them invisible.
+  # This was shipped once and the validation fixture caught it — three of four rules
+  # silently stopped detecting because their fixture files ended in .txt.
+  '''(^|/)docs/adr/.*\.md$''',              # ADRs quote config examples; narrow and deliberate
+  '''(^|/)tests?/fixtures?/''',
+  '''\.env\.example$''',
+  '''\.env\.template$''',
+  '''(^|/)CHANGELOG\.md$''',
+]

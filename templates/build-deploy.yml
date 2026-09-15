@@ -1,0 +1,93 @@
+# Starter: drop this into a calling repo at .github/workflows/build-deploy.yml
+# Replace YOUR_ORG and pin @v1 to a released tag once the kit repo is tagged.
+#
+# Shape: security gates -> build (scan before push, SBOM) -> deploy BY DIGEST, gated by a
+# GitHub Environment. Note the trigger set: push builds, but push does NOT deploy.
+name: Build & Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy the build produced by this run"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Gate 1: security must pass before anything is built ──────────────
+  security:
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-security.yml@v1
+    permissions:
+      contents: read
+      security-events: write
+    with:
+      language: python
+      enable_iac: false
+      soft_fail_sast: false
+    secrets:
+      SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+  # ── Gate 2: the repo's own pipelines must satisfy supply-chain policy ─
+  policy:
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/workflow-policy-check.yml@v1
+    permissions:
+      contents: read
+
+  # ── Build: Trivy gate runs BEFORE the push; emits digest + SBOM hash ──
+  #
+  # `github_environment` is REQUIRED whenever push is true (it defaults to true). Pushing needs
+  # Azure OIDC, and the federated credential subject is environment-scoped — so the environment
+  # is what supplies both the matching subject and the target subscription. Omitting it fails
+  # fast with an explanatory error rather than after the whole build.
+  #
+  # To build on feature branches too, add them to `on.push.branches` and pass:
+  #     github_environment: ""      # no Azure auth, no credential needed
+  #     push: false                 # build + scan + SBOM only
+  # Keep `push: true` on main only. Do NOT restrict this with a Branch-form federated credential —
+  # use the Environment's deployment branch policy (see docs/adoption/SETUP.md §1.2).
+  build:
+    needs: [security, policy]
+    if: github.event_name != 'pull_request'
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-build-docker.yml@v1
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      github_environment: production        # same Environment the deploy uses
+      acr_login_server: ${{ vars.ACR_LOGIN_SERVER }}
+      image_repository: ${{ vars.IMAGE_REPOSITORY }}
+      cloud: commercial
+    secrets:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+
+  # ── Deploy: dispatch-only and Environment-gated. Never on bare push. ──
+  deploy:
+    needs: [build]
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-deploy-containerapp.yml@v1
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      github_environment: production        # approvals live on the Environment
+      resource_group: ${{ vars.RESOURCE_GROUP }}
+      containerapp_name: ${{ vars.CONTAINERAPP_NAME }}
+      acr_login_server: ${{ vars.ACR_LOGIN_SERVER }}
+      image_repository: ${{ vars.IMAGE_REPOSITORY }}
+      image_digest: ${{ needs.build.outputs.image_digest }}   # immutable reference
+      cloud: commercial
+      health_path: /health
+      rollback_on_failure: true
+    secrets:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://secure-cicd-kit/schemas/expected-signal.schema.json",
+  "title": "Expected Signal Contract",
+  "description": "What a seeded fixture MUST produce, and optionally WHICH SCANNER must produce it.\n\nThe `tool` pin exists because overlapping coverage let one scanner mask a dead one: cppcheck covered for a flawfinder that never ran, and semgrep covered for gosec. Without the pin the contract reported green while the freshly repaired path was completely dead.\n\nDo NOT 'simplify' pinned signals back to tool-agnostic matching because the extra metadata looks redundant. The metadata IS the assertion.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["path", "expected_signal"],
+    "additionalProperties": false,
+    "properties": {
+      "path": { "type": "string" },
+      "expected_signal": { "type": "string" },
+      "tool": {
+        "type": "string",
+        "description": "When present, THIS scanner must independently have produced the signal. Another scanner covering for it is a FAILURE, not a pass."
+      },
+      "negative_control": {
+        "type": "boolean",
+        "description": "Must produce NO finding. A suite with no negative control cannot tell 'detects correctly' from 'detects everything'."
+      }
+    }
+  }
+}

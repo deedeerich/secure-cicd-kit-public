@@ -1,0 +1,32 @@
+# CODEOWNERS — example. Copy to .github/CODEOWNERS and adapt.
+#
+# NOTE FOR SOLO / CONSTRAINED TEAMS:
+# CODEOWNERS with require_code_owner_reviews and one engineer = nothing ever merges.
+# Use it WITHOUT the required-review setting: it still routes review requests, still
+# documents ownership, and still marks which paths are consequential — without
+# creating a self-blocking gate. Turn the requirement on when a second qualified
+# reviewer exists.
+
+# Default
+*                               @your-org/engineering
+
+# ---- Consequential paths: these define the "invariant-adjacent" surface -----
+# Even unenforced, listing them here documents WHERE independent challenge matters.
+
+/.github/workflows/             @your-org/platform @your-org/security
+/.github/actions/               @your-org/platform
+/developer-safety/              @your-org/security
+/infra/                         @your-org/platform
+/**/*.tf                        @your-org/platform
+/**/Dockerfile*                 @your-org/platform
+
+# Auth, identity, data model, audit — highest independent-review value
+/**/auth/                       @your-org/security
+/**/rbac/                       @your-org/security
+/**/migrations/                 @your-org/data
+/**/audit/                      @your-org/security
+/schemas/                       @your-org/architecture
+
+# Policy and governance
+/policy/                        @your-org/security
+/docs/decisions/                @your-org/architecture

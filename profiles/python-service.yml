@@ -1,0 +1,31 @@
+# Containerized Python service deploying to Container Apps in the commercial partition.
+profile: python-service
+description: Containerized Python API service with a gated, digest-pinned deploy to Container Apps.
+language: python
+
+security:
+  enable_iac: false
+  soft_fail_sast: false          # enforced: SAST findings block
+  fail_on_severity: "CRITICAL,HIGH"
+  semgrep_config: "p/default p/owasp-top-ten p/python"
+  required_gates:
+    - secret-scan
+    - code-quality
+    - sast-semgrep
+    - sast-bandit
+    - deps-scan
+    - workflow-policy
+
+supply_chain:
+  sbom: true
+  image_scan_gate: true
+  require_sha_pinned_actions: true
+  trivy_severity: "HIGH,CRITICAL"
+
+deploy:
+  target: container-app
+  partitions: [commercial]
+  by_digest: true
+  gated: true
+  health_path: /health
+  rollback: previous-revision

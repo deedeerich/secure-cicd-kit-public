@@ -1,0 +1,13 @@
+# Clean control. Current pins, resolved against PyPI at the date below — not from memory.
+#
+# THIS FILE IS EXPECTED TO GO STALE AND START FAILING. When it does, that is the gate working:
+# a new advisory landed against one of these pins. Bump the pin. Never weaken the gate, never
+# raise fail_on_severity, and never point the clean fixture somewhere quieter — each of those
+# converts a true positive into a silent one.
+#
+# Last bumped 2026-08-14 because urllib3 2.2.3 acquired four HIGH advisories
+# (CVE-2025-66418, CVE-2025-66471, CVE-2026-21441, CVE-2026-44431) within hours of the
+# previous pin being written. That is not a fixture defect; it is the control firing.
+requests==2.34.2
+PyYAML==6.0.3
+urllib3==2.7.0

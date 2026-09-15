@@ -1,0 +1,30 @@
+# Consumer template — NVD CVE scanning.
+# Copy to .github/workflows/nvd-cve.yml in the consuming repo and pin @vX.
+#
+# Requires repo/org secret: NVD_API_KEY
+#   Free, self-service: https://nvd.nist.gov/developers/request-an-api-key
+
+name: NVD CVE Scan
+
+on:
+  pull_request:
+  schedule:
+    - cron: "0 5 * * *"   # daily, after NVD publishes
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  cve:
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-nvd-cve.yml@v1
+    with:
+      scan_paths: "."
+      # Dependency-Check is slow on a cold cache. Common pattern: full scan on the
+      # schedule, Trivy-only on PRs.
+      enable_dependency_check: ${{ github.event_name != 'pull_request' }}
+      trivy_fail_severities: ""     # start report-only; tighten when the backlog is triaged
+      fail_on_cvss: 11              # 11 = never fail; lower it deliberately
+    secrets:
+      NVD_API_KEY: ${{ secrets.NVD_API_KEY }}

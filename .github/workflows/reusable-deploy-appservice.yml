@@ -1,0 +1,217 @@
+name: "Kit: Deploy App Service (by digest, sovereign-capable)"
+# Employer-neutral deploy reusable for Azure App Service (Linux containers).
+# Deploy-by-DIGEST only, OIDC-only auth, gated by a GitHub Environment, optional
+# slot-then-swap so the health probe runs BEFORE production traffic moves.
+# Defaults target the sovereign/government partition; set cloud=commercial for parity use.
+# Logic is INLINED (not `uses: ./`) so it resolves correctly when called cross-repo.
+
+on:
+  workflow_call:
+    inputs:
+      github_environment:
+        description: "GitHub Environment that gates this deploy (approvals/secrets live there)"
+        type: string
+        required: true
+      resource_group:
+        description: "Resource group containing the Web App"
+        type: string
+        required: true
+      webapp_name:
+        description: "Web App name"
+        type: string
+        required: true
+      acr_login_server:
+        description: "Registry login server FQDN"
+        type: string
+        required: true
+      image_repository:
+        description: "Image repository name"
+        type: string
+        required: true
+      image_digest:
+        description: "Image digest to deploy, e.g. sha256:abc... (from reusable-build-docker)"
+        type: string
+        required: true
+      cloud:
+        description: "gov | commercial"
+        type: string
+        required: false
+        default: "gov"
+      slot:
+        description: "Deployment slot to stage into ('' deploys straight to production)"
+        type: string
+        required: false
+        default: "staging"
+      swap_on_healthy:
+        description: "Swap the slot into production once the health probe passes"
+        type: boolean
+        required: false
+        default: true
+      health_path:
+        description: "Path appended to the app hostname for the health probe"
+        type: string
+        required: false
+        default: "/health"
+      health_retries:
+        description: "Health probe attempts before the deploy is declared failed"
+        type: number
+        required: false
+        default: 18
+      health_interval_seconds:
+        description: "Seconds between health probe attempts"
+        type: number
+        required: false
+        default: 10
+      version_metadata:
+        description: "Provenance JSON from render-version-metadata; stamped as an app setting"
+        type: string
+        required: false
+        default: ""
+    secrets:
+      AZURE_TENANT_ID:
+        description: "Entra tenant ID for OIDC federated login. Not a secret value in the cryptographic sense, but org-identifying — keep it in secrets."
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        description: "Target Azure subscription ID for OIDC federated login."
+        required: true
+      AZURE_CLIENT_ID:
+        description: "Client ID of the federated app registration / user-assigned identity used for OIDC login. No client secret is used."
+        required: true
+    outputs:
+      app_url:
+        description: "Public URL that received the deploy (slot URL if not swapped)"
+        value: ${{ jobs.deploy.outputs.app_url }}
+
+# Concurrency for a CHANGE workflow is the opposite of concurrency for a validation
+# workflow. Validation cancels the superseded run — the answer is stale, killing it costs
+# nothing. A deployment must NEVER be cancelled mid-mutation: the run dies between the
+# change and its verification, leaving a half-applied state with no rollback and no record
+# of what it owned. See docs/architecture/ROLLBACK_CONTRACT.md — a cancelled run cannot honour a
+# contract that depends on completing its own change manifest.
+#
+# So: serialize per target, never cancel in flight. GitHub keeps at most one run PENDING
+# per group and discards older pending ones, which is safe — a pending run has mutated
+# nothing.
+concurrency:
+  group: deploy-appservice-${{ inputs.github_environment }}-${{ inputs.resource_group }}-${{ inputs.webapp_name }}-${{ inputs.slot }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write   # OIDC
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.github_environment }}
+    outputs:
+      app_url: ${{ steps.resolve.outputs.app_url }}
+    steps:
+      - name: Validate digest (refuse mutable tags)
+        run: |
+          d='${{ inputs.image_digest }}'
+          if ! echo "$d" | grep -Eq '^sha256:[a-f0-9]{64}$'; then
+            echo "::error::image_digest must be a full sha256 digest (got '$d'). Tag-based deploys are not permitted."
+            exit 1
+          fi
+          echo "Deploying immutable reference: ${{ inputs.acr_login_server }}/${{ inputs.image_repository }}@$d"
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
+
+      - name: Set container image (digest-pinned)
+        run: |
+          set -euo pipefail
+          slot_arg=""
+          [ -n '${{ inputs.slot }}' ] && slot_arg="--slot ${{ inputs.slot }}"
+          # shellcheck disable=SC2086
+          az webapp config container set \
+            -n '${{ inputs.webapp_name }}' -g '${{ inputs.resource_group }}' $slot_arg \
+            --container-image-name '${{ inputs.acr_login_server }}/${{ inputs.image_repository }}@${{ inputs.image_digest }}' \
+            --output none
+          echo "Image set on target: ${{ inputs.slot != '' && inputs.slot || 'production' }}"
+
+      - name: Stamp provenance
+        if: inputs.version_metadata != ''
+        run: |
+          slot_arg=""
+          [ -n '${{ inputs.slot }}' ] && slot_arg="--slot ${{ inputs.slot }}"
+          # shellcheck disable=SC2086
+          az webapp config appsettings set \
+            -n '${{ inputs.webapp_name }}' -g '${{ inputs.resource_group }}' $slot_arg \
+            --settings DEPLOY_PROVENANCE='${{ inputs.version_metadata }}' \
+            --output none
+          echo '${{ inputs.version_metadata }}'
+
+      - name: Restart target
+        run: |
+          slot_arg=""
+          [ -n '${{ inputs.slot }}' ] && slot_arg="--slot ${{ inputs.slot }}"
+          # shellcheck disable=SC2086
+          az webapp restart -n '${{ inputs.webapp_name }}' -g '${{ inputs.resource_group }}' $slot_arg --output none
+
+      - name: Resolve target URL
+        id: resolve
+        run: |
+          slot_arg=""
+          [ -n '${{ inputs.slot }}' ] && slot_arg="--slot ${{ inputs.slot }}"
+          # shellcheck disable=SC2086
+          host=$(az webapp show -n '${{ inputs.webapp_name }}' -g '${{ inputs.resource_group }}' $slot_arg \
+            --query defaultHostName -o tsv)
+          echo "app_url=https://${host}" >> "$GITHUB_OUTPUT"
+          echo "Target URL: https://${host}"
+
+      - name: Health check (before any traffic move)
+        id: health
+        continue-on-error: true
+        run: |
+          url='${{ steps.resolve.outputs.app_url }}${{ inputs.health_path }}'
+          for i in $(seq 1 ${{ inputs.health_retries }}); do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$url" || echo 000)
+            echo "  attempt $i/${{ inputs.health_retries }} -> HTTP $code"
+            if [ "$code" = "200" ]; then
+              echo "Healthy after $i attempt(s)."
+              exit 0
+            fi
+            sleep ${{ inputs.health_interval_seconds }}
+          done
+          echo "::error::Health probe never returned 200 at $url"
+          exit 1
+
+      - name: Swap slot into production
+        if: steps.health.outcome == 'success' && inputs.swap_on_healthy && inputs.slot != ''
+        run: |
+          az webapp deployment slot swap \
+            -n '${{ inputs.webapp_name }}' -g '${{ inputs.resource_group }}' \
+            --slot '${{ inputs.slot }}' --target-slot production --output none
+          echo "Swapped ${{ inputs.slot }} -> production."
+
+      - name: Held back (unhealthy)
+        if: steps.health.outcome == 'failure' && inputs.slot != ''
+        run: |
+          echo "::warning::Health probe failed on slot '${{ inputs.slot }}' — no swap performed. Production is untouched."
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### App Service deploy"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| App | \`${{ inputs.webapp_name }}\` |"
+            echo "| Partition | \`${{ inputs.cloud }}\` |"
+            echo "| Digest | \`${{ inputs.image_digest }}\` |"
+            echo "| Staged on | \`${{ inputs.slot != '' && inputs.slot || 'production' }}\` |"
+            echo "| Health | \`${{ steps.health.outcome }}\` |"
+            echo "| Swapped | \`${{ steps.health.outcome == 'success' && inputs.swap_on_healthy && inputs.slot != '' }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail the deploy if unhealthy
+        if: steps.health.outcome == 'failure'
+        run: exit 1

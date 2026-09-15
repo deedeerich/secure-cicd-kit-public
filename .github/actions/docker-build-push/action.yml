@@ -1,0 +1,80 @@
+name: "Docker Build, Scan & Push"
+description: "Buildx build, Trivy image scan, Syft SPDX SBOM, push to ACR, capture digest + SBOM hash. Assumes Azure login already performed."
+inputs:
+  acr-login-server:
+    description: "ACR login server FQDN (e.g. myacr.azurecr.io)"
+    required: true
+  image-repository:
+    description: "Image repository name (e.g. team/app)"
+    required: true
+  dockerfile:
+    description: "Path to Dockerfile"
+    required: false
+    default: "Dockerfile"
+  context:
+    description: "Docker build context"
+    required: false
+    default: "."
+  image-tag:
+    description: "Image tag"
+    required: false
+    default: "${{ github.sha }}"
+  trivy-severity:
+    description: "Trivy severities that FAIL the build"
+    required: false
+    default: "HIGH,CRITICAL"
+  push:
+    description: "Push after a clean scan"
+    required: false
+    default: "true"
+outputs:
+  image-digest:
+    description: "SHA256 digest of the pushed image"
+    value: ${{ steps.push.outputs.digest }}
+  sbom-sha256:
+    description: "SHA256 of the SPDX SBOM"
+    value: ${{ steps.sbom.outputs.sha256 }}
+runs:
+  using: composite
+  steps:
+    - uses: docker/setup-buildx-action@v4
+    - name: ACR login
+      shell: bash
+      run: az acr login --name "$(echo '${{ inputs.acr-login-server }}' | cut -d. -f1)"
+    - name: Build (load locally for scan)
+      uses: docker/build-push-action@v7
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.dockerfile }}
+        load: true
+        tags: ${{ inputs.acr-login-server }}/${{ inputs.image-repository }}:${{ inputs.image-tag }}
+    - name: Trivy image scan (gate before push)
+      uses: aquasecurity/trivy-action@v0.36.0
+      with:
+        image-ref: ${{ inputs.acr-login-server }}/${{ inputs.image-repository }}:${{ inputs.image-tag }}
+        severity: ${{ inputs.trivy-severity }}
+        exit-code: "1"
+        ignore-unfixed: "true"
+    - name: SBOM (Syft, SPDX JSON)
+      id: sbom
+      shell: bash
+      run: |
+        curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+        syft "${{ inputs.acr-login-server }}/${{ inputs.image-repository }}:${{ inputs.image-tag }}" -o spdx-json=sbom.spdx.json
+        echo "sha256=$(sha256sum sbom.spdx.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+    - name: Push (digest-pinned)
+      id: push
+      if: inputs.push == 'true'
+      uses: docker/build-push-action@v7
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.dockerfile }}
+        push: true
+        tags: ${{ inputs.acr-login-server }}/${{ inputs.image-repository }}:${{ inputs.image-tag }}
+    - name: Upload SBOM artifact
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: sbom-${{ inputs.image-tag }}
+        path: sbom.spdx.json
+        if-no-files-found: warn

@@ -1,0 +1,998 @@
+# ASSURANCE TAXONOMY — the authoritative controlled vocabulary for this kit.
+#
+# WHY THIS FILE EXISTS
+#
+# These words drive enforcement. `UNAVAILABLE` decides whether a build blocks; `PARTIAL` decides
+# whether a claim was established; `ACCEPTED_RISK` decides whether a real secret finding is allowed
+# to pass. They were being used across fourteen files with no definition anywhere, and two disposition
+# classes existed only in conversation.
+#
+# The failure this prevents is specific and has already happened here: the same decisions were
+# recorded in two places, one went stale, and the stale one looked authoritative. A vocabulary
+# scattered across prose has exactly that shape.
+#
+# THE RULE THAT MATTERS MOST — `consumers`:
+#   A term is violated not only by misuse but by SILENT RE-INTERPRETATION downstream. If `PARTIAL`
+#   means "claim not established" in a scanner and a dashboard later rounds it into `PASS`, the
+#   taxonomy has been broken even though every word used was valid. Each term therefore names who is
+#   allowed to consume it and what they may conclude.
+#
+# Reconciled by `scripts/reconcile_taxonomy.py`, run in self-test: a taxonomy-shaped token used in
+# the kit but absent here is drift and fails the build.
+
+meta:
+  version: 1
+  introduced: 2026-08-21
+  owner: kit-maintainer
+  supersedes: >-
+    Scattered definitions in FINDING_CLASSIFICATION.md, VALIDATION_DEBT.md, LANDMINES.md,
+    CAPABILITY_MATRIX.md, workflow comments and commit messages. Those remain as EXPLANATION;
+    this file is the AUTHORITY. Where they disagree, this wins and the other is a defect.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THE EPISTEMIC INTEGRITY CONTRACT
+#
+# Every invariant below is a consequence of one commitment:
+#
+#   THE THING REMAINS WHAT IT CLAIMS TO BE.
+#
+#   Evidence does not become a conclusion it does not support. A degraded system does not
+#   acquire authority it did not have. A failure does not disguise itself as absence. A decision
+#   does not quietly lose its rationale. An exception does not rewrite history. Documentation does
+#   not claim implementation. A control does not claim coverage it could not observe. And when new
+#   evidence proves the model wrong, THE MODEL CHANGES rather than being defended.
+#
+#   Degradation may reduce available information, confidence, or authority. It must NEVER rewrite
+#   what remains known, erase relevant distinctions, or represent lost knowledge as knowledge.
+#
+# WHICH DISTINCTIONS MUST SURVIVE
+#
+# The test is NOT "does this distinction change whether the gate blocks". Enforcement is one
+# consumer among many. The test is:
+#
+#   Would collapsing this distinction change the TRUTH, the MEANING, the INTERPRETATION, the
+#   OPERATIONAL RESPONSE, the CONTINUITY, the TRUST, or the CONFIDENCE in what the system knows?
+#
+# If yes to ANY of those, the distinction is preserved at the canonical boundary. An individual
+# consumer may then say "I do not need that distinction for my decision". It does not get to erase
+# it for everyone else.
+#
+#   DECISION CARDINALITY DOES NOT DETERMINE EVIDENCE CARDINALITY.
+#
+# Two enforcement outcomes (BLOCK / ALLOW) do not mean the evidence model contains two states.
+# `grep` returning 0/1/2 matters to operations (did the tool break), to assurance (did observation
+# succeed), to logging, to continuity (why was the last run classified differently), to a human
+# (fix code or fix infrastructure), and to a machine (is retry sensible) -- even where the final
+# policy projects all of it onto two actions.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# GOVERNING INVARIANTS — these bind every namespace below.
+#
+# They exist because the states alone were not enough: a correct producer still
+# participated in a false result when its consumer assigned semantics to missing output.
+invariants:
+
+  authority_never_grows_from_loss:
+    statement: >-
+      Degradation may reduce the SCOPE or CONFIDENCE of a claim. It must NEVER increase its
+      AUTHORITY. Loss of evidence must not accidentally expand what the system is entitled to
+      assert.
+    consequence: >-
+      A downstream stage may PRESERVE or REDUCE the certainty established upstream. It may not
+      INCREASE certainty without new evidence. Plumbing cannot manufacture certainty.
+    illegal_without_new_evidence:
+      - "COLLECTION_FAILED -> PASS"
+      - "PARTIAL -> COMPLETE"
+      - "UNDETERMINED -> PASS"
+      - "UNAVAILABLE -> NOT_APPLICABLE"
+    note: >-
+      Broader than this kit. It applies to agents, identity, continuity and governance: authority
+      must degrade with certainty, never grow because certainty disappeared.
+
+  a_node_is_not_a_path:
+    statement: >-
+      A CAPABILITY IS NOT ESTABLISHED UNTIL EVERY REQUIRED EDGE IN ITS CHAIN HAS A CONSUMER.
+      A producer that emits an artifact nobody reads is a node, not a path. In graph terms:
+      NODE EXISTS != PATH EXISTS.
+    consequence: >-
+      "We produce an SBOM" is true and answers nothing if no stage reads the licence data it
+      carries. The capability exists only across the whole chain --
+      produce -> consume -> interpret -> surface -> govern -- and is absent if any edge is
+      missing, however complete the nodes look individually.
+    observed:
+      - "collection_time.py emitted freshness and coverage; build_requirement_matrix did not read it, so COLLECTED_STALE was in the vocabulary with nothing able to reach it"
+      - "chunk_evidence.py emitted a record-set fingerprint per worksheet; build_evidence_families grouped per file and never opened SCHEMA_INDEX.csv"
+      - "syft emitted CycloneDX and SPDX, both carrying licence data; nothing in the kit read either"
+      - "three scanner jobs existed and were absent from the gate's needs -- they could not fail anything"
+      - "a roadmap marked a ladder rung BUILT on the strength of its producer alone"
+    why_checks_miss_it: >-
+      A tool-presence check passes through every one of these. verify_env's roadmap-vs-tree gate
+      verifies that TOOLS EXIST, not that CAPABILITIES ARE WIRED -- a gate that checks the wrong
+      noun is worse than none, because it gets quoted as coverage.
+    test: >-
+      Before marking a capability built, NAME ITS CONSUMER and show the consumer reading it.
+      Generating an artifact is not using it.
+    note: >-
+      Broader than this kit. The same shape applies to agent governance -- a rule an agent loads
+      and does not act on, a landmine register nothing checks before the danger zone, a handoff
+      written and never read on resume.
+
+  absence_is_not_a_negative_observation:
+    statement: >-
+      Failure to determine a value MUST NOT be represented as a successfully determined negative
+      value.
+    distinguish:
+      - "executed, valid report, zero findings   -> EVIDENCE"
+      - "did not execute, no report              -> ABSENCE OF EVIDENCE"
+      - "executed, malformed report              -> FAILED COLLECTION"
+      - "could not inspect scope                 -> FAILED APPLICABILITY DETERMINATION"
+    note: >-
+      These are not variations of zero. Seventeen sites collapsed them into `0`, and the fix for
+      those sites was itself defeated one boundary later by `${n:-0}`.
+
+  partial_is_not_total_ignorance:
+    statement: >-
+      A capability failing does not erase what other capabilities established. Preserve everything
+      still established and NAME what became unknown.
+    rule: >-
+      UNDETERMINED is reserved for failure of the AGGREGATE claim -- e.g. discovery failed, so the
+      set of capabilities that should have run is unknown, and therefore what was NOT scanned cannot
+      be known. Individual capability failure yields PARTIAL, with `established` and `unestablished`
+      both reported.
+    counter_examples:
+      - "A failed Bandit does not un-find a Trivy finding."
+      - "A passing Semgrep does not fill Bandit's hole."
+
+  correctness_is_not_local:
+    statement: >-
+      A claim is not correct because its producer is correct. It is correct when it survives every
+      downstream boundary that consumes it.
+    consequence: >-
+      A fix is COMPLETE only when the resulting claim remains correct through every consumer. Not
+      when the defective component behaves correctly.
+    evidence: >-
+      The producer was fixed to refuse inventing a zero and to exit non-zero. The consumer, running
+      on always(), read the absent output and defaulted it to zero -- reconstructing the exact lie
+      the producer had just refused to tell, and announcing GATE=PASS one line later.
+
+  defaults_are_suspicious_at_assurance_boundaries:
+    statement: >-
+      There is NO implicit default from unknown to known. A missing count is not 0. A missing state
+      is not PASS. A missing applicability result is not NOT_APPLICABLE.
+    rule: >-
+      Every assurance-bearing value must be traced producer -> consumer: who emits it, when it can
+      be absent, who reads it, what the reader does when it is absent or invalid, and what final
+      state results.
+
+namespaces:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  projection:
+    description: >-
+      Consumers legitimately reduce rich evidence into smaller state spaces. A policy gate may
+      project a dozen evidence states onto BLOCK | ALLOW. An operator needs PASS | FINDINGS |
+      COLLECTION_FAILED | UNAVAILABLE | EXECUTION_TIMEOUT. An orchestrator needs enough to choose
+      retry | continue-degraded | stop | escalate. A reviewer needs provenance and disposition
+      history. A continuity mechanism needs enough to reconstruct why the previous state was
+      believed.
+    rule: >-
+      NONE of those projections is dishonest. THE INTEGRITY VIOLATION IS A LOSSY PROJECTION
+      MASQUERADING AS THE RICHER STATE IT CAME FROM.
+    generalizes:
+      - "COLLECTION_FAILED -> count=0 was not wrong because projection is forbidden. It was wrong
+         because UNKNOWN OBSERVATION became KNOWN ABSENCE."
+      - "PARTIAL -> PASS was not bad terminology. REDUCED EVIDENCE became INCREASED EPISTEMIC
+         AUTHORITY."
+      - "continue-on-error is not inherently dangerous. It is dangerous when EXECUTION POLICY
+         consumes the failure while EVIDENCE SEMANTICS forget it happened."
+    falsification_question: >-
+      For every boundary: what distinctions existed BEFORE it, which disappear AFTER it, and is
+      every lost distinction intentionally irrelevant to EVERY downstream claim -- or preserved
+      elsewhere? That is a considerably nastier test than "does the output look right".
+
+  # ─────────────────────────────────────────────────────────────────────────
+  epistemic_property:
+    description: >-
+      Three properties routinely conflated, two of which are usually expressed as percentages.
+      Keeping them apart matters before anyone builds a dashboard reading "Trust: 94%".
+    consumers: [reporting, future dashboards, audit, any consumer deciding how much to rely on us]
+    values:
+      INTEGRITY:
+        definition: >-
+          Does the system preserve truth and meaning faithfully -- including inconvenient truth
+          about its own limitations?
+        compositional: >-
+          NOT a percentage, and NOT merely "upheld or violated at each boundary" -- an earlier
+          version of this entry said exactly that and was wrong. Individual integrity OBLIGATIONS
+          are testable. SYSTEM integrity is the continuing property that claims, evidence, meaning,
+          authority and provenance remain faithful ACROSS COMPOSITION.
+        proof_it_is_compositional: >-
+          The counting step upheld its local contract perfectly -- it refused to invent a zero and
+          exited non-zero. The consuming step then defaulted the absent output to zero and announced
+          PASS. Every boundary honoured its own contract; the composed claim was false, because the
+          contract itself was insufficient.
+        forbidden: >-
+          "47 of 50 integrity checks passed = 94% INTEGRITY". Integrity does not average. A system
+          that preserves truth at 94% of its boundaries can still emit an entirely false claim
+          through the other three.
+        note: >-
+          Integrity comes BEFORE trust. Trust is an accumulated consequence of repeatedly preserving
+          truth, including truth about limitations.
+      CONFIDENCE:
+        definition: How strongly does available evidence support THIS PARTICULAR claim?
+        requires: >-
+          A confidence figure without provenance is numerology with an API. It must be answerable:
+          confidence in WHAT claim, based on WHICH evidence, diminished by WHICH missing
+          observations, computed under WHICH model, at WHAT time.
+      TRUST:
+        definition: >-
+          Based on accumulated experience, how willing should a consumer be to rely on this system
+          and its claims?
+        note: >-
+          High confidence in one observation from a system you do not trust is coherent. So is
+          trusting a system while holding low confidence in one result because half its sensors
+          fell over. Repeated INTEGRITY failures must erode trust even when individual outputs
+          happen to be correct.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  suppression_reason:
+    description: >-
+      Why an error-suppressing idiom exists. Recorded per site, because "acceptable" without a
+      reason is how someone later "cleans up" a continue-on-error and publication starts killing
+      detection again.
+    consumers: [the suppression linter, reviewers, anyone tempted to tidy]
+    rule: >-
+      Legitimate suppression must be ANNOTATED, not outlawed. A lint that forbids syntax becomes a
+      chore; a lint that requires a stated reason becomes a record.
+    permissibility_test: >-
+      Suppression is permissible ONLY when the suppressed signal is either NON-SEMANTIC for every
+      relevant consumer, or its semantic information is PRESERVED THROUGH ANOTHER EXPLICIT CHANNEL.
+      Stating a reason is not sufficient. The annotation must identify WHAT DISTINCTION IS BEING
+      DISCARDED and WHERE IT SURVIVES.
+    required_annotation_fields:
+      reason: one of the values below
+      discards: what information can disappear at this point
+      preserved_by: >-
+        where that information still survives -- an exit-status check, a captured outcome, a state
+        output, an artifact -- or the explicit statement that it is non-semantic for every consumer
+    relevant_consumers: >-
+      enforcement, operations, humans, downstream machines, evidence and provenance, continuity and
+      recovery, confidence, and future audit or reconstruction. Not every distinction needs every
+      consumer -- but somebody must ESTABLISH that before the information is thrown away.
+    worked_example: >-
+      `2>/dev/null` is fine when stderr is noisy presentation and exit status is captured. It is NOT
+      fine when stderr is the only place we would learn the scanner could not authenticate.
+    values:
+      PRESENTATION_ONLY:
+        definition: Suppresses noisy output. Exit status and failure state survive intact.
+      EXPECTED_NEGATIVE_RESULT:
+        definition: >-
+          A nonzero exit that means "nothing found", not "something broke" -- and the DISTINCTION
+          between them is handled explicitly.
+        warning: >-
+          This is where `grep -c` went wrong: exit 1 means no-match, exit 2 means the tool failed,
+          and `|| echo 0` collapsed both. A multi-state dependency was projected into a boolean
+          before its states were understood.
+      FAILURE_ISOLATION_WITH_STATE_CAPTURE:
+        definition: >-
+          Execution continues so siblings can still produce evidence, AND the failure is captured
+          as explicit state that propagates.
+        rule: >-
+          `continue-on-error` is only correct when THE ERROR BECOMES DATA. If nobody captures the
+          outcome and maps it into the taxonomy, it is `|| true` wearing YAML.
+      CLEANUP_AFTER_FAILURE:
+        definition: >-
+          Must run after failure to preserve evidence or release resources. Makes no new assurance
+          claim.
+        rule: >-
+          A step running under always() may preserve evidence, record failure state, run an
+          independent scanner, or summarise known states. It may NEVER turn missing upstream output
+          into a successful state.
+      UNSAFE:
+        definition: The signal that determines truth is destroyed. Not acceptable; fix it.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  observation_quality:
+    description: >-
+      What a CONTROL knows about the thing it inspected. Added after the assurance dataflow tracer
+      reported a handoff as a defect purely because it could not see inside a third-party action --
+      the control hallucinating certainty from incomplete observability, which is the same sin the
+      control existed to detect, in a more sophisticated costume.
+    consumers: [every analysis or control layer, now and future]
+    rule: >-
+      UNVERIFIABLE is not ABSENT and neither is WRONG. A control must distinguish what it observed,
+      what it observed to be missing, and what it could not observe at all -- and must never
+      silently downgrade the third into either of the other two.
+    values:
+      VERIFIED:
+        definition: The control observed the thing and it holds.
+      VERIFIED_ABSENT:
+        definition: The control observed that the thing is genuinely not there. A real negative.
+      WRONG:
+        definition: The control observed the thing and it violates the contract. A real defect.
+      RUNTIME_VERIFIED:
+        definition: >-
+          Established by evidence from an actual run rather than by static inspection.
+        rule: >-
+          STATICALLY_UNVERIFIABLE is not GLOBALLY UNVERIFIABLE. Observability has SCOPE, and a
+          control must not let its own mechanism's limit masquerade as a property of the world.
+          A handoff a parser cannot see may still be proven by a runtime assertion or a contract
+          fixture.
+      PRODUCER_UNVERIFIED_EXTERNALLY_DECLARED:
+        definition: >-
+          The control could not observe this because the producing component declares its own
+          interface elsewhere -- e.g. a third-party action whose outputs are not visible to a
+          workflow parser.
+        rule: >-
+          MUST be reported as a declared observability limit. Reporting it as a defect trains people
+          to ignore the control; reporting it as a pass makes the control lie. Neither is available.
+        closing_options:
+          - action metadata inspection
+          - runtime assertion at the boundary
+          - contract fixture exercising the real handoff
+          - explicitly accepted external dependency assumption
+        note: >-
+          Choose one deliberately. Do not let silence choose.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  scanner_state:
+    description: What a single scanner established about the code it was pointed at.
+    consumers: [security-gate, capability-matrix, future findings model]
+    rule: >-
+      Every scanner reports its OWN state. After job consolidation job != scanner, so a job-level
+      result must never stand in for one of these.
+    values:
+      PASS:
+        definition: Executed, completed, found nothing.
+        enforcement: does not block
+      FINDINGS:
+        definition: Executed, completed, found something. The control WORKED.
+        enforcement: blocks unless policy says otherwise; secrets block regardless
+        note: A true finding is a pipeline SUCCESS and a repository failure. Different events.
+      PARTIAL:
+        definition: Executed, but a prerequisite was missing so the security CLAIM is NOT established.
+        enforcement: warns; does not block
+        forbidden: >-
+          MUST NOT be projected, summarised or rounded into PASS by any downstream consumer.
+          "Not established" is not "clean".
+      NOT_APPLICABLE:
+        definition: Nothing of this kind exists in scope. MUST be backed by a search that found nothing.
+        enforcement: does not block
+        forbidden: >-
+          MUST NOT be produced by a toggle being off, by a selector excluding it, or by discovery
+          failing. Those are EXCLUDED_BY_SELECTOR, disabled, and DISCOVERY_UNAVAILABLE.
+      FAILED:
+        definition: The scanner ran and MALFUNCTIONED.
+        enforcement: blocks
+      COLLECTION_FAILED:
+        definition: >-
+          The scanner ran, but gathering its results failed -- producing an EMPTY BUT WELL-FORMED
+          output that is indistinguishable from a clean scan.
+        enforcement: blocks
+        rule: >-
+          Emit COLLECTION_FAILED or UNKNOWN. NEVER an empty success. Found missing from this
+          registry by the reconciler; it was already enforced in validate-scanners and defined
+          nowhere -- an empty result that reads as clean is the whole failure family in one line.
+      UNAVAILABLE:
+        definition: The scanner never ran. Posture cannot be determined from this run.
+        enforcement: blocks
+        requires: [execution_unavailable_reason]
+        note: Not a finding, not clean, not a scanner defect. A fourth thing.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  capability_metadata:
+    description: >-
+      Capability-SPECIFIC facts a consumer may want, carried ALONGSIDE the shared assurance
+      vocabulary and never instead of it. NVD has different scanner details; it does not get a
+      different dialect for "was posture established".
+    consumers: [callers of reusable-nvd-cve, cost reporting]
+    rule: >-
+      These NEVER substitute for assurance_state. A caller must not infer posture from
+      nvd_database_state, and must not infer cost-health from assurance_state.
+    values:
+      UPDATED:
+        definition: The vulnerability database was refreshed successfully this run.
+      STALE:
+        definition: >-
+          The update failed and the scan ran against whatever data existed.
+        rule: >-
+          A stale database CANNOT establish "no known vulnerabilities". This projects to
+          assurance_state=UNDETERMINED, which is the original defect this workflow was rebuilt to
+          fix -- the version it was abstracted from swallowed update failures with `|| true` and
+          reported clean.
+      RESTORED_COMPLETE:
+        definition: A cache of a COMPLETE database was restored. The fast path.
+      RESTORED_PARTIAL:
+        definition: >-
+          Only a partial database was restored, usable as a RESUME BASE and never as the basis for
+          a clean verdict.
+      COLD:
+        definition: >-
+          No cache restored; the database was built from scratch. Measured at ~10 minutes with a
+          valid key and a current client -- NOT the ~50 minutes a stale client once took.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  api_boundary:
+    description: >-
+      The CONSUMER-FACING contract. Added after the HIL asked whether contracts were shaped for
+      people to hook into -- they were not. The assurance workflows exposed no outputs at all, so
+      every state in this registry died at the workflow boundary and callers saw only red or green.
+      The internal control was richer than the external contract.
+    consumers: [calling workflows, future orchestration, dashboards, correlation, release gating]
+    rule: >-
+      NO SECOND VOCABULARY AT THE API BOUNDARY. Every value a consumer receives is a term defined
+      here. Otherwise each future layer invents its own interpretation of "green".
+    schema: schemas/assurance-result.schema.json
+    values:
+      # assurance_state -- what the run ESTABLISHED
+      UNDETERMINED:
+        definition: >-
+          Posture could not be established -- something was UNAVAILABLE or COLLECTION_FAILED.
+        rule: >-
+          NEVER equivalent to PASS. A consumer must not read "did not block" as "safe". Absence of
+          a block is not evidence of absence of risk.
+      # enforcement_state -- what the gate DID about it
+      BLOCKED:  {definition: The gate stopped the caller.}
+      ALLOWED:  {definition: Nothing required blocking.}
+      ADVISORY:
+        definition: Findings existed and were deliberately not blocked.
+        rule: Not a clean result. Secrets are never included in this.
+      # evidence_state
+      CANONICAL: {definition: Identity-bound evidence was produced.}
+      UNBOUND:   {definition: Provenance identity could not be bound; downstream MUST NOT merge or correlate this.}
+      BOUND:     {definition: Full provenance identity was bound at capture.}
+      # discovery_state at the boundary
+      COMPLETE:  {definition: Discovery established applicability across the requested scope.}
+      # publication
+      PUBLISHED:     {definition: Evidence reached its presentation channel.}
+      NOT_ATTEMPTED: {definition: Publication was not tried. Distinct from failing.}
+
+  # ─────────────────────────────────────────────────────────────────────────
+  execution_unavailable_reason:
+    description: >-
+      WHY a scanner never ran. All of these mean "posture undeterminable" and every one has
+      completely different remediation, so the reason is part of the classification.
+    consumers: [security-gate, operator triage]
+    rule: Distinguishable ONLY by the job annotation, never by the logs. Check the annotation.
+    values:
+      BILLING_EXECUTION_REFUSED:
+        definition: Spending limit or payment failure refused the job.
+        signature: job with 0 steps, billing annotation
+      ACTION_ACQUISITION_FAILURE:
+        definition: The runner could not download a required action.
+        signature: job with 1 step, Set up job fails with 429/502/503
+      POLICY_REFUSED:
+        definition: Environment protection refused the ref.
+        signature: job with 0 steps, ~2s, no token minted
+      EXECUTION_TIMEOUT:
+        definition: The job hit its timeout-minutes bound.
+        requires_evidence: last completed phase
+        status: DECLARED-NOT-IMPLEMENTED
+        note: >-
+          A timeout currently surfaces as a plain job failure. Cost is bounded; SEMANTICS ARE NOT.
+          Recorded here so the gap is visible rather than implied.
+      DEPENDENCY_ACQUISITION_UNAVAILABLE:
+        definition: A required tool could not be obtained or made fit.
+        signature: bounded acquisition failed or timed out
+      DISCOVERY_UNAVAILABLE:
+        definition: Discovery could not establish what exists, so applicability is unknown.
+        rule: >-
+          MUST NOT resolve to a set of NOT_APPLICABLE. Discovery failing means everything runs.
+      INFRASTRUCTURE_UNKNOWN:
+        definition: None of the above and the scanner still never executed.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  prerequisite_readiness:
+    description: >-
+      Whether the EXECUTION ENVIRONMENT can service a capability that discovery found applicable.
+      Distinct from discovery: discovery is about the repository, this is about the runner.
+    consumers: [scanner jobs, security-gate, assurance reporting]
+    lifecycle: >-
+      discover applicability -> exercise ACTUAL TOOL fitness -> if fit, scan
+      -> if unfit or missing, remediate/acquire -> RE-CHECK FITNESS (only because state changed)
+      -> scan -> capture evidence.
+      The pipeline's job is to get the scan done, not to produce an exquisitely classified excuse.
+    rule: >-
+      Fitness is established by EXERCISING THE REAL CONSUMER, never a proxy. `command -v java`
+      proves a name resolves; a version string is self-reported; neither is the JVM that
+      dependency-check.sh actually selects. Run the tool.
+    transitions:
+      - "check fitness -> READY                       (fit already; NO re-check, nothing changed)"
+      - "check fitness -> remediate                   (unfit or missing, and a safe path exists)"
+      - "remediate -> re-check -> ACQUIRED_AND_READY  (re-check ONLY because state changed)"
+      - "remediate -> re-check -> REMEDIATION_FAILED  (install claimed success, tool still will not run)"
+      - "no remediation path -> PREREQUISITE_UNAVAILABLE"
+      - "remediation could not obtain it -> ACQUISITION_UNAVAILABLE"
+    values:
+      READY:
+        definition: The real tool ran its fitness check. No acquisition attempted or needed.
+      ACQUIRED_AND_READY:
+        definition: A prerequisite was missing or unfit, remediation ran, and re-check PASSED.
+        note: The re-check is required here precisely BECAUSE environment state changed.
+      PREREQUISITE_UNAVAILABLE:
+        definition: Required prerequisite absent and no remediation path is available.
+        projects_to: UNAVAILABLE / DEPENDENCY_ACQUISITION_UNAVAILABLE
+      ACQUISITION_UNAVAILABLE:
+        definition: Remediation was attempted and could not obtain the prerequisite.
+        projects_to: UNAVAILABLE / DEPENDENCY_ACQUISITION_UNAVAILABLE
+      FITNESS_FAILED:
+        definition: The tool is present but the real consumer will not run.
+        note: Present is not fit. A tool on PATH that cannot execute is an absent tool in costume.
+      REMEDIATION_FAILED:
+        definition: Acquisition reported success but the post-change fitness check still failed.
+        note: >-
+          An install that "succeeded" and a tool that runs are different claims. This state exists
+          so that difference cannot be silently collapsed.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  discovery_state:
+    description: What discovery established about the caller's scope.
+    consumers: [all scanner jobs, security-gate]
+    values:
+      RUN:        {definition: Discovered in scope AND permitted by the selector.}
+      EXCLUDED_BY_SELECTOR:
+        definition: Present in scope but excluded by explicit configuration.
+        rule: MUST be reported. Narrowing scope must never silently reduce VISIBILITY.
+      NOT_APPLICABLE: {definition: Searched and none found. Evidence-backed.}
+      DISABLED:   {definition: Explicitly turned off. An exception, reported loudly, never a default.}
+      MISSING_BUT_REQUIRED:
+        definition: Profile declares this must exist and it does not. ABSENCE IS THE FINDING.
+      UNDETERMINED_PRESENT:
+        definition: This ecosystem's probe failed. Presence was neither confirmed nor ruled out.
+        rule: >-
+          Force-enabled, and an explicit selector MUST NOT narrow it away. Configuration narrows
+          among things known to be present; it has no authority to resolve an unknown into an
+          absence.
+      DISCOVERY_PARTIAL:
+        definition: Some probes established applicability and at least one did not.
+        rule: >-
+          What the successful probes established STILL HOLDS. One failure does not convert six
+          answers into ignorance — discarding established evidence is as destructive as inventing
+          it, in the opposite direction.
+      DISCOVERY_UNAVAILABLE:
+        definition: EVERY probe failed. Applicability could not be established at all.
+        rule: Everything runs. Over-scanning is a cost problem; under-scanning reported green is not.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # COVERAGE IS NOT APPLICABILITY, AND THIS NAMESPACE EXISTS BECAUSE COLLAPSING THEM HID A DEFECT.
+  #
+  # Discovery answers "what is here that I know how to scan?". It used to ask seven closed
+  # questions and, hearing no seven times, report COMPLETE — so a repository written in languages
+  # this platform does not support produced a green run over code nothing had looked at. Discovery
+  # had not failed. It answered its own questions correctly and the wrong question completely.
+  #
+  # COMPLETE means "the survey ran". It does NOT mean "this repository is understood". Kept as a
+  # separate namespace from discovery_state on purpose: a scanner gap is a KNOWN LIMITATION of the
+  # platform, a survey failure is an ERROR CONDITION, and letting a permanent limitation hide
+  # inside a transient error is how a coverage gap becomes invisible.
+  coverage_state:
+    description: How much of the caller's code this platform is capable of reasoning about at all.
+    consumers: [security-gate, adopters evaluating the platform, coverage reporting]
+    values:
+      FULL:
+        definition: No code was found that this platform lacks a scanner for.
+      UNSUPPORTED_PRESENT:
+        definition: Code is present that this platform has NO scanner for. It was not scanned.
+        rule: >-
+          A COVERAGE DECLARATION, NEVER A FINDING. Unsupported code is not a vulnerability and must
+          never be scored, gated, or dispositioned as one. It tells an adopter precisely where this
+          platform's assurance stops inside THEIR repository — which is the most useful sentence it
+          can say to someone deciding whether to trust it. It must also never be silently absorbed
+          into PASS: the run established nothing about those files.
+      COVERAGE_UNDETERMINED:
+        definition: The coverage probe itself could not run. Unknown, not absent.
+        rule: >-
+          The platform does not know whether it has blind spots here. That is a weaker claim than
+          FULL and must not be reported as one.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  finding_classification:
+    description: What a RED result means, assigned before anything is changed.
+    consumers: [operators, remediation decisions]
+    values:
+      KIT_DEFECT:                 {definition: The machinery is wrong., action: fix the kit — the ONLY class that justifies changing it}
+      REPO_TRUE_FINDING:          {definition: The scanner is right., action: remediate the repository; never tune the scanner to hide it}
+      ASSURANCE_PREREQUISITE_GAP: {definition: A condition prevented a claim being established., action: state the coverage boundary}
+      FALSE_POSITIVE:             {definition: Produced, but does not mean what it appears to., action: narrow disposition with evidence}
+      EXECUTION_UNAVAILABLE:      {definition: Never ran., action: clear the cause and re-run}
+      UNKNOWN:                    {definition: Not yet established., action: NEVER assume clean}
+
+  # ─────────────────────────────────────────────────────────────────────────
+  disposition_type:
+    description: >-
+      An authorized decision that a specific finding should not block. Four MATERIALLY DIFFERENT
+      truth claims. Collapsing them produces nonsense such as "remediated" findings a scanner
+      detects forever.
+    consumers: [security-gate, future findings model, audit]
+    rule: >-
+      A finding is exempted ONLY by an exact, unexpired, approved disposition. Dispositions are
+      consumed from the PROTECTED DEFAULT BRANCH, never from the PR under evaluation — otherwise a
+      PR can exempt the secret it introduces in the same PR.
+    invariant: >-
+      A DISPOSITION DOES NOT MUTATE EVIDENCE. It changes ENFORCEMENT against that evidence. The
+      original observation is preserved forever. Without this rule the exception layer becomes
+      destructive deduplication wearing governance perfume — the same failure as collapsing two
+      corroborating scanners into one finding, arriving through the policy door instead.
+    transitions:
+      - "observed -> proposed              (anyone may propose)"
+      - "proposed -> under_review          (Security picks it up)"
+      - "under_review -> approved          (merged to the protected branch; ONLY now does it suppress)"
+      - "under_review -> rejected          (returns to blocking)"
+      - "under_review -> needs_evidence    (returns to proposed)"
+      - "approved -> expired               (automatic; silence NEVER renews)"
+      - "approved -> invalidated           (scope no longer matches, or REMEDIATED still reproduces)"
+    forbidden_transition: "proposed -> suppressing (a proposal never buys passage)"
+
+    required_fields:
+      [fingerprint, scanner, rule, scope_path, disposition_type, rationale, evidence_ref,
+       approver_role, created, expires]
+    rejected_synonyms: >-
+      ACCEPTED_RISK is the registered spelling. RISK_ACCEPTED and RISK_ACCEPTANCE were both in
+      circulation -- one in the reporter's own suppression list, one in conversation. A reporter
+      matching only its own spelling would honour nothing written to this schema, blocking an
+      approved exception forever with no error anywhere. scan_report.py asserts that neither
+      synonym suppresses.
+    values:
+      FALSE_POSITIVE:
+        claim: The finding was never valid. The detector is wrong.
+        evidence_must_show: why the detector is wrong
+      ACCEPTED_RISK:
+        claim: The finding is valid and remains. Authorized to proceed temporarily or conditionally.
+        evidence_must_show: who accepted it, under what conditions, until when
+      MITIGATED:
+        claim: >-
+          The finding remains technically observable, but compensating controls reduce effective
+          risk enough for authorized continuation.
+        evidence_must_show: which compensating control, and that it is in force
+        note: NOT the same claim as "the scanner is wrong" and NOT the same as "we accept it as-is".
+      REMEDIATED:
+        claim: The underlying condition was corrected. Future scans should NOT reproduce it.
+        self_invalidating: true
+        rule: >-
+          If the finding still reproduces, the disposition is STALE OR WRONG and must not suppress.
+          This is the only disposition class that can be falsified by the scanner itself.
+    secrets_rule: >-
+      Secrets get a much narrower path. A documented dummy credential or generated fixture may
+      qualify. "It looks like a secret but probably isn't" does not. A PROPOSED disposition never
+      buys passage.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  rollback_state:
+    description: >-
+      What may be done about a change that failed. Found MISSING from this registry by the
+      reconciler on its first run -- it was live vocabulary in ROLLBACK_CONTRACT.md driving real
+      decisions, defined nowhere central. Exactly the gap this file exists to close.
+    consumers: [deploy workflows, build-and-push, incident response]
+    rule: >-
+      "Put it back how it was" is NOT always the safe outcome. An unknown must not resolve toward
+      destruction merely because destruction is the easier branch to code.
+    values:
+      AUTO_ROLLBACK_ALLOWED:
+        definition: Reversible and safe. Proceed, then VERIFY.
+        note: A rollback command exiting 0 is not proof of restored service.
+      ROLLBACK_REQUIRES_VALIDATION:
+        definition: Reverse, but prove the restored state is correct before declaring success.
+      ROLLBACK_REQUIRES_HUMAN_DECISION:
+        definition: >-
+          Prior state unknown, or reversal has consequences a machine should not weigh.
+        produced_by: >-
+          A cancelled or TIMED-OUT mutation. A timeout is a cancellation nobody chose and nobody is
+          watching, which is why mutating jobs are deliberately unbounded pending this design.
+      ROLLBACK_PROHIBITED:
+        definition: Forward-fix only. Reversal is worse than the failure.
+        examples: >-
+          Reverting an emergency mitigation restores a known-exploitable state; reverting an RBAC
+          removal hands back access that was deliberately taken away.
+      ROLLBACK_VERIFIED:
+        definition: >-
+          Restored service has been PROVEN. Asserted only after verification, never after a rollback
+          command merely exits 0 -- same rung problem as a green job that ran no scanner.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  evidence_confidence:
+    description: How strongly a capability claim is supported.
+    consumers: [capability-matrix, validation-debt, handoff readiness]
+    values:
+      observed_tool_attributed:
+        definition: A SPECIFIC named scanner independently produced the evidence.
+        note: The strongest form. Overlapping coverage cannot hide a dead detector behind a live one.
+      observed_corroborated:
+        definition: Detected, but by any of several scanners — tool-agnostic.
+        warning: >-
+          Do NOT "simplify" a tool-attributed assertion into this. The extra metadata is the point;
+          it is what caught a dead flawfinder covered for by cppcheck.
+      unknown:   {definition: A probe exists and has not passed.}
+      untested:  {definition: No probe at all.}
+      requires_integration_environment:
+        definition: Provable, but needs resources not provisioned here.
+      REQUIRES_INTEGRATION_ENV:
+        definition: The identifier form used by tests/reconcile_validation.py for the state above.
+        note: Registered so the two spellings cannot drift apart unnoticed.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  publication_state:
+    description: >-
+      Repeatedly proven to be four separate claims. A scanner running, a report existing, a report
+      being valid, and a report being published are not the same event.
+    consumers: [security-gate, dashboards if they ever exist]
+    values:
+      ANALYSIS_COMPLETE:     {definition: The scanner executed and finished.}
+      REPORT_PRODUCED:       {definition: An output file exists and is non-empty.}
+      REPORT_STRUCTURALLY_VALID: {definition: The output parses as the format it claims to be.}
+      PERSISTED:             {definition: Retained as an artifact independent of any publication channel.}
+      PUBLICATION_DEGRADED:
+        definition: A presentation channel was unavailable.
+        rule: >-
+          MUST NOT fail the scan. An unreachable dashboard cancelled an entire deep scan once.
+          An empty Security tab is indistinguishable from a clean codebase — say which it is.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  validation_debt_state:
+    description: How an unproven capability is allowed to exist without permanent red.
+    consumers: [reconcile_validation.py, self-test]
+    rule: >-
+      A permanently red check is not a control, it is training: people learn red means "known
+      backlog", stop reading it, and a real regression arrives wearing the same colour.
+    values:
+      BLOCKING:
+        definition: Unregistered, undeferred, or an EXPIRED deferral. Fails the build.
+      ACCEPTED_DEBT:
+        definition: Dated, owned, unexpired deferral. Passes, reported loudly.
+        required_fields: [reason, owner_role, proves, expires]
+        rule: Expiry is the mechanism. Silence must NEVER renew a deferral.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  policy_mode:
+    description: How hard the gate enforces. Changes ENFORCEMENT, never VISIBILITY.
+    consumers: [security-gate, profiles]
+    values:
+      adoption:
+        definition: Non-secret findings report without blocking while a team learns its baseline.
+        invariant: SECRETS STILL BLOCK. advisory_mode does not and must never cover them.
+        warning: A baseline tool, not a resting state. Left on it is indistinguishable from no gate.
+      strict:
+        definition: High/critical findings block. Lint blocks only if policy says it matters.
+    forbidden: >-
+      There is no mode in which a secret finding passes without an exact approved disposition.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  iac_mode:
+    description: Applicability model for infrastructure-as-code.
+    consumers: [discover job, iac-scan]
+    supersedes: enable_iac (boolean, default false)
+    values:
+      auto:     {definition: Discover IaC in scope and scan what is found.}
+      disabled: {definition: Explicitly skipped. Reported loudly. An exception, not a default.}
+      required: {definition: Absence is itself a finding — this repo is declared to contain IaC.}
+
+  # ─────────────────────────────────────────────────────────────────────────
+  capability_origin:
+    description: >-
+      WHERE A CAPABILITY CAME FROM, which is not the date it became real. CodeQL had twelve
+      upload-sarif references and zero init calls -- a defect in a pre-existing neutral kit,
+      discovered during an employer engagement. Discovery location is not origin, and "not fully
+      implemented yet" is not "originated here".
+    consumers: [docs/assurance/CAPABILITY_CUSTODY.csv, tests/check_custody.py]
+    rule: >-
+      Record ORIGIN separately from implementation date, and draw the line per capability while
+      everything is still pre-instantiation -- the only moment it is free to draw.
+    values:
+      PREEXISTING_NEUTRAL_IMPLEMENTATION:
+        {definition: "Built and working in the neutral kit before the engagement."}
+      PREEXISTING_NEUTRAL_INTENT:
+        {definition: "Intended and annotated in the neutral kit, wiring incomplete. A defect, not an import."}
+      GENERIC_TEAM_PATTERN:
+        {definition: "A pattern any team shape needs. One engagement forcing you to notice a gap does not transfer the capability -- though specific VALUES may be employer policy."}
+      AM_REQUESTED_CAPABILITY:
+        {definition: "Entered from the employer's declared ecosystem. Overlay custody."}
+      AM_SPECIFIC_INTEGRATION:
+        {definition: "A concrete integration with the employer's own systems. Overlay custody."}
+      AM_SPECIFIC_POLICY:
+        {definition: "Their values, not the capability. A 3-4 digit ticket rule is policy; the ability to enforce a configurable range is not."}
+      AM_ECOSYSTEM_DECLARED:
+        {definition: "Declared in their stack and NOT implemented here. Listed so the capability map is honest about what is expected and absent."}
+
+  environment_tier:
+    description: >-
+      Gating stringency increases along the promotion path. UAT and PROD are BOTH production for
+      this purpose -- UAT usually holds production-shaped data and is the last place a defect is
+      cheap to find.
+    consumers: [deployment gate, promotion policy]
+    rule: >-
+      "Scanner did not run" MUST block at production tiers. UNDETERMINED is not PASS, and the
+      promotion gate is the last place that distinction is free.
+    values:
+      sandbox: {definition: "Throwaway. Findings warn; nothing blocks."}
+      dev:     {definition: "Shared development. Findings warn."}
+      test:    {definition: "New critical/high block. Scanner failure still warns."}
+      uat:     {definition: "PRODUCTION TIER. New critical/high block; a scanner that did not run blocks."}
+      prod:    {definition: "PRODUCTION TIER. Same as uat."}
+
+  team_pattern:
+    description: >-
+      Some controls cannot exist below a headcount. A gate requiring reviewer separation on a
+      single-developer repository is unsatisfiable, and shipping it produces a control everyone
+      routes around.
+    consumers: [branch protection policy, approval routing, disposition workflow]
+    rule: >-
+      A solo repository cannot prove the human half of the operating model. Required reviewers,
+      CODEOWNERS routing and approval separation are UNVALIDATED HUMAN-WORKFLOW PATHS there --
+      not failures, and not to be reported as passing either.
+    values:
+      solo_dev:   {definition: "1. Branch protection and required checks only; the author is the only approver."}
+      pair_devs:  {definition: "2. Mutual review possible; no separation of duties on an exception."}
+      small_team: {definition: "3-4. Real review, CODEOWNERS routing, rotation."}
+      full_team:  {definition: "5+. Approval separation; security reviewer distinct from author and approver."}
+
+  scan_depth:
+    description: >-
+      How hard to look, decided by TRIGGER CONTEXT. Distinct from applicability (discovery) and
+      from enforcement (environment x team). Distinct also from pipeline STAGE, which is a
+      dependency graph inside one run rather than a context the graph executes under.
+    consumers: [reusable-security profile input]
+    rule: >-
+      A scanner reduced in depth must NOT report as NOT_APPLICABLE. "We looked less hard this
+      time" and "there was nothing to look at" are different statements about coverage.
+    values:
+      pr:         {definition: "Fast and precise. Default query suite, diff-scoped secrets, changed paths."}
+      merge:      {definition: "Full tree, security-extended, blocking."}
+      nightly:    {definition: "security-and-quality, full git history, report only."}
+      release:    {definition: "Extended plus SBOM and attestation. Hard gate."}
+      revalidate: {definition: "Deployed artifact ONLY -- image digest and SBOM. No source scanning: the source did not change, the world did."}
+      DEPTH_REDUCED:
+        {definition: "A scanner that ran with a narrower suite or scope than its fullest setting. NOT NOT_APPLICABLE -- 'we looked less hard this time' and 'there was nothing to look at' are different statements about coverage, and collapsing them is how a PR-speed run reads as full assurance."}
+
+  platform_applicability:
+    description: >-
+      WHETHER A CAPABILITY COULD HAVE RUN AT ALL -- a different axis from whether it did. The
+      Actions UI renders every one of these as `skipped`, so a reader cannot tell a licensing
+      decision from an empty repository from a crash. Established ONCE by discovery and consumed
+      everywhere, because sixteen jobs answering separately meant sixteen possible beliefs about
+      one organisation setting.
+    consumers: [discover job, report job, scripts/scan_report.py]
+    rule: >-
+      UNKNOWN IS NOT FALSE. The security_and_analysis block is returned only to callers with
+      admin, so a read-scoped token legitimately cannot see it. Reporting false there is a
+      fabricated negative that silently disables scanning on fully licensed repositories.
+    values:
+      APPLICABLE:     {definition: In scope and available; the scanner should run.}
+      NOT_APPLICABLE: {definition: "No files of a supported kind in scope. Nobody's action."}
+      UNAVAILABLE:    {definition: "Not licensed or not available to this repository. PLATFORM action, never developer action."}
+      NOT_CONFIGURED: {definition: "Available and switched off. PLATFORM action -- a decision was made, or never made."}
+      UNKNOWN:        {definition: "This token could not see the answer. Run anyway and say so; never report a clean result."}
+
+  execution_state:
+    description: >-
+      WHETHER THE SCANNER ACTUALLY COMPLETED, separate from whether it was applicable. Pairs with
+      platform_applicability; scanner_state collapses the two, which is right for a gate verdict
+      and wrong for telling a person what to do next.
+    consumers: [report job, scripts/scan_status.sh, scripts/scan_report.py]
+    rule: >-
+      ONLY COMPLETE MAY CARRY A FINDING COUNT. A scanner that did not finish cannot report 0, and
+      cannot report a number scraped from a partial report it happened to leave behind. `0` says
+      something looked; NOT ESTABLISHED says nothing did, and they render almost identically to a
+      tired reader at 5pm.
+    values:
+      COMPLETE:          {definition: Ran to completion and produced a parseable result.}
+      FAILED:            {definition: Did not complete. Findings NOT ESTABLISHED.}
+      COLLECTION_FAILED: {definition: "Ran and produced no usable report -- a pipeline defect, not a code defect."}
+      NOT_RUN:           {definition: "Never started: skipped, cancelled, or gated off upstream."}
+
+  untrusted_input_transport:
+    description: >-
+      How a value reaches a script body. The ticket-reference gate interpolated a PR body into `run:`, so any
+      contributor could execute code on the runner -- and a lone double quote truncated the
+      variable, making the gate report a link ABSENT from a description that contained one.
+    consumers: [tests/lint_injection.py, self-test workflow]
+    rule: >-
+      Any value GitHub does not constrain must arrive through `env:`, never through ${{ }} inside
+      `run:` or a github-script body. In env: it is DATA. In the script it is CODE.
+    values:
+      UNTRUSTED_CONTEXT_INTERPOLATION:
+        definition: >-
+          A value controlled by anyone who can open an issue, PR or comment, or push a branch,
+          interpolated into a script body. Remote code execution with the job's token.
+        severity: critical
+      CALLER_CONTROLLED_INPUT_INTERPOLATION:
+        definition: >-
+          A reusable-workflow or workflow_dispatch input interpolated into a script body. Setting
+          it needs write access to the CALLING repository, so the exposure is smaller and it is
+          not nothing: a trusted input can still be a malformed one, it truncates on a quote, and
+          a kit consumed by many repositories should not let one misconfigured caller execute
+          code in the workflow the others share.
+        severity: medium
+      SAFE_ENV_TRANSPORT:
+        definition: >-
+          The value arrives through env:. This is the FIX and is never reported -- a linter that
+          flags the remedy teaches people to ignore it.
+        severity: none
+
+  credential_redaction:
+    description: >-
+      Only gitleaks was redacted. Thirteen other jobs published raw SARIF, and several scanners
+      embed matched source by design -- bandit's B105 snippet IS the password.
+    consumers: [scripts/redact_sarif.py, scripts/scan_report.py, tests/prove_redaction_chain.py]
+    rule: >-
+      Redaction runs BEFORE every publication step -- artifact and Security tab both. A redactor
+      after the upload protects nothing while looking exactly like protection.
+    artifacts:
+      SECRET_PATTERNS:
+        definition: >-
+          The shared pattern set. Duplicated between the printer and the artifact redactor because
+          each is inlined separately and neither can import the other at consumer runtime;
+          tests/check_redaction_parity.py fails the build if they drift.
+    retains: >-
+      rule id, severity, FILE, LINE, and a short identifying prefix of the value. Removes
+      snippet, contextRegion.snippet, codeFlow snippets and partialFingerprints -- which for a
+      secret scanner can be a hash OF the secret.
+
+  provenance_identity:
+    description: >-
+      The identity that must be BOUND AT CAPTURE, before anything merges or interprets evidence.
+      Once identity is lost it cannot be reconstructed — proven twice, by gosec and by Trivy.
+    consumers: [capture boundary, future correlation, future multi-repo collator]
+    rule: Normalize only after source identity is bound. NEVER merge first and recover provenance later.
+    status: PARTIAL — canonical path normalization exists; the full envelope does NOT.
+    fields:
+      # observed_at / observed_at_source ADDED: the envelope had thirteen fields and not one was
+      # a time. `run_id` implies a moment and records none -- and it stops resolving the day the
+      # run is deleted or its artifacts expire, typically 30-90 days, after which the finding has
+      # no date at all. Without an observation time the entire freshness half of this model is
+      # unprovable: "passed when built != safe now" needs both ends stamped, COLLECTED_STALE
+      # cannot be evaluated, a risk acceptance cannot be checked against its own expiry, and
+      # continuous revalidation cannot say what it is revalidating AGAINST.
+      [organization, repository, repository_id, commit_sha, ref, component_root, scanner,
+       scanner_version, rule_id, canonical_path, original_scanner_path, finding_fingerprint,
+       run_id, observed_at, observed_at_source]
+    artifacts:
+      DEPLOY_PROVENANCE:
+        definition: >-
+          Provenance stamped onto a RUNNING deployment -- image digest, SBOM hash, git SHA and run
+          id. The deployed counterpart of finding provenance: it answers "what is actually running
+          and where did it come from", which a branch name cannot.
+    observation_time:
+      rule: >-
+        A FRESHNESS CLAIM MAY ONLY BE MADE FROM A SOURCE THAT RECORDED THE TIME AT CAPTURE.
+        Weaker sources are not forbidden; they are forbidden from being mistaken for the strong
+        ones. Same discipline as evidence_state.
+      sources:
+        DECLARED_IN_CONTENT:
+          tier: 1
+          claimable: true
+          definition: >-
+            The artifact carries its own collection time -- a TimeGenerated or CollectedUtc
+            column, a "Generated:" header, a scanner's own invocation startTimeUtc. Survives
+            renaming, copying, zipping and re-download, none of which the weaker tiers survive.
+        SIDECAR:
+          tier: 2
+          claimable: true
+          definition: >-
+            A record written BY the collecting process at the moment it ran -- a
+            <name>.collection.json, or SARIF invocations[].startTimeUtc. Separable from the
+            artifact so it can be lost, but written by something that actually knew.
+        FILENAME:
+          tier: 3
+          claimable: false
+          definition: >-
+            A date in the name. A CLAIM: renameable, inheritable by a re-export that kept the old
+            name, typo-able. Useful for routing, never for asserting age.
+        FILE_MTIME:
+          tier: 4
+          claimable: false
+          definition: >-
+            Filesystem time. Records the last COPY, not the collection. Zip, download, OneDrive
+            sync, restore-from-backup and cp-without-p all rewrite it, so in a packet assembled
+            today every file reads as collected today. It looks authoritative and is
+            systematically wrong in the direction that makes stale evidence look fresh.
+        UNKNOWN:
+          tier: 5
+          claimable: false
+          definition: Nothing establishes when this was collected.
+      consequence: >-
+        Where the source is not claimable, freshness is NOT ESTABLISHED -- weaker than "current",
+        different from "stale". The age is unknown, and a control reporting it as current would
+        be inventing the one number the claim rests on.
+
+    warning: >-
+      Path normalization is NOT provenance. It closed one defect class and proved one abstraction
+      generalizes. Do not let "Trivy normalization passed" stand in for this.

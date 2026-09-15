@@ -1,0 +1,149 @@
+name: Verify Azure OIDC
+
+# Auth-only. Creates NO resources, costs nothing, deletes nothing.
+#
+# Proves the single highest-risk untested capability — azure-oidc-auth — which both deploy
+# workflows sit on top of. If OIDC is misconfigured, everything downstream fails in more
+# confusing ways, so this runs first and alone.
+#
+# Manual dispatch only. Never scheduled, never on push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: >-
+          GitHub Environment holding the Azure secrets. Leave blank if the secrets are
+          repo-scoped — the federated credential subject differs between the two cases.
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+
+  verify:
+    name: OIDC login (no resources created)
+    runs-on: ubuntu-latest
+    # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
+    # converts a dependency failure into uncontrolled cost).
+    # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
+    # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
+    # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write        # REQUIRED to mint the OIDC token. Without it, login fails.
+      contents: read
+    steps:
+      - name: Show the subject this run will present
+        run: |
+          if [ -n "${{ inputs.environment }}" ]; then
+            echo "Environment-scoped run. The federated credential subject MUST be exactly:"
+            echo "  repo:${{ github.repository }}:environment:${{ inputs.environment }}"
+          else
+            echo "Repo-scoped run. The federated credential subject MUST be exactly:"
+            echo "  repo:${{ github.repository }}:ref:${{ github.ref }}"
+          fi
+          echo ""
+          echo "A job declaring 'environment:' sends the ENVIRONMENT subject even though the run"
+          echo "happens on a branch. Using the branch form for an environment-scoped job is the"
+          echo "most common cause of AADSTS700213, and the error text does not say so."
+
+      - name: Assert the secrets are actually reachable
+        env:
+          CID: ${{ secrets.AZURE_CLIENT_ID }}
+          TID: ${{ secrets.AZURE_TENANT_ID }}
+          SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -uo pipefail
+          missing=0
+          for n in CID TID SID; do
+            v=$(eval echo "\$$n")
+            if [ -z "$v" ]; then echo "  MISSING: $n"; missing=1; else echo "  present: $n"; fi
+          done
+          if [ "$missing" = "1" ]; then
+            echo "::error::Secrets not reachable. Check they are in the '${{ inputs.environment }}'"
+            echo "Environment (not repo scope, not Variables) and that this job declares that environment."
+            exit 1
+          fi
+
+      - name: Azure login via OIDC
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Assert context integrity — observed MUST equal declared
+        env:
+          EXPECTED_TID: ${{ secrets.AZURE_TENANT_ID }}
+          EXPECTED_SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          EXPECTED_CID: ${{ secrets.AZURE_CLIENT_ID }}
+        run: |
+          set -uo pipefail
+          # A cloud CLI's ambient context is NOT an authorization decision. Authenticating
+          # successfully proves only that SOME identity reached SOME tenant. Before anything
+          # consequential, the observed context must equal the declared one.
+          #
+          # This matters most where it is least visible: a workstation or runner carrying a
+          # stale profile from another tenant will happily target the wrong estate without
+          # ever emitting an error. Deploy adapters MUST reproduce this assertion.
+          OBS_TID=$(az account show --query tenantId -o tsv 2>/dev/null || echo "")
+          OBS_SID=$(az account show --query id       -o tsv 2>/dev/null || echo "")
+          OBS_CID=$(az account show --query user.name -o tsv 2>/dev/null || echo "")
+
+          fail=0
+          check() {  # name observed expected — never echoes either value
+            if [ -z "$2" ]; then echo "  UNRESOLVED: $1"; fail=1
+            elif [ "$2" = "$3" ]; then echo "  match: $1"
+            else echo "::error title=Context mismatch::$1 observed does not equal declared."; fail=1
+            fi
+          }
+          check tenant       "$OBS_TID" "$EXPECTED_TID"
+          check subscription "$OBS_SID" "$EXPECTED_SID"
+          check identity     "$OBS_CID" "$EXPECTED_CID"
+
+          if [ "$fail" = "1" ]; then
+            echo "::error::Authentication succeeded but landed in an UNEXPECTED context. Refusing to"
+            echo "proceed. Values are withheld deliberately — compare them yourself against the"
+            echo "environment's secrets. This is the failure mode that silently targets the wrong estate."
+            exit 1
+          fi
+          echo "Context integrity verified: tenant, subscription and workload identity all as declared."
+
+      - name: Confirm identity and subscription
+        run: |
+          set -euo pipefail
+          az account show --output table
+          echo "signed-in object id: $(az ad signed-in-user show --query id -o tsv 2>/dev/null || echo 'n/a — service principal, expected')"
+
+      - name: Assert the tenant is empty, as expected for this test scope
+        run: |
+          set -uo pipefail
+          # Read-only. Establishes the PRE_TEST_RESOURCE_COUNT precondition that makes
+          # full teardown defensible later. See docs/architecture/ROLLBACK_CONTRACT.md.
+          COUNT=$(az resource list --query "length(@)" -o tsv 2>/dev/null || echo "unknown")
+          echo "PRE_TEST_RESOURCE_COUNT=$COUNT"
+          {
+            echo "### Azure OIDC verified"
+            echo ""
+            if [ -n "${{ inputs.environment }}" ]; then
+              echo "- Subject: \`repo:${{ github.repository }}:environment:${{ inputs.environment }}\`"
+            else
+              echo "- Subject: \`repo:${{ github.repository }}:ref:${{ github.ref }}\`"
+            fi
+            echo "- Resources visible in subscription: **$COUNT**"
+            echo ""
+            echo "No resources were created, modified, or deleted by this run."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$COUNT" = "unknown" ]; then
+            echo "::warning::Could not enumerate resources — the identity may lack Reader at subscription scope."
+            echo "That is fine for auth verification; it matters before any deploy test."
+          fi
+
+      - name: Confirm nothing was created
+        if: always()
+        run: echo "This workflow performs no mutations. Nothing to clean up."

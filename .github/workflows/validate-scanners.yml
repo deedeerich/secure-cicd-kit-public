@@ -1,0 +1,610 @@
+name: Validate scanners
+
+# Crosses the rung that self-test cannot: self-test validates SHAPE, this validates BEHAVIOR.
+#
+# Three questions, tested SEPARATELY, because passing one says nothing about the others:
+#   1. EXECUTION  — did the scanner actually run?
+#   2. DETECTION  — did it find the thing the fixture deliberately seeded?
+#   3. GATE       — when a finding class should block, did the workflow actually fail?
+#
+# (3) exists because this kit already shipped jobs that ran perfectly while being wired
+# out of the gate. A scanner can work flawlessly while the control does nothing.
+#
+# Plus a fourth: NEGATIVE behavior. A forced tool failure must render UNKNOWN/ERROR and
+# must never be indistinguishable from a clean result.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"          # weekly, Monday — drift in upstream actions surfaces here
+  workflow_dispatch:
+    inputs:
+      verbose:
+        description: "Print full scanner output"
+        type: boolean
+        default: false
+  push:
+    paths:
+      - ".github/workflows/reusable-security.yml"
+      - ".github/workflows/reusable-nvd-cve.yml"
+      - ".github/workflows/validate-scanners.yml"
+      - "tests/**"
+      - "developer-safety/hooks/**"
+
+# Metered minutes: supersede in-flight runs of this workflow on the same ref instead of
+# letting an obsolete run finish at full cost. A private repo pays for every minute.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+
+  # ---------------------------------------------------------------- fixture
+  fixture:
+    name: Build synthetic fixture
+    runs-on: ubuntu-latest
+    # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
+    # converts a dependency failure into uncontrolled cost).
+    # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
+    # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
+    # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
+    timeout-minutes: 10
+    outputs:
+      signals: ${{ steps.gen.outputs.signals }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - id: gen
+        run: |
+          set -euo pipefail
+          python tests/make_fixture.py --out fixture
+          echo "signals=$(jq -c '[.[].expected_signal]|unique' fixture/EXPECTED_SIGNALS.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: fixture
+          path: fixture/
+          retention-days: 7
+
+  # ------------------------------------------------------- secret detection
+  # Tests the Azure rules added to developer-safety: positives must fire,
+  # near-misses must NOT. Fourteen regexes are fourteen chances at a false negative
+  # AND fourteen chances at a false positive.
+  secret-rules:
+    name: "DETECTION: Azure secret rules"
+    needs: fixture
+    runs-on: ubuntu-latest
+    # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
+    # converts a dependency failure into uncontrolled cost).
+    # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
+    # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
+    # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: fixture
+          path: fixture
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          # A prior run got HTTP 503 from the release CDN. The URL and asset name are
+          # correct; the delivery path is not reliable. Extract the binary from the
+          # vendor container image instead — no release-asset dependency.
+          IMG=zricethezav/gitleaks:v8.21.2
+          docker pull -q "$IMG"
+          CID=$(docker create "$IMG")
+          docker cp "$CID:/usr/bin/gitleaks" ./gitleaks || docker cp "$CID:/gitleaks" ./gitleaks
+          docker rm -f "$CID" >/dev/null
+          sudo mv gitleaks /usr/local/bin/ && sudo chmod +x /usr/local/bin/gitleaks
+          gitleaks version
+      - name: Scan fixture
+        run: |
+          set -uo pipefail
+          gitleaks detect --no-git --source fixture \
+            --config developer-safety/hooks/gitleaks-azure.toml \
+            --report-format json --report-path leaks.json --exit-code 0
+          echo "findings: $(jq 'length' leaks.json)"
+      - name: Assert positives detected
+        run: |
+          set -uo pipefail
+          fail=0
+          for rule in azure-storage-connection-string entra-client-secret-assignment \
+                      azure-devops-pat azure-shared-access-key; do
+            if jq -e --arg r "$rule" 'any(.[]; .RuleID == $r)' leaks.json >/dev/null; then
+              echo "  ✅ $rule"
+            else
+              echo "  ❌ $rule  NOT DETECTED"; fail=1
+            fi
+          done
+          [ "$fail" = "0" ] || { echo "::error::Azure secret rules failed to detect seeded credentials."; exit 1; }
+      - name: Assert NO false positives on near-misses
+        run: |
+          set -uo pipefail
+          fp=$(jq '[.[] | select(.File | test("negative_controls"))] | length' leaks.json)
+          if [ "$fp" != "0" ]; then
+            echo "::error::$fp false positive(s) on documented near-misses:"
+            jq '[.[] | select(.File | test("negative_controls")) | {RuleID, Match}]' leaks.json
+            exit 1
+          fi
+          echo "  ✅ no false positives on near-misses"
+
+  # ------------------------------------------------------- scanner behavior
+  scanners:
+    name: "EXEC+DETECT: ${{ matrix.probe.id }}"
+    needs: fixture
+    runs-on: ubuntu-latest
+    # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
+    # converts a dependency failure into uncontrolled cost).
+    # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
+    # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
+    # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
+    timeout-minutes: 15
+    continue-on-error: true          # a probe failing must not hide the others
+    strategy:
+      fail-fast: false
+      matrix:
+        probe:
+          - id: bandit
+            lang: python
+          - id: semgrep
+            lang: multi
+          - id: gosec
+            lang: go
+          - id: flawfinder
+            lang: cpp
+          - id: checkov
+            lang: iac
+          - id: trivy
+            lang: deps
+          - id: osv
+            lang: deps
+          - id: syft
+            lang: sbom
+          - id: dotnet
+            lang: dotnet
+          - id: depcheck
+            lang: nvd
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: fixture
+          path: fixture
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Probe
+        id: probe
+        run: |
+          set -uo pipefail
+          exec 2>&1
+          ID="${{ matrix.probe.id }}"
+          EXEC=fail; DETECT=fail; ARTIFACT=fail; NOTE=""
+
+          case "$ID" in
+            bandit)
+              pip install --quiet bandit
+              # suppression: EXPECTED_NEGATIVE_RESULT -- this scanner exits nonzero when it FINDS something,
+              # which is not an error. Detection is separated from enforcement here; the count step downstream
+              # distinguishes 'found nothing' from 'produced no report' and emits COLLECTION_FAILED for the
+              # latter.
+              # discards: this scanner's non-zero exit, which means FINDINGS rather than malfunction
+              # preserved_by: the count step distinguishes an absent report from an empty one and emits
+              # preserved_by: COLLECTION_FAILED for the former; the enforce step refuses an absent count
+              bandit --version; bandit -r fixture/python -f json -o out.json || true; EXEC=ok; ls -l out.json || true
+              # A PARSE FAILURE IS NOT ZERO FINDINGS.
+              #
+              # This was `jq ... 2>/dev/null || echo 0`, so a missing, truncated or malformed report
+              # produced n=0 -- which the gate reads as CLEAN. The taxonomy already had a word for
+              # exactly this (COLLECTION_FAILED: "an empty but well-formed result is indistinguishable
+              # from a clean scan") while the code did the opposite. Found by auditing the class after
+              # the same defect turned up in discovery, not by reading this line.
+              if [ ! -s out.json ]; then
+                echo "::error title=COLLECTION_FAILED::out.json was not produced."
+                echo "An ABSENT report is not zero findings. Posture cannot be established from this run."
+                echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              if ! n=$(jq '.results|length' out.json 2>&1); then
+                echo "::error title=COLLECTION_FAILED::out.json is not valid SARIF."
+                echo "jq said: $n"
+                echo "A PARSE FAILURE is not zero findings."
+                echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              [ "${n:-0}" -gt 0 ] && DETECT=ok; NOTE="$n findings"
+              ;;
+            semgrep)
+              pip install --quiet semgrep
+              semgrep scan --config p/default --config p/csharp --config p/java \
+                --json --output out.json fixture >/dev/null 2>&1; EXEC=ok
+              # A PARSE FAILURE IS NOT ZERO FINDINGS.
+              #
+              # This was `jq ... 2>/dev/null || echo 0`, so a missing, truncated or malformed report
+              # produced n=0 -- which the gate reads as CLEAN. The taxonomy already had a word for
+              # exactly this (COLLECTION_FAILED: "an empty but well-formed result is indistinguishable
+              # from a clean scan") while the code did the opposite. Found by auditing the class after
+              # the same defect turned up in discovery, not by reading this line.
+              if [ ! -s out.json ]; then
+                echo "::error title=COLLECTION_FAILED::out.json was not produced."
+                echo "An ABSENT report is not zero findings. Posture cannot be established from this run."
+                echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              if ! n=$(jq '.results|length' out.json 2>&1); then
+                echo "::error title=COLLECTION_FAILED::out.json is not valid SARIF."
+                echo "jq said: $n"
+                echo "A PARSE FAILURE is not zero findings."
+                echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              [ "${n:-0}" -gt 0 ] && DETECT=ok; NOTE="$n findings"
+              ;;
+            gosec)
+              go install github.com/securego/gosec/v2/cmd/gosec@latest >/dev/null 2>&1
+              "$(go env GOPATH)"/bin/gosec -no-fail -fmt json -out out.json fixture/go/... >/dev/null 2>&1; EXEC=ok
+              # A PARSE FAILURE IS NOT ZERO FINDINGS.
+              #
+              # This was `jq ... 2>/dev/null || echo 0`, so a missing, truncated or malformed report
+              # produced n=0 -- which the gate reads as CLEAN. The taxonomy already had a word for
+              # exactly this (COLLECTION_FAILED: "an empty but well-formed result is indistinguishable
+              # from a clean scan") while the code did the opposite. Found by auditing the class after
+              # the same defect turned up in discovery, not by reading this line.
+              if [ ! -s out.json ]; then
+                echo "::error title=COLLECTION_FAILED::out.json was not produced."
+                echo "An ABSENT report is not zero findings. Posture cannot be established from this run."
+                echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              if ! n=$(jq '.Issues|length' out.json 2>&1); then
+                echo "::error title=COLLECTION_FAILED::out.json is not valid SARIF."
+                echo "jq said: $n"
+                echo "A PARSE FAILURE is not zero findings."
+                echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              [ "${n:-0}" -gt 0 ] && DETECT=ok; NOTE="$n issues"
+              ;;
+            flawfinder)
+              # dpkg-lock bounded: this probe hung on 2026-08-18 and billed ~193 minutes.
+              timeout 180 sudo apt-get -o DPkg::Lock::Timeout=60 update -qq || true
+              # A LITERAL \n IS NOT A LINE CONTINUATION. This read `install -y \n --no-install-...`
+              # with a two-character backslash-n, so bash resolved it to the single character `n`
+              # and apt tried to install a package called `n` -- E: Unable to locate package n,
+              # exit 100. Found 2026-09-01 by the first CI run after the substrate returned.
+              # Kept on one line: the continuation is what broke, so remove the need for one.
+              timeout 300 sudo apt-get -o DPkg::Lock::Timeout=60 install -y --no-install-recommends flawfinder cppcheck
+              # SARIF support is version-dependent — this is the assumption being tested.
+              if flawfinder --sarif fixture/cpp > out.json 2>/dev/null; then
+                EXEC=ok; NOTE="sarif supported"
+                # A PARSE FAILURE IS NOT ZERO FINDINGS.
+                #
+                # This was `jq ... 2>/dev/null || echo 0`, so a missing, truncated or malformed report
+                # produced n=0 -- which the gate reads as CLEAN. The taxonomy already had a word for
+                # exactly this (COLLECTION_FAILED: "an empty but well-formed result is indistinguishable
+                # from a clean scan") while the code did the opposite. Found by auditing the class after
+                # the same defect turned up in discovery, not by reading this line.
+                if [ ! -s out.json ]; then
+                  echo "::error title=COLLECTION_FAILED::out.json was not produced."
+                  echo "An ABSENT report is not zero findings. Posture cannot be established from this run."
+                  echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                  exit 1
+                fi
+                if ! n=$(jq '[.runs[].results[]]|length' out.json 2>&1); then
+                  echo "::error title=COLLECTION_FAILED::out.json is not valid SARIF."
+                  echo "jq said: $n"
+                  echo "A PARSE FAILURE is not zero findings."
+                  echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                  exit 1
+                fi
+              else
+                flawfinder fixture/cpp > out.txt 2>&1; EXEC=ok
+                NOTE="SARIF UNSUPPORTED — fell back to text"
+                # grep EXITS 1 FOR NO-MATCH AND 2 FOR ERROR, and `|| echo 0` swallowed both -- so a
+                # missing or unreadable file counted as zero hits. The harness cannot have weaker truth
+                # semantics than the production code it validates: a lie detector that lies is worse than
+                # no lie detector, because people trust it.
+                n=$(grep -ci "hits" out.txt); rc=$?
+                if [ "$rc" -gt 1 ]; then
+                  echo "::error title=COLLECTION_FAILED::could not read out.txt (grep exit $rc)."
+                  echo "An unreadable file is not zero hits."
+                  exit 1
+                fi
+                [ "$rc" -eq 1 ] && n=0
+              fi
+              [ "${n:-0}" -gt 0 ] && DETECT=ok
+              ;;
+            checkov)
+              pip install --quiet checkov
+              checkov --version; checkov -d fixture/infra -o json --quiet --compact > out.json || true; EXEC=ok; ls -l out.json || true
+              # A PARSE FAILURE IS NOT ZERO FINDINGS.
+              #
+              # This was `jq ... 2>/dev/null || echo 0`, so a missing, truncated or malformed report
+              # produced n=0 -- which the gate reads as CLEAN. The taxonomy already had a word for
+              # exactly this (COLLECTION_FAILED: "an empty but well-formed result is indistinguishable
+              # from a clean scan") while the code did the opposite. Found by auditing the class after
+              # the same defect turned up in discovery, not by reading this line.
+              if [ ! -s out.json ]; then
+                echo "::error title=COLLECTION_FAILED::out.json was not produced."
+                echo "An ABSENT report is not zero findings. Posture cannot be established from this run."
+                echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              if ! n=$(jq '[..|.failed_checks? // empty|length]|add // 0' out.json 2>&1); then
+                echo "::error title=COLLECTION_FAILED::out.json is not valid SARIF."
+                echo "jq said: $n"
+                echo "A PARSE FAILURE is not zero findings."
+                echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              [ "${n:-0}" -gt 0 ] && DETECT=ok; NOTE="$n failed checks"
+              ;;
+            trivy)
+              curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin latest >/dev/null 2>&1
+              trivy fs --format json --output out.json --scanners vuln fixture >/dev/null 2>&1; EXEC=ok
+              # A PARSE FAILURE IS NOT ZERO FINDINGS.
+              #
+              # This was `jq ... 2>/dev/null || echo 0`, so a missing, truncated or malformed report
+              # produced n=0 -- which the gate reads as CLEAN. The taxonomy already had a word for
+              # exactly this (COLLECTION_FAILED: "an empty but well-formed result is indistinguishable
+              # from a clean scan") while the code did the opposite. Found by auditing the class after
+              # the same defect turned up in discovery, not by reading this line.
+              if [ ! -s out.json ]; then
+                echo "::error title=COLLECTION_FAILED::out.json was not produced."
+                echo "An ABSENT report is not zero findings. Posture cannot be established from this run."
+                echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              if ! n=$(jq '[.Results[]?.Vulnerabilities//[]|length]|add // 0' out.json 2>&1); then
+                echo "::error title=COLLECTION_FAILED::out.json is not valid SARIF."
+                echo "jq said: $n"
+                echo "A PARSE FAILURE is not zero findings."
+                echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              [ "${n:-0}" -gt 0 ] && DETECT=ok; NOTE="$n vulns"
+              ;;
+            osv)
+              # Release URL + JSON shape are the assumptions being tested here.
+              if curl -sSfL -o osv-scanner https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64; then
+                chmod +x osv-scanner; ./osv-scanner scan source --recursive --format json --output out.json fixture >/dev/null 2>&1 || true
+                EXEC=ok
+                # A PARSE FAILURE IS NOT ZERO FINDINGS.
+                #
+                # This was `jq ... 2>/dev/null || echo 0`, so a missing, truncated or malformed report
+                # produced n=0 -- which the gate reads as CLEAN. The taxonomy already had a word for
+                # exactly this (COLLECTION_FAILED: "an empty but well-formed result is indistinguishable
+                # from a clean scan") while the code did the opposite. Found by auditing the class after
+                # the same defect turned up in discovery, not by reading this line.
+                if [ ! -s out.json ]; then
+                  echo "::error title=COLLECTION_FAILED::out.json was not produced."
+                  echo "An ABSENT report is not zero findings. Posture cannot be established from this run."
+                  echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                  exit 1
+                fi
+                if ! n=$(jq '[.results[]?.packages[]?.vulnerabilities//[]|length]|add // 0' out.json 2>&1); then
+                  echo "::error title=COLLECTION_FAILED::out.json is not valid SARIF."
+                  echo "jq said: $n"
+                  echo "A PARSE FAILURE is not zero findings."
+                  echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                  exit 1
+                fi
+                [ "${n:-0}" -gt 0 ] && DETECT=ok
+                # A PARSE FAILURE IS NOT ZERO MALICIOUS PACKAGES. This probe establishes whether MAL-
+                # detection works at all, so a swallowed jq failure would report the detector as fine
+                # precisely when it is not.
+                if ! mal=$(jq '[.results[]?.packages[]?.vulnerabilities[]?|select(.id|startswith("MAL-"))]|length' out.json 2>&1); then
+                  echo "::error title=COLLECTION_FAILED::osv output is not valid JSON."
+                  echo "jq said: $mal"
+                  exit 1
+                fi
+                NOTE="$n vulns, $mal MAL-"
+              else
+                NOTE="RELEASE URL BROKEN"
+              fi
+              ;;
+            syft)
+              curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sudo sh -s -- -b /usr/local/bin
+              syft version; syft dir:fixture -o cyclonedx-json=out.json || true; EXEC=ok; ls -l out.json || true
+              # A PARSE FAILURE IS NOT ZERO FINDINGS.
+              #
+              # This was `jq ... 2>/dev/null || echo 0`, so a missing, truncated or malformed report
+              # produced n=0 -- which the gate reads as CLEAN. The taxonomy already had a word for
+              # exactly this (COLLECTION_FAILED: "an empty but well-formed result is indistinguishable
+              # from a clean scan") while the code did the opposite. Found by auditing the class after
+              # the same defect turned up in discovery, not by reading this line.
+              if [ ! -s out.json ]; then
+                echo "::error title=COLLECTION_FAILED::out.json was not produced."
+                echo "An ABSENT report is not zero findings. Posture cannot be established from this run."
+                echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              if ! n=$(jq '.components|length' out.json 2>&1); then
+                echo "::error title=COLLECTION_FAILED::out.json is not valid SARIF."
+                echo "jq said: $n"
+                echo "A PARSE FAILURE is not zero findings."
+                echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              [ "${n:-0}" -gt 0 ] && DETECT=ok; NOTE="$n components"
+              ;;
+            depcheck)
+              # The capability unique to reusable-nvd-cve.yml. Trivy overlaps on
+              # dependency CVEs; Dependency-Check adds CPE matching against NVD.
+              # NOTE: without NVD_API_KEY the DB update is heavily rate limited, so
+              # this probe validates INSTALL + EXECUTE + OUTPUT SHAPE only. Detection
+              # against a fully-updated NVD database requires a key and is a separate,
+              # documented gap rather than something this probe can establish.
+              # The hosted image already ships a JRE and unzip. Do not make the call that hangs.
+              if ! command -v java >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
+                timeout 180 sudo apt-get -o DPkg::Lock::Timeout=60 update -qq || true
+                timeout 300 sudo apt-get -o DPkg::Lock::Timeout=60 install -y                   --no-install-recommends openjdk-17-jre-headless unzip
+              fi
+              VER=9.0.9
+              if wget -q "https://github.com/jeremylong/DependencyCheck/releases/download/v${VER}/dependency-check-${VER}-release.zip"; then
+                unzip -q "dependency-check-${VER}-release.zip" -d /opt/
+                chmod +x /opt/dependency-check/bin/dependency-check.sh
+                EXEC=ok
+                # --format SARIF is the assumption recorded as untested in VALIDATION_DEBT.
+                if /opt/dependency-check/bin/dependency-check.sh --project probe --scan fixture/java                      --format SARIF --format JSON --out dcout --noupdate 2>&1 | tail -20; then :; fi
+                if [ -f dcout/dependency-check-report.sarif ]; then
+                  cp dcout/dependency-check-report.sarif out.json
+                  NOTE="SARIF supported; filename confirmed"
+                  DETECT=ok
+                elif [ -f dcout/dependency-check-report.json ]; then
+                  cp dcout/dependency-check-report.json out.json
+                  NOTE="SARIF MISSING — only JSON produced. reusable-nvd-cve.yml SARIF upload WILL FAIL."
+                else
+                  NOTE="no report produced (no NVD data without a key?)"
+                fi
+                ls -l dcout || true
+              else
+                NOTE="Dependency-Check release download FAILED"
+              fi
+              ;;
+            dotnet)
+              # Output-format stability across SDK versions is the assumption being tested.
+              cd fixture/dotnet && dotnet restore >/dev/null 2>&1
+              dotnet list package --vulnerable --include-transitive > ../../out.txt 2>&1; EXEC=ok
+              cd ../..
+              if grep -qiE "(Critical|High|Moderate|Low)" out.txt; then DETECT=ok; fi
+              # COSMETIC: this value is a human-readable NOTE, not an assurance decision. The same
+              # grep conflation applies, and is accepted HERE because nothing branches on it. Recorded
+              # rather than silently left, so the exception is visible and deliberate.
+              NOTE="$(grep -ciE 'has the following vulnerable' out.txt || echo 0) projects flagged"
+              ;;
+          esac
+
+          [ -s out.json ] || [ -s out.txt ] && ARTIFACT=ok
+          echo "exec=$EXEC"     >> "$GITHUB_OUTPUT"
+          echo "detect=$DETECT" >> "$GITHUB_OUTPUT"
+          echo "artifact=$ARTIFACT" >> "$GITHUB_OUTPUT"
+          echo "note=$NOTE"     >> "$GITHUB_OUTPUT"
+          printf '| %s | %s | %s | %s | %s |\n' "$ID" "$EXEC" "$DETECT" "$ARTIFACT" "$NOTE" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record result
+        run: |
+          mkdir -p results
+          cat > "results/${{ matrix.probe.id }}.json" <<EOF
+          {"id":"${{ matrix.probe.id }}","exec":"${{ steps.probe.outputs.exec }}",
+           "detect":"${{ steps.probe.outputs.detect }}","artifact":"${{ steps.probe.outputs.artifact }}",
+           "note":"${{ steps.probe.outputs.note }}"}
+          EOF
+      - uses: actions/upload-artifact@v7
+        with:
+          name: probe-${{ matrix.probe.id }}
+          path: results/
+
+  # -------------------------------------------------- negative / typed absence
+  # The lesson this kit keeps teaching, applied to itself: a tool that could not run
+  # must NOT be indistinguishable from a tool that ran and found nothing.
+  negative-control:
+    name: "NEGATIVE: failure must not read as clean"
+    needs: fixture
+    runs-on: ubuntu-latest
+    # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
+    # converts a dependency failure into uncontrolled cost).
+    # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
+    # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
+    # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Force a collection failure and assert it is NOT clean
+        run: |
+          set -uo pipefail
+          # A scanner pointed at a path that does not exist = collection failure.
+          if trivy fs --format json --output out.json /nonexistent-path 2>/dev/null; then
+            :
+          fi
+          if [ -s out.json ] && [ "$(jq '[.Results[]?]|length' out.json 2>/dev/null || echo 0)" = "0" ]; then
+            echo "::error::A FAILED COLLECTION produced an empty-but-well-formed result."
+            echo "That is indistinguishable from a clean scan. Consumers cannot tell them apart."
+            echo "Required: emit COLLECTION_FAILED / UNKNOWN, never an empty success."
+            exit 1
+          fi
+          echo "✅ Failed collection did not masquerade as a clean result."
+        continue-on-error: true
+
+  # ------------------------------------------------------------- gate behavior
+  # A scanner working perfectly proves nothing about whether the control blocks.
+  gate-behavior:
+    name: "GATE: does the gate enumerate every job?"
+    runs-on: ubuntu-latest
+    # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
+    # converts a dependency failure into uncontrolled cost).
+    # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
+    # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
+    # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Every job must be reachable by the gate
+        run: |
+          python -m pip install --quiet PyYAML
+          python tests/check_gate.py
+
+  # ------------------------------------------------------------------ verdict
+  capability-matrix:
+    name: Capability matrix
+    needs: [secret-rules, scanners, negative-control, gate-behavior]
+    if: always()
+    runs-on: ubuntu-latest
+    # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
+    # converts a dependency failure into uncontrolled cost).
+    # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
+    # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
+    # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: probe-*
+          path: probes
+          merge-multiple: true
+      - name: Render matrix and name what is MISSING
+        run: |
+          python - <<'PY'
+          import json, glob, os
+          rows = []
+          for f in sorted(glob.glob('probes/*.json')):
+              try: rows.append(json.load(open(f)))
+              except Exception: pass
+          ok = lambda v: "✅" if v == "ok" else "❌"
+          out = ["## Scanner capability matrix", "",
+                 "| scanner | executed | detected seeded signal | artifact | note |",
+                 "|---|---|---|---|---|"]
+          broken = []
+          for r in sorted(rows, key=lambda x: x['id']):
+              out.append(f"| `{r['id']}` | {ok(r['exec'])} | {ok(r['detect'])} | {ok(r['artifact'])} | {r['note']} |")
+              if r['exec'] != 'ok' or r['detect'] != 'ok':
+                  broken.append(r['id'])
+          out += ["", "### What is MISSING", ""]
+          missing = [
+              "CodeQL / GHAS — not in the kit; assumed unavailable, should be an optional job",
+              "DAST — no runtime application testing at all",
+              "Container image scanning — Trivy scans the filesystem, not built images",
+              "License compliance — SBOM is generated but no policy is applied to it",
+              "Signing / provenance attestation — SBOM produced, nothing attests to it",
+              "Secret scanning at the ORG level — hooks and CI only; no push protection assumed",
+              "Findings deduplication and disposition — scanners emit, nothing manages the output",
+          ]
+          out += [f"- {m}" for m in missing]
+          if broken:
+              out += ["", f"### ⚠️ Probes not proven this run: {', '.join(broken)}",
+                      "Treat those capabilities as UNKNOWN, not working."]
+          txt = "\n".join(out)
+          print(txt)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as fh: fh.write(txt + "\n")
+          PY

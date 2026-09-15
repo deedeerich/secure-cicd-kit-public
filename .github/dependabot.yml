@@ -1,0 +1,108 @@
+# Dependabot — present, and deliberately not load-bearing.
+#
+# WHY THIS FILE DID NOT EXIST UNTIL NOW
+#   The kit had dependency SCANNING (OWASP Dependency-Check, the NVD CVE workflows) and no
+#   dependency UPDATING. Those are different capabilities: one tells you a dependency is
+#   vulnerable, the other opens the PR that fixes it. Having the first is not having the second,
+#   and the capability matrix has listed this gap rather than hiding it.
+#
+# WHAT IT DOES AND DOES NOT ASSUME
+#   Dependabot is a platform feature. If alerts or security updates are disabled for the
+#   repository or the org, this file changes nothing and fails nothing -- it simply does not fire.
+#   That is the intended behaviour: available where enabled, silent where not, never a hard
+#   dependency of the pipeline.
+#
+#   Which means its absence must NEVER be read as "no vulnerable dependencies". A repo with
+#   Dependabot off and this file present looks identical to a repo with no vulnerable
+#   dependencies, and that ambiguity is the failure this kit exists to prevent. The scanners in
+#   reusable-security.yml remain the thing that establishes posture; this only proposes fixes.
+#
+# ECOSYSTEMS
+#   Listed broadly on purpose. Dependabot skips an ecosystem with no manifest rather than
+#   erroring, so over-listing costs nothing and under-listing silently drops coverage -- the same
+#   reason discovery in reusable-security.yml turns everything on when it cannot establish
+#   applicability.
+
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    labels: [dependencies, github-actions]
+    commit-message:
+      prefix: "deps(actions)"
+    groups:
+      actions-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    labels: [dependencies, python]
+    commit-message:
+      prefix: "deps(pip)"
+    groups:
+      python-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    labels: [dependencies, javascript]
+    commit-message:
+      prefix: "deps(npm)"
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: [dependencies, dotnet]
+    commit-message:
+      prefix: "deps(nuget)"
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: [dependencies, go]
+    commit-message:
+      prefix: "deps(go)"
+
+  - package-ecosystem: maven
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: [dependencies, java]
+    commit-message:
+      prefix: "deps(maven)"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: [dependencies, docker]
+    commit-message:
+      prefix: "deps(docker)"
+
+  - package-ecosystem: terraform
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: [dependencies, terraform]
+    commit-message:
+      prefix: "deps(terraform)"

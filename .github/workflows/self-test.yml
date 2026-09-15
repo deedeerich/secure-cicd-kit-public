@@ -1,0 +1,405 @@
+name: Self-test
+
+# The kit's own CI. A shared CI library that isn't itself linted is a liability:
+# every consumer inherits its defects. This validates syntax, contract shape, and
+# the kit's own compliance with the policy gate it ships.
+
+on:
+  push:
+    branches: [main]
+    # Documentation cannot change what the policy gate, profile schema, contract shape or
+    # validation-coverage jobs evaluate — they read workflows, actions and the registry.
+    # Running six jobs on a docs-only commit buys nothing and costs metered minutes.
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'LICENSE'
+  pull_request:
+  workflow_dispatch:
+
+# Metered minutes: supersede in-flight runs of this workflow on the same ref instead of
+# letting an obsolete run finish at full cost. A private repo pays for every minute.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  yaml-lint:
+    name: YAML lint
+    runs-on: ubuntu-latest
+    # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
+    # converts a dependency failure into uncontrolled cost).
+    # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
+    # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
+    # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: yamllint
+        run: |
+          python -m pip install --quiet yamllint
+          cat > .yamllint.kit.yml <<'EOF'
+          extends: default
+          rules:
+            line-length: {max: 140, level: warning}
+            comments: {min-spaces-from-content: 1}
+            truthy: {allowed-values: ["true", "false", "on"]}
+            document-start: disable
+          EOF
+          yamllint -c .yamllint.kit.yml .github/ profiles/
+
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
+    # converts a dependency failure into uncontrolled cost).
+    # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
+    # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
+    # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run actionlint
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color -shellcheck=
+
+  contract-check:
+    name: Contract shape
+    runs-on: ubuntu-latest
+    # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
+    # converts a dependency failure into uncontrolled cost).
+    # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
+    # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
+    # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Validate reusable/action contracts
+        run: |
+          python -m pip install --quiet PyYAML jsonschema
+          cat > /tmp/contract.py <<'PYEOF'
+          import glob, sys, os
+          import yaml
+
+          fail = []
+
+          def note(p, m):
+              fail.append(f"{p}: {m}")
+
+          # Every reusable-* workflow must expose a workflow_call contract with documented inputs.
+          for p in sorted(glob.glob(".github/workflows/reusable-*.yml")) + sorted(glob.glob(".github/workflows/workflow-policy-check.yml")):
+              doc = yaml.safe_load(open(p, encoding="utf-8")) or {}
+              on = doc.get("on", doc.get(True)) or {}
+              if not isinstance(on, dict) or "workflow_call" not in on:
+                  note(p, "must be callable: `on: workflow_call`")
+                  continue
+              call = on["workflow_call"] or {}
+              for name, spec in (call.get("inputs") or {}).items():
+                  if not isinstance(spec, dict):
+                      note(p, f"input `{name}` is malformed"); continue
+                  if not spec.get("description"):
+                      note(p, f"input `{name}` has no description")
+                  if not spec.get("type"):
+                      note(p, f"input `{name}` has no type")
+                  if not spec.get("required") and "default" not in spec:
+                      note(p, f"optional input `{name}` has no default")
+              # Secrets are part of the contract too. This check was ABSENT, which is how
+              # nine undocumented secrets shipped past the gate that exists to catch them.
+              # A consumer cannot supply a secret correctly if nothing says what it is for.
+              for name, spec in (call.get("secrets") or {}).items():
+                  if isinstance(spec, dict) and not spec.get("description"):
+                      note(p, f"secret `{name}` has no description")
+              if doc.get("permissions") is None:
+                  note(p, "no top-level `permissions:` declared")
+
+          # Every composite action must declare name/description/runs and document its inputs.
+          for p in sorted(glob.glob(".github/actions/*/action.yml")):
+              doc = yaml.safe_load(open(p, encoding="utf-8")) or {}
+              for k in ("name", "description", "runs"):
+                  if not doc.get(k):
+                      note(p, f"missing `{k}`")
+              if (doc.get("runs") or {}).get("using") != "composite":
+                  note(p, "`runs.using` must be `composite`")
+              for name, spec in (doc.get("inputs") or {}).items():
+                  if not isinstance(spec, dict) or not spec.get("description"):
+                      note(p, f"input `{name}` has no description")
+
+          # Every action directory must be named after its action.yml location.
+          for d in sorted(glob.glob(".github/actions/*")):
+              if os.path.isdir(d) and not os.path.exists(os.path.join(d, "action.yml")):
+                  note(d, "action directory has no action.yml")
+
+          if fail:
+              print("Contract violations:")
+              for f in fail:
+                  print(f"  - {f}")
+              sys.exit(1)
+          print("All reusable-workflow and composite-action contracts are well-formed.")
+          PYEOF
+          python /tmp/contract.py
+
+  profile-schema:
+    name: Profile schema
+    runs-on: ubuntu-latest
+    # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
+    # converts a dependency failure into uncontrolled cost).
+    # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
+    # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
+    # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Validate profiles against schema
+        run: |
+          python -m pip install --quiet PyYAML jsonschema
+          python - <<'PYEOF'
+          import glob, json, sys
+          import yaml, jsonschema
+
+          schema = json.load(open("profiles/profile.schema.json", encoding="utf-8"))
+          bad = 0
+          for p in sorted(glob.glob("profiles/*.yml")):
+              doc = yaml.safe_load(open(p, encoding="utf-8"))
+              try:
+                  jsonschema.validate(doc, schema)
+                  print(f"  ok  {p}")
+              except jsonschema.ValidationError as e:
+                  bad += 1
+                  print(f"  ERR {p}: {e.message} (at {'/'.join(str(x) for x in e.path)})")
+          sys.exit(1 if bad else 0)
+          PYEOF
+
+  normalizer-drift:
+    name: Normalizer drift
+    runs-on: ubuntu-latest
+    # Bounded so a stalled dependency cannot bill six hours (LM-001).
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Inlined normalizer must match the canonical source
+        run: |
+          set -euo pipefail
+          # The SARIF normalizer is inlined into the reusable workflow, because `uses: ./` does not
+          # resolve for a cross-repo consumer -- the same reason 14 Azure gitleaks rules once
+          # silently never loaded. Inlining means COPIES, and copies drift: this kit has already
+          # shipped a fix applied to a probe but not the workflow, and a tag bumped in one place and
+          # not another. So the copies are GENERATED and this check fails if any has diverged.
+          python3 scripts/inline_normalizer.py --check
+
+      - name: Credential material must be redacted before it becomes an artifact
+        run: |
+          # Only gitleaks was redacted. Thirteen other jobs uploaded raw SARIF, and several of
+          # those scanners embed matched source BY DESIGN -- bandit's B105 hardcoded_password
+          # snippet IS the password. An artifact is downloadable by anyone with repo read access
+          # and retained for weeks, so redacting the rendered summary while shipping the raw
+          # value in a file moves the credential rather than removing it.
+          #
+          # This asserts two things a reviewer cannot see by reading: that the printer and the
+          # artifact redactor share one pattern set, and that redaction runs BEFORE every upload.
+          # Order is the whole control -- a redactor after the upload protects nothing while
+          # looking exactly like protection.
+          python3 tests/check_redaction_parity.py
+          python3 scripts/redact_sarif.py --self-test
+          # And the chain itself, using the redaction step EXTRACTED FROM THIS WORKFLOW rather
+          # than the canonical file -- so a stale, mis-indented or unwired inlined copy fails
+          # here instead of on a consumer's runner. Six scanners seeded with real-shaped fake
+          # credentials; the secret must be absent from the redaction log, the sanitised
+          # artifacts, the run log and the step summary, while file, line and an identifying
+          # prefix all survive.
+          python3 tests/prove_redaction_chain.py
+
+      - name: Capability custody must match the workflows
+        run: |
+          # A custody claim written down and never verified is the same shape as an invariant
+          # written down and never enforced -- and this estate has already proven that gets
+          # violated anyway. This asserts the declared capabilities are present or absent as
+          # declared, and that the neutral core never depends on the the overlay.
+          #
+          # The dependency is ONE-WAY. If the neutral kit ever needs the overlay to run, the
+          # overlay has become the product and the custody line stops being true regardless of
+          # what the manifest says.
+          python3 tests/check_custody.py
+
+      - name: The neutral core must not name anyone
+        run: |
+          # scripts/export-deny.txt has listed account identities, private repository names and a
+          # former engagement since it was written -- and exactly one thing read it: an export
+          # script a human runs by hand. The protection was real and entirely deferred. Nothing
+          # failed while the names simply sat in the tree.
+          #
+          # DOCUMENTED and ENFORCED are two rungs apart, and the gap is invisible from the inside:
+          # a control nobody runs looks identical to a control with nothing to find. A sweep on
+          # 2026-09-15 found 89 line hits across 19 neutral files naming one employer's tooling and
+          # a second engagement's repositories, in a kit whose entire premise is neutrality.
+          #
+          # Keep the LESSON, remove the NAME. A defect found while working somewhere else is
+          # engineering knowledge; whose estate it was found in is not. overlays/ is excluded --
+          # an overlay is allowed to know its own name, which is what makes it an overlay.
+          python3 tests/check_export_safety.py
+
+      - name: No untrusted input may reach a script body
+        run: |
+          # the ticket-reference gate interpolated a PR body straight into a run: block, so any
+          # contributor could execute code on the runner -- and a lone double quote truncated the
+          # variable, which is how the gate reported a ticket reference ABSENT from a description that
+          # contained one. A false negative manufactured by the harness.
+          #
+          # That was found by reading one file. Nothing swept the other seventy. Finding a defect
+          # and not looking for its siblings is how one instance gets fixed and five survive, so
+          # the sweep is now a gate rather than an afternoon someone remembers to spend.
+          python3 tests/lint_injection.py
+
+      - name: Both layers must parse, and the core must stand alone
+        run: |
+          # TWO PERMANENT TESTS, because an overlay that is only ever exercised together with
+          # the core hides the day the core stopped working without it.
+          #
+          #   neutral core alone          must parse and be structurally complete
+          #   core + any present overlay  must parse and reference no missing jobs
+          #
+          # The dependency is one-way: overlay -> core, never the reverse. If the core ever
+          # needs the overlay, the overlay has become the product.
+          python3 - <<'PY'
+          import glob, os, sys
+          import yaml
+          bad = []
+          for p in (glob.glob('.github/workflows/*.yml')
+                    + glob.glob('overlays/*/workflows/*.yml')):
+              try:
+                  d = yaml.safe_load(open(p, encoding='utf-8')) or {}
+              except Exception as e:
+                  bad.append('%s: %s' % (p, e)); continue
+              jobs = set((d.get('jobs') or {}))
+              for j, v in (d.get('jobs') or {}).items():
+                  for n in (v.get('needs') or []):
+                      if n not in jobs:
+                          bad.append('%s: job %s needs %s, which does not exist in this file'
+                                     % (p, j, n))
+          if bad:
+              for b in bad:
+                  print('::error title=Layer check::%s' % b)
+              sys.exit(1)
+          print('both layers parse; no dangling needs in either')
+          PY
+
+      - name: Every workflow must be parseable
+        run: |
+          # A workflow that is not valid YAML does not run, and GitHub shows nothing where the
+          # run would have been -- so a governance control can sit in the repository for months
+          # having never executed once. Two `workflow-policy-check.yml` files in the wider estate
+          # are in exactly that state: `- name: Fail if deploy workflows use on: push` has an
+          # unquoted colon-space, which makes the file invalid. Four steps, never run.
+          #
+          # An invalid workflow is indistinguishable from an absent one unless something looks.
+          fail=0
+          for f in .github/workflows/*.yml .github/workflows/*.yaml; do
+            [ -e "$f" ] || continue
+            python3 -c "import sys,yaml,io; yaml.safe_load(io.open(sys.argv[1],encoding='utf-8'))" "$f" \
+              || { echo "::error title=Unparseable workflow::$f is not valid YAML and cannot run."; fail=1; }
+          done
+          [ "$fail" = "0" ] || exit 1
+          echo "every workflow file parses"
+
+      - name: Vocabulary in use must be registered
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet PyYAML
+          # These words drive ENFORCEMENT. UNAVAILABLE decides whether a build blocks; PARTIAL
+          # decides whether a claim was established. They were used across fourteen files and
+          # defined in none, while two disposition classes existed only in conversation.
+          # An undefined enforcement word is how PARTIAL quietly becomes PASS three layers
+          # downstream -- valid words, broken taxonomy.
+          python3 scripts/reconcile_taxonomy.py
+
+      - name: Discovery contract
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet PyYAML
+          # Discovery decides WHICH SCANNERS RUN AT ALL, which makes it the highest-leverage place
+          # in the kit for a lie. This extracts the real shell from the workflow and exercises it
+          # against synthetic trees -- including a survey that FAILS, which must force everything on
+          # rather than producing a tidy row of NOT_APPLICABLE over code nobody scanned.
+          python3 tests/test_discovery.py
+
+      - name: Assurance dataflow — producer to consumer
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet PyYAML
+          # CORRECTNESS IS NOT LOCAL. A correct producer still participates in a false result when
+          # its consumer assigns semantics to missing output -- which happened here inside a fix for
+          # that very class. Traces every assurance-bearing handoff and fails on an unguarded
+          # default, because there is no implicit default from unknown to known.
+          python3 scripts/trace_assurance_flow.py
+
+      - name: Suppressions must state why they are safe
+        run: |
+          set -euo pipefail
+          # REPORTING, NOT BLOCKING, until the backlog is annotated. A check that fails on day one
+          # is a check somebody disables on day two -- the same reasoning that split the coverage
+          # gate into BLOCKING and ACCEPTED DEBT. Switch to --check once the count reaches zero,
+          # and record that switch as a ratchet so it cannot silently slide back.
+          python3 scripts/lint_suppressions.py
+
+  validation-coverage:
+    name: Validation coverage
+    runs-on: ubuntu-latest
+    # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
+    # converts a dependency failure into uncontrolled cost).
+    # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
+    # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
+    # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Reconcile implementation / capability / validation registries
+        run: |
+          python -m pip install --quiet PyYAML
+          # BLOCKING when an artifact has no registered capability, when an unproven
+          # capability has no deferral, or when a deferral has EXPIRED. Dated, owned,
+          # unexpired deferrals are reported as accepted debt and do NOT fail the job.
+          #
+          # This split exists because a permanently red check is not a control, it is
+          # training: people learn red means "known backlog" and stop reading it, and
+          # then a real regression arrives wearing the same colour as the noise.
+          python tests/reconcile_validation.py
+
+      - name: NEGATIVE CONTROL — the gate must actually be able to fail
+        run: |
+          # A gate that has never failed is decoration. Force every deferral past its
+          # expiry and require a non-zero exit. If this step passes silently, the
+          # accepted-debt path has swallowed the blocking path and the whole mechanism
+          # is theatre.
+          if python tests/reconcile_validation.py --today 2099-01-01 >/tmp/expired.txt 2>&1; then
+            echo "::error title=Gate cannot fail::Every deferral was expired and the gate STILL"
+            echo "returned success. The blocking path is broken — coverage reporting is now"
+            echo "unfalsifiable and must not be trusted."
+            exit 1
+          fi
+          grep -q "BLOCKING" /tmp/expired.txt || {
+            echo "::error::Gate failed, but not via the BLOCKING path. Wrong failure mode."; exit 1; }
+          echo "Negative control passed: expired deferrals produce BLOCKING and a non-zero exit."
+
+  dogfood-policy:
+    name: Policy gate (dogfood)
+    # The kit runs its own governance gate against itself. Pinning is reported rather
+    # than enforced here until the third-party actions carry real SHA pins — see docs/assurance/PINNING.md.
+    uses: ./.github/workflows/workflow-policy-check.yml
+    with:
+      require_sha_pinning: false
+      soft_fail: true

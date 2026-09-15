@@ -1,0 +1,313 @@
+name: "Kit: Workflow Policy Check"
+# Employer-neutral governance gate — PROMOTED from inline pipeline logic into a shared reusable.
+# Lints the CALLING repo's own GitHub Actions workflows against supply-chain and deploy policy.
+#
+# Threat model: the CI supply-chain compromise class — a third-party Action that is compromised,
+# or whose tag is repointed at malicious code, executing on a runner that holds repo secrets and
+# a live OIDC token (the tj-actions/changed-files pattern). The durable controls are: pin
+# third-party actions to a full commit SHA, keep GITHUB_TOKEN permissions minimal, never expose
+# secrets to fork-controlled code, and never interpolate attacker-controlled text into a shell.
+# Those are enforced below regardless of the specific TTP or campaign name.
+#
+# The checker is INLINED so it resolves correctly when called cross-repo.
+
+on:
+  workflow_call:
+    inputs:
+      workflows_path:
+        description: "Directory holding the workflows to lint"
+        type: string
+        required: false
+        default: ".github/workflows"
+      trusted_orgs:
+        description: "Comma-separated action owners permitted to use tag refs instead of SHA pins"
+        type: string
+        required: false
+        default: "actions,github,azure,docker,hashicorp"
+      require_sha_pinning:
+        description: "Require full 40-char commit SHA pins for untrusted action owners"
+        type: boolean
+        required: false
+        default: true
+      allow_deploy_on_push:
+        description: "Permit deploy-shaped jobs on bare push triggers (policy default: no)"
+        type: boolean
+        required: false
+        default: false
+      soft_fail:
+        description: "Report violations without failing the build (use for first adoption only)"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  policy-check:
+    name: Workflow policy
+    runs-on: ubuntu-latest
+    # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
+    # converts a dependency failure into uncontrolled cost).
+    # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
+    # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
+    # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install parser
+        run: python -m pip install --quiet PyYAML
+
+      - name: Evaluate policy
+        id: policy
+        env:
+          WORKFLOWS_PATH: ${{ inputs.workflows_path }}
+          TRUSTED_ORGS: ${{ inputs.trusted_orgs }}
+          REQUIRE_SHA: ${{ inputs.require_sha_pinning }}
+          ALLOW_DEPLOY_ON_PUSH: ${{ inputs.allow_deploy_on_push }}
+        run: |
+          cat > /tmp/policy_check.py <<'PYEOF'
+          import os, re, sys, glob
+          import yaml
+
+          WF_DIR   = os.environ.get("WORKFLOWS_PATH", ".github/workflows")
+          TRUSTED  = {o.strip().lower() for o in os.environ.get("TRUSTED_ORGS", "").split(",") if o.strip()}
+          NEED_SHA = os.environ.get("REQUIRE_SHA", "true").lower() == "true"
+          ALLOW_DOP = os.environ.get("ALLOW_DEPLOY_ON_PUSH", "false").lower() == "true"
+
+          # Built without literal Actions-expression syntax so this file is not self-interpolated.
+          OPEN, CLOSE = "$" + "{{", "}" + "}"
+          EXPR = re.compile(re.escape(OPEN) + r"\s*(.*?)\s*" + re.escape(CLOSE), re.S)
+          SHA40 = re.compile(r"^[0-9a-f]{40}$")
+          DEPLOYISH = re.compile(r"deploy|release|publish|promote", re.I)
+
+          # Image-setting deploy commands, and the flag that carries the image reference.
+          # Anchored on `az ` so this checker does not flag its own rule text.
+          DEPLOY_CMD = re.compile(r"\baz\s+(?:containerapp\s+update|webapp\s+config\s+container\s+set)\b")
+          IMG_FLAG   = re.compile(r"--(?:image|container-image-name)\s+('[^']*'|\"[^\"]*\"|\S+)")
+          DIGEST_LIT = re.compile(r"@sha256:[a-f0-9]{64}")
+
+          # Attacker-controllable expression contexts that must never reach a shell unquoted.
+          INJECTABLE = re.compile(
+              r"github\.event\.(issue|pull_request|comment|discussion|review)\.(title|body)"
+              r"|github\.event\.head_commit\.message"
+              r"|github\.event\.pull_request\.head\.(ref|label)"
+              r"|github\.head_ref",
+          )
+
+          findings = []  # (severity, file, message)
+
+          def add(sev, f, msg):
+              findings.append((sev, f, msg))
+
+          def walk_jobs(doc):
+              jobs = doc.get("jobs") or {}
+              if isinstance(jobs, dict):
+                  for name, job in jobs.items():
+                      if isinstance(job, dict):
+                          yield name, job
+
+          def steps_of(job):
+              s = job.get("steps") or []
+              return [x for x in s if isinstance(x, dict)]
+
+          def triggers(doc):
+              # PyYAML parses a bare `on:` key as boolean True.
+              on = doc.get("on", doc.get(True))
+              if isinstance(on, str):
+                  return {on: None}
+              if isinstance(on, list):
+                  return {k: None for k in on}
+              return on if isinstance(on, dict) else {}
+
+          files = sorted(glob.glob(os.path.join(WF_DIR, "*.yml")) + glob.glob(os.path.join(WF_DIR, "*.yaml")))
+          if not files:
+              print(f"No workflow files found under {WF_DIR} — nothing to check.")
+              sys.exit(0)
+
+          for path in files:
+              raw = open(path, encoding="utf-8").read()
+              try:
+                  doc = yaml.safe_load(raw) or {}
+              except yaml.YAMLError as e:
+                  add("ERROR", path, f"unparseable YAML: {e}")
+                  continue
+              if not isinstance(doc, dict):
+                  add("ERROR", path, "workflow root is not a mapping")
+                  continue
+
+              trig = triggers(doc)
+              top_perms = doc.get("permissions")
+
+              # ── R1/R2: action reference pinning ────────────────────────────
+              for job_name, job in walk_jobs(doc):
+                  for step in steps_of(job):
+                      uses = step.get("uses")
+                      if not isinstance(uses, str) or uses.startswith(("./", "docker://")):
+                          continue
+                      if "@" not in uses:
+                          add("ERROR", path, f"{job_name}: `uses: {uses}` has no ref — always pin a version")
+                          continue
+                      repo, ref = uses.rsplit("@", 1)
+                      owner = repo.split("/", 1)[0].lower()
+                      if ref in ("main", "master", "HEAD") or ref.startswith("refs/heads/"):
+                          add("ERROR", path, f"{job_name}: `{uses}` tracks a moving branch — a repoint silently ships new code into CI")
+                      elif NEED_SHA and owner not in TRUSTED and not SHA40.match(ref):
+                          add("ERROR", path, f"{job_name}: `{uses}` is untrusted-owner and not SHA-pinned — pin to a full 40-char commit SHA")
+                      elif owner not in TRUSTED and SHA40.match(ref) and "#" not in raw.split(uses, 1)[-1][:80]:
+                          add("NOTE", path, f"{job_name}: `{repo}` SHA-pinned (good) — add a trailing `# vX.Y.Z` comment so upgrades stay reviewable")
+
+              # ── R3: GITHUB_TOKEN permissions ───────────────────────────────
+              if top_perms is None and not any(
+                  isinstance(j, dict) and "permissions" in j for _, j in walk_jobs(doc)
+              ):
+                  add("ERROR", path, "no `permissions:` declared — the job inherits the repo default token scope")
+              if top_perms in ("write-all",) or (
+                  isinstance(top_perms, dict) and top_perms.get("contents") == "write" and "workflow_call" not in trig
+              ):
+                  add("WARN", path, "broad top-level write permissions — scope them to the jobs that need them")
+              if isinstance(top_perms, dict) and top_perms.get("id-token") == "write":
+                  n_jobs = len(list(walk_jobs(doc)))
+                  if n_jobs > 1 and "workflow_call" not in trig:
+                      add("WARN", path, f"`id-token: write` granted workflow-wide across {n_jobs} jobs — every job gets a usable OIDC token; scope it to the deploying job")
+
+              # ── R4: fork-controlled code with secrets ──────────────────────
+              if "pull_request_target" in trig:
+                  for job_name, job in walk_jobs(doc):
+                      for step in steps_of(job):
+                          if isinstance(step.get("uses"), str) and step["uses"].startswith("actions/checkout"):
+                              ref = (step.get("with") or {}).get("ref", "")
+                              if "head" in str(ref) or "pull_request" in str(ref):
+                                  add("ERROR", path, f"{job_name}: `pull_request_target` checking out the PR head runs fork code with full secret access")
+                  add("WARN", path, "`pull_request_target` grants secrets to PR-triggered runs — confirm no fork-controlled code executes")
+
+              # ── R5: OIDC-only cloud auth ───────────────────────────────────
+              for job_name, job in walk_jobs(doc):
+                  for step in steps_of(job):
+                      uses = step.get("uses") or ""
+                      with_ = step.get("with") or {}
+                      if isinstance(uses, str) and uses.startswith("azure/login") and "creds" in with_:
+                          add("ERROR", path, f"{job_name}: `azure/login` with `creds:` uses a long-lived service-principal secret — federate with OIDC instead")
+                      if isinstance(uses, str) and uses.startswith("docker/login-action") and "password" in with_:
+                          pw = str(with_.get("password"))
+                          if "PASSWORD" in pw.upper() or "TOKEN" in pw.upper():
+                              add("WARN", path, f"{job_name}: registry login by static password — prefer federated/registry-token auth")
+
+              # ── R6: no deploy-on-push ──────────────────────────────────────
+              if not ALLOW_DOP and "push" in trig:
+                  for job_name, job in walk_jobs(doc):
+                      if not (DEPLOYISH.search(job_name) or DEPLOYISH.search(str(job.get("name", "")))):
+                          continue
+                      cond = str(job.get("if", ""))
+                      # Three legitimate gates: a GitHub Environment on this job, an `if:`
+                      # that confines the job to a manual dispatch, or delegation to a
+                      # reusable workflow that carries the Environment itself.
+                      has_env      = "environment" in job
+                      dispatch_only = "workflow_dispatch" in cond
+                      delegates_env = "github_environment" in (job.get("with") or {})
+                      if not (has_env or dispatch_only or delegates_env):
+                          add("ERROR", path, f"{job_name}: deploy-shaped job reachable from `push` with no gating `environment:` and no dispatch guard — deploys must be gated or dispatched")
+                      elif not has_env and not delegates_env:
+                          add("WARN", path, f"{job_name}: deploy-shaped job gated only by `if:` — add a GitHub Environment so the approval is enforced server-side")
+
+              # ── R7: deploy by digest, not tag ──────────────────────────────
+              for job_name, job in walk_jobs(doc):
+                  for step in steps_of(job):
+                      run = step.get("run") or ""
+                      if not isinstance(run, str) or not DEPLOY_CMD.search(run):
+                          continue
+                      for raw_val in IMG_FLAG.findall(run):
+                          val = raw_val.strip("'\"")
+                          # Accept a literal digest, or an expression that resolves one
+                          # (the deploy reusables validate the digest shape at runtime).
+                          if DIGEST_LIT.search(val) or ("@" in val and "digest" in val.lower()):
+                              continue
+                          add("ERROR", path, f"{job_name}: deploy sets image `{val}` without an `@sha256:` digest — mutable tags break reproducibility and provenance")
+
+              # ── R8: over-broad secret propagation ──────────────────────────
+              for job_name, job in walk_jobs(doc):
+                  if job.get("secrets") == "inherit":
+                      add("WARN", path, f"{job_name}: `secrets: inherit` hands the callee every repo secret — pass only what it needs")
+
+              # ── R9: script injection via untrusted expressions ─────────────
+              for job_name, job in walk_jobs(doc):
+                  for step in steps_of(job):
+                      run = step.get("run")
+                      if isinstance(run, str):
+                          for expr in EXPR.findall(run):
+                              if INJECTABLE.search(expr):
+                                  add("ERROR", path, f"{job_name}: attacker-controlled `{expr}` interpolated into a `run:` block — pass it through `env:` and reference the variable instead")
+
+          # ── R1/R2 again: composite actions ────────────────────────────────
+          # A composite action is another place third-party actions execute with the
+          # caller's authority, so the same pinning rules apply to its steps.
+          actions_dir = os.path.join(os.path.dirname(WF_DIR.rstrip("/")) or ".github", "actions")
+          action_files = sorted(glob.glob(os.path.join(actions_dir, "*", "action.yml")) +
+                                glob.glob(os.path.join(actions_dir, "*", "action.yaml")))
+          for path in action_files:
+              try:
+                  doc = yaml.safe_load(open(path, encoding="utf-8")) or {}
+              except yaml.YAMLError as e:
+                  add("ERROR", path, f"unparseable YAML: {e}")
+                  continue
+              for step in ((doc.get("runs") or {}).get("steps") or []):
+                  if not isinstance(step, dict):
+                      continue
+                  uses = step.get("uses")
+                  if not isinstance(uses, str) or uses.startswith(("./", "docker://")):
+                      continue
+                  if "@" not in uses:
+                      add("ERROR", path, f"`uses: {uses}` has no ref — always pin a version")
+                      continue
+                  repo, ref = uses.rsplit("@", 1)
+                  owner = repo.split("/", 1)[0].lower()
+                  if ref in ("main", "master", "HEAD") or ref.startswith("refs/heads/"):
+                      add("ERROR", path, f"`{uses}` tracks a moving branch — a repoint silently ships new code into CI")
+                  elif NEED_SHA and owner not in TRUSTED and not SHA40.match(ref):
+                      add("ERROR", path, f"`{uses}` is untrusted-owner and not SHA-pinned — pin to a full 40-char commit SHA")
+
+          # ── Report ────────────────────────────────────────────────────────
+          order = {"ERROR": 0, "WARN": 1, "NOTE": 2}
+          findings.sort(key=lambda f: (order.get(f[0], 3), f[1]))
+          errors = sum(1 for s, _, _ in findings if s == "ERROR")
+          warns  = sum(1 for s, _, _ in findings if s == "WARN")
+
+          lines = ["### Workflow policy check", "",
+                   f"Scanned **{len(files)}** workflow file(s) under `{WF_DIR}` "
+                   f"and **{len(action_files)}** composite action(s).", ""]
+          if findings:
+              lines += ["| Severity | File | Finding |", "|---|---|---|"]
+              for sev, f, msg in findings:
+                  icon = {"ERROR": "🔴", "WARN": "🟡", "NOTE": "🔵"}.get(sev, "")
+                  lines.append(f"| {icon} {sev} | `{f.replace(os.sep, '/')}` | {msg} |")
+          else:
+              lines.append("✅ No policy violations found.")
+          report = "\n".join(lines)
+          print(report)
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a", encoding="utf-8") as fh:
+                  fh.write(report + "\n")
+
+          print(f"\n{errors} error(s), {warns} warning(s).")
+          sys.exit(1 if errors else 0)
+          PYEOF
+          python /tmp/policy_check.py
+        continue-on-error: ${{ inputs.soft_fail }}
+
+      - name: Policy verdict
+        run: |
+          if [ "${{ steps.policy.outcome }}" = "failure" ]; then
+            if [ "${{ inputs.soft_fail }}" = "true" ]; then
+              echo "::warning::Workflow policy violations found (soft_fail enabled — not blocking)."
+            else
+              echo "::error::Workflow policy violations found. See the job summary."
+              exit 1
+            fi
+          fi
+          echo "Workflow policy check complete."

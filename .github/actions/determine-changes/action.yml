@@ -1,0 +1,44 @@
+name: "Determine Changed Components"
+description: "Path-based change detection (dorny/paths-filter) with a manual-dispatch override ('all' or a named component)."
+inputs:
+  filters:
+    description: "YAML string mapping component name -> path globs (dorny/paths-filter format)"
+    required: true
+  component:
+    description: "Manual override: a component name, 'all', or '' to auto-detect from changed paths"
+    required: false
+    default: ""
+  event-name:
+    description: "github.event_name (passed through for override logic)"
+    required: true
+outputs:
+  changes:
+    description: "JSON array of changed component names (or 'all')"
+    value: ${{ steps.decide.outputs.changes }}
+  any-changed:
+    description: "true if at least one component changed / was selected"
+    value: ${{ steps.decide.outputs.any }}
+runs:
+  using: composite
+  steps:
+    - name: Path filter (auto-detect)
+      id: filter
+      if: inputs.component == ''
+      uses: dorny/paths-filter@v4
+      with:
+        filters: ${{ inputs.filters }}
+    - name: Decide
+      id: decide
+      shell: bash
+      run: |
+        comp="${{ inputs.component }}"
+        if [ "$comp" = "all" ]; then
+          echo 'changes=["all"]' >> "$GITHUB_OUTPUT"; echo "any=true" >> "$GITHUB_OUTPUT"
+        elif [ -n "$comp" ]; then
+          echo "changes=[\"$comp\"]" >> "$GITHUB_OUTPUT"; echo "any=true" >> "$GITHUB_OUTPUT"
+        else
+          c='${{ steps.filter.outputs.changes }}'
+          [ -z "$c" ] && c='[]'
+          echo "changes=$c" >> "$GITHUB_OUTPUT"
+          if [ "$c" != "[]" ]; then echo "any=true" >> "$GITHUB_OUTPUT"; else echo "any=false" >> "$GITHUB_OUTPUT"; fi
+        fi

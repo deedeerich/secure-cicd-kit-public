@@ -1,0 +1,216 @@
+name: "Kit: Deploy Container App (by digest)"
+# Employer-neutral deploy reusable for Azure Container Apps.
+# Deploy-by-DIGEST only (never by mutable tag), OIDC-only auth, gated by a GitHub Environment,
+# post-deploy health check with automatic rollback to the previous revision on failure.
+# Logic is INLINED (not `uses: ./`) so it resolves correctly when called cross-repo.
+
+on:
+  workflow_call:
+    inputs:
+      github_environment:
+        description: "GitHub Environment that gates this deploy (approvals/secrets live there)"
+        type: string
+        required: true
+      resource_group:
+        description: "Resource group containing the Container App"
+        type: string
+        required: true
+      containerapp_name:
+        description: "Container App name"
+        type: string
+        required: true
+      acr_login_server:
+        description: "Registry login server FQDN"
+        type: string
+        required: true
+      image_repository:
+        description: "Image repository name"
+        type: string
+        required: true
+      image_digest:
+        description: "Image digest to deploy, e.g. sha256:abc... (from reusable-build-docker)"
+        type: string
+        required: true
+      cloud:
+        description: "commercial | gov"
+        type: string
+        required: false
+        default: "commercial"
+      health_path:
+        description: "Path appended to the app FQDN for the health probe"
+        type: string
+        required: false
+        default: "/health"
+      health_retries:
+        description: "Health probe attempts before the deploy is declared failed"
+        type: number
+        required: false
+        default: 12
+      health_interval_seconds:
+        description: "Seconds between health probe attempts"
+        type: number
+        required: false
+        default: 10
+      rollback_on_failure:
+        description: "Re-activate the previous revision if the health probe never passes"
+        type: boolean
+        required: false
+        default: true
+      version_metadata:
+        description: "Provenance JSON from render-version-metadata; stamped as a revision label"
+        type: string
+        required: false
+        default: ""
+    secrets:
+      AZURE_TENANT_ID:
+        description: "Entra tenant ID for OIDC federated login. Not a secret value in the cryptographic sense, but org-identifying — keep it in secrets."
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        description: "Target Azure subscription ID for OIDC federated login."
+        required: true
+      AZURE_CLIENT_ID:
+        description: "Client ID of the federated app registration / user-assigned identity used for OIDC login. No client secret is used."
+        required: true
+    outputs:
+      app_url:
+        description: "Public URL of the deployed app"
+        value: ${{ jobs.deploy.outputs.app_url }}
+      revision:
+        description: "Name of the revision created by this deploy"
+        value: ${{ jobs.deploy.outputs.revision }}
+
+# Concurrency for a CHANGE workflow is the opposite of concurrency for a validation
+# workflow. Validation cancels the superseded run — the answer is stale, killing it costs
+# nothing. A deployment must NEVER be cancelled mid-mutation: the run dies between the
+# change and its verification, leaving a half-applied state with no rollback and no record
+# of what it owned. See docs/architecture/ROLLBACK_CONTRACT.md — a cancelled run cannot honour a
+# contract that depends on completing its own change manifest.
+#
+# So: serialize per target, never cancel in flight. GitHub keeps at most one run PENDING
+# per group and discards older pending ones, which is safe — a pending run has mutated
+# nothing.
+concurrency:
+  group: deploy-containerapp-${{ inputs.github_environment }}-${{ inputs.resource_group }}-${{ inputs.containerapp_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write   # OIDC
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.github_environment }}
+    outputs:
+      app_url: ${{ steps.resolve.outputs.app_url }}
+      revision: ${{ steps.deploy.outputs.revision }}
+    steps:
+      - name: Validate digest (refuse mutable tags)
+        run: |
+          d='${{ inputs.image_digest }}'
+          if ! echo "$d" | grep -Eq '^sha256:[a-f0-9]{64}$'; then
+            echo "::error::image_digest must be a full sha256 digest (got '$d'). Tag-based deploys are not permitted."
+            exit 1
+          fi
+          echo "Deploying immutable reference: ${{ inputs.acr_login_server }}/${{ inputs.image_repository }}@$d"
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
+
+      - name: Capture current revision (rollback point)
+        id: before
+        run: |
+          prev=$(az containerapp revision list \
+            -n '${{ inputs.containerapp_name }}' -g '${{ inputs.resource_group }}' \
+            --query "[?properties.active].{n:name,t:properties.createdTime} | sort_by(@,&t) | [-1].n" -o tsv 2>/dev/null || true)
+          echo "previous=${prev}" >> "$GITHUB_OUTPUT"
+          echo "Previous active revision: ${prev:-<none>}"
+
+      - name: Deploy by digest
+        id: deploy
+        run: |
+          set -euo pipefail
+          az containerapp update \
+            -n '${{ inputs.containerapp_name }}' \
+            -g '${{ inputs.resource_group }}' \
+            --image '${{ inputs.acr_login_server }}/${{ inputs.image_repository }}@${{ inputs.image_digest }}' \
+            --output none
+          rev=$(az containerapp revision list \
+            -n '${{ inputs.containerapp_name }}' -g '${{ inputs.resource_group }}' \
+            --query "sort_by([], &properties.createdTime) | [-1].name" -o tsv)
+          echo "revision=${rev}" >> "$GITHUB_OUTPUT"
+          echo "New revision: ${rev}"
+
+      - name: Stamp provenance
+        if: inputs.version_metadata != ''
+        run: |
+          az containerapp update \
+            -n '${{ inputs.containerapp_name }}' \
+            -g '${{ inputs.resource_group }}' \
+            --set-env-vars \
+              DEPLOY_PROVENANCE='${{ inputs.version_metadata }}' \
+            --output none
+          echo '${{ inputs.version_metadata }}'
+
+      - name: Resolve app URL
+        id: resolve
+        run: |
+          fqdn=$(az containerapp show \
+            -n '${{ inputs.containerapp_name }}' -g '${{ inputs.resource_group }}' \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          echo "app_url=https://${fqdn}" >> "$GITHUB_OUTPUT"
+          echo "App URL: https://${fqdn}"
+
+      - name: Health check
+        id: health
+        continue-on-error: true
+        run: |
+          url='${{ steps.resolve.outputs.app_url }}${{ inputs.health_path }}'
+          for i in $(seq 1 ${{ inputs.health_retries }}); do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$url" || echo 000)
+            echo "  attempt $i/${{ inputs.health_retries }} -> HTTP $code"
+            if [ "$code" = "200" ]; then
+              echo "Healthy after $i attempt(s)."
+              exit 0
+            fi
+            sleep ${{ inputs.health_interval_seconds }}
+          done
+          echo "::error::Health probe never returned 200 at $url"
+          exit 1
+
+      - name: Roll back to previous revision
+        if: steps.health.outcome == 'failure' && inputs.rollback_on_failure && steps.before.outputs.previous != ''
+        run: |
+          echo "::warning::Health check failed — rolling back to ${{ steps.before.outputs.previous }}"
+          az containerapp revision activate \
+            -n '${{ inputs.containerapp_name }}' -g '${{ inputs.resource_group }}' \
+            --revision '${{ steps.before.outputs.previous }}' --output none
+          az containerapp ingress traffic set \
+            -n '${{ inputs.containerapp_name }}' -g '${{ inputs.resource_group }}' \
+            --revision-weight '${{ steps.before.outputs.previous }}=100' --output none
+          echo "Rolled back."
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Container App deploy"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| App | \`${{ inputs.containerapp_name }}\` |"
+            echo "| Partition | \`${{ inputs.cloud }}\` |"
+            echo "| Digest | \`${{ inputs.image_digest }}\` |"
+            echo "| Revision | \`${{ steps.deploy.outputs.revision }}\` |"
+            echo "| URL | ${{ steps.resolve.outputs.app_url }} |"
+            echo "| Health | \`${{ steps.health.outcome }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail the deploy if unhealthy
+        if: steps.health.outcome == 'failure'
+        run: exit 1

@@ -1,0 +1,10 @@
+# DELIBERATELY VULNERABLE. Never installed, imported or executed — present to be DETECTED.
+# Upgrading these silently disables the seeded assertion and the test goes green having
+# proven nothing. See ../README.md.
+#
+# PyYAML 5.1     CVE-2020-1747  arbitrary code execution via full_load  (CRITICAL)
+# urllib3 1.24.1 CVE-2019-11324 certificate verification bypass         (HIGH)
+# requests 2.19.1 CVE-2018-18074 credential leak over redirect          (HIGH)
+PyYAML==5.1
+urllib3==1.24.1
+requests==2.19.1

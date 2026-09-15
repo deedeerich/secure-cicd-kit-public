@@ -1,0 +1,271 @@
+name: Consumer path test
+
+# Proves the CONTRACT, not the tools.
+#
+# validate-scanners.yml installs each scanner binary and proves it detects a seeded condition.
+# That says nothing about the thing a consumer actually references: whether `paths` threads
+# through, whether the language selectors route, whether inapplicable jobs skip VISIBLY rather
+# than passing silently, whether the gate sees every child, and whether a real finding blocks
+# the CALLER.
+#
+# The gap is not theoretical. aquasecurity/trivy-action was pinned to @0.28.0 — a tag that has
+# never existed — in six places for weeks, while validate-scanners stayed green, because the
+# probes install the Trivy binary directly and never resolve the action reference. This workflow
+# is what would have caught it.
+#
+# LEVEL 1 of two. This is the internal consumer-style caller: cheap and continuous, but it uses
+# a `./` reference, so it cannot prove cross-repository resolution or the private-repo access
+# policy. LEVEL 2 is a genuinely separate repository calling
+# `<owner>/secure-cicd-kit/.github/workflows/reusable-security.yml@<ref>`, and only Level 2 makes
+# the security surface handoff-ready. `uses:` does not accept expressions, so an in-repo caller
+# cannot name its own repository dynamically without hardcoding an owner — which is exactly the
+# portability defect this kit exists to avoid.
+#
+# Dispatch-only and weekly: each reusable call fans out to ~13 jobs, and minutes are metered.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 7 * * 3"        # Wednesday, offset from validate-scanners' Monday run
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  # ── Positive control: a clean fixture must PASS, with python selectors only ──────────
+  clean:
+    name: clean
+    uses: ./.github/workflows/reusable-security.yml
+    permissions:
+      contents: read
+      security-events: write
+    with:
+      language: python
+      paths: tests/consumer-fixture/clean
+      soft_fail_sast: false
+      enable_sbom: true
+      enable_malicious_pkg_scan: true
+    secrets: inherit
+
+  # ── Selector routing: `multi` must fan out to every language SAST job ───────────────
+  multi:
+    name: multi
+    uses: ./.github/workflows/reusable-security.yml
+    permissions:
+      contents: read
+      security-events: write
+    with:
+      language: multi
+      paths: tests/consumer-fixture/clean
+      soft_fail_sast: false
+      enable_sbom: false
+      enable_malicious_pkg_scan: false
+    secrets: inherit
+
+  # ── Assertions over what actually ran ────────────────────────────────────────────────
+  assert-contract:
+    name: Assert the consumer contract held
+    needs: [clean, multi]
+    if: always()
+    runs-on: ubuntu-latest
+    # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
+    # converts a dependency failure into uncontrolled cost).
+    # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
+    # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
+    # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Collect child job outcomes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" \
+            --paginate --jq '.jobs[] | "\(.conclusion)\t\(.name)"' > jobs.tsv
+          echo "=== child jobs observed ==="
+          sort jobs.tsv
+          echo "=========================="
+
+      - name: Assert selectors routed, and skips are VISIBLE
+        run: |
+          set -uo pipefail
+          fail=0
+
+          # $1 = expected conclusion, $2 = exact job name
+          expect() {
+            got=$(awk -F'\t' -v n="$2" '$2==n {print $1}' jobs.tsv | head -1)
+            if [ -z "$got" ]; then
+              echo "::error title=Job absent::expected '$2' to exist with conclusion '$1', but it never appeared"
+              fail=1
+            elif [ "$got" != "$1" ]; then
+              echo "::error title=Wrong outcome::'$2' was '$got', expected '$1'"
+              fail=1
+            else
+              echo "  ok  $1  $2"
+            fi
+          }
+
+          echo "--- language=python: bandit runs, other language SASTs must SKIP ---"
+          expect success "clean / SAST (Bandit, python)"
+          # A skipped job must report `skipped`. If one of these ever reads `success` it means an
+          # inapplicable scanner is being counted as a pass — coverage that does not exist,
+          # reported as coverage that does. That is the failure this kit exists to prevent.
+          expect skipped "clean / SAST + deps (.NET)"
+          expect skipped "clean / SAST (Java)"
+          expect skipped "clean / SAST (Go)"
+          expect skipped "clean / SAST (C / C++)"
+          # enable_iac defaulted false
+          expect skipped "clean / IaC scan (Checkov + Trivy config)"
+
+          echo "--- unconditional jobs must run regardless of selector ---"
+          expect success "clean / Secret scan (gitleaks + detect-secrets)"
+          expect success "clean / Dependency scan (Trivy fs)"
+          expect success "clean / SAST (Semgrep)"
+          expect success "clean / SBOM (CycloneDX)"
+          expect success "clean / Security gate"
+
+          # SELECTOR BREADTH IS NOT COVERAGE. APPLICABILITY IS DECIDED BY DISCOVERY.
+          #
+          # This block asserted that `language: multi` made every language SAST RUN, regardless of
+          # what the target actually contained. That is union thinking, and it was only ever passing
+          # because four scanners were IGNORING their `paths` scope: a line continuation had eaten
+          # `"$scope"` along with their output flags, so they walked the whole checkout, found the
+          # `full` fixture's Go and Java sources, and reported success. Restore the scope and the
+          # assumption collapses -- this leg targets `tests/consumer-fixture/clean`, which contains
+          # no Go, Java, .NET or C/C++ source at all.
+          #
+          # `multi` means "consider every selector", not "execute every scanner". Discovery decides
+          # applicability; running a Go scanner against a repository with no Go is not coverage, it
+          # is cost. The union belongs in the FAILURE case -- when discovery cannot establish what
+          # is present, the safe move is to scan broadly or declare COLLECTION_FAILED, never to skip
+          # quietly.
+          #
+          # What must still hold, and is asserted below: the skip is a DECISION, not an accident.
+          echo "--- language=multi: applicable SAST runs, inapplicable SAST skips VISIBLY ---"
+          # python and node ARE present in the clean fixture -- these must run.
+          expect success "multi / SAST (Bandit, python)"
+          expect success "multi / SAST (Semgrep)"
+          # Go, Java, .NET and C/C++ are NOT present -- these must skip, and the reusable workflow
+          # must have said so rather than silently omitting them.
+          for j in "SAST + deps (.NET)" "SAST (Java)" "SAST (Go)" "SAST (C / C++)"; do
+            expect skipped "multi / $j"
+          done
+          expect success "multi / Security gate"
+
+          echo "--- toggles must actually disable, not silently run ---"
+          expect skipped "multi / SBOM (CycloneDX)"
+          expect skipped "multi / Malicious / compromised packages (OSV)"
+
+          [ "$fail" = "0" ] || {
+            echo "::error::Consumer contract violated. The reusable workflow does not behave as documented."
+            exit 1; }
+          echo "Consumer contract held."
+
+      - name: Assert the clean fixture PASSED
+        run: |
+          # A clean fixture failing means either a new advisory landed against the pinned
+          # dependencies (real signal — bump them) or the gate blocks on nothing (worse).
+          if [ "${{ needs.clean.result }}" != "success" ]; then
+            echo "::error title=Clean fixture blocked::result=${{ needs.clean.result }}. Either a new"
+            echo "advisory now matches tests/consumer-fixture/clean, or the gate fails on clean input."
+            exit 1
+          fi
+          [ "${{ needs.multi.result }}" = "success" ] || {
+            echo "::error::multi-selector run did not succeed: ${{ needs.multi.result }}"; exit 1; }
+          echo "Both positive controls passed."
+
+  # ── Negative control + coverage proof, from one run ──────────────────────────────────
+  #
+  # The negative workflow scans the FULL multi-language fixture with enforcement on. That one
+  # run answers two separate questions: does a real finding block the caller, and is every
+  # seeded signal actually DETECTED. Counting green jobs answers neither — a scanner pointed
+  # at the wrong path, handed the wrong config, or quietly emitting an empty report is green.
+  assert-seeded-blocks:
+    name: Assert seeded findings BLOCK the caller
+    runs-on: ubuntu-latest
+    # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
+    # converts a dependency failure into uncontrolled cost).
+    # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
+    # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
+    # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: write        # dispatch + read + download artifacts from the expected-to-fail run
+    steps:
+      - uses: actions/checkout@v7
+      - name: Dispatch the negative workflow and require it to FAIL
+        id: negative
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # gh infers the repo from the git remote, and this job deliberately does not
+          # check out. Without GH_REPO every gh call dies with "failed to determine base
+          # repo", which reads like an auth problem and is not one.
+          GH_REPO: ${{ github.repository }}
+          REF: ${{ github.ref_name }}
+        run: |
+          set -uo pipefail
+          # A gate that has never blocked is decoration. This proves the whole chain:
+          #   consumer -> reusable workflow -> scanner -> finding -> gate -> CALLER FAILS
+          before=$(gh run list --workflow=consumer-path-negative.yml --branch "$REF" \
+                     --limit 1 --json databaseId --jq '.[0].databaseId // 0')
+          gh workflow run consumer-path-negative.yml --ref "$REF"
+
+          rid=0
+          for _ in $(seq 1 20); do
+            sleep 10
+            rid=$(gh run list --workflow=consumer-path-negative.yml --branch "$REF" \
+                    --limit 1 --json databaseId --jq '.[0].databaseId // 0')
+            [ "$rid" != "$before" ] && [ "$rid" != "0" ] && break
+          done
+          [ "$rid" != "$before" ] || { echo "::error::negative run never started"; exit 1; }
+          echo "negative run: $rid"
+
+          for _ in $(seq 1 60); do
+            st=$(gh run view "$rid" --json status --jq .status)
+            [ "$st" = "completed" ] && break
+            sleep 20
+          done
+          concl=$(gh run view "$rid" --json conclusion --jq .conclusion)
+          echo "negative run concluded: $concl"
+
+          if [ "$concl" = "success" ]; then
+            echo "::error title=Gate did not block::The seeded fixture carries known HIGH/CRITICAL"
+            echo "advisories and the caller SUCCEEDED. The security gate is not blocking on real"
+            echo "findings — every green result from this kit is now unfalsifiable."
+            exit 1
+          fi
+          if [ "$concl" != "failure" ]; then
+            echo "::error::negative run ended '$concl', not 'failure'. Wrong failure mode —"
+            echo "cancelled or timed-out runs prove nothing about the gate."
+            exit 1
+          fi
+          echo "rid=$rid" >> "$GITHUB_OUTPUT"
+          echo "Negative control passed: a seeded finding blocked the caller."
+
+      - name: EXPECTED vs OBSERVED — every seeded signal must be detected
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          # The findings live in the SARIF artifacts that run produced. Because publication to
+          # the Security tab is optional and may be unavailable, the artifacts are the durable
+          # record — which is exactly why they are always written.
+          mkdir -p sarif
+          gh run download "${{ steps.negative.outputs.rid }}" -p "sarif-*" -D sarif || {
+            echo "::error title=No SARIF artifacts::The negative run produced no downloadable"
+            echo "findings. Either every scanner emitted nothing, or artifact upload is broken —"
+            echo "both mean this kit currently has no durable record of what it found."
+            exit 1; }
+          find sarif -name '*.sarif' | sort
+          python3 tests/verify_expected_signals.py \
+            --fixture tests/consumer-fixture/full --sarif-dir sarif

@@ -1,0 +1,29 @@
+# Starter: drop this into a calling repo at .github/workflows/policy.yml
+# Standalone governance gate — lints the repo's own workflows for supply-chain and deploy policy.
+# Adopt with soft_fail: true, fix what it reports, then flip it to blocking.
+name: Workflow Policy
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - ".github/actions/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - ".github/actions/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/workflow-policy-check.yml@v1
+    with:
+      # Owners allowed to use tag refs; everyone else must be SHA-pinned.
+      trusted_orgs: "actions,github,azure,docker,hashicorp"
+      require_sha_pinning: true
+      allow_deploy_on_push: false
+      soft_fail: false

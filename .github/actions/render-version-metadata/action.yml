@@ -1,0 +1,30 @@
+name: "Render Version Metadata"
+description: "Emit a deployment metadata JSON object (image digest, git SHA, run ID, SBOM hash, timestamp) for provenance stamping."
+inputs:
+  image-digest:
+    description: "SHA256 digest of the container image"
+    required: true
+  sbom-sha256:
+    description: "SHA256 hash of the SBOM artifact"
+    required: true
+outputs:
+  metadata:
+    description: "Rendered deployment metadata as a compact JSON string"
+    value: ${{ steps.render.outputs.metadata }}
+runs:
+  using: composite
+  steps:
+    - name: Render metadata
+      id: render
+      shell: bash
+      run: |
+        meta=$(jq -cn \
+          --arg digest "${{ inputs.image-digest }}" \
+          --arg sbom   "${{ inputs.sbom-sha256 }}" \
+          --arg sha    "${{ github.sha }}" \
+          --arg run    "${{ github.run_id }}" \
+          --arg ref    "${{ github.ref_name }}" \
+          --arg ts     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          '{image_digest:$digest, sbom_sha256:$sbom, git_sha:$sha, git_ref:$ref, run_id:$run, built_at:$ts}')
+        echo "metadata=$meta" >> "$GITHUB_OUTPUT"
+        echo "$meta" | jq .

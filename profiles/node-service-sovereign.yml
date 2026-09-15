@@ -1,0 +1,31 @@
+# Containerized Node service deploying to App Service in the sovereign partition.
+# Same pipeline shape as python-service — the partition is an input, not a fork.
+profile: node-service-sovereign
+description: Containerized Node service deploying to App Service in a sovereign/government cloud partition, staged through a slot.
+language: node
+
+security:
+  enable_iac: false
+  soft_fail_sast: false
+  fail_on_severity: "CRITICAL,HIGH"
+  semgrep_config: "p/default p/owasp-top-ten p/javascript"
+  required_gates:
+    - secret-scan
+    - code-quality
+    - sast-semgrep
+    - deps-scan
+    - workflow-policy
+
+supply_chain:
+  sbom: true
+  image_scan_gate: true
+  require_sha_pinned_actions: true
+  trivy_severity: "HIGH,CRITICAL"
+
+deploy:
+  target: app-service
+  partitions: [gov]
+  by_digest: true
+  gated: true
+  health_path: /healthz
+  rollback: hold-slot          # unhealthy slot is never swapped; production stays untouched

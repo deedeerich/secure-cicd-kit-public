@@ -1,0 +1,22 @@
+name: "Setup Node.js"
+description: "Set up Node.js with npm caching and install via npm ci."
+inputs:
+  node-version:
+    description: "Node.js version to install"
+    required: false
+    default: "20"
+  install:
+    description: "Run npm ci"
+    required: false
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v7
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: npm
+    - name: npm ci
+      if: inputs.install == 'true'
+      shell: bash
+      run: npm ci --no-fund

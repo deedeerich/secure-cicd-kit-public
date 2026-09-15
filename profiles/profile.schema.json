@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/secure-cicd-kit/profile.schema.json",
+  "title": "secure-cicd-kit repository profile",
+  "description": "Declares what a class of repository gets from the kit: which scans run, which gates block, and how it deploys. A profile is the intent; the reusable workflows are the implementation. Employer-neutral — no org, registry, tenant, or resource identifiers belong here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["profile", "description", "security"],
+  "properties": {
+    "profile": {
+      "type": "string",
+      "description": "Profile identifier, kebab-case.",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "description": {
+      "type": "string",
+      "description": "What kind of repository this profile is for.",
+      "minLength": 10
+    },
+    "language": {
+      "type": "string",
+      "description": "Primary language, passed to the security suite.",
+      "enum": ["python", "node", "multi", "none"],
+      "default": "python"
+    },
+    "security": {
+      "type": "object",
+      "description": "Which scans run and which of them block a merge.",
+      "additionalProperties": false,
+      "required": ["required_gates"],
+      "properties": {
+        "enable_iac": {
+          "type": "boolean",
+          "description": "Run Checkov + Trivy config over Terraform/IaC.",
+          "default": false
+        },
+        "soft_fail_sast": {
+          "type": "boolean",
+          "description": "SAST reports SARIF without blocking. Intended for adoption only.",
+          "default": true
+        },
+        "fail_on_severity": {
+          "type": "string",
+          "description": "Comma-separated severities that fail dependency/container scans.",
+          "default": "CRITICAL,HIGH"
+        },
+        "semgrep_config": {
+          "type": "string",
+          "description": "Space-separated Semgrep rulesets."
+        },
+        "required_gates": {
+          "type": "array",
+          "description": "Scans that must pass before merge. These become the repo's required checks.",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": ["secret-scan", "code-quality", "sast-semgrep", "sast-bandit", "deps-scan", "iac-scan", "workflow-policy"]
+          }
+        }
+      }
+    },
+    "supply_chain": {
+      "type": "object",
+      "description": "Build-time integrity requirements.",
+      "additionalProperties": false,
+      "properties": {
+        "sbom": {
+          "type": "boolean",
+          "description": "Generate and retain an SPDX SBOM for every image.",
+          "default": true
+        },
+        "image_scan_gate": {
+          "type": "boolean",
+          "description": "Trivy must pass BEFORE the image is pushed, not after.",
+          "default": true
+        },
+        "require_sha_pinned_actions": {
+          "type": "boolean",
+          "description": "Third-party actions must be pinned to a full commit SHA.",
+          "default": true
+        },
+        "trivy_severity": {
+          "type": "string",
+          "description": "Container severities that block the push.",
+          "default": "HIGH,CRITICAL"
+        }
+      }
+    },
+    "deploy": {
+      "type": "object",
+      "description": "Deployment shape. Omit entirely for library repositories that never deploy.",
+      "additionalProperties": false,
+      "required": ["target"],
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "Which deploy reusable this profile calls.",
+          "enum": ["container-app", "app-service", "none"]
+        },
+        "partitions": {
+          "type": "array",
+          "description": "Cloud partitions this profile deploys to. Dual-partition parity is achieved by inputs, never by forked pipelines.",
+          "items": { "enum": ["commercial", "gov"] },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "by_digest": {
+          "type": "boolean",
+          "description": "Deploy by immutable image digest. Tag-based deploys are policy violations.",
+          "const": true,
+          "default": true
+        },
+        "gated": {
+          "type": "boolean",
+          "description": "Deploys require a GitHub Environment approval; never automatic on push.",
+          "const": true,
+          "default": true
+        },
+        "health_path": {
+          "type": "string",
+          "description": "Health probe path used to prove the deploy before traffic moves.",
+          "default": "/health"
+        },
+        "rollback": {
+          "type": "string",
+          "description": "What happens when the health probe fails.",
+          "enum": ["previous-revision", "hold-slot", "none"],
+          "default": "previous-revision"
+        }
+      }
+    }
+  }
+}

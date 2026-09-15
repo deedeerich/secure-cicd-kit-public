@@ -1,0 +1,641 @@
+name: "Kit: NVD CVE Scan"
+
+# =============================================================================
+# NVD API COMPLIANCE (https://nvd.nist.gov/developers)
+#
+# DISCLAIMER (required by NIST):
+# This product uses data from the NVD API but is not endorsed or certified by the NVD.
+#
+# TERMS OF USE: https://nvd.nist.gov/developers/terms-of-use
+# API KEY:      https://nvd.nist.gov/developers/request-an-api-key
+# =============================================================================
+#
+# Employer-neutral CVE scanning against the public NIST National Vulnerability Database,
+# via Trivy (vulnerability DB) and OWASP Dependency-Check (NVD-backed, API-key accelerated).
+# Complements reusable-security.yml: that one runs Trivy for fast dependency triage; this one
+# adds Dependency-Check's deeper CPE matching and a scheduled full-DB pass.
+#
+# Zero cloud dependencies. Reference via workflow_call.
+
+on:
+  workflow_call:
+    inputs:
+      github_environment:
+        description: >-
+          GitHub Environment supplying NVD_API_KEY. REQUIRED to use an API key at all: the key is an
+          ENVIRONMENT secret, a caller job that `uses:` a reusable workflow may not declare an
+          environment, and `secrets: inherit` does not carry environment secrets on its own. Without
+          this the scan silently takes the un-keyed path -- which still works, but rate-limited DB
+          updates take 20-40 minutes instead of minutes. Leave empty to scan without a key.
+        type: string
+        required: false
+        default: ''
+      sbom_path:
+        description: >-
+          Path to a CycloneDX or SPDX SBOM to re-scan against the CURRENT vulnerability database.
+          Empty skips it, reported NOT_APPLICABLE.
+
+          THIS IS WHAT CONTINUOUS REVALIDATION ACTUALLY IS. The SBOM is the durable record of
+          what a build produced. Re-scanning it on a schedule finds vulnerabilities disclosed
+          AFTER that build passed -- the software did not change, the database did. Zero-days
+          land in NVD when they are classified, which is usually long after the artifact shipped.
+
+          `passed when built != safe now`, and this is the input that lets anything prove the
+          second half. Keep the SBOM with the deployment record; a revalidation run needs no
+          source checkout at all.
+        type: string
+        default: ""
+      image_ref:
+        description: >-
+          Deployed image to re-scan, ideally by DIGEST. Empty skips it, reported NOT_APPLICABLE.
+          A digest is the artifact; a tag is a moving pointer and cannot be matched against a
+          deployment record later.
+        type: string
+        default: ""
+      scan_paths:
+        description: "Space-separated repo-relative paths to scan. Default: whole repo."
+        type: string
+        required: false
+        default: "."
+      project_name:
+        description: "Project name used in Dependency-Check reports."
+        type: string
+        required: false
+        default: "${{ github.repository }}"
+      fail_on_cvss:
+        description: "Fail the job when a finding at or above this CVSS score exists. 11 = never fail."
+        type: number
+        required: false
+        default: 11
+      trivy_severities:
+        description: "Trivy severities to report."
+        type: string
+        required: false
+        default: "CRITICAL,HIGH,MEDIUM"
+      trivy_fail_severities:
+        description: "Trivy severities that FAIL the job. Empty string = report only."
+        type: string
+        required: false
+        default: ""
+      enable_dependency_check:
+        description: "Run OWASP Dependency-Check. Slow on a cold NVD cache; consider scheduled runs only."
+        type: boolean
+        required: false
+        default: true
+      enable_trivy:
+        description: "Run Trivy filesystem scan."
+        type: boolean
+        required: false
+        default: true
+      scan_dockerfiles:
+        description: "Also scan any Dockerfiles found in the repo for misconfiguration."
+        type: boolean
+        required: false
+        default: true
+      dependency_check_version:
+        description: "OWASP Dependency-Check release to install."
+        type: string
+        required: false
+        # KEEP THIS CURRENT. 9.0.9 (early 2024) predates NIST retiring the legacy NVD data feeds,
+        # and the first real run of this workflow failed with "the NVD returned a 403 or 404 error"
+        # on database update -- the classic outdated-client symptom.
+        #
+        # The API key was NOT the cause. It had been tested independently against the NVD connection
+        # and works. A valid key against a RETIRED ENDPOINT still returns 404: the credential
+        # authenticates fine while the URL it authenticates to no longer exists. Proving the
+        # credential is not proving the client can still speak the current API -- the same
+        # tool-is-not-workflow distinction this kit exists to enforce, one layer down.
+        #
+        # So the version is a live dependency of the scan working at all, not a preference. Upstream
+        # latest at time of change: v12.1.0.
+        default: "12.1.0"
+      python_version:
+        description: "Python version used for the scan runner environment."
+        type: string
+        required: false
+        default: "3.12"
+      artifact_retention_days:
+        description: "Days to retain the uploaded scan-results artifact."
+        type: number
+        required: false
+        default: 30
+    outputs:
+      # THE SAME TAXONOMY AS reusable-security. NVD has different scanner details; it does NOT get
+      # a different assurance vocabulary. A caller must not have to learn a second dialect to find
+      # out whether posture was established.
+      assurance_state:
+        description: "PASS | FINDINGS | PARTIAL | UNDETERMINED — what this run ESTABLISHED."
+        value: ${{ jobs.nvd-cve-scan.outputs.assurance_state }}
+      enforcement_state:
+        description: "BLOCKED | ALLOWED | ADVISORY — what the workflow DID about it."
+        value: ${{ jobs.nvd-cve-scan.outputs.enforcement_state }}
+      undetermined:
+        description: >-
+          true when posture could not be established. Consumers must not read "did not block" as
+          "safe" while this is true.
+        value: ${{ jobs.nvd-cve-scan.outputs.undetermined }}
+      evidence_artifact:
+        description: "Run artifact holding the persisted evidence."
+        value: ${{ jobs.nvd-cve-scan.outputs.evidence_artifact }}
+      # Capability-specific metadata: ADDITIONAL fields, never a competing vocabulary.
+      nvd_database_state:
+        description: "UPDATED | STALE | UNAVAILABLE — NVD-specific, and NOT a substitute for assurance_state."
+        value: ${{ jobs.nvd-cve-scan.outputs.nvd_database_state }}
+      cache_state:
+        description: "RESTORED_COMPLETE | RESTORED_PARTIAL | COLD — why this run cost what it cost."
+        value: ${{ jobs.nvd-cve-scan.outputs.cache_state }}
+    secrets:
+      NVD_API_KEY:
+        description: "NVD API key. Strongly recommended — without it, DB updates are heavily rate limited."
+        required: false
+
+permissions:
+  contents: read
+  security-events: write   # upload SARIF to code scanning
+
+jobs:
+
+  nvd-cve-scan:
+    name: NVD CVE scan
+    outputs:
+      assurance_state:    ${{ steps.summary.outputs.assurance_state }}
+      enforcement_state:  ${{ steps.summary.outputs.enforcement_state }}
+      undetermined:       ${{ steps.summary.outputs.undetermined }}
+      evidence_artifact:  ${{ steps.summary.outputs.evidence_artifact }}
+      nvd_database_state: ${{ steps.summary.outputs.nvd_database_state }}
+      cache_state:        ${{ steps.summary.outputs.cache_state }}
+    # The environment is what makes NVD_API_KEY resolvable at all -- see the input's note.
+    environment: ${{ inputs.github_environment }}
+    runs-on: ubuntu-latest
+    # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
+    # converts a dependency failure into uncontrolled cost).
+    # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
+    # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
+    # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
+    # 60, NOT the 20 the other scanners get. This workflow has NEVER RUN, so there are no
+    # observed durations to size from -- and its own docs say a cold-cache update takes 20-40
+    # minutes without an NVD_API_KEY, with 30+ min documented as expected. A limit derived from
+    # sibling jobs would have killed every legitimate cold run. Sized from DOCUMENTATION, not
+    # evidence; re-size once a real run produces a number.
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Prepare output directory
+        run: mkdir -p nvd-scan-results
+
+      # ---------------------------------------------------------------- Trivy
+
+      - name: Trivy filesystem scan (SARIF)
+        if: inputs.enable_trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: "."
+          format: sarif
+          output: nvd-scan-results/trivy-nvd.sarif
+          severity: ${{ inputs.trivy_severities }}
+          exit-code: "0"          # reporting pass; gating happens below
+
+      # PUBLICATION IS NOT DETECTION. Code scanning is free on public repos and otherwise
+      # Advanced Security; on a private repo without it, upload-sarif returns "Resource not
+      # accessible by integration". On the first real run of this workflow that failure SKIPPED
+      # EVERY REMAINING STEP -- the NVD database update, Dependency-Check itself and the
+      # Dockerfile scan never ran, because a publication channel was unavailable. An unreachable
+      # dashboard must never be able to cancel the scan it was going to display.
+      - name: Trivy SARIF — is there anything to publish?
+        if: always()
+        id: pub_trivy
+        run: |
+          set -uo pipefail
+          if [ -s nvd-scan-results/trivy-nvd.sarif ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Trivy: nothing to publish::No SARIF produced. Not a failure."
+          fi
+
+      - name: Upload Trivy SARIF
+        if: always() && inputs.enable_trivy && steps.pub_trivy.outputs.publish == 'true'
+        continue-on-error: true          # PUBLICATION=DEGRADED, never ANALYSIS=FAILED
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: nvd-scan-results/trivy-nvd.sarif
+          category: trivy-nvd
+
+      - name: Trivy gate
+        if: inputs.enable_trivy && inputs.trivy_fail_severities != ''
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: "."
+          format: table
+          severity: ${{ inputs.trivy_fail_severities }}
+          exit-code: "1"          # this one is the gate, and it is explicit
+
+      # ------------------------------------------------- OWASP Dependency-Check
+
+      # RESTORE ONLY. actions/cache's combined form saves in a post-job step that DOES NOT RUN
+      # WHEN THE JOB FAILS -- so a ~50-minute NVD database build was discarded because a downstream
+      # analyzer exited non-zero. Every failed run then paid the full cost again, and while
+      # Dependency-Check was failing the cache could never save, so the run could never get cheaper.
+      # A self-sustaining expense. The save is now an explicit step below, tied to whether the
+      # DATABASE was built, not to whether the job as a whole succeeded.
+      - name: Restore NVD data cache
+        if: inputs.enable_dependency_check
+        id: nvd_cache
+        uses: actions/cache/restore@v6
+        with:
+          path: /tmp/nvd-data
+          # NOTE: keyed on run_id, so the PRIMARY key never hits by design -- every restore comes
+          # through the prefix restore-key, which is what lets a previous run's database warm this
+          # one. (The old comment claimed "date-keyed", which this never was.)
+          key: nvd-data-good-${{ runner.os }}-${{ github.run_id }}
+          # ORDER MATTERS. Prefer a COMPLETE database; fall back to a partial one only as a resume
+          # base, never as a basis for a clean verdict.
+          restore-keys: |
+            nvd-data-good-${{ runner.os }}-
+            nvd-data-partial-${{ runner.os }}-
+
+      # ROOT CAUSE, not a workaround. This step hung 26 minutes with ZERO output -- no "Get:",
+      # no "Reading package lists" -- then the C/C++ analyzer install did the same thing earlier in
+      # the week. A slow mirror still prints progress. Silence means `apt-get` is BLOCKING ON THE
+      # DPKG LOCK, which GitHub's Ubuntu images hold at boot via unattended-upgrades. Under -qq it
+      # waits silently and forever, and an outer job timeout is the only thing that ever ends it.
+      # Those two hangs billed roughly 386 minutes between them.
+      #
+      # The deeper point: we were paying that risk for packages ALREADY ON THE IMAGE. The hosted
+      # runner ships a JRE and unzip. The cheapest fix for a hang is not to make the hanging call.
+      - name: Install OWASP Dependency-Check
+        if: inputs.enable_dependency_check
+        run: |
+          set -euo pipefail
+
+          # PRESENCE IS NOT FITNESS. `command -v java` succeeds on a Java 8 runtime, and
+          # Dependency-Check 12.x requires 11+. Checking only that the binary exists is the
+          # same defect this kit keeps finding elsewhere: a credential that exists but is
+          # never delivered, a job that is green but ran no scanner, a tag that resolves to
+          # nothing. Establish the VERSION, and say which path was taken and why.
+          MIN_JAVA=11
+          need_apt=false
+          java_ver=""
+          if command -v java >/dev/null 2>&1; then
+            raw="$(java -version 2>&1 | head -1)"
+            # Handles both "11.0.22" and legacy "1.8.0_402" forms.
+            java_ver="$(printf '%s' "$raw" | sed -E 's/.*version "([0-9]+)\.([0-9]+).*/\1 \2/' \
+                        | awk '{ if ($1 == 1) print $2; else print $1 }')"
+            case "$java_ver" in
+              ''|*[!0-9]*) java_ver="" ;;   # unparseable is NOT a pass
+            esac
+            if [ -z "$java_ver" ]; then
+              echo "::warning title=Java version unreadable::could not parse. Treating as unfit."
+              need_apt=true
+            elif [ "$java_ver" -lt "$MIN_JAVA" ]; then
+              echo "::warning title=Java too old::found $java_ver, need >= $MIN_JAVA."
+              need_apt=true
+            fi
+          else
+            need_apt=true
+          fi
+          command -v unzip >/dev/null 2>&1 || need_apt=true
+
+          if [ "$need_apt" = "true" ]; then
+            echo "::notice title=Installing a JRE::java missing or below $MIN_JAVA, or no unzip."
+            # DPkg::Lock::Timeout makes apt FAIL rather than block forever. Without it there is no
+            # bound at all: the process simply waits for a lock nobody told us about.
+            for i in 1 2 3; do
+              if timeout 180 sudo apt-get -o DPkg::Lock::Timeout=60 update -qq; then break; fi
+              echo "::warning title=apt update blocked::attempt $i (likely dpkg lock); retrying"
+              sleep $(( i * 10 ))
+            done
+            timeout 300 sudo apt-get -o DPkg::Lock::Timeout=60 install -y               --no-install-recommends openjdk-17-jre-headless unzip || {
+                echo "::error title=DEPENDENCY_ACQUISITION_UNAVAILABLE::Could not install a JRE."
+                echo "The scanner never ran. This is NOT evidence of no vulnerabilities."
+                exit 1; }
+          else
+            echo "Using preinstalled java $java_ver and unzip -- no install attempted."
+            java -version 2>&1 | head -1
+          fi
+
+          # DO NOT TEST A PROXY FOR THE TOOL. The version check above is a DIAGNOSTIC only: it
+          # explains WHY we did or did not install, and produces a useful message. It is not the
+          # gate, for two reasons the owner identified:
+          #
+          #   1. A version string can be wrong or spoofed. `java -version` is self-reported.
+          #   2. More fundamentally, it is the WRONG JAVA. This kit never sets JAVA_HOME, so
+          #      dependency-check.sh selects its own JVM -- honouring JAVA_HOME if present,
+          #      otherwise PATH. Checking `java` proves nothing about the runtime the tool picks.
+          #
+          # So the gate is running the ACTUAL TOOL. If dependency-check.sh reports its version,
+          # the toolchain is fit BY CONSTRUCTION -- JVM selection, classpath and all. This is the
+          # same tool-is-not-a-proxy-for-the-tool rule that caught a probe proving Dependency-
+          # Check the binary while the workflow around it had never run.
+          echo "JAVA_HOME=${JAVA_HOME:-<unset -- dependency-check will resolve java from PATH>}"
+          if ! dc_ver="$(/opt/dependency-check/bin/dependency-check.sh --version 2>&1)"; then
+            echo "::error title=DEPENDENCY_ACQUISITION_UNAVAILABLE::dependency-check.sh will not run."
+            echo "Output was: $dc_ver"
+            echo "The scanner never ran. This is NOT evidence of no vulnerabilities."
+            exit 1
+          fi
+          echo "  dependency-check: $dc_ver"
+
+          VER="${{ inputs.dependency_check_version }}"
+          URL="https://github.com/jeremylong/DependencyCheck/releases/download/v${VER}/dependency-check-${VER}-release.zip"
+          # Bound each attempt AND the total. A 429/5xx from the release host is transient; an
+          # unreachable host is a classification to report, never a reason to wait out the job bound.
+          ok=false
+          for i in 1 2 3; do
+            if timeout 300 wget -q --tries=2 --timeout=60 "$URL"; then ok=true; break; fi
+            echo "::warning title=Download retry::attempt $i for dependency-check ${VER} failed"
+            sleep $(( i * 15 ))
+          done
+          if [ "$ok" != "true" ]; then
+            echo "::error title=DEPENDENCY_ACQUISITION_UNAVAILABLE::Could not fetch dependency-check ${VER}."
+            echo "The scanner never ran. This is NOT evidence of no vulnerabilities."
+            exit 1
+          fi
+          unzip -q "dependency-check-${VER}-release.zip" -d /opt/
+          sudo chmod +x /opt/dependency-check/bin/dependency-check.sh
+          echo "/opt/dependency-check/bin" >> "$GITHUB_PATH"
+
+      - name: Warn when no NVD API key is configured
+        if: inputs.enable_dependency_check && env.NVD_API_KEY == ''
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          echo "::warning title=No NVD API key::NVD_API_KEY is not set. Database updates will be \
+          heavily rate limited and this job may take 30+ minutes or fail to complete the update. \
+          Request a free key at https://nvd.nist.gov/developers/request-an-api-key"
+
+      - name: Update NVD database
+        if: inputs.enable_dependency_check
+        id: nvd_update
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/nvd-data
+          ARGS=(--updateonly --data /tmp/nvd-data)
+          if [ -n "${NVD_API_KEY:-}" ]; then
+            ARGS+=(--nvdApiKey "$NVD_API_KEY")
+            echo "Updating NVD database with API key."
+          else
+            echo "Updating NVD database without API key (rate limited)."
+          fi
+          # Update failure is not silently swallowed: it downgrades the run to
+          # report-only and says so, rather than scanning against a stale DB
+          # while implying currency.
+          if ! /opt/dependency-check/bin/dependency-check.sh "${ARGS[@]}"; then
+            echo "::warning title=NVD update failed::Scanning against whatever cached NVD data \
+            exists. Results may be STALE — do not treat an empty result as 'no vulnerabilities'."
+            echo "NVD_UPDATE_FAILED=true" >> "$GITHUB_ENV"
+          fi
+
+      # Save HERE, immediately after the build and BEFORE any analyzer can fail. An expensive
+      # artifact that was correctly produced must not be destroyed by a later stage's failure --
+      # the same contagion shape as a publication failure cancelling detection, one layer over.
+      - name: Save NVD data cache (complete)
+        if: always() && inputs.enable_dependency_check && steps.nvd_update.outcome == 'success'
+        uses: actions/cache/save@v6
+        with:
+          path: /tmp/nvd-data
+          key: nvd-data-good-${{ runner.os }}-${{ github.run_id }}
+
+      # TWO TIERS, ON PURPOSE. A build that dies at 80% still represents real downloaded work, and
+      # throwing it away means the next run starts from zero again -- the trap that made this
+      # workflow permanently expensive. But a half-written H2 database must NEVER be mistaken for a
+      # complete one, or the kit scans against partial data and reports a clean result.
+      #
+      # So: the COMPLETE copy is what a normal run restores. The PARTIAL copy exists only as a
+      # RESUME BASE -- Dependency-Check updates incrementally, so starting from partial data is
+      # cheaper than starting from none. It is restored only when no complete copy exists, and any
+      # run that restores it still has NVD_UPDATE_FAILED semantics available: an incomplete database
+      # can never produce a "no known vulnerabilities" verdict.
+      - name: Save NVD data cache (partial — resume base only)
+        if: always() && inputs.enable_dependency_check && steps.nvd_update.outcome != 'success'
+        uses: actions/cache/save@v6
+        with:
+          path: /tmp/nvd-data
+          key: nvd-data-partial-${{ runner.os }}-${{ github.run_id }}
+
+      - name: Run OWASP Dependency-Check
+        if: inputs.enable_dependency_check
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          set -euo pipefail
+          ARGS=(
+            --project "${{ inputs.project_name }}"
+            --format JSON --format HTML --format SARIF
+            --out nvd-scan-results/dependency-check
+            --data /tmp/nvd-data
+            --enableExperimental
+            --disableOssIndex
+            --failOnCVSS "${{ inputs.fail_on_cvss }}"
+          )
+          for p in ${{ inputs.scan_paths }}; do ARGS+=(--scan "$p"); done
+          if [ -n "${NVD_API_KEY:-}" ]; then ARGS+=(--nvdApiKey "$NVD_API_KEY"); fi
+          /opt/dependency-check/bin/dependency-check.sh "${ARGS[@]}"
+
+      # This uploaded a report NOTHING CREATED on the first run -- "Path does not exist" --
+      # because Dependency-Check had been skipped upstream. Publishing an artifact that was never
+      # produced is the same defect class as a job that installs a tool and never runs it.
+      - name: Dependency-Check SARIF — is there anything to publish?
+        if: always()
+        id: pub_dc
+        run: |
+          set -uo pipefail
+          f=nvd-scan-results/dependency-check/dependency-check-report.sarif
+          if [ -s "$f" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Dependency-Check: nothing to publish::No SARIF at '$f'."
+            echo "ANALYSIS did not produce a report. This is NOT evidence of no vulnerabilities."
+          fi
+
+      - name: Upload Dependency-Check SARIF
+        if: always() && inputs.enable_dependency_check && steps.pub_dc.outputs.publish == 'true'
+        continue-on-error: true          # PUBLICATION=DEGRADED, never ANALYSIS=FAILED
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: nvd-scan-results/dependency-check/dependency-check-report.sarif
+          category: owasp-dependency-check
+
+      - name: State plainly if publication degraded
+        if: always()
+        run: |
+          set -uo pipefail
+          # An empty Security tab is indistinguishable from a clean codebase. Say which it is.
+          if [ "${{ steps.pub_trivy.outputs.publish }}" = "true" ] ||              [ "${{ steps.pub_dc.outputs.publish }}" = "true" ]; then
+            echo "PUBLICATION: attempted. If the Security tab is empty, code scanning is"
+            echo "unavailable on this repository — the findings are in the uploaded artifact."
+            echo "GHAS is a PRESENTATION surface, not the security engine."
+          fi
+
+      # ----------------------------------------------------------- Dockerfiles
+
+      # always(): Dockerfile misconfiguration has NOTHING to do with dependency analysis. Without
+      # this, a Dependency-Check failure silently suppressed an unrelated scanner -- one control's
+      # failure quietly reducing another control's coverage, reported as a single red.
+      # ── CONTINUOUS REVALIDATION ────────────────────────────────────────────────────────
+      #
+      # Scanning a Dockerfile is not scanning what is running. The Dockerfile says what the
+      # image was MEANT to contain; the SBOM says what the build ACTUALLY produced, and the
+      # image digest is the artifact itself.
+      - name: Re-scan recorded SBOM against current vulnerability data
+        if: inputs.sbom_path != ''
+        # suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE -- a revalidation run must not be
+        # aborted by one artifact it could not read. The other revalidation targets and the
+        # source scans still need to produce their evidence, and an absent or unparseable SBOM
+        # is reported as NOT ESTABLISHED rather than silently passing.
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          if [ ! -s "${{ inputs.sbom_path }}" ]; then
+            echo "::warning title=SBOM absent::${{ inputs.sbom_path }} is missing or empty."
+            echo "Revalidation state: NOT ESTABLISHED. This is not a clean result."
+            exit 0
+          fi
+          # suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE -- a non-zero exit here means
+          # findings were present, which is the gate's verdict to make and not this step's.
+          # The SARIF is produced and published either way.
+          trivy sbom --format sarif --output "$OUTDIR/trivy-sbom-revalidation.sarif"             "${{ inputs.sbom_path }}" || true
+          n=$(jq '[.runs[].results[]] | length' "$OUTDIR/trivy-sbom-revalidation.sarif" 2>/dev/null || echo "")
+          {
+            echo ""
+            echo "### SBOM revalidation"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| SBOM | \`${{ inputs.sbom_path }}\` |"
+            echo "| Findings against CURRENT data | ${n:-PRESENT -- count unavailable from current parser} |"
+            echo ""
+            echo "The software did not change; the vulnerability database did. A finding here is"
+            echo "a vulnerability disclosed AFTER the build that produced this SBOM passed."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Re-scan deployed image
+        if: inputs.image_ref != ''
+        # suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE -- a registry that is unreachable at
+        # 05:00 must not delete the rest of the run's evidence. Unreachable is reported; it is
+        # not the same as scanned-and-clean.
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          # suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE -- same reason as above; findings
+          # are the gate's decision, and the report is produced regardless.
+          trivy image --format sarif --output "$OUTDIR/trivy-image-revalidation.sarif"             "${{ inputs.image_ref }}" || true
+          {
+            echo ""
+            echo "### Deployed image revalidation"
+            echo ""
+            echo "| Image | \`${{ inputs.image_ref }}\` |"
+            echo "|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "${{ inputs.image_ref }}" in
+            *@sha256:*) : ;;
+            *) echo "::warning title=Image referenced by tag::A tag is a moving pointer. This"
+               echo "result cannot be matched against a deployment record later. Prefer a digest." ;;
+          esac
+
+      - name: Scan Dockerfiles for misconfiguration
+        if: always() && inputs.scan_dockerfiles
+        run: |
+          set -euo pipefail
+          # NOT `find ... | grep -q .`, and the reason is a race, not a style preference.
+          #
+          # grep -q exits on the FIRST match. If find still has matches to write, it takes SIGPIPE
+          # and the pipeline reports 141 under pipefail. This branch is `if ! <pipeline>`, so a
+          # SIGPIPE would invert to "no Dockerfiles found" and SILENTLY SKIP container
+          # misconfiguration scanning on a repository that demonstrably has Dockerfiles. That is a
+          # false negative in a security control, produced by an unrelated timing accident.
+          #
+          # HONESTY ABOUT EVIDENCE: this was NOT reproduced here. The sibling construct in the
+          # discovery job reproduced at 4/30 runs on identical inputs, so the race is real but
+          # intermittent, and absence of a local repro is not absence of the defect -- it is a
+          # sampling result. The construct is unsound whether or not it has fired yet.
+          #
+          # -print -quit is find's own early exit: it stops walking itself, so there is no second
+          # writer and no signal. Capture, then test. No pipe, no race, no inverted branch.
+          first_dockerfile="$(find . -name 'Dockerfile*' -not -path './.git/*' -print -quit)"
+          if [ -z "$first_dockerfile" ]; then
+            echo "No Dockerfiles found; skipping."
+            exit 0
+          fi
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sudo sh -s -- -b /usr/local/bin latest
+          trivy config --format table --exit-code 0 . | tee nvd-scan-results/trivy-dockerfile.txt
+
+      # --------------------------------------------------------------- Results
+
+      - name: Upload scan artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nvd-scan-results
+          path: nvd-scan-results/
+          retention-days: ${{ inputs.artifact_retention_days }}
+
+      - name: Summary
+        id: summary
+        if: always()
+        run: |
+          # EMIT THE CALLER CONTRACT. Same taxonomy as reusable-security -- a consumer must
+          # not have to learn a second dialect to discover whether posture was established.
+          # NVD-specific facts (database freshness, cache) are ADDITIONAL fields, never a
+          # competing vocabulary.
+          und=false
+          if [ "${NVD_UPDATE_FAILED:-false}" = "true" ]; then und=true; fi
+          dc_report=nvd-scan-results/dependency-check/dependency-check-report.sarif
+          if [ "${{ inputs.enable_dependency_check }}" = "true" ] && [ ! -s "$dc_report" ]; then
+            und=true
+          fi
+          emit() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
+          emit undetermined "$und"
+          emit evidence_artifact "nvd-scan-results"
+          if [ "${NVD_UPDATE_FAILED:-false}" = "true" ]; then
+            emit nvd_database_state STALE
+          else
+            emit nvd_database_state UPDATED
+          fi
+          emit cache_state "${NVD_CACHE_STATE:-COLD}"
+          # UNDETERMINED is never PASS. A stale database cannot establish 'no known
+          # vulnerabilities' -- that was the original defect this workflow was rebuilt to fix.
+          if [ "$und" = "true" ]; then
+            emit assurance_state UNDETERMINED
+          else
+            emit assurance_state PASS
+          fi
+          # fail_on_cvss 11 means never fail: this workflow REPORTS by default and gates only
+          # when a threshold was deliberately set.
+          if [ "${{ inputs.fail_on_cvss }}" -le 10 ] 2>/dev/null; then
+            emit enforcement_state BLOCKED
+          else
+            emit enforcement_state ALLOWED
+          fi
+
+          {
+            echo "### NVD CVE scan"
+            echo ""
+            if [ "${NVD_UPDATE_FAILED:-false}" = "true" ]; then
+              echo "⚠️ **NVD database update failed — results may be stale.**"
+              echo "An empty result set here does NOT establish 'no known vulnerabilities'."
+              echo ""
+            fi
+            echo "| Scanner | Ran |"
+            echo "|---|---|"
+            echo "| Trivy (fs) | ${{ inputs.enable_trivy }} |"
+            echo "| OWASP Dependency-Check | ${{ inputs.enable_dependency_check }} |"
+            echo "| Dockerfile config | ${{ inputs.scan_dockerfiles }} |"
+            echo ""
+            echo "Paths scanned: \`${{ inputs.scan_paths }}\`"
+            echo ""
+            echo "_This product uses data from the NVD API but is not endorsed or certified by the NVD._"
+          } >> "$GITHUB_STEP_SUMMARY"

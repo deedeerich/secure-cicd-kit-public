@@ -1,0 +1,17 @@
+Capability,Static state,Invoked in,Jobs,Merely mentioned in,Result surfaced in run,Outcome captured,Referenced by gate,EFFECTIVE (needs live seeded run)
+bandit,ENFORCED (static),reusable-security.yml;validate-scanners.yml,sast-bandit;scanners;security-gate,consumer-path-test.yml;reusable-security.yml;self-test.yml;validate-scanners.yml,yes,yes,yes,NOT ESTABLISHED HERE
+checkov,ENFORCED (static),reusable-security.yml;validate-scanners.yml,iac-scan;scanners,consumer-path-test.yml;reusable-security.yml;validate-scanners.yml,yes,yes,yes,NOT ESTABLISHED HERE
+codeql,ENFORCED (static),reusable-security.yml,codeql,reusable-nvd-cve.yml;reusable-security.yml;validate-scanners.yml,yes,yes,yes,NOT ESTABLISHED HERE
+dependency-check,ENFORCED (static),nvd-cve.yml;reusable-nvd-cve.yml;reusable-security.yml;validate-scanners.yml,nvd;nvd-cve-scan;sast-go;scanners;workflow_call;workflow_dispatch,nvd-cve.yml;reusable-nvd-cve.yml;reusable-security.yml;validate-scanners.yml,yes,yes,yes,NOT ESTABLISHED HERE
+detect-secrets,ENFORCED (static),reusable-security.yml,secret-scan,consumer-path-test.yml;reusable-security.yml,yes,yes,yes,NOT ESTABLISHED HERE
+dotnet-vuln,ENFORCED (static),reusable-security.yml;validate-scanners.yml,sast-dotnet;scanners,reusable-security.yml,yes,yes,yes,NOT ESTABLISHED HERE
+flawfinder,ENFORCED (static),reusable-security.yml;validate-scanners.yml,sast-cpp;sbom;scanners,reusable-security.yml;validate-scanners.yml,yes,yes,yes,NOT ESTABLISHED HERE
+gitleaks,ENFORCED (static),reusable-security.yml;validate-scanners.yml,secret-rules;secret-scan,consumer-path-test.yml;reusable-security.yml;self-test.yml;validate-scanners.yml,yes,yes,yes,NOT ESTABLISHED HERE
+gosec,ENFORCED (static),reusable-security.yml;validate-scanners.yml,codeql;deps-scan;iac-scan;malicious-deps;report;sast-bandit;sast-cpp;sast-dotnet;sast-go;sast-java;sast-semgrep;sbom;scanners;secret-scan,reusable-security.yml;validate-scanners.yml,yes,yes,yes,NOT ESTABLISHED HERE
+osv-scanner,ENFORCED (static),reusable-security.yml;validate-scanners.yml,malicious-deps;scanners,reusable-security.yml;validate-scanners.yml,yes,yes,yes,NOT ESTABLISHED HERE
+owasp-zap,ABSENT,-,-,-,no,no,no,NOT ESTABLISHED HERE
+sarif-upload,ENFORCED (static),reusable-nvd-cve.yml;reusable-security.yml,deps-scan;iac-scan;malicious-deps;nvd-cve-scan;sast-bandit;sast-cpp;sast-dotnet;sast-go;sast-java;sast-semgrep;secret-scan,validate-scanners.yml,yes,yes,yes,NOT ESTABLISHED HERE
+semgrep,ENFORCED (static),reusable-security.yml;validate-scanners.yml,sast-dotnet;sast-java;sast-semgrep;scanners,consumer-path-test.yml;reusable-security.yml;validate-scanners.yml,yes,yes,yes,NOT ESTABLISHED HERE
+sonarcloud,ABSENT,-,-,-,no,no,no,NOT ESTABLISHED HERE
+syft,ENFORCED (static),reusable-build-docker.yml;reusable-security.yml;validate-scanners.yml,build;sbom;scanners,reusable-build-docker.yml;reusable-security.yml;validate-scanners.yml,yes,yes,yes,NOT ESTABLISHED HERE
+trivy,ENFORCED (static),consumer-path-test.yml;reusable-build-docker.yml;reusable-nvd-cve.yml;reusable-security.yml;validate-scanners.yml,assert-contract;build;deps-scan;iac-scan;image-scan;negative-control;nvd-cve-scan;scanners;workflow_call,consumer-path-test.yml;nvd-cve.yml;reusable-build-docker.yml;reusable-nvd-cve.yml;reusable-security.yml;validate-scanners.yml,yes,yes,yes,NOT ESTABLISHED HERE

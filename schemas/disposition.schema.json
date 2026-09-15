@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://secure-cicd-kit/schemas/disposition.schema.json",
+  "title": "Finding Disposition",
+  "description": "An AUTHORIZED decision that a specific finding should not block.\n\nTHE INVARIANT: a disposition does not mutate evidence. It changes ENFORCEMENT against that evidence. The original observation is preserved forever. Without this rule the exception layer becomes destructive deduplication wearing governance perfume.\n\nTHE HARDENING: dispositions are consumed from the PROTECTED DEFAULT BRANCH, never from the PR under evaluation. Otherwise a PR can exempt the secret it introduces in the same PR -- 'secrets always block unless I add myself to the exemption file' is not a control.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "fingerprint",
+    "scanner",
+    "rule",
+    "scope_path",
+    "disposition_type",
+    "rationale",
+    "approver_role",
+    "created",
+    "expires"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "fingerprint": {
+      "type": "string",
+      "minLength": 8,
+      "description": "Stable identity of THIS finding. Exact match only -- never a rule-wide or path-wide mute, which takes the next real occurrence with it."
+    },
+    "scanner": {
+      "type": "string"
+    },
+    "rule": {
+      "type": "string"
+    },
+    "scope_path": {
+      "type": "string",
+      "description": "Narrowest path that resolves it. A broad allowlist is cheap today and an invisibility cloak forever."
+    },
+    "disposition_type": {
+      "description": "Four MATERIALLY DIFFERENT truth claims. Collapsing them produces 'remediated' findings a scanner detects forever.",
+      "enum": [
+        "FALSE_POSITIVE",
+        "ACCEPTED_RISK",
+        "MITIGATED",
+        "REMEDIATED"
+      ]
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 20
+    },
+    "evidence_ref": {
+      "type": "string"
+    },
+    "compensating_control": {
+      "type": "string",
+      "description": "REQUIRED when disposition_type is MITIGATED. Naming the control is what distinguishes mitigation from acceptance."
+    },
+    "approver_role": {
+      "type": "string",
+      "description": "A ROLE, never a person -- nothing orphans at handoff. Proposing is not approving."
+    },
+    "created": {
+      "type": "string",
+      "format": "date"
+    },
+    "expires": {
+      "type": "string",
+      "format": "date",
+      "description": "Expiry is the mechanism. Silence must NEVER renew a disposition. THE WINDOW DIFFERS BY TYPE -- see expiry_policy: a remediation claim and a risk acceptance are not the same kind of promise and must not carry the same lifetime."
+    },
+    "state": {
+      "enum": [
+        "proposed",
+        "under_review",
+        "approved",
+        "rejected",
+        "needs_evidence",
+        "expired",
+        "invalidated"
+      ],
+      "default": "proposed",
+      "$comment": "Only 'approved' suppresses. A proposal never buys passage."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "disposition_type": {
+            "const": "MITIGATED"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "compensating_control"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "disposition_type": {
+            "const": "ACCEPTED_RISK"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "evidence_ref"
+        ],
+        "$comment": "Accepting a real risk requires a record of who accepted it and under what conditions."
+      }
+    }
+  ],
+  "expiry_policy": {
+    "$comment": "Non-standard key, deliberate: this is contract guidance the validator cannot express, and burying it in prose is how it gets lost.",
+    "REMEDIATED": {
+      "max_days": 30,
+      "rule": "SHORT-LIVED BY DESIGN. This is not a suppression record -- it is a claim that the condition is gone. It must be revalidated by the next scan.",
+      "self_invalidating": "If the scanner still reproduces the finding, the remediation claim FAILED or went stale. It must stop suppressing immediately, not at expiry. This is the only disposition a scanner can falsify by itself."
+    },
+    "MITIGATED": {
+      "max_days": 180,
+      "rule": "A compensating control can legitimately persist, but it must be REVALIDATED -- controls decay, get reconfigured, or get removed by someone who did not know why they existed."
+    },
+    "ACCEPTED_RISK": {
+      "max_days": 180,
+      "rule": "A real risk knowingly carried. The expiry is what forces a fresh, dated decision instead of a permanent one made once by someone who has since left."
+    },
+    "FALSE_POSITIVE": {
+      "max_days": 365,
+      "rule": "Longest-lived, because the detector being wrong is a stable fact.",
+      "invalidate_when": "The fingerprint, rule or path changes MATERIALLY. A detector that was wrong about one thing is not thereby wrong about a different thing at the same path."
+    }
+  }
+}

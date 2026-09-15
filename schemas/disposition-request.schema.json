@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://secure-cicd-kit/schemas/disposition-request.schema.json",
+  "title": "Disposition Request",
+  "description": "A developer's REQUEST that a specific finding be dispositioned. Distinct from the disposition itself.\n\nWHY THIS EXISTS: enforcement without a request path leaves humans communicating with the pipeline by interpretive dance. A team that cannot ask for a review will disable the workflow instead, which is strictly worse than an advisory mode.\n\nTWO LIFECYCLES, DELIBERATELY NOT ONE ENUM:\n  request_state     REQUESTED -> UNDER_REVIEW -> APPROVED | REJECTED | CHANGES_REQUESTED\n                    ... the GOVERNANCE workflow: where this request has got to.\n  requested_disposition  FALSE_POSITIVE | ACCEPTED_RISK | MITIGATED | REMEDIATED\n                    ... the SECURITY determination: what is claimed to be true.\n\nCollapsing them produces a dashboard cheerfully reporting that a vulnerability is 'APPROVED', which says nothing whatsoever about what was approved.\n\nAUTHORITY: a request is not a disposition. Only a MERGED approval on the protected default branch alters enforcement. A PR cannot approve its own request -- otherwise a developer adds FALSE_POSITIVE beside the secret they just introduced and the same PR passes.",
+  "type": "object",
+  "required": ["schema_version", "finding_ref", "requested_disposition", "requester",
+               "requested_at", "justification", "request_state"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+
+    "finding_ref": {
+      "type": "object",
+      "description": "Points at the IMMUTABLE original observation. The request never edits it.",
+      "required": ["fingerprint", "scanner", "rule", "path"],
+      "additionalProperties": false,
+      "properties": {
+        "fingerprint": { "type": "string", "minLength": 8 },
+        "scanner":     { "type": "string" },
+        "rule":        { "type": "string" },
+        "path":        { "type": "string" },
+        "first_observed_run": { "type": "string" }
+      }
+    },
+
+    "requested_disposition": {
+      "description": "THE SECURITY CLAIM. What the requester says is true about the finding.",
+      "enum": ["FALSE_POSITIVE", "ACCEPTED_RISK", "MITIGATED", "REMEDIATED"]
+    },
+
+    "request_state": {
+      "description": "THE GOVERNANCE STATE. Where the request has got to. Never conflated with the claim above.",
+      "enum": ["REQUESTED", "UNDER_REVIEW", "APPROVED", "REJECTED", "CHANGES_REQUESTED"],
+      "default": "REQUESTED"
+    },
+
+    "requester": {
+      "type": "string",
+      "description": "Who is asking. MUST NOT equal review.reviewer -- implementer is not reviewer."
+    },
+    "requested_at": { "type": "string", "format": "date-time" },
+
+    "justification": {
+      "type": "string", "minLength": 30,
+      "description": "Why the requested classification holds. 'Please ignore the scanner' is not a justification."
+    },
+    "evidence_refs": {
+      "type": "array", "items": { "type": "string" },
+      "description": "Links to the evidence supporting the CLAIM. What counts differs by type -- see conditional requirements."
+    },
+
+    "review": {
+      "type": "object",
+      "description": "Filled by the security-approver ROLE. Reviewing is establishing whether the proposed classification is actually supported -- not clicking Approve.",
+      "additionalProperties": false,
+      "properties": {
+        "reviewer": {
+          "type": "string",
+          "description": "The ROLE that reviewed, never a person's name. A pipeline routed to an individual becomes an undocumented API, and needs reconstructive surgery when they leave."
+        },
+        "reviewed_at": { "type": "string", "format": "date-time" },
+        "rationale":   { "type": "string" },
+        "ticket_ref": {
+          "type": "string",
+          "description": "External work item (an external work-item system). Designed in NOW so the same contract can later be driven by their workflow without changing the security model."
+        }
+      }
+    },
+
+    "governance": {
+      "type": "object",
+      "description": "What the disposition would carry if approved. Reviewed, not merely proposed.",
+      "additionalProperties": false,
+      "properties": {
+        "owner_role":  { "type": "string" },
+        "scope":       { "type": "string", "description": "Narrowest scope that resolves it." },
+        "expires_at":  { "type": "string", "format": "date" },
+        "review_at":   { "type": "string", "format": "date" },
+        "compensating_control": { "type": "string" },
+        "acceptance_ref":       { "type": "string" }
+      }
+    },
+
+    "external_ref": {
+      "type": "string",
+      "description": "Optional upstream identifier so a request can originate outside GitHub without redesigning the contract."
+    }
+  },
+
+  "allOf": [
+    {
+      "$comment": "MITIGATED means a compensating control exists. Naming it is what separates mitigation from acceptance.",
+      "if":   { "properties": { "requested_disposition": { "const": "MITIGATED" } } },
+      "then": { "properties": { "governance": { "required": ["compensating_control"] } },
+                "required": ["governance", "evidence_refs"] }
+    },
+    {
+      "$comment": "ACCEPTED_RISK means the finding is REAL and someone chose to proceed. That choice needs a record and an end date.",
+      "if":   { "properties": { "requested_disposition": { "const": "ACCEPTED_RISK" } } },
+      "then": { "properties": { "governance": { "required": ["acceptance_ref", "owner_role", "expires_at"] } },
+                "required": ["governance", "evidence_refs"] }
+    },
+    {
+      "$comment": "REMEDIATED asserts the condition is GONE. It must be verifiable by re-scanning, and is the only claim the scanner itself can falsify.",
+      "if":   { "properties": { "requested_disposition": { "const": "REMEDIATED" } } },
+      "then": { "required": ["evidence_refs"] }
+    },
+    {
+      "$comment": "Approval requires a reviewer and a rationale. An approval with neither is a rubber stamp with extra steps.",
+      "if":   { "properties": { "request_state": { "const": "APPROVED" } } },
+      "then": { "properties": { "review": { "required": ["reviewer", "reviewed_at", "rationale"] } },
+                "required": ["review"] }
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+name: "Azure Login (OIDC)"
+description: "Authenticate to Azure via OIDC federation. Supports Commercial and US Government clouds."
+inputs:
+  cloud:
+    description: "Target partition: commercial | gov"
+    required: true
+    default: "commercial"
+  tenant-id:
+    description: "Azure AD tenant ID"
+    required: true
+  subscription-id:
+    description: "Azure subscription ID"
+    required: true
+  client-id:
+    description: "App registration / managed identity client ID for OIDC federation"
+    required: true
+runs:
+  using: composite
+  steps:
+    # Requires the calling job to grant: permissions: { id-token: write, contents: read }
+    - name: Azure login
+      uses: azure/login@v3
+      with:
+        client-id: ${{ inputs.client-id }}
+        tenant-id: ${{ inputs.tenant-id }}
+        subscription-id: ${{ inputs.subscription-id }}
+        environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
