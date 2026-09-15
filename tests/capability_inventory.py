@@ -21,10 +21,30 @@ THE CHAIN, AND WHY EACH LINK IS SEPARATE
       SURFACED     a human sees the result in the run, not only inside an artifact
       CONSUMED     a downstream gate reads the outcome
       ENFORCED     the outcome can actually fail the build
-      EFFECTIVE    seeded input proves detection works
+
+    and then, only from a LIVE RUN and never from this file:
+
+      EXECUTED            the job actually ran on a runner and completed
+      DETECTION_PROVEN    it found the planted defect it was supposed to find
+      ENFORCEMENT_PROVEN  a real finding actually blocked a real promotion
+      REVALIDATED         proven again after the code stopped changing and the feed moved
 
     A capability that stops at IDENTIFIED looks identical, in a YAML skim, to one that reaches
-    EFFECTIVE. That is the entire problem.
+    the top. That is the entire problem.
+
+    EXECUTED IS NOT DETECTION_PROVEN, AND THE FIRST LIVE RUN IS WHY THAT SPLIT EXISTS.
+    On 2026-09-15 this kit ran against a corpus of deliberately planted defects. CodeQL executed,
+    uploaded its analysis, and reported ZERO results over a file containing three XSS sinks.
+    Gitleaks executed and reported zero over a planted credential. Both jobs were green; both
+    would have been recorded EFFECTIVE under a single post-run state, and that record would have
+    been worse than no record -- a green job is the most persuasive possible evidence for a
+    control that did nothing.
+
+        A GREEN WORKFLOW IS NOT EVIDENCE THAT THE INTENDED CONTROLS EXECUTED,
+        AND AN EXECUTED CONTROL IS NOT EVIDENCE THAT IT DETECTS ANYTHING.
+
+    So detection is proven per capability against a fixture mapped to a query documented to catch
+    that exact pattern -- not against "something vulnerable-looking is in the repo".
 
 WHAT THIS CANNOT ESTABLISH
     It is static. It proves a step EXISTS that would invoke a tool; it cannot prove the tool

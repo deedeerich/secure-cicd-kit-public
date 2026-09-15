@@ -29,7 +29,17 @@ on:
         required: false
         default: auto
       enable_iac:
-        description: "Also scan Terraform/IaC (Checkov + Trivy config)"
+        description: >-
+          DEPRECATED AND IGNORED. Superseded by `iac_mode`; nothing reads this value.
+
+          It was left declared after `iac_mode` replaced it, so a caller could pass
+          `enable_iac: true`, see it accepted, and get no IaC scanning — which is exactly what
+          happened on the first live run of this kit. A declared input nothing consumes is worse
+          than an absent one: an absent input fails loudly at the call site, while a dead one
+          reads as configuration and silently means nothing.
+
+          Kept only so existing callers do not break. It is reported as ignored at run time,
+          and it will be removed. Use `iac_mode` instead.
         type: boolean
         required: false
         default: false
@@ -321,6 +331,7 @@ jobs:
           IN_PATHS: ${{ inputs.paths }}
           IN_LANGUAGE: ${{ inputs.language }}
           IN_IAC_MODE: ${{ inputs.iac_mode }}
+          IN_ENABLE_IAC: ${{ inputs.enable_iac }}
         run: |
           set -uo pipefail
           state=COMPLETE
@@ -328,6 +339,16 @@ jobs:
           [ -d "$scope" ] || scope="."
           sel="${IN_LANGUAGE:-auto}"
           iac_mode="${IN_IAC_MODE:-auto}"
+
+          # A DEAD INPUT MUST SAY SO OUT LOUD. `enable_iac` was superseded by `iac_mode` and left
+          # declared, so a caller could set it, watch it be accepted, and get nothing. Silence
+          # here is what let a configured-looking run scan no infrastructure at all.
+          if [ "${IN_ENABLE_IAC:-false}" = "true" ]; then
+            echo "::warning title=enable_iac is ignored::This input is deprecated and nothing"
+            echo "reads it. IaC applicability is decided by artifact presence; use iac_mode to"
+            echo "force or disable. Your setting had NO effect on this run."
+            echo "| (config) | enable_iac IGNORED | deprecated; use iac_mode |" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
           # FAIL-SAFE: if the survey itself cannot run, everything is enabled and the state says so.
           trap 'echo "::error title=Discovery failed::Applicability could not be established."; \
@@ -398,6 +419,29 @@ jobs:
             # mean `cpp`, py means `python`, tf/terraform mean `iac`.
             case "$sel" in auto|multi) return 0 ;; esac
             _want="$(printf '%s' "$sel" | tr "A-Z" "a-z" | tr ",;+" "   ")"
+            _unknown=""
+            for _w in $_want; do
+              case "$_w" in
+                javascript|typescript|js|ts|node) ;;
+                py|python) ;;
+                "c#"|csharp|dotnet|.net) ;;
+                c|c++|cpp) ;;
+                tf|terraform|iac) ;;
+                go|java|kotlin|scala) ;;
+                *) _unknown="$_unknown $_w" ;;
+              esac
+            done
+            if [ -n "$_unknown" ]; then
+              # FAIL CLOSED, LOUDLY. An unrecognised selector used to mean "matches nothing", so a
+              # typo or an unsupported name silently emptied the scan and the run went green. An
+              # input this tool does not understand is an UNKNOWN, and an unknown must never resolve
+              # to "scan less" -- that is the same inversion as treating a failed probe as absence.
+              echo "::error title=Unrecognised language selector::language=\'$sel\' contains$_unknown,"
+              echo "which this kit does not recognise. Refusing to silently scan less. Use auto, or"
+              echo "a list of: python node go java dotnet cpp iac (aliases: js/ts, py, c#, c++, tf)."
+              echo "| (selector) | UNRECOGNISED | $_unknown -- refused, see error |" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
             for _w in $_want; do
               case "$_w" in
                 javascript|typescript|js|ts|node) _w=node ;;
@@ -556,7 +600,28 @@ jobs:
                 echo "| iac | MISSING_BUT_REQUIRED | declared by profile, none discovered |" >> "$GITHUB_STEP_SUMMARY"
               fi
               ;;
-            *) emit iac "$ia" "*.tf / *.bicep / Dockerfile / Chart.yaml" ;;
+            # IaC APPLICABILITY IS DECIDED BY ARTIFACT PRESENCE, NEVER BY THE LANGUAGE SELECTOR.
+            #
+            # `emit` applies the language selector, so a caller who wrote `language: python` got no
+            # IaC scan over a repository full of Terraform -- the scanner was switched off by an
+            # input about APPLICATION LANGUAGE, which is a different axis entirely. AXES_AND_PHASES.md
+            # says discovery decides applicability and names contamination between axes as the defect;
+            # this was that, in the code, while the document described it as a principle.
+            #
+            # A .tf file is not written in Python or JavaScript. Its presence is the whole question.
+            *)
+              if [ -e "$FAILDIR/iac" ]; then
+                echo "iac=true" >> "$GITHUB_OUTPUT"
+                echo "| iac | UNDETERMINED -> RUN | probe failed; presence unknown, so enabled |" >> "$GITHUB_STEP_SUMMARY"
+              elif [ "$ia" = "yes" ]; then
+                echo "iac=true" >> "$GITHUB_OUTPUT"
+                printf '  %-8s RUN                   %s\n' iac "*.tf / *.bicep / Dockerfile / Chart.yaml"
+                echo "| iac | RUN | artifact present; applicability is not a language question |" >> "$GITHUB_STEP_SUMMARY"
+              else
+                echo "iac=false" >> "$GITHUB_OUTPUT"
+                echo "| iac | NOT_APPLICABLE | no IaC artifact discovered |" >> "$GITHUB_STEP_SUMMARY"
+              fi
+              ;;
           esac
 
           echo "state=$state" >> "$GITHUB_OUTPUT"
