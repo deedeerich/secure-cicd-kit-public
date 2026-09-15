@@ -379,7 +379,36 @@ jobs:
           }
 
           selected() {
-            case "$sel" in auto|multi) return 0 ;; "$1") return 0 ;; *) return 1 ;; esac
+                    # A LIST IS THE OBVIOUS THING A CALLER WRITES, AND IT USED TO MEAN "NONE".
+            #
+            # The selector was an exact match against one ecosystem name, so `language: python,javascript`
+            # -- the natural way to say "this repo is both" -- matched neither `auto`, `multi`, nor any
+            # single name, and EXCLUDED_BY_SELECTOR fired for every ecosystem present. The first live run
+            # of this kit against a seeded corpus scanned exactly the ecosystem-AGNOSTIC jobs and skipped
+            # CodeQL, Bandit and IaC over a repository containing Python, JSX, Terraform and a Dockerfile.
+            # The run went green.
+            #
+            # It was not silent -- each exclusion emitted a notice and a summary row, which is the only
+            # reason it was diagnosable. But a config value that reads as "scan these two languages" and
+            # means "scan no languages" is a footgun whichever way it is annotated, so the selector now
+            # accepts a delimited list. Separators: comma, space, semicolon, plus.
+            #
+            # Aliases exist because the ecosystem keys are internal and the names callers reach for are
+            # not: javascript/typescript/js/ts all mean `node`, csharp/c#/.net mean `dotnet`, c/c++/cpp
+            # mean `cpp`, py means `python`, tf/terraform mean `iac`.
+            case "$sel" in auto|multi) return 0 ;; esac
+            _want="$(printf '%s' "$sel" | tr "A-Z" "a-z" | tr ",;+" "   ")"
+            for _w in $_want; do
+              case "$_w" in
+                javascript|typescript|js|ts|node) _w=node ;;
+                py|python) _w=python ;;
+                "c#"|csharp|dotnet|.net) _w=dotnet ;;
+                c|c++|cpp) _w=cpp ;;
+                tf|terraform|iac) _w=iac ;;
+              esac
+              [ "$_w" = "$1" ] && return 0
+            done
+            return 1
           }
 
           {
