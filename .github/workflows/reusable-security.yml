@@ -302,6 +302,18 @@ jobs:
       # Coverage, not applicability. Empty = nothing unsupported was seen. A comma list = code this
       # platform cannot scan is present. UNDETERMINED = the coverage probe itself could not run.
       unsupported: ${{ steps.d.outputs.unsupported }}
+      # THE SAME FACT, NAMED RATHER THAN SPELLED IN FILE EXTENSIONS.
+      #
+      #   ARTIFACT_PRESENT + CAPABILITY_REQUIRED + SCANNER_UNAVAILABLE = COVERAGE_GAP
+      #
+      # A comma list of ARTIFACT CLASSES that are present in this repository and that no scanner
+      # in this kit can look at. It is NOT_APPLICABLE's opposite: NOT_APPLICABLE says the artifact
+      # is not here, CLEAN says a scanner ran and found nothing, COVERAGE_GAP says the artifact is
+      # here and nothing looked. Absence of evidence, published as such.
+      coverage_gaps: ${{ steps.d.outputs.coverage_gaps }}
+      # How many classes. A consumer gating on "did this kit fully cover us" reads this, not a
+      # string length. 0 means every discovered artifact class had a capable scanner.
+      coverage_gap_count: ${{ steps.d.outputs.coverage_gap_count }}
       # Platform applicability. Established ONCE so sixteen jobs cannot hold sixteen beliefs
       # about the same organisation setting. UNKNOWN is a real value, never coerced to false.
       ghas_available:      ${{ steps.platform.outputs.ghas_available }}
@@ -517,31 +529,6 @@ jobs:
           # vulnerability and must never be scored as one -- it is this platform telling an adopter
           # exactly where its assurance stops inside their specific repository, which is the single
           # most useful thing it can say to someone deciding whether to trust it.
-          unsupported=""
-          unsup_raw="$(find "$scope" -maxdepth 8 -type f \( \
-              -name '*.rs' -o -name '*.rb' -o -name '*.php' -o -name '*.swift' -o -name '*.kt' \
-              -o -name '*.scala' -o -name '*.ex' -o -name '*.exs' -o -name '*.erl' -o -name '*.hs' \
-              -o -name '*.lua' -o -name '*.pl' -o -name '*.r' -o -name '*.jl' -o -name '*.dart' \
-              -o -name '*.groovy' -o -name '*.clj' -o -name '*.zig' -o -name '*.nim' \
-              -o -name '*.vb' -o -name '*.fs' -o -name '*.sh' -o -name '*.ps1' \) \
-              -not -path '*/node_modules/*' -not -path '*/vendor/*' -not -path '*/.git/*' \
-              -print 2>/dev/null)"
-          unsup_rc=$?
-          if [ "$unsup_rc" -ne 0 ]; then
-            # Same rule as every other probe: could-not-look is not found-nothing.
-            unsupported="UNDETERMINED"
-            echo "::warning title=Coverage probe failed::Could not determine whether unsupported"
-            echo "languages are present. This is unknown, not absent."
-          elif [ -n "$unsup_raw" ]; then
-            # sed takes the final dot, so a dotted directory name cannot masquerade as an
-            # extension. sort -u after, never a pipe to an early-exiting reader.
-            unsupported="$(printf '%s\n' "$unsup_raw" | sed 's/.*\.//' | sort -u | tr '\n' ',' | sed 's/,$//')"
-            echo "::warning title=Unsupported languages present::This repository contains code this"
-            echo "platform has no scanner for: $unsupported"
-            echo "Those files were NOT scanned. This run establishes nothing about them."
-            echo "| (coverage) | UNSUPPORTED_PRESENT | no scanner for: $unsupported |" >> "$GITHUB_STEP_SUMMARY"
-          fi
-          echo "unsupported=$unsupported" >> "$GITHUB_OUTPUT"
 
           # STATE IS COMPUTED FROM HOW MUCH WAS ESTABLISHED, NOT FROM WHETHER ANYTHING FAILED.
           # Every probe failing is genuinely total ignorance. SOME failing is not, and collapsing
@@ -623,6 +610,152 @@ jobs:
               fi
               ;;
           esac
+
+          # THREE STATES A READER MUST NEVER SEE COLLAPSED:
+          #
+          #   NOT_APPLICABLE   the artifact is not here            nothing to find
+          #   CLEAN            a scanner ran and found nothing     evidence of absence
+          #   COVERAGE_GAP     the artifact is here, nothing scans it   ABSENCE OF EVIDENCE
+          #
+          # The first two are answers. The third is the admission that no question was asked, and
+          # it is the one that used to disappear. Reporting a gap as NOT_APPLICABLE is a
+          # fabricated negative; reporting it as nothing at all is worse, because a reader cannot
+          # even tell something was omitted.
+          #
+          #   ARTIFACT_PRESENT + CAPABILITY_REQUIRED + SCANNER_UNAVAILABLE = COVERAGE_GAP
+          #
+          # Each discovered-but-unscannable CLASS gets its own row, its own ::warning and its own
+          # entry in `coverage_gaps` -- named, not spelled as a file extension, because "Shell" and
+          # "GitHub Actions workflow" are what an adopter is deciding about. A single squashed
+          # "UNSUPPORTED_PRESENT: kt,ps1,sh" row made eight separate admissions look like one
+          # footnote.
+          gap_class() {
+            case "$1" in
+              rs)     printf 'Rust' ;;
+              rb)     printf 'Ruby' ;;
+              php)    printf 'PHP' ;;
+              swift)  printf 'Swift' ;;
+              kt|kts) printf 'Kotlin' ;;
+              scala)  printf 'Scala' ;;
+              ex|exs) printf 'Elixir' ;;
+              erl)    printf 'Erlang' ;;
+              hs)     printf 'Haskell' ;;
+              lua)    printf 'Lua' ;;
+              pl)     printf 'Perl' ;;
+              r)      printf 'R' ;;
+              jl)     printf 'Julia' ;;
+              dart)   printf 'Dart' ;;
+              groovy) printf 'Groovy' ;;
+              clj)    printf 'Clojure' ;;
+              zig)    printf 'Zig' ;;
+              nim)    printf 'Nim' ;;
+              vb)     printf 'VisualBasic' ;;
+              fs)     printf 'FSharp' ;;
+              sh)     printf 'Shell' ;;
+              ps1)    printf 'PowerShell' ;;
+              gha)    printf 'GitHubActionsWorkflow' ;;
+              *)      printf '%s' "$1" ;;
+            esac
+          }
+
+          gaps=""
+          gap_count=0
+          declare_gap() {
+            _cls="$1"; _cnt="$2"; _need="$3"
+            gaps="${gaps}${gaps:+,}${_cls}"
+            gap_count=$((gap_count + 1))
+            echo "::warning title=COVERAGE_GAP: $_cls::ARTIFACT_PRESENT + CAPABILITY_REQUIRED + SCANNER_UNAVAILABLE. ${_cnt} ${_cls} file(s) are in scope and this kit has no scanner for them (${_need}). They were NOT scanned. This is not NOT_APPLICABLE and it is not CLEAN -- nothing looked."
+            echo "| $_cls | COVERAGE_GAP | ARTIFACT_PRESENT, no capable scanner -- ${_cnt} file(s), needs ${_need} |" >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          unsupported=""
+          unsup_raw="$(find "$scope" -maxdepth 8 -type f \( \
+              -name '*.rs' -o -name '*.rb' -o -name '*.php' -o -name '*.swift' -o -name '*.kt' \
+              -o -name '*.scala' -o -name '*.ex' -o -name '*.exs' -o -name '*.erl' -o -name '*.hs' \
+              -o -name '*.lua' -o -name '*.pl' -o -name '*.r' -o -name '*.jl' -o -name '*.dart' \
+              -o -name '*.groovy' -o -name '*.clj' -o -name '*.zig' -o -name '*.nim' \
+              -o -name '*.vb' -o -name '*.fs' -o -name '*.sh' -o -name '*.ps1' \) \
+              -not -path '*/node_modules/*' -not -path '*/vendor/*' -not -path '*/.git/*' \
+              -print 2>/dev/null)"
+          unsup_rc=$?
+          if [ "$unsup_rc" -ne 0 ]; then
+            # Same rule as every other probe: could-not-look is not found-nothing.
+            unsupported="UNDETERMINED"
+            echo "::warning title=Coverage probe failed::Could not determine whether unsupported"
+            echo "languages are present. This is unknown, not absent."
+            echo "| (coverage) | UNDETERMINED | the coverage probe itself could not run |" >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$unsup_raw" ]; then
+            # sed takes the final dot, so a dotted directory name cannot masquerade as an
+            # extension. sort -u after, never a pipe to an early-exiting reader.
+            unsupported="$(printf '%s\n' "$unsup_raw" | sed 's/.*\.//' | sort -u | tr '\n' ',' | sed 's/,$//')"
+            echo "::warning title=Unsupported languages present::This repository contains code this"
+            echo "platform has no scanner for: $unsupported"
+            echo "Those files were NOT scanned. This run establishes nothing about them."
+            # ONE ROW PER CLASS. `unsupported` stays an extension list so no existing consumer
+            # breaks; the per-class rows are what a human reads.
+            for _ext in $(printf '%s\n' "$unsup_raw" | sed 's/.*\.//' | sort -u); do
+              # suppression: EXPECTED_NEGATIVE_RESULT -- grep exits 1 when the count is ZERO, which
+              # is a legitimate count and not an error. Left unguarded it would fire the ERR trap
+              # and turn a per-class tally into a declared survey failure.
+              # discards: grep's exit status, which here only distinguishes count==0 from count>0
+              # preserved_by: the COUNT ITSELF, which grep -c has already printed to stdout and
+              # preserved_by: which is what the row and the warning report
+              _n="$(printf '%s\n' "$unsup_raw" | grep -c -- "\.${_ext}\$" || true)"
+              declare_gap "$(gap_class "$_ext")" "${_n:-0}" "a .${_ext} scanner"
+            done
+          fi
+          echo "unsupported=$unsupported" >> "$GITHUB_OUTPUT"
+
+          # THE PIPELINE'S OWN DEFINITION FILES ARE AN ARTIFACT CLASS TOO.
+          #
+          # Workflow YAML decides what runs, with what permissions, against which refs -- and no
+          # probe above asks about it, so a repository whose only unscanned artifact was
+          # .github/workflows/*.yml produced a completely silent survey. Checkov's CKV_GHA_* rules
+          # fire only when the IaC job happens to be enabled and pointed at the right scope; that
+          # is incidental coverage, not a declared capability, and this kit ships no actionlint.
+          # suppression: PRESENTATION_ONLY -- find's stderr is noise on unreadable subtrees; the
+          # EXIT STATUS is captured on the next line and drives UNDETERMINED rather than reading
+          # as 'no workflows here'.
+          # discards: find's stderr on permission-denied or unreadable subtrees
+          # preserved_by: gha_rc on the next line, which turns a failed probe into an explicit
+          # preserved_by: UNDETERMINED row instead of a silent absence
+          gha_raw="$(find "$scope" -maxdepth 8 -type f -path '*/.github/workflows/*' \
+              \( -name '*.yml' -o -name '*.yaml' \) \
+              -not -path '*/node_modules/*' -not -path '*/vendor/*' -not -path '*/.git/*' \
+              -print 2>/dev/null)"
+          gha_rc=$?
+          if [ "$gha_rc" -ne 0 ]; then
+            echo "::warning title=Workflow coverage probe failed::Could not determine whether"
+            echo "GitHub Actions workflow definitions are present. Unknown, not absent."
+            echo "| GitHubActionsWorkflow | UNDETERMINED | probe failed; presence unknown |" >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$gha_raw" ]; then
+            # suppression: EXPECTED_NEGATIVE_RESULT -- grep exits 1 on a zero count, which is a
+            # count and not an error; unguarded it would fire the ERR trap.
+            # discards: grep's exit status, which only distinguishes count==0 from count>0
+            # preserved_by: the COUNT grep -c printed, which is what the gap row reports
+            _n="$(printf '%s\n' "$gha_raw" | grep -c . || true)"
+            declare_gap "$(gap_class gha)" "${_n:-0}" "a workflow linter (e.g. actionlint)"
+          fi
+
+          # COUNTED AND PUBLISHED, NEVER INFERRED FROM A STRING. A consumer asking "was this
+          # repository fully covered" gets a number, and 0 is only ever printed because every
+          # discovered class had a capable scanner.
+          echo "coverage_gaps=$gaps" >> "$GITHUB_OUTPUT"
+          echo "coverage_gap_count=$gap_count" >> "$GITHUB_OUTPUT"
+          if [ "$gap_count" -gt 0 ]; then
+            printf '  %-8s %s\n' "(gaps)" "COVERAGE_GAP x${gap_count}: $gaps"
+            {
+              echo ""
+              echo "**COVERAGE_GAP x${gap_count}** — \`$gaps\`"
+              echo ""
+              echo "> These artifact classes are PRESENT in this repository and NO scanner in this"
+              echo "> kit can look at them. That is not NOT_APPLICABLE (the artifact is here) and"
+              echo "> not CLEAN (nothing ran). It is absence of evidence, and it is where this"
+              echo "> platform's assurance stops inside this specific repository."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '  %-8s %s\n' "(gaps)" "none — every discovered artifact class has a capable scanner"
+          fi
 
           echo "state=$state" >> "$GITHUB_OUTPUT"
           echo "discovery state: $state"
@@ -1244,8 +1377,17 @@ jobs:
                   return 2
               rc = 0
               for p in argv:
-                  if not os.path.exists(p) or os.path.getsize(p) == 0:
-                      print('  %s: absent or empty, nothing to redact' % p)
+                  # A DIRECTORY IS NOT A REPORT, AND THIS USED TO BE FATAL.
+                  #
+                  # checkov-action treats `output_file_path` as a DIRECTORY and writes the report inside it,
+                  # so a caller globbing *.sarif hands this function a directory. os.path.exists() said yes,
+                  # json.load() raised IsADirectoryError, the handler below tried to overwrite the
+                  # "unparseable report" with an empty one -- and raised IsADirectoryError AGAIN, this time
+                  # unhandled. A redaction step then failed a job whose SCAN HAD SUCCEEDED, and took the
+                  # scanner behind it with it. isfile(), not exists(): only a real file can be redacted, and
+                  # skipping a non-file loses nothing, because a directory never carried a credential.
+                  if not os.path.isfile(p) or os.path.getsize(p) == 0:
+                      print('  %s: not a readable SARIF file, nothing to redact' % p)
                       continue
                   try:
                       doc = json.load(io.open(p, encoding='utf-8', errors='replace'))
@@ -1274,7 +1416,18 @@ jobs:
 
           REDACT_SARIF_PY
           shopt -s nullglob globstar
-          files=( *.sarif **/*.sarif )
+          # A PATH ENDING .sarif IS NOT ALWAYS A SARIF FILE.
+          #
+          # checkov-action treats `output_file_path` as a DIRECTORY and writes
+          # checkov.sarif/results_sarif.sarif inside it. `*.sarif` therefore matched the
+          # DIRECTORY, the redactor raised IsADirectoryError and exited 1, and a job whose
+          # scan had SUCCEEDED went red -- taking the second IaC scanner behind it with it,
+          # because that step had no if: always(). A housekeeping step decided a security
+          # verdict. Keep regular files only; **/*.sarif still finds the real report inside.
+          files=()
+          for _f in *.sarif **/*.sarif; do
+            if [ -f "$_f" ]; then files+=( "$_f" ); fi
+          done
           if [ ${#files[@]} -eq 0 ]; then
             echo "no SARIF produced by this job -- nothing to redact"
           else
@@ -1944,8 +2097,17 @@ jobs:
                   return 2
               rc = 0
               for p in argv:
-                  if not os.path.exists(p) or os.path.getsize(p) == 0:
-                      print('  %s: absent or empty, nothing to redact' % p)
+                  # A DIRECTORY IS NOT A REPORT, AND THIS USED TO BE FATAL.
+                  #
+                  # checkov-action treats `output_file_path` as a DIRECTORY and writes the report inside it,
+                  # so a caller globbing *.sarif hands this function a directory. os.path.exists() said yes,
+                  # json.load() raised IsADirectoryError, the handler below tried to overwrite the
+                  # "unparseable report" with an empty one -- and raised IsADirectoryError AGAIN, this time
+                  # unhandled. A redaction step then failed a job whose SCAN HAD SUCCEEDED, and took the
+                  # scanner behind it with it. isfile(), not exists(): only a real file can be redacted, and
+                  # skipping a non-file loses nothing, because a directory never carried a credential.
+                  if not os.path.isfile(p) or os.path.getsize(p) == 0:
+                      print('  %s: not a readable SARIF file, nothing to redact' % p)
                       continue
                   try:
                       doc = json.load(io.open(p, encoding='utf-8', errors='replace'))
@@ -1974,7 +2136,18 @@ jobs:
 
           REDACT_SARIF_PY
           shopt -s nullglob globstar
-          files=( *.sarif **/*.sarif )
+          # A PATH ENDING .sarif IS NOT ALWAYS A SARIF FILE.
+          #
+          # checkov-action treats `output_file_path` as a DIRECTORY and writes
+          # checkov.sarif/results_sarif.sarif inside it. `*.sarif` therefore matched the
+          # DIRECTORY, the redactor raised IsADirectoryError and exited 1, and a job whose
+          # scan had SUCCEEDED went red -- taking the second IaC scanner behind it with it,
+          # because that step had no if: always(). A housekeeping step decided a security
+          # verdict. Keep regular files only; **/*.sarif still finds the real report inside.
+          files=()
+          for _f in *.sarif **/*.sarif; do
+            if [ -f "$_f" ]; then files+=( "$_f" ); fi
+          done
           if [ ${#files[@]} -eq 0 ]; then
             echo "no SARIF produced by this job -- nothing to redact"
           else
@@ -2327,8 +2500,17 @@ jobs:
                   return 2
               rc = 0
               for p in argv:
-                  if not os.path.exists(p) or os.path.getsize(p) == 0:
-                      print('  %s: absent or empty, nothing to redact' % p)
+                  # A DIRECTORY IS NOT A REPORT, AND THIS USED TO BE FATAL.
+                  #
+                  # checkov-action treats `output_file_path` as a DIRECTORY and writes the report inside it,
+                  # so a caller globbing *.sarif hands this function a directory. os.path.exists() said yes,
+                  # json.load() raised IsADirectoryError, the handler below tried to overwrite the
+                  # "unparseable report" with an empty one -- and raised IsADirectoryError AGAIN, this time
+                  # unhandled. A redaction step then failed a job whose SCAN HAD SUCCEEDED, and took the
+                  # scanner behind it with it. isfile(), not exists(): only a real file can be redacted, and
+                  # skipping a non-file loses nothing, because a directory never carried a credential.
+                  if not os.path.isfile(p) or os.path.getsize(p) == 0:
+                      print('  %s: not a readable SARIF file, nothing to redact' % p)
                       continue
                   try:
                       doc = json.load(io.open(p, encoding='utf-8', errors='replace'))
@@ -2357,7 +2539,18 @@ jobs:
 
           REDACT_SARIF_PY
           shopt -s nullglob globstar
-          files=( *.sarif **/*.sarif )
+          # A PATH ENDING .sarif IS NOT ALWAYS A SARIF FILE.
+          #
+          # checkov-action treats `output_file_path` as a DIRECTORY and writes
+          # checkov.sarif/results_sarif.sarif inside it. `*.sarif` therefore matched the
+          # DIRECTORY, the redactor raised IsADirectoryError and exited 1, and a job whose
+          # scan had SUCCEEDED went red -- taking the second IaC scanner behind it with it,
+          # because that step had no if: always(). A housekeeping step decided a security
+          # verdict. Keep regular files only; **/*.sarif still finds the real report inside.
+          files=()
+          for _f in *.sarif **/*.sarif; do
+            if [ -f "$_f" ]; then files+=( "$_f" ); fi
+          done
           if [ ${#files[@]} -eq 0 ]; then
             echo "no SARIF produced by this job -- nothing to redact"
           else
@@ -2734,8 +2927,17 @@ jobs:
                   return 2
               rc = 0
               for p in argv:
-                  if not os.path.exists(p) or os.path.getsize(p) == 0:
-                      print('  %s: absent or empty, nothing to redact' % p)
+                  # A DIRECTORY IS NOT A REPORT, AND THIS USED TO BE FATAL.
+                  #
+                  # checkov-action treats `output_file_path` as a DIRECTORY and writes the report inside it,
+                  # so a caller globbing *.sarif hands this function a directory. os.path.exists() said yes,
+                  # json.load() raised IsADirectoryError, the handler below tried to overwrite the
+                  # "unparseable report" with an empty one -- and raised IsADirectoryError AGAIN, this time
+                  # unhandled. A redaction step then failed a job whose SCAN HAD SUCCEEDED, and took the
+                  # scanner behind it with it. isfile(), not exists(): only a real file can be redacted, and
+                  # skipping a non-file loses nothing, because a directory never carried a credential.
+                  if not os.path.isfile(p) or os.path.getsize(p) == 0:
+                      print('  %s: not a readable SARIF file, nothing to redact' % p)
                       continue
                   try:
                       doc = json.load(io.open(p, encoding='utf-8', errors='replace'))
@@ -2764,7 +2966,18 @@ jobs:
 
           REDACT_SARIF_PY
           shopt -s nullglob globstar
-          files=( *.sarif **/*.sarif )
+          # A PATH ENDING .sarif IS NOT ALWAYS A SARIF FILE.
+          #
+          # checkov-action treats `output_file_path` as a DIRECTORY and writes
+          # checkov.sarif/results_sarif.sarif inside it. `*.sarif` therefore matched the
+          # DIRECTORY, the redactor raised IsADirectoryError and exited 1, and a job whose
+          # scan had SUCCEEDED went red -- taking the second IaC scanner behind it with it,
+          # because that step had no if: always(). A housekeeping step decided a security
+          # verdict. Keep regular files only; **/*.sarif still finds the real report inside.
+          files=()
+          for _f in *.sarif **/*.sarif; do
+            if [ -f "$_f" ]; then files+=( "$_f" ); fi
+          done
           if [ ${#files[@]} -eq 0 ]; then
             echo "no SARIF produced by this job -- nothing to redact"
           else
@@ -3199,8 +3412,17 @@ jobs:
                   return 2
               rc = 0
               for p in argv:
-                  if not os.path.exists(p) or os.path.getsize(p) == 0:
-                      print('  %s: absent or empty, nothing to redact' % p)
+                  # A DIRECTORY IS NOT A REPORT, AND THIS USED TO BE FATAL.
+                  #
+                  # checkov-action treats `output_file_path` as a DIRECTORY and writes the report inside it,
+                  # so a caller globbing *.sarif hands this function a directory. os.path.exists() said yes,
+                  # json.load() raised IsADirectoryError, the handler below tried to overwrite the
+                  # "unparseable report" with an empty one -- and raised IsADirectoryError AGAIN, this time
+                  # unhandled. A redaction step then failed a job whose SCAN HAD SUCCEEDED, and took the
+                  # scanner behind it with it. isfile(), not exists(): only a real file can be redacted, and
+                  # skipping a non-file loses nothing, because a directory never carried a credential.
+                  if not os.path.isfile(p) or os.path.getsize(p) == 0:
+                      print('  %s: not a readable SARIF file, nothing to redact' % p)
                       continue
                   try:
                       doc = json.load(io.open(p, encoding='utf-8', errors='replace'))
@@ -3229,7 +3451,18 @@ jobs:
 
           REDACT_SARIF_PY
           shopt -s nullglob globstar
-          files=( *.sarif **/*.sarif )
+          # A PATH ENDING .sarif IS NOT ALWAYS A SARIF FILE.
+          #
+          # checkov-action treats `output_file_path` as a DIRECTORY and writes
+          # checkov.sarif/results_sarif.sarif inside it. `*.sarif` therefore matched the
+          # DIRECTORY, the redactor raised IsADirectoryError and exited 1, and a job whose
+          # scan had SUCCEEDED went red -- taking the second IaC scanner behind it with it,
+          # because that step had no if: always(). A housekeeping step decided a security
+          # verdict. Keep regular files only; **/*.sarif still finds the real report inside.
+          files=()
+          for _f in *.sarif **/*.sarif; do
+            if [ -f "$_f" ]; then files+=( "$_f" ); fi
+          done
           if [ ${#files[@]} -eq 0 ]; then
             echo "no SARIF produced by this job -- nothing to redact"
           else
@@ -3363,6 +3596,17 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+      # DETECTION FIRST. `soft_fail: true` IS NOT LENIENCY AND DOES NOT LOSE A FINDING.
+      #
+      #   scanner exit / findings  ->  normalized result  ->  policy decision
+      #                                                        advisory -> report, never block
+      #                                                        blocking -> fail the gate
+      #
+      # It stops checkov's EXIT CODE from doubling as the gate. Every finding still lands in the
+      # SARIF, in the retained artifact, in the Security tab and in the count two steps below --
+      # nothing is suppressed, scoped away or downgraded. Only the CONSEQUENCE is decided
+      # elsewhere, by the policy layer, which is the only layer that knows what mode the caller
+      # asked for. This is the same separation sast-semgrep and sast-bandit already use.
       - name: Checkov
         uses: bridgecrewio/checkov-action@v12
         with:
@@ -3370,6 +3614,87 @@ jobs:
           output_format: sarif
           output_file_path: checkov.sarif
           soft_fail: true
+      - name: Checkov — count findings
+        if: always()
+        id: checkov
+        shell: bash
+        run: |
+          set -uo pipefail
+          # checkov-action treats `output_file_path` as a DIRECTORY and writes the report inside
+          # it. Pointing anything at `checkov.sarif` gets a directory, not a report.
+          f=checkov.sarif/results_sarif.sarif
+          # AN ABSENT REPORT IS NOT ZERO FINDINGS. This job only runs because discovery FOUND IaC
+          # artifacts in scope, so a missing or unparseable report means the evidence could not be
+          # collected -- which is UNDETERMINED, and must never be counted as a clean scan.
+          if [ ! -s "$f" ]; then
+            echo "::error title=COLLECTION_FAILED::$f was not produced."
+            echo "Discovery established that IaC artifacts ARE present, so an ABSENT report is a"
+            echo "collection failure, not zero findings."
+            echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! n=$(jq '[.runs[].results[] | select((.level // "warning") == "error")] | length' "$f" 2>&1); then
+            echo "::error title=COLLECTION_FAILED::$f is not valid SARIF."
+            echo "jq said: $n"
+            echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE -- `total` is context for the log
+          # line only. The GATE reads $n, which was produced by the checked jq call above; if that
+          # one had failed this step would already have declared COLLECTION_FAILED and returned.
+          # discards: a second jq invocation's error, which cannot occur once the first succeeded
+          # preserved_by: $n, the error-level count the enforcement step actually reads, and the
+          # preserved_by: collection=COMPLETE/COLLECTION_FAILED state emitted either way
+          total=$(jq '[.runs[].results[]] | length' "$f" 2>/dev/null || echo "$n")
+          echo "collection=COMPLETE" >> "$GITHUB_OUTPUT"
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+          echo "total=$total" >> "$GITHUB_OUTPUT"
+          echo "Checkov ERROR-level findings: $n (of $total result(s))"
+      # THE POLICY LAYER. The ONLY step in this job permitted to decide whether truth blocks.
+      #
+      # iac-scan used to have no such step at all: the scanner's soft_fail was the whole policy,
+      # so IaC findings could not block in ANY mode, and whether the job went red was decided by
+      # whichever housekeeping step happened to fail. That is an enforcement decision taken by
+      # accident, in the wrong layer, from the wrong signal.
+      - name: Checkov — enforce
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          collection='${{ steps.checkov.outputs.collection }}'
+          n='${{ steps.checkov.outputs.count }}'
+          advisory='${{ inputs.advisory_mode }}'
+          # COLLECTION_FAILED IS NOT ZERO FINDINGS -- AND THIS STEP RUNS ON always(). Without this
+          # check ${n:-0} quietly supplies the very zero the counting step refused to invent.
+          if [ "$collection" = "COLLECTION_FAILED" ] || [ -z "$collection" ]; then
+            echo "::error title=COLLECTION_FAILED::IaC posture could NOT be established from this run."
+            echo "This is not a clean result and it is not a finding -- it is an unknown."
+            if [ "$advisory" = "true" ]; then
+              echo "::warning title=IaC UNDETERMINED (advisory)::Not blocked, not established."
+              echo "ANALYSIS=INCOMPLETE GATE=ADVISORY"
+              exit 0
+            fi
+            echo "ANALYSIS=INCOMPLETE GATE=FAIL"
+            exit 1
+          fi
+          if [ -z "${n:-}" ]; then
+            echo "::error title=COLLECTION_FAILED::No count was produced by the scan step."
+            echo "An ABSENT measurement is not a measurement of zero."
+            [ "$advisory" = "true" ] || exit 1
+            exit 0
+          fi
+          if [ "${n:-0}" -gt 0 ] && [ "$advisory" = "true" ]; then
+            # ADVISORY: THE FINDING IS REAL, REPORTED AND PERSISTED. Only the block is withheld.
+            echo "::warning title=Checkov (advisory)::${n} ERROR-level IaC finding(s) were found"
+            echo "and are reported in the SARIF, the artifact and the gate summary. advisory_mode"
+            echo "is on, so they do not block promotion. ANALYSIS=COMPLETE GATE=ADVISORY"
+            exit 0
+          fi
+          if [ "${n:-0}" -gt 0 ]; then
+            echo "::error title=Checkov::${n} ERROR-level IaC finding(s). ANALYSIS=COMPLETE GATE=FAIL"
+            exit 1
+          fi
+          echo "ANALYSIS=COMPLETE GATE=PASS (0 error-level finding(s), advisory_mode=$advisory)"
       # Findings must survive whether or not this repo has code scanning. Uploading to the
       # Security tab is a PUBLICATION channel, not the finding itself — free on public repos,
       # otherwise Advanced Security. Treating it as mandatory turned successful scans into
@@ -3577,8 +3902,17 @@ jobs:
                   return 2
               rc = 0
               for p in argv:
-                  if not os.path.exists(p) or os.path.getsize(p) == 0:
-                      print('  %s: absent or empty, nothing to redact' % p)
+                  # A DIRECTORY IS NOT A REPORT, AND THIS USED TO BE FATAL.
+                  #
+                  # checkov-action treats `output_file_path` as a DIRECTORY and writes the report inside it,
+                  # so a caller globbing *.sarif hands this function a directory. os.path.exists() said yes,
+                  # json.load() raised IsADirectoryError, the handler below tried to overwrite the
+                  # "unparseable report" with an empty one -- and raised IsADirectoryError AGAIN, this time
+                  # unhandled. A redaction step then failed a job whose SCAN HAD SUCCEEDED, and took the
+                  # scanner behind it with it. isfile(), not exists(): only a real file can be redacted, and
+                  # skipping a non-file loses nothing, because a directory never carried a credential.
+                  if not os.path.isfile(p) or os.path.getsize(p) == 0:
+                      print('  %s: not a readable SARIF file, nothing to redact' % p)
                       continue
                   try:
                       doc = json.load(io.open(p, encoding='utf-8', errors='replace'))
@@ -3607,7 +3941,18 @@ jobs:
 
           REDACT_SARIF_PY
           shopt -s nullglob globstar
-          files=( *.sarif **/*.sarif )
+          # A PATH ENDING .sarif IS NOT ALWAYS A SARIF FILE.
+          #
+          # checkov-action treats `output_file_path` as a DIRECTORY and writes
+          # checkov.sarif/results_sarif.sarif inside it. `*.sarif` therefore matched the
+          # DIRECTORY, the redactor raised IsADirectoryError and exited 1, and a job whose
+          # scan had SUCCEEDED went red -- taking the second IaC scanner behind it with it,
+          # because that step had no if: always(). A housekeeping step decided a security
+          # verdict. Keep regular files only; **/*.sarif still finds the real report inside.
+          files=()
+          for _f in *.sarif **/*.sarif; do
+            if [ -f "$_f" ]; then files+=( "$_f" ); fi
+          done
           if [ ${#files[@]} -eq 0 ]; then
             echo "no SARIF produced by this job -- nothing to redact"
           else
@@ -3639,7 +3984,14 @@ jobs:
           echo "unavailable here (free on public repos, otherwise GitHub Advanced Security)."
           echo "The scan SUCCEEDED and the gate still enforces on these findings."
           echo "Retrieve them from the 'sarif-checkov' artifact."
+      # ONE SCANNER'S VERDICT MUST NOT CANCEL ANOTHER SCANNER'S COLLECTION.
+      #
+      # Without always(), a Checkov finding (or, in the live run that exposed this, a crashed
+      # housekeeping step) skipped Trivy config entirely -- so the job reported a Checkov failure
+      # AND silently established nothing about the half of the IaC surface Trivy covers. A gate
+      # decision is not a reason to stop looking.
       - name: Trivy IaC misconfig
+        if: always()
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: config
@@ -3917,7 +4269,7 @@ jobs:
           SCAN_STATUS_SH
           . /tmp/scan_status.sh
           if [ "$JOB_STATUS" = "success" ]; then _e=COMPLETE; else _e=FAILED; fi
-          scan_status "Infrastructure" "$_e" "" "terraform / bicep / docker"
+          scan_status "Infrastructure" "$_e" "checkov.sarif/results_sarif.sarif" "terraform / bicep / docker"
       # END SCAN_STATUS
 
   sast-dotnet:
@@ -4278,8 +4630,17 @@ jobs:
                   return 2
               rc = 0
               for p in argv:
-                  if not os.path.exists(p) or os.path.getsize(p) == 0:
-                      print('  %s: absent or empty, nothing to redact' % p)
+                  # A DIRECTORY IS NOT A REPORT, AND THIS USED TO BE FATAL.
+                  #
+                  # checkov-action treats `output_file_path` as a DIRECTORY and writes the report inside it,
+                  # so a caller globbing *.sarif hands this function a directory. os.path.exists() said yes,
+                  # json.load() raised IsADirectoryError, the handler below tried to overwrite the
+                  # "unparseable report" with an empty one -- and raised IsADirectoryError AGAIN, this time
+                  # unhandled. A redaction step then failed a job whose SCAN HAD SUCCEEDED, and took the
+                  # scanner behind it with it. isfile(), not exists(): only a real file can be redacted, and
+                  # skipping a non-file loses nothing, because a directory never carried a credential.
+                  if not os.path.isfile(p) or os.path.getsize(p) == 0:
+                      print('  %s: not a readable SARIF file, nothing to redact' % p)
                       continue
                   try:
                       doc = json.load(io.open(p, encoding='utf-8', errors='replace'))
@@ -4308,7 +4669,18 @@ jobs:
 
           REDACT_SARIF_PY
           shopt -s nullglob globstar
-          files=( *.sarif **/*.sarif )
+          # A PATH ENDING .sarif IS NOT ALWAYS A SARIF FILE.
+          #
+          # checkov-action treats `output_file_path` as a DIRECTORY and writes
+          # checkov.sarif/results_sarif.sarif inside it. `*.sarif` therefore matched the
+          # DIRECTORY, the redactor raised IsADirectoryError and exited 1, and a job whose
+          # scan had SUCCEEDED went red -- taking the second IaC scanner behind it with it,
+          # because that step had no if: always(). A housekeeping step decided a security
+          # verdict. Keep regular files only; **/*.sarif still finds the real report inside.
+          files=()
+          for _f in *.sarif **/*.sarif; do
+            if [ -f "$_f" ]; then files+=( "$_f" ); fi
+          done
           if [ ${#files[@]} -eq 0 ]; then
             echo "no SARIF produced by this job -- nothing to redact"
           else
@@ -4747,8 +5119,17 @@ jobs:
                   return 2
               rc = 0
               for p in argv:
-                  if not os.path.exists(p) or os.path.getsize(p) == 0:
-                      print('  %s: absent or empty, nothing to redact' % p)
+                  # A DIRECTORY IS NOT A REPORT, AND THIS USED TO BE FATAL.
+                  #
+                  # checkov-action treats `output_file_path` as a DIRECTORY and writes the report inside it,
+                  # so a caller globbing *.sarif hands this function a directory. os.path.exists() said yes,
+                  # json.load() raised IsADirectoryError, the handler below tried to overwrite the
+                  # "unparseable report" with an empty one -- and raised IsADirectoryError AGAIN, this time
+                  # unhandled. A redaction step then failed a job whose SCAN HAD SUCCEEDED, and took the
+                  # scanner behind it with it. isfile(), not exists(): only a real file can be redacted, and
+                  # skipping a non-file loses nothing, because a directory never carried a credential.
+                  if not os.path.isfile(p) or os.path.getsize(p) == 0:
+                      print('  %s: not a readable SARIF file, nothing to redact' % p)
                       continue
                   try:
                       doc = json.load(io.open(p, encoding='utf-8', errors='replace'))
@@ -4777,7 +5158,18 @@ jobs:
 
           REDACT_SARIF_PY
           shopt -s nullglob globstar
-          files=( *.sarif **/*.sarif )
+          # A PATH ENDING .sarif IS NOT ALWAYS A SARIF FILE.
+          #
+          # checkov-action treats `output_file_path` as a DIRECTORY and writes
+          # checkov.sarif/results_sarif.sarif inside it. `*.sarif` therefore matched the
+          # DIRECTORY, the redactor raised IsADirectoryError and exited 1, and a job whose
+          # scan had SUCCEEDED went red -- taking the second IaC scanner behind it with it,
+          # because that step had no if: always(). A housekeeping step decided a security
+          # verdict. Keep regular files only; **/*.sarif still finds the real report inside.
+          files=()
+          for _f in *.sarif **/*.sarif; do
+            if [ -f "$_f" ]; then files+=( "$_f" ); fi
+          done
           if [ ${#files[@]} -eq 0 ]; then
             echo "no SARIF produced by this job -- nothing to redact"
           else
@@ -5407,8 +5799,17 @@ jobs:
                   return 2
               rc = 0
               for p in argv:
-                  if not os.path.exists(p) or os.path.getsize(p) == 0:
-                      print('  %s: absent or empty, nothing to redact' % p)
+                  # A DIRECTORY IS NOT A REPORT, AND THIS USED TO BE FATAL.
+                  #
+                  # checkov-action treats `output_file_path` as a DIRECTORY and writes the report inside it,
+                  # so a caller globbing *.sarif hands this function a directory. os.path.exists() said yes,
+                  # json.load() raised IsADirectoryError, the handler below tried to overwrite the
+                  # "unparseable report" with an empty one -- and raised IsADirectoryError AGAIN, this time
+                  # unhandled. A redaction step then failed a job whose SCAN HAD SUCCEEDED, and took the
+                  # scanner behind it with it. isfile(), not exists(): only a real file can be redacted, and
+                  # skipping a non-file loses nothing, because a directory never carried a credential.
+                  if not os.path.isfile(p) or os.path.getsize(p) == 0:
+                      print('  %s: not a readable SARIF file, nothing to redact' % p)
                       continue
                   try:
                       doc = json.load(io.open(p, encoding='utf-8', errors='replace'))
@@ -5437,7 +5838,18 @@ jobs:
 
           REDACT_SARIF_PY
           shopt -s nullglob globstar
-          files=( *.sarif **/*.sarif )
+          # A PATH ENDING .sarif IS NOT ALWAYS A SARIF FILE.
+          #
+          # checkov-action treats `output_file_path` as a DIRECTORY and writes
+          # checkov.sarif/results_sarif.sarif inside it. `*.sarif` therefore matched the
+          # DIRECTORY, the redactor raised IsADirectoryError and exited 1, and a job whose
+          # scan had SUCCEEDED went red -- taking the second IaC scanner behind it with it,
+          # because that step had no if: always(). A housekeeping step decided a security
+          # verdict. Keep regular files only; **/*.sarif still finds the real report inside.
+          files=()
+          for _f in *.sarif **/*.sarif; do
+            if [ -f "$_f" ]; then files+=( "$_f" ); fi
+          done
           if [ ${#files[@]} -eq 0 ]; then
             echo "no SARIF produced by this job -- nothing to redact"
           else
@@ -5871,8 +6283,17 @@ jobs:
                   return 2
               rc = 0
               for p in argv:
-                  if not os.path.exists(p) or os.path.getsize(p) == 0:
-                      print('  %s: absent or empty, nothing to redact' % p)
+                  # A DIRECTORY IS NOT A REPORT, AND THIS USED TO BE FATAL.
+                  #
+                  # checkov-action treats `output_file_path` as a DIRECTORY and writes the report inside it,
+                  # so a caller globbing *.sarif hands this function a directory. os.path.exists() said yes,
+                  # json.load() raised IsADirectoryError, the handler below tried to overwrite the
+                  # "unparseable report" with an empty one -- and raised IsADirectoryError AGAIN, this time
+                  # unhandled. A redaction step then failed a job whose SCAN HAD SUCCEEDED, and took the
+                  # scanner behind it with it. isfile(), not exists(): only a real file can be redacted, and
+                  # skipping a non-file loses nothing, because a directory never carried a credential.
+                  if not os.path.isfile(p) or os.path.getsize(p) == 0:
+                      print('  %s: not a readable SARIF file, nothing to redact' % p)
                       continue
                   try:
                       doc = json.load(io.open(p, encoding='utf-8', errors='replace'))
@@ -5901,7 +6322,18 @@ jobs:
 
           REDACT_SARIF_PY
           shopt -s nullglob globstar
-          files=( *.sarif **/*.sarif )
+          # A PATH ENDING .sarif IS NOT ALWAYS A SARIF FILE.
+          #
+          # checkov-action treats `output_file_path` as a DIRECTORY and writes
+          # checkov.sarif/results_sarif.sarif inside it. `*.sarif` therefore matched the
+          # DIRECTORY, the redactor raised IsADirectoryError and exited 1, and a job whose
+          # scan had SUCCEEDED went red -- taking the second IaC scanner behind it with it,
+          # because that step had no if: always(). A housekeeping step decided a security
+          # verdict. Keep regular files only; **/*.sarif still finds the real report inside.
+          files=()
+          for _f in *.sarif **/*.sarif; do
+            if [ -f "$_f" ]; then files+=( "$_f" ); fi
+          done
           if [ ${#files[@]} -eq 0 ]; then
             echo "no SARIF produced by this job -- nothing to redact"
           else
@@ -6489,8 +6921,17 @@ jobs:
                   return 2
               rc = 0
               for p in argv:
-                  if not os.path.exists(p) or os.path.getsize(p) == 0:
-                      print('  %s: absent or empty, nothing to redact' % p)
+                  # A DIRECTORY IS NOT A REPORT, AND THIS USED TO BE FATAL.
+                  #
+                  # checkov-action treats `output_file_path` as a DIRECTORY and writes the report inside it,
+                  # so a caller globbing *.sarif hands this function a directory. os.path.exists() said yes,
+                  # json.load() raised IsADirectoryError, the handler below tried to overwrite the
+                  # "unparseable report" with an empty one -- and raised IsADirectoryError AGAIN, this time
+                  # unhandled. A redaction step then failed a job whose SCAN HAD SUCCEEDED, and took the
+                  # scanner behind it with it. isfile(), not exists(): only a real file can be redacted, and
+                  # skipping a non-file loses nothing, because a directory never carried a credential.
+                  if not os.path.isfile(p) or os.path.getsize(p) == 0:
+                      print('  %s: not a readable SARIF file, nothing to redact' % p)
                       continue
                   try:
                       doc = json.load(io.open(p, encoding='utf-8', errors='replace'))
@@ -6519,7 +6960,18 @@ jobs:
 
           REDACT_SARIF_PY
           shopt -s nullglob globstar
-          files=( *.sarif **/*.sarif )
+          # A PATH ENDING .sarif IS NOT ALWAYS A SARIF FILE.
+          #
+          # checkov-action treats `output_file_path` as a DIRECTORY and writes
+          # checkov.sarif/results_sarif.sarif inside it. `*.sarif` therefore matched the
+          # DIRECTORY, the redactor raised IsADirectoryError and exited 1, and a job whose
+          # scan had SUCCEEDED went red -- taking the second IaC scanner behind it with it,
+          # because that step had no if: always(). A housekeeping step decided a security
+          # verdict. Keep regular files only; **/*.sarif still finds the real report inside.
+          files=()
+          for _f in *.sarif **/*.sarif; do
+            if [ -f "$_f" ]; then files+=( "$_f" ); fi
+          done
           if [ ${#files[@]} -eq 0 ]; then
             echo "no SARIF produced by this job -- nothing to redact"
           else
@@ -7068,8 +7520,17 @@ jobs:
                   return 2
               rc = 0
               for p in argv:
-                  if not os.path.exists(p) or os.path.getsize(p) == 0:
-                      print('  %s: absent or empty, nothing to redact' % p)
+                  # A DIRECTORY IS NOT A REPORT, AND THIS USED TO BE FATAL.
+                  #
+                  # checkov-action treats `output_file_path` as a DIRECTORY and writes the report inside it,
+                  # so a caller globbing *.sarif hands this function a directory. os.path.exists() said yes,
+                  # json.load() raised IsADirectoryError, the handler below tried to overwrite the
+                  # "unparseable report" with an empty one -- and raised IsADirectoryError AGAIN, this time
+                  # unhandled. A redaction step then failed a job whose SCAN HAD SUCCEEDED, and took the
+                  # scanner behind it with it. isfile(), not exists(): only a real file can be redacted, and
+                  # skipping a non-file loses nothing, because a directory never carried a credential.
+                  if not os.path.isfile(p) or os.path.getsize(p) == 0:
+                      print('  %s: not a readable SARIF file, nothing to redact' % p)
                       continue
                   try:
                       doc = json.load(io.open(p, encoding='utf-8', errors='replace'))
@@ -7098,7 +7559,18 @@ jobs:
 
           REDACT_SARIF_PY
           shopt -s nullglob globstar
-          files=( *.sarif **/*.sarif )
+          # A PATH ENDING .sarif IS NOT ALWAYS A SARIF FILE.
+          #
+          # checkov-action treats `output_file_path` as a DIRECTORY and writes
+          # checkov.sarif/results_sarif.sarif inside it. `*.sarif` therefore matched the
+          # DIRECTORY, the redactor raised IsADirectoryError and exited 1, and a job whose
+          # scan had SUCCEEDED went red -- taking the second IaC scanner behind it with it,
+          # because that step had no if: always(). A housekeeping step decided a security
+          # verdict. Keep regular files only; **/*.sarif still finds the real report inside.
+          files=()
+          for _f in *.sarif **/*.sarif; do
+            if [ -f "$_f" ]; then files+=( "$_f" ); fi
+          done
           if [ ${#files[@]} -eq 0 ]; then
             echo "no SARIF produced by this job -- nothing to redact"
           else
@@ -8477,8 +8949,17 @@ jobs:
                   return 2
               rc = 0
               for p in argv:
-                  if not os.path.exists(p) or os.path.getsize(p) == 0:
-                      print('  %s: absent or empty, nothing to redact' % p)
+                  # A DIRECTORY IS NOT A REPORT, AND THIS USED TO BE FATAL.
+                  #
+                  # checkov-action treats `output_file_path` as a DIRECTORY and writes the report inside it,
+                  # so a caller globbing *.sarif hands this function a directory. os.path.exists() said yes,
+                  # json.load() raised IsADirectoryError, the handler below tried to overwrite the
+                  # "unparseable report" with an empty one -- and raised IsADirectoryError AGAIN, this time
+                  # unhandled. A redaction step then failed a job whose SCAN HAD SUCCEEDED, and took the
+                  # scanner behind it with it. isfile(), not exists(): only a real file can be redacted, and
+                  # skipping a non-file loses nothing, because a directory never carried a credential.
+                  if not os.path.isfile(p) or os.path.getsize(p) == 0:
+                      print('  %s: not a readable SARIF file, nothing to redact' % p)
                       continue
                   try:
                       doc = json.load(io.open(p, encoding='utf-8', errors='replace'))
@@ -8507,7 +8988,18 @@ jobs:
 
           REDACT_SARIF_PY
           shopt -s nullglob globstar
-          files=( *.sarif **/*.sarif )
+          # A PATH ENDING .sarif IS NOT ALWAYS A SARIF FILE.
+          #
+          # checkov-action treats `output_file_path` as a DIRECTORY and writes
+          # checkov.sarif/results_sarif.sarif inside it. `*.sarif` therefore matched the
+          # DIRECTORY, the redactor raised IsADirectoryError and exited 1, and a job whose
+          # scan had SUCCEEDED went red -- taking the second IaC scanner behind it with it,
+          # because that step had no if: always(). A housekeeping step decided a security
+          # verdict. Keep regular files only; **/*.sarif still finds the real report inside.
+          files=()
+          for _f in *.sarif **/*.sarif; do
+            if [ -f "$_f" ]; then files+=( "$_f" ); fi
+          done
           if [ ${#files[@]} -eq 0 ]; then
             echo "no SARIF produced by this job -- nothing to redact"
           else
@@ -8639,6 +9131,23 @@ jobs:
                 ;;
             esac
           done
+          # A GREEN GATE MUST NOT BE READ AS FULL COVERAGE.
+          #
+          # Every row above answers "did this scanner block". None of them answers "was there
+          # something here nothing scanned". Discovery established that separately; repeating it
+          # HERE is the point, because the gate summary is what a reviewer actually reads before
+          # approving a promotion, and a COVERAGE_GAP buried three jobs upstream is functionally
+          # silent. Environment, not interpolation, so a class name can never be read as shell.
+          COVERAGE_GAPS='${{ needs.discover.outputs.coverage_gaps }}'
+          COVERAGE_GAP_COUNT='${{ needs.discover.outputs.coverage_gap_count }}'
+          if [ -n "$COVERAGE_GAPS" ]; then
+            echo "::warning title=COVERAGE_GAP x${COVERAGE_GAP_COUNT}::${COVERAGE_GAPS} are present"
+            echo "in this repository and NO scanner in this kit can read them. Not blocked, and"
+            echo "not clean -- nothing looked. A PASS below is scoped to what WAS scanned."
+            {
+              echo "| (coverage) | COVERAGE_GAP x${COVERAGE_GAP_COUNT} | ${COVERAGE_GAPS} — present, no capable scanner |"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
           # EMIT THE CONTRACT BEFORE ANY exit. A gate that blocks and tells the caller nothing
           # about WHY forces every consumer to re-derive state from logs -- which is how a
           # vocabulary dies at an integration boundary.

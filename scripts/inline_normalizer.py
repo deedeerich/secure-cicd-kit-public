@@ -65,7 +65,11 @@ STATUS_JOBS = [
     ("sast-semgrep",  "SAST (Semgrep)",     "semgrep.sarif",      "source"),
     ("sast-bandit",   "SAST (Bandit)",      "bandit.sarif",       "python"),
     ("deps-scan",     "Dependencies",       "trivy-deps.sarif",   "dependencies + CVE feeds"),
-    ("iac-scan",      "Infrastructure",     "",                   "terraform / bicep / docker"),
+    # checkov-action writes into a DIRECTORY named by output_file_path; the report is the file
+    # inside it. Passing "" here meant the IaC job printed "findings NOT ESTABLISHED" on every
+    # run, including runs where it had just counted sixteen.
+    ("iac-scan",      "Infrastructure",     "checkov.sarif/results_sarif.sarif",
+     "terraform / bicep / docker"),
     ("sast-dotnet",   "SAST (.NET)",        "",                   "dotnet"),
     ("sast-java",     "SAST (Java)",        "",                   "java / kotlin"),
     ("sast-go",       "SAST (Go)",          "",                   "go"),
@@ -200,7 +204,18 @@ def redact_step():
     out += [(inner + line).rstrip() if line.strip() else "" for line in body.split("\n")]
     out += [inner + REDACT_TAG,
             inner + "shopt -s nullglob globstar",
-            inner + "files=( *.sarif **/*.sarif )",
+            inner + "# A PATH ENDING .sarif IS NOT ALWAYS A SARIF FILE.",
+            inner + "#",
+            inner + "# checkov-action treats `output_file_path` as a DIRECTORY and writes",
+            inner + "# checkov.sarif/results_sarif.sarif inside it. `*.sarif` therefore matched the",
+            inner + "# DIRECTORY, the redactor raised IsADirectoryError and exited 1, and a job whose",
+            inner + "# scan had SUCCEEDED went red -- taking the second IaC scanner behind it with it,",
+            inner + "# because that step had no if: always(). A housekeeping step decided a security",
+            inner + "# verdict. Keep regular files only; **/*.sarif still finds the real report inside.",
+            inner + "files=()",
+            inner + "for _f in *.sarif **/*.sarif; do",
+            inner + '  if [ -f "$_f" ]; then files+=( "$_f" ); fi',
+            inner + "done",
             inner + 'if [ ${#files[@]} -eq 0 ]; then',
             inner + '  echo "no SARIF produced by this job -- nothing to redact"',
             inner + "else",
