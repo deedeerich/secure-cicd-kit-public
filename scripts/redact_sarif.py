@@ -183,8 +183,17 @@ def main():
         return 2
     rc = 0
     for p in argv:
-        if not os.path.exists(p) or os.path.getsize(p) == 0:
-            print('  %s: absent or empty, nothing to redact' % p)
+        # A DIRECTORY IS NOT A REPORT, AND THIS USED TO BE FATAL.
+        #
+        # checkov-action treats `output_file_path` as a DIRECTORY and writes the report inside it,
+        # so a caller globbing *.sarif hands this function a directory. os.path.exists() said yes,
+        # json.load() raised IsADirectoryError, the handler below tried to overwrite the
+        # "unparseable report" with an empty one -- and raised IsADirectoryError AGAIN, this time
+        # unhandled. A redaction step then failed a job whose SCAN HAD SUCCEEDED, and took the
+        # scanner behind it with it. isfile(), not exists(): only a real file can be redacted, and
+        # skipping a non-file loses nothing, because a directory never carried a credential.
+        if not os.path.isfile(p) or os.path.getsize(p) == 0:
+            print('  %s: not a readable SARIF file, nothing to redact' % p)
             continue
         try:
             doc = json.load(io.open(p, encoding='utf-8', errors='replace'))

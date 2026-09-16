@@ -88,6 +88,13 @@ def run_case(shell, files, language="auto", iac_mode="auto", scope=".", break_fi
         io.open(outfile, "w").close()
         io.open(summary, "w").close()
 
+        # THE HARNESS MUST FEED THE STEP THE WAY THE RUNNER DOES.
+        #
+        # Caller input stopped being interpolated as `${{ inputs.* }}` inside the script -- it is
+        # passed as ENV, deliberately, so a caller cannot inject shell. These substitutions then
+        # matched nothing, every case silently ran with the defaults (language=auto,
+        # iac_mode=auto), and four assertions about SELECTORS were being answered by a shell that
+        # had never seen a selector. Kept below for older revisions; the env below is what works.
         body = shell
         body = body.replace("${{ inputs.paths }}", scope)
         body = body.replace("${{ inputs.language }}", language)
@@ -112,14 +119,22 @@ def run_case(shell, files, language="auto", iac_mode="auto", scope=".", break_fi
         # the thing being measured.
         script = os.path.join(rundir, "d.sh")
         io.open(script, "w", encoding="utf-8", newline="\n").write(body)
-        env = dict(os.environ, GITHUB_OUTPUT=outfile, GITHUB_STEP_SUMMARY=summary)
-        subprocess.run([_bash(), script], cwd=tmp, env=env, capture_output=True, text=True)
+        env = dict(os.environ, GITHUB_OUTPUT=outfile, GITHUB_STEP_SUMMARY=summary,
+                   IN_PATHS=scope, IN_LANGUAGE=language, IN_IAC_MODE=iac_mode,
+                   IN_ENABLE_IAC="false")
+        p = subprocess.run([_bash(), script], cwd=tmp, env=env, capture_output=True, text=True)
 
         out = {}
         for line in io.open(outfile, encoding="utf-8"):
             if "=" in line:
                 k, v = line.strip().split("=", 1)
                 out[k] = v
+        # A COVERAGE GAP THAT NOBODY CAN SEE IS THE DEFECT, NOT THE FIX. The step OUTPUT is what a
+        # consumer binds to; the SUMMARY and the ::warning are what a human reads, and the
+        # requirement is that all three carry it. Surfaced under reserved keys so `check` can
+        # assert on outputs exactly as before.
+        out["__summary__"] = io.open(summary, encoding="utf-8").read()
+        out["__log__"] = (p.stdout or "") + (p.stderr or "")
         return out
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -133,6 +148,20 @@ def check(name, got, expect):
     for k, (want, actual) in bad.items():
         print("      %-8s want=%-24s got=%s" % (k, want, actual))
     return not bad
+
+
+def check_text(name, got, key, must, must_not=()):
+    """Assert on the human-facing channels: the step summary and the annotation log."""
+    blob = got.get(key, "")
+    missing = [s for s in must if s not in blob]
+    present = [s for s in must_not if s in blob]
+    ok = not missing and not present
+    print("  %-38s %s" % (name, "PASS" if ok else "FAIL"))
+    for s in missing:
+        print("      MISSING  %r" % s)
+    for s in present:
+        print("      FORBIDDEN %r" % s)
+    return ok
 
 
 def main():
@@ -221,6 +250,66 @@ def main():
     ok &= check("fully supported repo declares no gap",
                 run_case(shell, ["app/main.py", "svc/go.mod", "infra/main.tf"]),
                 {"python": "true", "go": "true", "iac": "true", "unsupported": ""})
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # COVERAGE_GAP — absence of evidence, published as such
+    # ─────────────────────────────────────────────────────────────────────────
+    #
+    #   ARTIFACT_PRESENT + CAPABILITY_REQUIRED + SCANNER_UNAVAILABLE = COVERAGE_GAP
+    #
+    # Three states that must never appear collapsed:
+    #   NOT_APPLICABLE   the artifact is not here            nothing to find
+    #   CLEAN            a scanner ran and found nothing     evidence of absence
+    #   COVERAGE_GAP     the artifact is here, nothing scans it   ABSENCE OF EVIDENCE
+    #
+    # The failure being pinned: discovery answered its seven closed questions, found no Python
+    # and no Go, and published a tidy survey over a repository of shell scripts, PowerShell and
+    # workflow YAML that nothing in this kit can read. Silence is the defect. A gap must be
+    # NAMED, COUNTED, WARNED and put in the summary.
+    shell_ps = run_case(shell, ["ops/deploy.sh", "ops/build.ps1"])
+    ok &= check("shell + powershell -> counted gaps",
+                shell_ps,
+                # Order follows the sorted EXTENSION (ps1 before sh), not the display name.
+                {"coverage_gaps": "PowerShell,Shell", "coverage_gap_count": "2",
+                 "python": "false", "go": "false", "state": "COMPLETE"})
+    ok &= check_text("shell + powershell -> summary rows", shell_ps, "__summary__",
+                     must=["| Shell | COVERAGE_GAP |", "| PowerShell | COVERAGE_GAP |",
+                           "**COVERAGE_GAP x2**"],
+                     must_not=["| Shell | NOT_APPLICABLE |", "| PowerShell | NOT_APPLICABLE |"])
+    ok &= check_text("shell + powershell -> ::warning each", shell_ps, "__log__",
+                     must=["::warning title=COVERAGE_GAP: Shell::",
+                           "::warning title=COVERAGE_GAP: PowerShell::"])
+
+    # THE PIPELINE'S OWN DEFINITION FILES. No probe asked about them at all, so a repo whose only
+    # unscanned artifact was .github/workflows/*.yml produced a completely silent survey. This kit
+    # ships no actionlint; incidental CKV_GHA_* coverage from Checkov is not a declared capability.
+    gha = run_case(shell, [".github/workflows/ci.yml", ".github/workflows/release.yaml"])
+    ok &= check("workflow YAML is a declared gap", gha,
+                {"coverage_gaps": "GitHubActionsWorkflow", "coverage_gap_count": "1",
+                 "unsupported": "", "state": "COMPLETE"})
+    ok &= check_text("workflow gap names the missing scanner", gha, "__summary__",
+                     must=["| GitHubActionsWorkflow | COVERAGE_GAP |", "actionlint"])
+
+    # Swift, Kotlin, Ruby, PHP, Rust are in this estate and nothing here scans them.
+    est = run_case(shell, ["ios/App.swift", "android/Main.kt", "app/h.rb",
+                           "web/i.php", "native/core.rs"])
+    ok &= check("swift/kotlin/ruby/php/rust all named", est,
+                {"coverage_gap_count": "5"})
+    ok &= check_text("each class named, not spelled as an extension", est, "__summary__",
+                     must=["| Swift | COVERAGE_GAP |", "| Kotlin | COVERAGE_GAP |",
+                           "| Ruby | COVERAGE_GAP |", "| PHP | COVERAGE_GAP |",
+                           "| Rust | COVERAGE_GAP |"])
+
+    # A GAP IS NOT AN APPLICABILITY ANSWER. Supported code still runs; the gap sits beside it.
+    ok &= check("gap coexists with a real scanner",
+                run_case(shell, ["app/main.py", "ops/deploy.sh"]),
+                {"python": "true", "coverage_gaps": "Shell", "coverage_gap_count": "1"})
+
+    # ZERO IS ONLY PRINTED WHEN SOMEONE LOOKED. A fully covered repo declares no gap, and that
+    # claim has to be distinguishable from the silence this test exists to forbid.
+    ok &= check("fully covered repo -> zero gaps",
+                run_case(shell, ["app/main.py", "svc/go.mod", "infra/main.tf"]),
+                {"coverage_gaps": "", "coverage_gap_count": "0"})
 
     # REGRESSION: `find | head -1` reported 141 on any repo with a second match, so discovery
     # claimed DISCOVERY_UNAVAILABLE on essentially every real repository. It failed SAFE, which
