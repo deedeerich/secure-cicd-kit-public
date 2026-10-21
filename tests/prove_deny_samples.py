@@ -135,5 +135,31 @@ def main(argv):
     return 0
 
 
+
+# SOURCE-ONLY CONTROL (2026-10-21). This control guards the SOURCE before anything leaves it. A
+# neutral export never carries the deny list (tests/prove_export_scope.py E2), so in an exported
+# copy -- recognised by its export watermark AND the list's absence -- there is nothing for it to
+# read. It says so by name and does not fail the copy's own self-test; the source's gate checked
+# this tree at export, at the commit the watermark records. An explicit list or a self-test run
+# still runs normally. tests/prove_export_scope.py E9.
+def _exported_copy_without_list(root, argv):
+    if any(a.startswith('--deny') or a == '--self-test' for a in argv[1:]) or len(
+            [a for a in argv[1:] if not a.startswith('-')]) > 0:
+        return False
+    wm = os.path.join(root, '.neutral-export-watermark.json')
+    return os.path.isfile(wm) and not os.path.isfile(os.path.join(root, 'scripts',
+                                                                  'export-deny.txt'))
+
+
+def _say_source_only(name):
+    print('SOURCE-ONLY CONTROL: %s guards the source repository before export. This is an '
+          'exported copy (.neutral-export-watermark.json present) and, by design, carries no '
+          'scripts/export-deny.txt, so there is nothing here for it to check; the source ran it '
+          'at the commit the watermark records. Nothing was checked here, and nothing passed.'
+          % name)
+    return 0
+
 if __name__ == '__main__':
+    if _exported_copy_without_list(ROOT, sys.argv):
+        sys.exit(_say_source_only('prove_deny_samples.py'))
     sys.exit(main(sys.argv))

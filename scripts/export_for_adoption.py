@@ -380,6 +380,26 @@ def profile_label(name: str | None) -> str:
     return name or NEUTRAL_PROFILE
 
 
+# GENERATED FILES DESCRIBE THE TREE THEY SIT IN (2026-10-21). The capability inventory is generated
+# from the workflows present; copied from the source it named the internal consumer-path workflow
+# the export withholds, and the copy's own self-test ("Normalizer drift") failed on the first public
+# PR of Release 2. Each generated file is regenerated inside the copy, from the copy.
+# tests/prove_export_scope.py E9.
+GENERATED = ("docs/assurance/CAPABILITY_INVENTORY_GENERATED.csv",)
+
+
+def regenerate_generated(dest: str) -> str | None:
+    """Regenerate GENERATED inside `dest` from `dest`. -> None, or why it could not."""
+    tool = os.path.join(dest, "tests", "capability_inventory.py")
+    if not os.path.isfile(tool):
+        return None
+    p = subprocess.run([sys.executable, tool], cwd=dest, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    if p.returncode != 0:
+        return f"tests/capability_inventory.py exited {p.returncode}: {(p.stdout + p.stderr)[-300:]}"
+    return None
+
+
 def write_watermark(src: str, dest: str, head: str, branch: str, shipped: dict,
                     unresolved: dict | None = None, dirty_flag: bool = False,
                     profile: str | None = None) -> None:
@@ -659,6 +679,17 @@ def incremental(src: str, a, deny: list, hit_count: int) -> int:
                                               .strftime("%Y-%m-%d"))
              for rel, _why in conflicts if rel not in to_write}
 
+    # Generated files are regenerated from the destination and recorded as shipped in THAT form,
+    # so the next incremental does not mistake the regenerated file for a local edit.
+    why = regenerate_generated(dest)
+    if why:
+        print(f"REFUSED: a generated file could not be regenerated in the destination ({why}).")
+        return 1
+    for rel in GENERATED:
+        fp = os.path.join(dest, rel.replace("/", os.sep))
+        if os.path.isfile(fp):
+            shipped[rel] = sha256_of(fp)
+
     write_watermark(src, dest, head, branch, shipped, still, a.allow_dirty, a.profile)
 
     print()
@@ -872,6 +903,11 @@ def main() -> int:
 
     shutil.copytree(src, a.out, ignore=ignore)
     shutil.rmtree(os.path.join(a.out, ".git"), ignore_errors=True)
+    why = regenerate_generated(a.out)
+    if why:
+        print(f"REFUSED: a generated file could not be regenerated from the copy ({why}). The copy")
+        print(f"at {a.out} would describe the source instead of itself; it is left for inspection.")
+        return 1
 
     stamp = datetime.datetime.now().strftime("%Y-%m-%d")
     with open(os.path.join(a.out, "EXPORT_MANIFEST.md"), "w", encoding="utf-8", newline="\n") as f:

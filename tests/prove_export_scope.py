@@ -39,6 +39,9 @@ WHAT IT PROVES
         2026-10-16). It records the source commit -- the three-way incremental needs nothing
         else -- and a neutral source label, never the private branch name; an incremental from
         the commit alone still runs and advances it.
+    E9  THE COPY PASSES ITS OWN CHECKS. The capability inventory is regenerated from the copy (it
+        named a workflow the export withholds), and the copy's proof census passes (a tool only
+        the withheld workflow runs looked unwired). Both failed the first public Release 2 PR.
     E8  WHAT GIT DOES NOT TRACK IS NOT THE KIT. An untracked file that is not gitignored (a scanner
         tarball an earlier CI step downloaded) is neither scanned nor shipped.
     E6  THE EXCLUDED PATH IS EXCLUDED. A path list defined for exclusion was never read, so the
@@ -272,6 +275,35 @@ def main():
             if rel not in shipped:
                 fails.append('E3 did not ship %s' % rel)
         print('exported %d file(s)' % len(shipped))
+        # E9 THE COPY PASSES ITS OWN SELF-TEST CHECKS. The first public PR of Release 2 failed
+        # twice in "Normalizer drift": the generated capability inventory named the internal
+        # consumer-path workflow the export withholds, and a tool only that workflow runs then
+        # looked unwired to the proof census. Run both against the exported tree, as shipped.
+        inv = os.path.join(out, 'docs', 'assurance', 'CAPABILITY_INVENTORY_GENERATED.csv')
+        before = open(inv, 'rb').read() if os.path.isfile(inv) else None
+        subprocess.run([sys.executable, os.path.join(out, 'tests', 'capability_inventory.py')],
+                       cwd=out, capture_output=True, text=True, env=env)
+        after = open(inv, 'rb').read() if os.path.isfile(inv) else None
+        if before is None or before.replace(b'\r\n', b'\n') != (after or b'').replace(b'\r\n', b'\n'):
+            fails.append('E9 the exported capability inventory is not what the exported tree '
+                         'generates: it describes the source, not the copy')
+        cov = subprocess.run([sys.executable, os.path.join(out, 'tests', 'check_selftest_coverage.py')],
+                             cwd=out, capture_output=True, text=True, encoding='utf-8',
+                             errors='replace', env=env)
+        if cov.returncode != 0:
+            fails.append('E9 the exported tree fails its own proof census: %s'
+                         % ' | '.join(l for l in cov.stdout.splitlines() if 'FAIL' in l)[:400])
+        # The deny list never ships (E2), so in a copy the controls that guard the SOURCE have
+        # nothing to read. Each must say so by name -- not fail the copy's self-test (third
+        # failure of the first public Release 2 PR), and not pretend to have checked anything.
+        for tool in ('check_export_safety.py', 'prove_deny_samples.py', 'prove_export_scope.py'):
+            q = subprocess.run([sys.executable, os.path.join(out, 'tests', tool)], cwd=out,
+                               capture_output=True, text=True, encoding='utf-8', errors='replace',
+                               env=env)
+            said = q.stdout + q.stderr
+            if q.returncode != 0 or 'SOURCE-ONLY CONTROL' not in said:
+                fails.append('E9 in the exported copy tests/%s exited %d without naming itself a '
+                             'source-only control: %s' % (tool, q.returncode, said.strip()[-200:]))
         try:
             prove_no_deny_list_refuses(fails)
             prove_profile_bound(fails)
@@ -294,5 +326,31 @@ def main():
         shutil.rmtree(work, ignore_errors=True)
 
 
+
+# SOURCE-ONLY CONTROL (2026-10-21). This control guards the SOURCE before anything leaves it. A
+# neutral export never carries the deny list (tests/prove_export_scope.py E2), so in an exported
+# copy -- recognised by its export watermark AND the list's absence -- there is nothing for it to
+# read. It says so by name and does not fail the copy's own self-test; the source's gate checked
+# this tree at export, at the commit the watermark records. An explicit list or a self-test run
+# still runs normally. tests/prove_export_scope.py E9.
+def _exported_copy_without_list(root, argv):
+    if any(a.startswith('--deny') or a == '--self-test' for a in argv[1:]) or len(
+            [a for a in argv[1:] if not a.startswith('-')]) > 0:
+        return False
+    wm = os.path.join(root, '.neutral-export-watermark.json')
+    return os.path.isfile(wm) and not os.path.isfile(os.path.join(root, 'scripts',
+                                                                  'export-deny.txt'))
+
+
+def _say_source_only(name):
+    print('SOURCE-ONLY CONTROL: %s guards the source repository before export. This is an '
+          'exported copy (.neutral-export-watermark.json present) and, by design, carries no '
+          'scripts/export-deny.txt, so there is nothing here for it to check; the source ran it '
+          'at the commit the watermark records. Nothing was checked here, and nothing passed.'
+          % name)
+    return 0
+
 if __name__ == '__main__':
+    if _exported_copy_without_list(ROOT, sys.argv):
+        sys.exit(_say_source_only('prove_export_scope.py'))
     sys.exit(main())
