@@ -112,6 +112,13 @@ RUNTIME_TOOLS = {
     'live_ticketing_run.py': 'runs against the owner\'s PERSONAL tracker with live credentials '
                              '(KDEC-004); never on CI by design. Its offline half is '
                              'prove_live_runner_offline.py, which self-test runs',
+    # In the kit, consumer-path-test.yml runs it and the census counts it as run. A neutral export
+    # withholds that workflow, so in a public copy it is a tool a consumer runs against their own
+    # consumer-path results; its behaviour is proven by prove_expected_signals_honest.py.
+    'verify_expected_signals.py': 'checks a consumer-path run\'s signals against an expected list; '
+                                  'run by the kit\'s internal consumer-path workflow (withheld from '
+                                  'exports) or by a consumer. prove_expected_signals_honest.py, '
+                                  'which self-test runs, proves its behaviour',
 }
 UNWIRED = {
     'check_context_current.py': {
