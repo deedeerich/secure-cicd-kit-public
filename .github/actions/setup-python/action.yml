@@ -9,6 +9,28 @@ inputs:
     description: "Path to pip requirements file (skipped if absent)"
     required: false
     default: "requirements.txt"
+  cache-dependency-path:
+    description: >-
+      Path the pip cache keys on. Empty keeps the upstream default, which globs `**/requirements.txt`
+      and `**/pyproject.toml` RECURSIVELY -- so it can silently key the cache on a fixture's
+      requirements file rather than the one this run actually installs. Pass it explicitly wherever
+      the answer matters.
+    required: false
+    default: ""
+# WHAT THE INSTALL BRANCH DID, SAID OUT LOUD. The composite used to install and report nothing, so
+# a green step that installed everything and a green step that installed nothing read the same --
+# the silence of a scanner that runs and reports nothing (D7), one layer down. Found by the first
+# proof to run the install branch (tests/prove_setup_python_installs.py).
+outputs:
+  install_state:
+    description: "INSTALLED | SKIPPED. Which branch ran; never infer it from a green step."
+    value: ${{ steps.install.outputs.install_state }}
+  installed:
+    description: >-
+      Space-separated name==version of every distribution pip installed from the requirements
+      file, from pip's own install report. Empty when SKIPPED, and empty when every requirement
+      was already satisfied -- a cache hit installs nothing, and says so.
+    value: ${{ steps.install.outputs.installed }}
 runs:
   using: composite
   steps:
@@ -16,12 +38,43 @@ runs:
       with:
         python-version: ${{ inputs.python-version }}
         cache: pip
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}
     - name: Install requirements
+      id: install
       shell: bash
+      env:
+        # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py). A path
+        # interpolated into the body is parsed by bash before the `-f` test ever sees it.
+        REQUIREMENTS_FILE: ${{ inputs.requirements-file }}
       run: |
         python -m pip install --upgrade pip
-        if [ -f "${{ inputs.requirements-file }}" ]; then
-          pip install -r "${{ inputs.requirements-file }}"
+        if [ -f "$REQUIREMENTS_FILE" ]; then
+          # pip's own report of what THIS invocation installed (not a second listing of the
+          # environment). A requirement nothing can resolve fails here, under the composite's
+          # `-e`, before any state is written: a failed install is never reported as one.
+          report="$(mktemp)"
+          pip install -r "$REQUIREMENTS_FILE" --report "$report"
+          installed="$(python -c 'import json, sys; r = json.load(open(sys.argv[1], encoding="utf-8")); print(" ".join("%s==%s" % (i["metadata"]["name"], i["metadata"]["version"]) for i in r.get("install", [])))' "$report")"
+          rm -f "$report"
+          echo "install_state=INSTALLED" >> "$GITHUB_OUTPUT"
+          echo "installed=$installed" >> "$GITHUB_OUTPUT"
+          {
+            echo "### setup-python: installed from \`$REQUIREMENTS_FILE\`"
+            echo ""
+            if [ -n "$installed" ]; then
+              for d in $installed; do echo "- \`$d\`"; done
+            else
+              echo "Every requirement was already satisfied; this run installed nothing new."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Installed from $REQUIREMENTS_FILE: ${installed:-(nothing new; already satisfied)}"
         else
-          echo "No ${{ inputs.requirements-file }} — skipping install."
+          echo "No $REQUIREMENTS_FILE — skipping install."
+          echo "install_state=SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "installed=" >> "$GITHUB_OUTPUT"
+          {
+            echo "### setup-python: no requirements file at \`$REQUIREMENTS_FILE\`"
+            echo ""
+            echo "Install SKIPPED; nothing installed."
+          } >> "$GITHUB_STEP_SUMMARY"
         fi

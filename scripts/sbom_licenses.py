@@ -26,19 +26,44 @@ USAGE
 
 EXIT
     0  inventory written      1  denied licence present      2  self-test failed
+    3  NO readable SBOM, or one supplied SBOM unreadable -- licence state NOT ESTABLISHED, which
+       is not an empty licence set (ledger L16: this used to exit 0, so a syft failure read as
+       "nothing denied")
+
+THE VERDICT BELONGS TO THE GATE (ledger L16). `--out` writes it as JSON -- `state` (FINDINGS |
+PASS | NOT_APPLICABLE when no denylist was supplied), the deduplicated component count, the
+inventory, the undeclared and the denied -- and the sbom job publishes `state` and the denied
+count as job outputs the gate reads.
 """
 import argparse
 import io
 import json
 import os
+import re
 import sys
+
+
+def described_roots(doc):
+    """SPDX ids the DOCUMENT describes -- the scan root (syft: a `.` package of purpose FILE),
+    not a dependency. Measured on syft 1.52.0; counting it reported the directory itself as an
+    unlicensed component."""
+    roots = set(doc.get('documentDescribes') or [])
+    for r in (doc.get('relationships') or []):
+        if (r.get('relationshipType') == 'DESCRIBES'
+                and r.get('spdxElementId') == 'SPDXRef-DOCUMENT'):
+            roots.add(r.get('relatedSpdxElement'))
+    return roots
 
 
 def components(doc):
     """CycloneDX and SPDX carry the same facts under different names. Handle both rather than
     silently reading one and reporting a total that means 'the half I understood'."""
     out = []
+    roots = described_roots(doc)
     for c in (doc.get('components') or []):                      # CycloneDX
+        if c.get('type') == 'file':
+            # A manifest syft read, not a dependency (see the self-test).
+            continue
         lic = []
         for entry in (c.get('licenses') or []):
             node = entry.get('license') or {}
@@ -48,6 +73,8 @@ def components(doc):
         out.append({'name': c.get('name') or '?', 'version': c.get('version') or '',
                     'licenses': sorted(set(lic)), 'purl': c.get('purl') or ''})
     for p in (doc.get('packages') or []):                        # SPDX
+        if p.get('SPDXID') in roots:
+            continue
         lic = []
         for k in ('licenseConcluded', 'licenseDeclared'):
             v = p.get(k)
@@ -60,19 +87,53 @@ def components(doc):
     return out
 
 
+def dedupe(comps):
+    """ONE COMPONENT, ONE ROW. The job reads CycloneDX AND SPDX, which describe the same packages;
+    counting both counted every component twice. Merge on (name, version), uniting licences."""
+    merged, order = {}, []
+    for c in comps:
+        k = (c['name'], c['version'])
+        if k not in merged:
+            merged[k] = dict(c, licenses=list(c['licenses']))
+            order.append(k)
+        else:
+            merged[k]['licenses'] = sorted(set(merged[k]['licenses']) | set(c['licenses']))
+            merged[k]['purl'] = merged[k]['purl'] or c['purl']
+    return [merged[k] for k in order]
+
+
+TOKEN = re.compile(r'[A-Za-z0-9.+\-:]+')
+OPERATORS = {'AND', 'OR', 'WITH'}
+
+
+def tokens(expr):
+    """The licence identifiers in an SPDX expression: `(MIT OR GPL-3.0-only)` -> MIT, GPL-3.0-only."""
+    return [t for t in TOKEN.findall(expr) if t.upper() not in OPERATORS]
+
+
+def denies(entry, token):
+    """TOKEN-LEVEL, NOT SUBSTRING (ledger L16). `GPL-3.0` must catch `GPL-3.0-only`,
+    `GPL-3.0-or-later` and `GPL-3.0+`, and must NOT catch `LGPL-3.0-only` -- which the substring
+    match did, reporting an LGPL library as a GPL denial."""
+    t, d = token.upper(), entry.upper()
+    return t == d or t == d + '+' or t.startswith(d + '-')
+
+
 def assess(comps, deny):
     denied, undeclared, inventory = [], [], {}
-    dl = [d.strip().upper() for d in deny if d.strip()]
+    dl = [d.strip() for d in deny if d.strip()]
     for c in comps:
         if not c['licenses']:
             undeclared.append(c)
             continue
+        hit = None
         for lic in c['licenses']:
             inventory[lic] = inventory.get(lic, 0) + 1
-            # Substring match, deliberately: a denylist entry of GPL-3.0 should catch
-            # "GPL-3.0-only" and "GPL-3.0-or-later" rather than requiring every spelling.
-            if any(d in lic.upper() for d in dl):
-                denied.append((c, lic))
+            if hit is None and any(denies(d, t) for d in dl for t in tokens(lic)):
+                hit = lic
+        # One denial per component, whichever of its licences carried it.
+        if hit is not None:
+            denied.append((c, hit))
     return denied, undeclared, inventory
 
 
@@ -108,6 +169,35 @@ def self_test():
     d2, _u, _i = assess(c1, [''])
     if d2:
         fails.append('an empty denylist denied something -- empty substring matches everything')
+    # TOKEN-LEVEL: LGPL is not GPL; an expression is read per identifier; `+` is a GPL spelling.
+    lg = [{'name': 'l', 'version': '1', 'licenses': ['LGPL-3.0-only'], 'purl': ''},
+          {'name': 'x', 'version': '1', 'licenses': ['MIT OR GPL-3.0-only'], 'purl': ''},
+          {'name': 'p', 'version': '1', 'licenses': ['GPL-3.0+'], 'purl': ''}]
+    d3, _u, _i = assess(lg, ['GPL-3.0'])
+    if sorted(c['name'] for c, _l in d3) != ['p', 'x']:
+        fails.append('token match wrong: denied %s, expected p and x (never the LGPL one)'
+                     % sorted(c['name'] for c, _l in d3))
+    # DEDUPE: the same package from CycloneDX and SPDX is one component.
+    both = dedupe(components({'components': [{'name': 'd', 'version': '1',
+                                              'licenses': [{'license': {'id': 'Apache-2.0'}}]}]})
+                  + components(spdx))
+    if len([c for c in both if c['name'] == 'd']) != 1:
+        fails.append('a package present in CycloneDX and SPDX was counted twice')
+    # THE DESCRIBED ROOT IS NOT A DEPENDENCY.
+    rooted = {'packages': [{'SPDXID': 'SPDXRef-Root', 'name': '.'},
+                           {'SPDXID': 'SPDXRef-P', 'name': 'q', 'versionInfo': '1'}],
+              'relationships': [{'spdxElementId': 'SPDXRef-DOCUMENT', 'relationshipType':
+                                 'DESCRIBES', 'relatedSpdxElement': 'SPDXRef-Root'}]}
+    if [c['name'] for c in components(rooted)] != ['q']:
+        fails.append('the SPDX document root was counted as a component')
+    # A FILE IS NOT A PACKAGE. syft on Linux lists every manifest it read as a CycloneDX
+    # component of type `file`, named by absolute path (measured: syft 1.52.0 and 1.54.1 on a
+    # hosted runner; Windows emitted none). Counting them reported each lockfile as an
+    # unlicensed dependency, and the component count depended on the host.
+    filed = {'components': [{'type': 'library', 'name': 'r', 'version': '1'},
+                            {'type': 'file', 'name': '/w/src/package-lock.json'}]}
+    if [c['name'] for c in components(filed)] != ['r']:
+        fails.append('a CycloneDX `file` component was counted as a package')
     if fails:
         print('SELF-TEST FAILED:')
         for f in fails:
@@ -131,20 +221,29 @@ def main():
         return 2
 
     comps = []
-    read = []
+    read, unreadable = [], []
     for p in a.sbom:
         if not os.path.exists(p) or os.path.getsize(p) == 0:
+            unreadable.append(p)
             continue
         try:
             comps += components(json.load(io.open(p, encoding='utf-8', errors='replace')))
             read.append(os.path.basename(p))
-        except (ValueError, IOError) as e:
+        except (ValueError, IOError, AttributeError) as e:
+            unreadable.append(p)
             print('::warning title=Unreadable SBOM::%s (%s) -- its components are NOT included '
                   'in the counts below.' % (p, type(e).__name__))
-    if not read:
-        print('no readable SBOM supplied; licence state NOT ESTABLISHED')
-        return 0
+    if not read or unreadable:
+        # NOT ESTABLISHED IS NOT EMPTY. Exit 3, so the caller cannot read it as "nothing denied".
+        print('::error title=Licence state NOT ESTABLISHED::%s' % (
+            'no readable SBOM supplied' if not read else
+            'SBOM(s) absent or unreadable: %s' % ', '.join(unreadable)))
+        if a.out:
+            json.dump({'state': 'COLLECTION_FAILED', 'read': read, 'unreadable': unreadable},
+                      io.open(a.out, 'w', encoding='utf-8'), indent=1)
+        return 3
 
+    comps = dedupe(comps)
     denied, undeclared, inv = assess(comps, a.deny.split(','))
     out = os.environ.get('GITHUB_STEP_SUMMARY', '')
     L = ['### Dependency licences', '',
@@ -179,9 +278,12 @@ def main():
         with io.open(out, 'a', encoding='utf-8') as fh:
             fh.write(text + '\n\n')
     if a.out:
-        json.dump({'components': len(comps), 'inventory': inv,
+        policy = any(d.strip() for d in a.deny.split(','))
+        json.dump({'state': 'FINDINGS' if denied else ('PASS' if policy else 'NOT_APPLICABLE'),
+                   'components': len(comps), 'inventory': inv,
                    'undeclared': [c['name'] for c in undeclared],
-                   'denied': [{'name': c['name'], 'licence': l} for c, l in denied]},
+                   'denied': [{'name': c['name'], 'version': c['version'], 'licence': l}
+                              for c, l in denied]},
                   io.open(a.out, 'w', encoding='utf-8'), indent=1)
     return 1 if denied else 0
 

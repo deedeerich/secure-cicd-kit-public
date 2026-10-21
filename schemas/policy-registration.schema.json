@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://secure-cicd-kit/schemas/policy-registration.schema.json",
+  "title": "Policy Registration",
+  "description": "The business's declared enforcement posture for one repository, per environment cell, on the protected default branch under CODEOWNERS (ENFORCEMENT_TIERS_AND_FINDING_BASELINE.md sections 4 and 10; SINGLE_PIPELINE_TARGET.md stage 1). The rung sits ABOVE policy_mode, team_pattern and environment_tier: policy_mode is DERIVED from it and never written here; the tier and the team pattern are read from here and never from a workflow input. Read by scripts/policy_registration.py from a git ref only -- a registration read from the PR under evaluation is a self-signed demotion. Every number the design calls a placeholder lives under `numbers`; the mechanism holds no constant for any of them.",
+  "type": "object",
+  "required": ["schema_version", "team_pattern", "numbers", "environments"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 1},
+    "repository": {"type": "string", "description": "Optional human label. The repository is the one the file is committed in; nothing is resolved from this field."},
+    "notes": {"type": "string"},
+    "team_pattern": {
+      "enum": ["solo_dev", "pair_devs", "small_team", "full_team"],
+      "description": "Changes HOW a floor is satisfied, never WHETHER. solo_dev makes approval separation an unvalidated human-workflow path -- reported as such, never as passing."
+    },
+    "numbers": {
+      "type": "object",
+      "description": "Policy, not architecture (capability_origin.OVERLAY_SPECIFIC_POLICY). Every value here is a placeholder the design refuses to make a constant; a number the mechanism needs and does not find here is POLICY_NUMBER_NOT_CONFIGURED, never a default.",
+      "additionalProperties": false,
+      "properties": {
+        "promotion_consecutive_clean_runs": {"type": "integer", "minimum": 1, "description": "ETFB 4.3 item 1: consecutive runs at baseline strength with no EVIDENCE_UNTRUSTED before crawl -> walk."},
+        "sla_period_days": {
+          "type": "object", "additionalProperties": false,
+          "properties": {"CRITICAL": {"type": "integer", "minimum": 0}, "HIGH": {"type": "integer", "minimum": 0}, "MEDIUM": {"type": "integer", "minimum": 0}, "LOW": {"type": "integer", "minimum": 0}},
+          "required": ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
+          "description": "ETFB 8.2: the remediation term per effective severity. The owner's numbers are recorded as the configured value."
+        },
+        "breach_grace_days": {
+          "type": "object", "additionalProperties": false,
+          "properties": {"CRITICAL": {"type": "integer", "minimum": 0}, "HIGH": {"type": "integer", "minimum": 0}, "MEDIUM": {"type": "integer", "minimum": 0}, "LOW": {"type": "integer", "minimum": 0}},
+          "required": ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
+          "description": "ETFB 8.5: the grace between a breach and REOPENED_BY_LAPSE. CRITICAL: none; longer severities: short and configured."
+        },
+        "track_stall_period_days": {"type": "integer", "minimum": 1, "description": "ETFB 8.8 rule 5: a cell whose track recorded zero verified closures in this period owes a decision at promotion review."},
+        "no_fix_recheck_days": {"type": "integer", "minimum": 1, "description": "ETFB 8.7: how often NO_FIX_AVAILABLE must be re-established. Tied to the SLA period by policy; configured here."},
+        "severity_formula_version": {"type": "string", "minLength": 1, "description": "ETFB 6: the version of the severity derivation this cell runs. A change is a declared event with a reconciliation obligation."}
+      }
+    },
+    "environments": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "One cell per environment the repository deploys to. Monotone along the promotion path: rung(sandbox) <= rung(dev) <= rung(test) <= rung(uat) = rung(prod).",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["tier", "rung", "approver_role", "registered_on", "review_trigger", "reachable_from_merge_without_human_gate"],
+        "additionalProperties": false,
+        "properties": {
+          "tier": {"enum": ["sandbox", "dev", "test", "uat", "prod"]},
+          "rung": {"enum": ["crawl", "walk", "run"], "description": "The DECLARED rung: the target. The effective rung follows promotion_evidence and may be lower; the record carries both and the gate obeys the effective one."},
+          "approver_role": {"type": "string", "minLength": 1, "description": "A role, never a person."},
+          "registered_on": {"type": "string", "format": "date"},
+          "review_trigger": {"type": "string", "minLength": 1, "description": "ETFB 10: returns to review when the environment set, the team pattern or the exposure changes."},
+          "reachable_from_merge_without_human_gate": {"type": "boolean", "description": "ETFB 4.1: a pull request is evaluated at the rung of the highest environment the merged branch can reach without a further human gate."},
+          "notes": {"type": "string"},
+          "promotion_evidence": {
+            "type": "object", "additionalProperties": false,
+            "description": "ETFB 4.3. Evidence REFERENCES, never booleans: configuration is not evidence.",
+            "properties": {
+              "walk": {
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                  "controls_executed_at_baseline": {"type": "object", "required": ["consecutive_clean_runs", "evidence_ref"], "additionalProperties": false,
+                    "properties": {"consecutive_clean_runs": {"type": "integer", "minimum": 0}, "evidence_ref": {"type": "string", "minLength": 1}}},
+                  "ledger_populated_and_owned": {"type": "string", "minLength": 1},
+                  "entries_classified": {"type": "string", "minLength": 1},
+                  "human_controls_assessed": {"type": "string", "minLength": 1}
+                }
+              },
+              "run": {
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                  "baseline_forced_failure_demonstrated": {"type": "string", "minLength": 1},
+                  "track_closure_verified": {"type": "string", "minLength": 1},
+                  "day_one_fix_availability_established": {"type": "string", "minLength": 1}
+                }
+              }
+            }
+          },
+          "history": {
+            "type": "array",
+            "description": "ETFB 4.2: promotions and demotions, prior values retained, never overwritten in place. A demotion additionally requires a reason, an authority and an expiry, or it is WEAKENING_UNATTRIBUTED on every affected run.",
+            "items": {
+              "type": "object", "required": ["from", "to", "date"], "additionalProperties": false,
+              "properties": {
+                "from": {"enum": ["crawl", "walk", "run"]},
+                "to": {"enum": ["crawl", "walk", "run"]},
+                "date": {"type": "string", "format": "date"},
+                "reason": {"type": "string"},
+                "authority": {"type": "string"},
+                "expires": {"type": "string", "format": "date"},
+                "approver_role": {"type": "string"},
+                "evidence_refs": {"type": "array", "items": {"type": "string"}}
+              }
+            }
+          }
+        }
+      }
+    },
+    "cherry_picks": {
+      "type": "array",
+      "description": "ETFB 2: strengthen only. A pick below the rung floor is a policy defect that fails the policy check by name. `control` is a control class (secrets, new_critical_high, pre_existing_on_track, pre_existing_track_lapsed, other_findings) or a named control (a scanner job).",
+      "items": {
+        "type": "object", "required": ["control", "minimum", "reason", "authority"], "additionalProperties": false,
+        "properties": {
+          "control": {"type": "string", "minLength": 1},
+          "minimum": {"enum": ["PROCEED", "PROCEED_WITH_ADVISORY", "DECISION_REQUIRED", "EVIDENCE_UNTRUSTED", "BLOCKED"]},
+          "reason": {"type": "string", "minLength": 1},
+          "authority": {"type": "string", "minLength": 1, "description": "A role. Security where the pick is not a strengthening; automatic where it is."},
+          "expires": {"type": "string", "format": "date"},
+          "review_trigger": {"type": "string"},
+          "requires_human_control": {"enum": ["second_reviewer", "approval_separation", "codeowners_routing", "security_reviewer_distinct"], "description": "ETFB 4.3 item 4: a pick needing a human control the team pattern cannot provide is recorded as an unvalidated human-workflow path, never as passing."},
+          "notes": {"type": "string"}
+        }
+      }
+    }
+  }
+}

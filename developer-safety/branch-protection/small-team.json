@@ -1,7 +1,7 @@
 {
   "required_status_checks": {
     "strict": true,
-    "contexts": ["lint", "test", "secret-scan", "sast", "sca", "policy"]
+    "contexts": ["security / Security gate", "policy / Workflow policy"]
   },
   "enforce_admins": true,
   "required_pull_request_reviews": {

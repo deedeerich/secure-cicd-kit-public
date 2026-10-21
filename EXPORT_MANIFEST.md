@@ -1,6 +1,6 @@
 # Export manifest
 
-Produced by `scripts/export_for_adoption.py` on **2026-09-16**.
+Produced by `scripts/export_for_adoption.py` on **2026-10-21**.
 
 ## This is a fresh tree, not a clone
 
@@ -10,7 +10,7 @@ starts from zero: `git init`, one commit, no inherited past.
 
 ## What the gate checked
 
-13 forbidden patterns covering personal account identities, private consumer repository
+30 forbidden patterns covering personal account identities, private consumer repository
 names, finding counts attributable to a consumer, and former-employer references.
 
 **Occurrences found at export time: 0.**

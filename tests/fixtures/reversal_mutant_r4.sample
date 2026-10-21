@@ -1,0 +1,52 @@
+# Fixture: a reversal that establishes ownership before it removes anything. It must PASS.
+# Without this half the self-test cannot tell "the rules work" from "the rules reject everything".
+name: fixture reversal with preconditions
+on:
+  workflow_call:
+    inputs:
+      release_id:
+        description: The release being reversed.
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  reverse:
+    runs-on: ubuntu-latest
+    steps:
+      - name: P1 - read the ownership stamp off the live object
+        id: ownership
+        run: |
+          set -euo pipefail
+          STAMP="$(az resource show --ids "$TARGET" --query "tags.release_ownership_stamp" -o tsv 2>/dev/null || true)"
+          [ -n "$STAMP" ] || { echo "the stamp on the live object could not be read"; exit 1; }
+          echo "stamp=$STAMP" >> "$GITHUB_OUTPUT"
+
+      - name: P2 - read the current version handle and compare it with the recorded post-state
+        id: drift
+        run: |
+          set -euo pipefail
+          CURRENT="$(az resource show --ids "$TARGET" --query etag -o tsv)"
+          [ -n "$CURRENT" ] || { echo "the current version handle could not be read"; exit 1; }
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+
+      - name: Derive the disposition from what live state actually said
+        id: preconditions
+        run: |
+          set -euo pipefail
+          python3 scripts/derive_reversal_disposition.py \
+            --stamp "${{ steps.ownership.outputs.stamp }}" \
+            --current-version "${{ steps.drift.outputs.current }}" \
+            --release "${{ inputs.release_id }}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the recorded pre-state where this release still owns the change
+        if: steps.preconditions.outputs.reversal_disposition == 'REVERSAL_RESTORE_PRIOR'
+        run: |
+          set -euo pipefail
+          az resource update --ids "$TARGET" --set "$PRIOR"
+
+      - name: Remove only what this release created and still exclusively owns
+        if: steps.preconditions.outputs.reversal_disposition == 'REVERSAL_REMOVE'
+        run: |
+          set -euo pipefail
+          az resource delete --ids "$TARGET"

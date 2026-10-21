@@ -61,6 +61,179 @@ backlog.
 > **Independent agreement raises CONFIDENCE. Source observations stay intact.**
 > Never destructive deduplication — corroboration is the strongest evidence you have.
 
+### D5 · Raise tracked work for findings that are NEW, RECURRED, or REOPENED BY LAPSE
+
+**Requested 2026-09-17. Three triggers, and they are not variations of one thing.**
+
+| trigger | what changed | what it means |
+|---|---|---|
+| `NEW` | a fingerprint never seen before | nobody has decided about this yet |
+| `RECURRED` | a fingerprint previously `REMEDIATED` is detected again | **a fix did not hold.** Someone already decided about this once and the decision was undone — by a revert, a merge, a dependency bump, or a fix that never worked |
+| `REOPENED_BY_LAPSE` | nothing in the code changed; the **disposition expired** | an `ACCEPTED_RISK` or `FALSE_POSITIVE` aged out. The risk was never removed; permission to carry it ran out |
+
+**TWO OF THESE COME FROM THE SCAN. THE THIRD COMES FROM THE CALENDAR.**
+
+That is the load-bearing distinction. A pipeline that reacts only to scanner output can raise `NEW`
+and `RECURRED`, and is **structurally incapable** of raising `REOPENED_BY_LAPSE` — because on the
+day an acceptance expires, the scan is byte-identical to yesterday's. Nothing appears, nothing
+disappears, no diff fires. The finding was suppressed by a decision and the decision quietly stopped
+being valid.
+
+So D5 needs a **clock**, not a diff. It must run on a schedule as well as on scan completion, and
+compare `disposition.expires` against the run date independently of whether anything was scanned.
+The kit already proves this class of defect is real: five of its own deferrals lapsed on 2026-09-15
+and only `tests/reconcile_validation.py`'s date check noticed. Nothing in any scan could have.
+
+**What already exists — build the consumer, do not reinvent the model:**
+
+- `schemas/disposition.schema.json` — `fingerprint`, `disposition_type`
+  (`FALSE_POSITIVE` · `ACCEPTED_RISK` · `MITIGATED` · `REMEDIATED`), `approver_role`, `created`,
+  `expires`, and a `state` enum that already contains `expired`. The vocabulary is done.
+- `scripts/scan_report.py::fingerprint()` — stable identity across runs, deliberately excluding the
+  line number so a finding that shifts three lines is still the same finding. **That is what makes
+  `RECURRED` distinguishable from `NEW` at all**, and why it must never be "improved" to include
+  position.
+- `schemas/disposition-request.schema.json` — the proposal side.
+
+**The traps, each of which has already bitten this kit in another form:**
+
+**Idempotence.** Re-running must not create a second issue for the same fingerprint. Key the issue
+on the fingerprint, search before creating, and reopen-with-a-comment rather than open-a-duplicate.
+A capability that manufactures backlog is worse than one that manufactures none.
+
+**An issue must never auto-close because a scanner did not run.** A finding absent from this run is
+`POTENTIALLY_ABSENT`, not `REMEDIATED` — the same rule `compare_snapshots.py` applies to a resource
+missing from a partial collection, and the same rule `COVERAGE_GAP` applies to a language nothing
+scanned. Closing requires positive evidence that the scanner ran, covered the path, and did not find
+it. Absence of a finding is not evidence of a fix.
+
+**`RECURRED` must not be silently re-dispositioned.** When a fix does not hold, the old
+`REMEDIATED` disposition is not evidence about the new occurrence — it is evidence that a previous
+judgement was wrong or was undone. The issue should carry the prior decision and its approver role
+as **context**, never as an inherited suppression.
+
+**The issue is a projection, not the record.** The disposition store is authoritative. An issue
+closed by hand must not mean a risk is accepted; that requires a disposition with an approver role
+and an expiry. Otherwise the tracker becomes a second source of truth and the two drift — which is
+the defect this kit has found in five other places.
+
+**Custody.** GitHub Issues is the neutral implementation. Any other tracker is an **extension
+point**, and which tracker an organisation uses is not something the neutral core may know.
+
+**Depends on:** D1–D4 (correlation and dedupe must settle what "the same finding" means before
+anything raises work from it). **Blocked by nothing else.**
+
+### D6 · Discovery must establish VERSIONS, and a scanner must refuse a version it cannot support
+
+**Requested 2026-09-17.** Discovery currently answers *is this ecosystem present*. It does not
+answer *at what version*, and nothing asks whether the scanner pointed at it actually supports that
+version.
+
+That leaves a silent failure between `ARTIFACT_PRESENT` and `CLEAN`:
+
+```
+Python 3.13 in the repo
+  -> discovery says python=true
+  -> bandit runs
+  -> bandit's AST parser does not know a 3.13 construct
+  -> it skips the file, or parses it wrong
+  -> zero findings
+  -> green
+```
+
+Nothing lied. The scanner ran, exited 0, and reported nothing — and "nothing" is
+indistinguishable from "clean" unless the version question was asked first.
+
+**The contract extension.** Discovery already reports per artifact class; it must also report the
+version it found and what the scanner does with it:
+
+```
+ARTIFACT_PRESENT        python
+VERSION_DISCOVERED      3.13.1          from .python-version / pyproject / setup-python input
+SCANNER_SUPPORTS        bandit <= 3.12  declared by the kit, per scanner
+=> VERSION_UNSUPPORTED  a COVERAGE_GAP, not a clean result
+```
+
+`VERSION_UNSUPPORTED` is a member of the same family as `COVERAGE_GAP` and must never collapse into
+`NOT_APPLICABLE` or `CLEAN`. The code is here, a control is owed, the control ran, and it could not
+see. That is a fourth state and it is the one a green run hides best.
+
+**Why this is not the toolchain composites' job.** `setup-python` pins what the RUNNER installs.
+This is a different question: what the REPOSITORY targets, and whether the scanner can read it. A
+repo can pin 3.13 in `pyproject.toml` while the workflow sets up 3.11 — and then the scanners are
+reading code written for a language version they were never handed.
+
+**Each scanner must declare its own supported range.** Not a global table: bandit, semgrep, CodeQL,
+gosec and trivy each have their own. A single kit-wide "supported versions" list would be a
+convenient fiction, and the first scanner to fall outside it would be wrong in whichever direction
+the list happened to be set.
+
+**The honest default when support is unknown** is `VERSION_SUPPORT_UNDETERMINED`, treated as a gap
+rather than as support. Same rule as a failed discovery probe: could-not-establish is not
+established-absent, and it is certainly not established-present.
+
+**Depends on:** the `COVERAGE_GAP` machinery in discovery, which exists. **Blocked by nothing.**
+
+### D7 · Toolchain version and support assurance — is what we are running still the right version?
+
+**Requested 2026-09-17.** D6 asks *can this scanner understand the code in front of it*. D7 asks
+*is this scanner itself current, supported, and safe to keep running*. Same word, two questions, and
+they must not share a register:
+
+```
+D6   repository target version  ->  scanner supported range     a COVERAGE question
+D7   installed tool version     ->  latest / supported release  a MAINTENANCE question
+```
+
+A pipeline can be perfectly version-compatible with the code and running a scanner whose rule pack
+was abandoned eighteen months ago. Nothing in the run would say so.
+
+**What it inventories.** Not just scanners — everything whose version changes what the pipeline
+detects: GitHub Actions versions and pinned SHAs · scanner binaries · the language runtimes the
+pipeline itself uses · Terraform CLI and provider/plugin versions · container base images · and the
+kit's own reusable-workflow tags, since a consumer pinned to `@v0.1.0` is running last week's
+detection whatever the source says.
+
+**Per entry:** tool · installed version · where that version is configured · latest available ·
+support status · security-advisory status · breaking-change risk · update class · last checked.
+
+**"Newer exists" is not "upgrade now", and the state vocabulary has to carry that:**
+
+```
+CURRENT                       running a supported, reasonably recent version
+UPDATE_AVAILABLE              newer exists; no forcing reason
+SECURITY_UPDATE_REQUIRED      the gap itself is the vulnerability
+DEPRECATED                    still runs, no longer maintained
+UNSUPPORTED                   past end of support
+VERSION_UNKNOWN               could not establish -- a gap, never a pass
+UPDATE_BLOCKED_BY_COMPATIBILITY  newer version breaks something named
+```
+
+**AN UPGRADE IS A CHANGE TO DETECTION, NOT A MAINTENANCE CHORE.** A major checkov, trivy, semgrep or
+CodeQL bump can change rule behaviour, output schema, severity mapping and finding counts. So an
+update must not promote until the seeded acceptance corpus proves the new version still detects what
+the old one did — and any deliberate change in findings is surfaced as a change, not absorbed as
+noise. Upgrading a scanner and assuming the assurance state survives is the same mistake as assuming
+a green run means the controls executed.
+
+The lifecycle mirrors the capability ladder already in use:
+
+```
+version discovered -> support evaluated -> update classified -> regression-tested against the
+seeded corpus -> published as a new kit version -> detection and enforcement REVALIDATED
+```
+
+That last rung is `REVALIDATED` in `capability_maturity`, reached for a reason that has nothing to
+do with the code changing — which is exactly the case the revalidation model was built for.
+
+**This is also what the toolchain composites should eventually feed.** `setup-python`, `setup-node`
+and `setup-terraform` currently prove nothing; their first probe is *"I installed what was
+requested"*, and their second job is to report what was ACTUALLY installed into this inventory. A
+composite that pins a version and never says what it got is the same class of silence as a scanner
+that runs and reports nothing.
+
+**Depends on:** the seeded acceptance corpus (exists, public, proven). **Blocked by nothing.**
+
 Already demonstrable on real data: OSV and Trivy independently flagged the **same** lockfile.
 
 Carry all of it, not just the multiplier maths: normalisation basis (rule ID → CWE), independence
@@ -109,7 +282,7 @@ sensitive findings kept out of logs.
 | 5 composite actions | **Expire 2026-09-15.** No infrastructure needed — just probes |
 | `reusable-nvd-cve.yml` | ~~Never run on a runner~~ **has run** (2026-08-18/19, three runs). Remaining gap is the WARM path: only a ~50 min cold build is recorded, cache key/restore behaviour is still marked unvalidated, and any faster run exists only in Actions history and was never written back here. Capture the warm duration from a real run |
 | `context-integrity` negative fixture | Positive path observed; the **refusal** path has none. An assertion that has never failed is decoration |
-| `image-build` / `image-push` | Need a registry. Expire 2026-10-31 |
+| `image-build` / `image-push` | ~~Need a registry. Expire 2026-10-31~~ **closed by proof 2026-10-15** against a real local `registry:2` (`tests/prove_build_push_round_trip.py`): digest, SBOM with the fixture component, retrieval by digest, identity round trip. Remaining gap is an ACR behind Azure identity, and a hosted dispatch of the workflow -- neither is a registry gap |
 
 ---
 
@@ -392,7 +565,7 @@ behind a comment. Generic capability stays; employer specifics do not leak in.
 .github/workflows/          neutral core — 16 jobs, independently runnable
 overlays/<name>/
   workflows/
-    security-am.yml         CALLS the core, adds Sonar + ZAP, gates only its own additions
+    security-<name>.yml     CALLS the core, adds Sonar + ZAP, gates only its own additions
     the ticket-reference gate
 ```
 

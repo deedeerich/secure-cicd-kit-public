@@ -80,7 +80,7 @@ V4 and V5 are the point of the self-test harness: it found defects in the kit be
 | # | Node | Why unvalidated | What it needs | Claims that depend on it |
 |---|---|---|---|---|
 | U1 | `reusable-security.yml` scanner invocations | No GitHub runner available in the authoring environment | One pilot repo run | "the scan set works"; Checkov's SARIF output path and the Semgrep flag combination are the two most likely breakages |
-| U2 | `reusable-build-docker.yml` | No runner, no registry, no cloud identity | Pilot run with a real ACR | "Trivy gates before push"; "SBOM is produced"; the `docker/build-push-action` digest output contract |
+| U2 | `reusable-build-docker.yml` | No hosted run, no ACR, no cloud identity. The build job's own steps HAVE run locally against a real `registry:2` (`tests/prove_build_push_round_trip.py`, 2026-10-15): config digest, SBOM, push, retrieval by digest, identity round trip, posture, and the stamp through the job/workflow/template maps | Pilot run with a real ACR | "Trivy gates before push" (the gate step is a `uses:`, proven at tool level by `tests/prove_image_scan_enforces.py`); the `docker/build-push-action` output contract on a runner |
 | U3 | `reusable-deploy-containerapp.yml` | No Azure subscription or Container App to target | Pilot deploy | "auto-rollback works"; `az containerapp revision` query shapes are the likely breakage |
 | U4 | `reusable-deploy-appservice.yml` | Same, plus no sovereign-partition tenant | Pilot deploy in each partition | "dual-partition parity holds"; slot-swap behaviour |
 | U6 | `scripts/pin-actions.sh` | Requires live GitHub API access and a token | One dry run | "tags resolve to SHAs correctly" |

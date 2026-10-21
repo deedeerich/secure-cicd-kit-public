@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "notes": "EXAMPLE. Copy to .security/policy-registration.json on the protected default branch, put the path under CODEOWNERS, and replace every value. The numbers block carries the owner's table from ENFORCEMENT_TIERS_AND_FINDING_BASELINE.md section 8.2 as a configured value; it is policy, not architecture, and nothing in the kit defaults any of them.",
+  "team_pattern": "small_team",
+  "numbers": {
+    "promotion_consecutive_clean_runs": 5,
+    "sla_period_days": {"CRITICAL": 7, "HIGH": 30, "MEDIUM": 180, "LOW": 365},
+    "breach_grace_days": {"CRITICAL": 0, "HIGH": 7, "MEDIUM": 14, "LOW": 14},
+    "track_stall_period_days": 90,
+    "no_fix_recheck_days": 30,
+    "severity_formula_version": "severity-formula/1"
+  },
+  "environments": {
+    "development": {
+      "tier": "dev",
+      "rung": "crawl",
+      "approver_role": "security-lead",
+      "registered_on": "2026-10-14",
+      "review_trigger": "the environment set, the team pattern or the exposure of this repository changes",
+      "reachable_from_merge_without_human_gate": true
+    },
+    "production": {
+      "tier": "prod",
+      "rung": "walk",
+      "approver_role": "security-lead",
+      "registered_on": "2026-10-14",
+      "review_trigger": "the environment set, the team pattern or the exposure of this repository changes",
+      "reachable_from_merge_without_human_gate": false,
+      "promotion_evidence": {
+        "walk": {
+          "controls_executed_at_baseline": {"consecutive_clean_runs": 5, "evidence_ref": "actions runs <first>..<fifth>, no EVIDENCE_UNTRUSTED"},
+          "ledger_populated_and_owned": ".security/finding-baseline.json at <commit>, every entry owned",
+          "entries_classified": ".security/finding-baseline.json at <commit>, every entry carries finding_classification",
+          "human_controls_assessed": "review record <reference>: approval separation available at small_team"
+        }
+      },
+      "history": [
+        {"from": "crawl", "to": "walk", "date": "2026-10-14", "approver_role": "security-lead", "evidence_refs": ["see promotion_evidence.walk"]}
+      ]
+    }
+  },
+  "cherry_picks": [
+    {
+      "control": "deps-scan",
+      "minimum": "BLOCKED",
+      "reason": "the supply chain is this repository's exposure; a dependency finding blocks at walk",
+      "authority": "security-lead",
+      "review_trigger": "promotion to run, where new critical and high block regardless"
+    }
+  ]
+}

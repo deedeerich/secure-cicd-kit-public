@@ -6,7 +6,7 @@ WHY A CHECK AND NOT A DOCUMENT
     A custody claim written down and never verified is the same shape as an invariant written down
     and never enforced -- which this estate has already proven gets violated anyway. The manifest
     says one capability is neutral and another belongs to an overlay. Nothing stops someone
-    adding a third AM-specific integration into the neutral core next month, and by then the
+    adding a third overlay-specific integration into the neutral core next month, and by then the
     provenance answer is "it has always been in there", which is exactly the answer with no defence.
 
 THE ONE-WAY RULE
@@ -21,9 +21,21 @@ THE ONE-WAY RULE
 WHAT IT CANNOT ESTABLISH
     Static, and manifest-driven. It proves the declared capabilities are present or absent as
     declared and that the core does not reference the overlay. It cannot decide whether a NEW
-    capability was AM-originated -- a person classifies that once, here, while it is still cheap.
+    capability was consumer-originated -- a person classifies that once, here, while it is still cheap.
 
-USAGE  python3 tests/check_custody.py
+EVERY OVERLAY, AND NONE (ledger L107)
+    It read the FIRST ledger and the FIRST overlay directory only, so a second overlay that
+    copied the pipeline, or a second ledger, was never looked at; and with no overlay at all it
+    crashed on `os.path.exists(None)` -- the neutral kit could not run its own custody check.
+    Every overlay and every ledger is now checked, and a tree with none passes.
+
+THE CALL SHAPE (KDEC-008 OD-10)
+    An overlay calls the kit cross-repository: `owner/repo/.github/workflows/reusable-security.yml
+    @<40-hex sha>`. A `./` path resolves against the CALLER's checkout, so it works only inside
+    the kit repository; a branch or tag is a moving pointer. Both are refused.
+    tests/prove_custody_overlays.py runs this checker against constructed trees.
+
+USAGE  python3 tests/check_custody.py [--root DIR]
 EXIT   0 consistent      1 drift      2 self-test failed
 """
 import csv
@@ -62,9 +74,8 @@ def _find_manifests():
     return out
 
 
-MANIFESTS = _find_manifests()
-MANIFEST = MANIFESTS[0] if MANIFESTS else None
-WF = os.path.join(ROOT, '.github', 'workflows')
+MANIFESTS = []
+WF = ''
 
 # Capability -> how to recognise it actually being invoked in a workflow.
 # Deliberately the same shape as tests/capability_inventory.py: a NAME is not an invocation.
@@ -89,18 +100,37 @@ MARKERS = {
     'SBOM licence inventory': [r'sbom_licenses\.py'],
 }
 
-OVERLAY_ROOT = os.path.join(ROOT, 'overlays')
+OVERLAY_ROOT = ''
 # DISCOVERED, NEVER NAMED. An overlay identity hardcoded in the neutral core would be published
 # to every future consumer of this kit. Direction of knowledge: overlay knows neutral; neutral
 # knows only that an extension point exists.
-OVERLAY_DIRS = sorted(d for d in glob.glob(os.path.join(OVERLAY_ROOT, '*')) if os.path.isdir(d))
-OVERLAY_NAMES = [os.path.basename(d) for d in OVERLAY_DIRS]
-OVERLAY_DIR = OVERLAY_DIRS[0] if OVERLAY_DIRS else os.path.join(OVERLAY_ROOT, '_none')
+OVERLAY_DIRS, OVERLAY_NAMES = [], []
+# The one call shape an overlay may use to reach the core (KDEC-008 OD-10).
+CORE_CALL = re.compile(r'^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/\.github/workflows/'
+                       r'reusable-security\.yml@[0-9a-f]{40}$')
+
+
+def configure(root):
+    """Point every path at `root`. Module globals so the existing functions read them as before."""
+    global ROOT, MANIFESTS, WF, OVERLAY_ROOT, OVERLAY_DIRS, OVERLAY_NAMES
+    ROOT = os.path.abspath(root)
+    WF = os.path.join(ROOT, '.github', 'workflows')
+    OVERLAY_ROOT = os.path.join(ROOT, 'overlays')
+    OVERLAY_DIRS = sorted(d for d in glob.glob(os.path.join(OVERLAY_ROOT, '*'))
+                          if os.path.isdir(d))
+    OVERLAY_NAMES = [os.path.basename(d) for d in OVERLAY_DIRS]
+    MANIFESTS = _find_manifests()
 
 
 def load():
-    with io.open(MANIFEST, encoding='utf-8-sig', newline='') as fh:
-        return list(csv.DictReader(fh))
+    """Every ledger's rows, each tagged with the ledger it came from."""
+    rows = []
+    for m in MANIFESTS:
+        with io.open(m, encoding='utf-8-sig', newline='') as fh:
+            for r in csv.DictReader(fh):
+                r['_ledger'] = os.path.relpath(m, ROOT).replace(os.sep, '/')
+                rows.append(r)
+    return rows
 
 
 def workflow_text():
@@ -128,22 +158,28 @@ def workflow_text():
 
 def self_test():
     fails = []
-    if not os.path.exists(MANIFEST):
-        fails.append('no manifest at %s -- nothing to check' % MANIFEST)
-    else:
-        rows = load()
+    if not MANIFESTS:
+        # NO OVERLAY IS NOT AN ERROR. A neutral kit with no overlay has nothing to declare.
+        print('self-test ok: no overlay ledger present -- nothing is declared, nothing to check')
+        return True
+    for m in MANIFESTS:
+        with io.open(m, encoding='utf-8-sig', newline='') as fh:
+            rows = list(csv.DictReader(fh))
+        where = os.path.relpath(m, ROOT).replace(os.sep, '/')
         if not rows:
             # A manifest that lists nothing would let this check pass while asserting nothing.
-            fails.append('manifest is empty; a custody check with no rows is not a pass')
+            fails.append('%s is empty; a custody check with no rows is not a pass' % where)
+            continue
         need = {'Capability', 'Origin', 'Custody'}
-        if rows and not need <= set(rows[0].keys()):
-            fails.append('manifest is missing columns: %s' % ', '.join(sorted(need - set(rows[0]))))
-        cust = set(r['Custody'] for r in rows) if rows else set()
+        if not need <= set(rows[0].keys()):
+            fails.append('%s is missing columns: %s' % (where, ', '.join(sorted(need - set(rows[0])))))
+            continue
+        cust = set(r['Custody'] for r in rows)
         known = {'neutral'} | set(OVERLAY_NAMES)
-        if rows and not cust <= known:
-            fails.append('unknown custody value(s): %s -- expected neutral or a directory under '
-                         'overlays/ (%s)' % (', '.join(sorted(cust - known)),
-                                             ', '.join(OVERLAY_NAMES) or 'none present'))
+        if not cust <= known:
+            fails.append('%s: unknown custody value(s): %s -- expected neutral or a directory '
+                         'under overlays/ (%s)' % (where, ', '.join(sorted(cust - known)),
+                                                   ', '.join(OVERLAY_NAMES) or 'none present'))
     if fails:
         print('SELF-TEST FAILED:')
         for f in fails:
@@ -153,7 +189,12 @@ def self_test():
     return True
 
 
-def main():
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    root = ROOT
+    if '--root' in argv:
+        root = argv[argv.index('--root') + 1]
+    configure(root)
     if not self_test():
         return 2
     rows = load()
@@ -196,7 +237,7 @@ def main():
                             % (cap, ', '.join(in_overlay)))
 
     # 2. THE ONE-WAY RULE. The neutral core must never reference the overlay.
-    if os.path.isdir(OVERLAY_DIR):
+    if OVERLAY_DIRS:
         for f, t in blobs.items():
             # THE KIT'S OWN CI IS EXEMPT, AND THE EXEMPTION IS NARROW.
             #
@@ -211,15 +252,31 @@ def main():
             if f.startswith('core:') and re.search(r'overlays/', t):
                 problems.append('neutral workflow %s references an overlay -- the dependency is '
                                 'one-way and this reverses it' % f)
-        # And the overlay must actually compose the core rather than duplicate it.
-        am = os.path.join(OVERLAY_DIR, 'workflows', 'security-am.yml')
-        if os.path.exists(am):
-            txt = io.open(am, encoding='utf-8').read()
-            if 'reusable-security.yml' not in txt:
-                problems.append('the overlay does not call the neutral core -- if it has copied '
-                                'the pipeline instead of composing it, it is a fork')
-            else:
-                notes.append('overlay composes the neutral core (calls reusable-security.yml)')
+        # EVERY overlay with workflows must compose the core, by the one call shape (OD-10).
+        for od in OVERLAY_DIRS:
+            name = os.path.basename(od)
+            wfs = sorted(glob.glob(os.path.join(od, 'workflows', '*.yml'))
+                         + glob.glob(os.path.join(od, 'workflows', '*.yaml')))
+            if not wfs:
+                continue
+            calls = []
+            for w in wfs:
+                txt = io.open(w, encoding='utf-8', errors='replace').read()
+                for m in re.finditer(r'(?m)^\s*(?:-\s*)?uses:\s*["\']?([^\s"\'#]*reusable-security\.yml[^\s"\'#]*)',
+                                     txt):
+                    calls.append((os.path.relpath(w, ROOT).replace(os.sep, '/'), m.group(1)))
+            if not calls:
+                problems.append('overlay %s does not call the neutral core -- if it has copied the '
+                                'pipeline instead of composing it, it is a fork' % name)
+                continue
+            for where, ref in calls:
+                if not CORE_CALL.match(ref):
+                    problems.append('%s calls the core as `%s` -- an overlay calls the kit '
+                                    'cross-repository as owner/repo/.github/workflows/'
+                                    'reusable-security.yml@<40-hex sha> (KDEC-008 OD-10); a ./ '
+                                    'path resolves against the caller and a branch or tag moves'
+                                    % (where, ref))
+            notes.append('overlay %s composes the neutral core (%d call(s))' % (name, len(calls)))
     else:
         notes.append('no overlays/ directory; nothing has been separated yet')
 
@@ -260,6 +317,8 @@ def main():
     print('manifest and workflows agree; no neutral->overlay dependency')
     return 0
 
+
+configure(ROOT)
 
 if __name__ == '__main__':
     sys.exit(main())

@@ -1,0 +1,13 @@
+{
+  "class": "NEUTRAL",
+  "enforced_by": "tests/check_export_safety.py",
+  "deny_list": "scripts/export-deny.txt",
+  "may_receive_from": [
+    "NEUTRAL"
+  ],
+  "rationale": "Ships to consumers. An identity here discloses one consumer to the next, so neutrality is by construction and enforced by a test, not by intention.",
+  "exceptions": {
+    "overlays/": "Consumer overlays MAY name their own consumer -- that is what makes them overlays -- and are excluded from export. An overlay may not name a DIFFERENT engagement; that exclusion is all-or-nothing today and does not check it."
+  },
+  "spec": "see the control plane's shared/CUSTODY_CLASSES.md"
+}

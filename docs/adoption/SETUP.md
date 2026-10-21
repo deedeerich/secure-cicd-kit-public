@@ -190,6 +190,7 @@ This is a GitHub boundary, not a limitation of the kit. A private repository's r
 | `AZURE_SUBSCRIPTION_ID` | same | Yes | Target subscription |
 | `NVD_API_KEY` | `reusable-nvd-cve.yml` | Strongly recommended | Free NIST key. Without it the DB update is rate-limited and may take 30+ min. |
 | `SEMGREP_APP_TOKEN` | `reusable-security.yml` | Optional | Managed rules / dashboard only. Everything works without it. |
+| `JIRA_EMAIL` + `JIRA_TOKEN`, or `AZDO_PAT` | `reusable-ticket-reconcile.yml` | Only for ticketing | One backend per run. Held in the protected environment named by the workflow's `environment` input. |
 
 **No client secret exists anywhere in this kit, by design.** If you are creating one for Azure auth,
 stop — you are on the wrong path.
@@ -217,8 +218,12 @@ workflow cannot be handed a credential from a weaker scope than the environment 
 > input** and set `environment: ${{ inputs.github_environment }}` on its job.
 
 `reusable-build-docker`, `reusable-deploy-appservice`, `reusable-deploy-containerapp` and
-`reusable-nvd-cve` follow this. `reusable-security` does not, which is why its **optional**
-`SEMGREP_APP_TOKEN` must be stored at repository or organization scope rather than environment scope.
+`reusable-nvd-cve` follow this with `github_environment` (required for the two deploys; required for
+the build whenever `push` is true); `reusable-ticket-reconcile` and `verify-azure-oidc` take the same
+thing as a required input named `environment`. `reusable-security` does not, which is why its
+**optional** `SEMGREP_APP_TOKEN` must be stored at repository or organization scope rather than
+environment scope. (Its own `environment` input is something else: the baseline-ledger cell, not a
+GitHub Environment.)
 
 #### Choosing the scope
 
@@ -422,7 +427,9 @@ credentials → Add credential**
 6. Name: anything descriptive
 7. Audience: leave `api://AzureADTokenExchange`
 
-Verify the generated subject reads exactly `repo:<ORG>/<REPO>:environment:<ENVIRONMENT>`.
+Verify the generated subject reads exactly `repo:<ORG>/<REPO>:environment:<ENVIRONMENT>`, or the
+ID-qualified form `repo:<ORG>@<ORG_ID>/<REPO>@<REPO_ID>:environment:<ENVIRONMENT>` (§4.0). Both
+are accepted by `verify-azure-oidc.yml`, the ID form only when both ids equal the token's own claims.
 
 **CLI:**
 ```bash
@@ -465,8 +472,8 @@ may deploy* is a repository policy question, not an identity question.
 
 ## 5 · RBAC
 
-**Auth verification needs NO role at all.** Login succeeds with zero assignments. Add roles only for
-what you actually intend to do.
+**Login needs NO role at all** — it succeeds with zero assignments. The boundary probe in §7 needs
+`Reader` on the scopes it must reach. Add roles only for what you actually intend to do.
 
 | To do this | Role | Scope |
 |---|---|---|
@@ -503,14 +510,27 @@ permissions:
   contents: read
 ```
 
+The job that calls `reusable-build-docker.yml` additionally grants `attestations: write` (its attest
+job signs build provenance). A caller must grant **everything** a called workflow's jobs request, or
+GitHub refuses the whole run before any job starts (`startup_failure`, no log); the full table per
+reusable workflow is in [`USAGE.md`](USAGE.md) → *What's in it*, and `tests/check_caller_permissions.py`
+enforces it on the kit's own callers and templates.
+
 The kit's policy gate rejects workflow-level `id-token: write`. Grant it per job, only where needed.
 
 ---
 
 ## 7 · Verify — creates nothing, costs nothing
 
-**Actions → Verify Azure OIDC → Run workflow.** It prints the subject your run presents, asserts the
-secrets are reachable, then logs in. Run this before anything that deploys.
+**Actions → Verify Azure OIDC authorization boundary → Run workflow** (`verify-azure-oidc.yml`; also
+callable as a reusable workflow). It prints the subject your run presents and which form it matched
+(`PLAIN` or `ID_QUALIFIED`), logs in, compares the session's tenant, subscription and client against
+what you declared (`expect_tenant_id`, `expect_subscription_id`, `expect_client_id`), then probes the
+**authorization boundary**: the identity's own and shared resource groups must be reachable, a
+sibling product's and the opposite tier's must be **refused**, and a subscription-scope write is
+attempted and must be refused. It needs those four resource-group names as inputs, and `Reader` on
+the two reachable ones. Its `verdict` output is `PASS` only when every assertion was established and
+`mutation_state` is `UNCHANGED`. Run this before anything that deploys.
 
 ---
 
@@ -523,16 +543,16 @@ Required inputs, all of which name pre-existing resources:
 
 | Workflow | Requires |
 |---|---|
-| `reusable-deploy-appservice` | `resource_group` · `webapp_name` · `acr_login_server` · `image_repository` · `image_digest` |
-| `reusable-deploy-containerapp` | `resource_group` · `containerapp_name` · `acr_login_server` · `image_repository` · `image_digest` |
-| `reusable-build-docker` | `acr_login_server` · `image_repository` |
+| `reusable-deploy-appservice` | `github_environment` · `routing_result` · `environment_tier` · `resource_group` · `webapp_name` · `acr_login_server` · `image_repository` · `image_digest` |
+| `reusable-deploy-containerapp` | `github_environment` · `routing_result` · `environment_tier` · `resource_group` · `containerapp_name` · `acr_login_server` · `image_repository` · `image_digest` |
+| `reusable-build-docker` | `image_repository`; plus `acr_login_server` and `github_environment` whenever `push` is true (the default) |
 
 So from a **zero-resource** subscription you still need:
 
 | # | Thing | Why | Missing role |
 |---|---|---|---|
 | 1 | A **resource group** | everything lands in one | **Contributor** on it (or create in portal) |
-| 2 | An **Azure Container Registry** | `acr_login_server` is required by all three | **AcrPush** to push · **Contributor** to create |
+| 2 | An **Azure Container Registry** | `acr_login_server` is required by both deploys and by a pushing build | **AcrPush** to push · **Contributor** to create |
 | 3 | A **Linux App Service** (container-based) | `webapp_name` target | Website Contributor covers *deploy*, not *create* |
 | 4 | A **Container Apps environment + app** | `containerapp_name` target | ContainerApp Contributor covers *deploy*, not *create* |
 | 5 | **Pull rights from ACR to the apps** | otherwise deploy succeeds and the app fails to start | app's managed identity needs **AcrPull** on the registry |
@@ -551,11 +571,17 @@ Smallest standing privilege, cleanest teardown, matches the
 narrow roles, and test deploy only. Less privilege granted; you own cleanup manually.
 
 Given you are deliberately at zero resources and want to stay there, **A is the better fit** —
-scoped to one throwaway RG, with the harness asserting empty before and empty after.
+scoped to one throwaway RG, with the harness asserting empty before and empty after. (The harness,
+`tests/harness/teardown_scope.py`, is proven against a stub; a live empty-before/empty-after run is
+still owed.)
 
-**Do not do this yet.** The deploy workflows are blocked on
-[`ROLLBACK_CONTRACT.md`](../architecture/ROLLBACK_CONTRACT.md) regardless of tenant access — that is a design gate,
-not an access gate.
+The deploy workflows implement [`ROLLBACK_CONTRACT.md`](../architecture/ROLLBACK_CONTRACT.md) and are
+proven live against exactly this shape of sandbox (a Basic registry, a Container Apps environment and
+app, a Linux App Service; apps pulling with their own identity): verdict refusal, healthy deploy,
+verified rollback, second-actor refusal and the App Service slot swap. Run ids are in
+[`RELEASE_1_EVIDENCE_MANIFEST.md`](../assurance/RELEASE_1_EVIDENCE_MANIFEST.md). In a landing zone,
+the vending creates the empty target and the deploy identity, and the kit only releases into it
+([`LZ_KIT_HANDOFF_CONTRACT.md`](../architecture/LZ_KIT_HANDOFF_CONTRACT.md)).
 
 ---
 

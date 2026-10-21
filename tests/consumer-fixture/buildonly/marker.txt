@@ -1,0 +1,3 @@
+A build-only fixture. FROM scratch on purpose: no OS packages, so the Trivy gate has a
+deterministic clean result rather than one that depends on the week an advisory lands.
+The point of this fixture is the CONTRACT (no Azure, no registry), not detection.

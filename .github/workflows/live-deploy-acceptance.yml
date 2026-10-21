@@ -1,0 +1,213 @@
+name: Live deploy acceptance
+
+# Drives the two deploy reusables against REAL sandbox targets, called the way a consumer calls
+# them (a `uses:` job with `with:` and secrets), one acceptance-matrix cell per dispatch
+# (docs/architecture/DEPLOYMENT_CONTRACT_RECONCILIATION.md section 7.8). It exists because both
+# reusables are `workflow_call`-only: with no caller in this repository they could only ever be
+# proven against a stub cloud (ROLLBACK_CONTRACT.md promotion gate).
+#
+# TEST HARNESS, NOT A DEPLOY PATH. Dispatch-only; nothing schedules it and nothing on push calls it.
+# Every target, digest and verdict is a dispatch input, so the file names no estate. The matrix
+# cell is chosen by the inputs:
+#
+#   A  healthy deployment             a digest that answers 200 on health_path
+#   C  complete, unhealthy workload   a digest that does not (the reversal runs)
+#   refusal                           routing_result BLOCKED / DECISION_REQUIRED / empty: refused
+#                                     before login, nothing touched
+#   second actor                      an operator changes the target while the health probe waits
+#                                     (raise health_retries to open the window); the reversal must
+#                                     defer or refuse and say so
+#
+# LEVEL 1, like consumer-path-test.yml: a `./` reference, so it proves the reusables RUN against a
+# real target, not cross-repository resolution. `uses:` takes no expressions, so an in-repo caller
+# cannot name its own repository without hardcoding an owner.
+#
+# The reusable's job declares the GitHub Environment, so the secrets it logs in with are the
+# ENVIRONMENT's; the mapping below exists because the reusable declares them required, and on a
+# repository whose Azure secrets live only in environments it maps empty values.
+
+on:
+  workflow_dispatch:
+    inputs:
+      adapter:
+        description: "containerapp | appservice | build (build once and push to the registry; the digest it prints is what a deploy dispatch then names)"
+        type: choice
+        options: [containerapp, appservice, build]
+        required: true
+      github_environment:
+        description: "GitHub Environment that gates the deploy"
+        type: string
+        required: true
+      routing_result:
+        description: "Gate verdict handed to the deploy (PROCEED, PROCEED_WITH_ADVISORY, BLOCKED, DECISION_REQUIRED, EVIDENCE_UNTRUSTED, or empty)"
+        type: string
+        required: false
+        default: "PROCEED"
+      environment_tier:
+        description: "sandbox | dev | test | uat | prod"
+        type: string
+        required: true
+      resource_group:
+        description: "Resource group of the target"
+        type: string
+        required: true
+      target_name:
+        description: "Container App name or Web App name"
+        type: string
+        required: true
+      registry:
+        description: "Registry login server FQDN"
+        type: string
+        required: true
+      image_repository:
+        description: "Image repository"
+        type: string
+        required: true
+      image_digest:
+        description: "sha256:<64 hex> -- a tag is refused by the reusable. Ignored by build."
+        type: string
+        required: false
+        default: ""
+      build_context:
+        description: "build only: directory holding the Dockerfile (e.g. tests/fixtures/deploy-probe/healthy-a)"
+        type: string
+        required: false
+        default: ""
+      health_path:
+        description: "Health path probed on the target"
+        type: string
+        required: false
+        default: "/health"
+      health_retries:
+        description: "Probe attempts (raise it to open a second-actor window)"
+        type: string
+        required: false
+        default: "6"
+      health_interval_seconds:
+        description: "Seconds between probe attempts"
+        type: string
+        required: false
+        default: "10"
+      slot:
+        description: "App Service only: staging slot, or empty for direct-to-production"
+        type: string
+        required: false
+        default: ""
+      version_metadata:
+        description: "Provenance JSON to stamp after health (DCR-3 provenance tags live). Empty: the stamp step does not run."
+        type: string
+        required: false
+        default: ""
+      rollback_on_failure:
+        description: "false withholds reversal authority: at uat/prod the deploy is refused before the first mutation (DCR-9 capability refusal, no Azure change needed)"
+        type: boolean
+        required: false
+        default: true
+      attestation_rung:
+        description: "V1 rung inside the deploy (crawl | walk | run). On a private repository whose plan offers no attestations V1 is HELD at any rung (recorded, gh never called)."
+        type: string
+        required: false
+        default: "run"
+
+permissions:
+  contents: read
+
+jobs:
+  containerapp:
+    if: inputs.adapter == 'containerapp'
+    uses: ./.github/workflows/reusable-deploy-containerapp.yml
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read   # V1 runs inside the deploy (P-02)
+    with:
+      attestation_signer_workflow: ${{ format('{0}/.github/workflows/reusable-build-docker.yml', github.repository) }}
+      attestation_rung: ${{ inputs.attestation_rung }}
+      version_metadata: ${{ inputs.version_metadata }}
+      rollback_on_failure: ${{ inputs.rollback_on_failure }}
+      github_environment: ${{ inputs.github_environment }}
+      routing_result: ${{ inputs.routing_result }}
+      environment_tier: ${{ inputs.environment_tier }}
+      resource_group: ${{ inputs.resource_group }}
+      containerapp_name: ${{ inputs.target_name }}
+      acr_login_server: ${{ inputs.registry }}
+      image_repository: ${{ inputs.image_repository }}
+      image_digest: ${{ inputs.image_digest }}
+      cloud: commercial
+      health_path: ${{ inputs.health_path }}
+      health_retries: ${{ fromJSON(inputs.health_retries) }}
+      health_interval_seconds: ${{ fromJSON(inputs.health_interval_seconds) }}
+    secrets:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+
+  appservice:
+    if: inputs.adapter == 'appservice'
+    uses: ./.github/workflows/reusable-deploy-appservice.yml
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read   # V1 runs inside the deploy (P-02)
+    with:
+      attestation_signer_workflow: ${{ format('{0}/.github/workflows/reusable-build-docker.yml', github.repository) }}
+      attestation_rung: ${{ inputs.attestation_rung }}
+      version_metadata: ${{ inputs.version_metadata }}
+      rollback_on_failure: ${{ inputs.rollback_on_failure }}
+      github_environment: ${{ inputs.github_environment }}
+      routing_result: ${{ inputs.routing_result }}
+      environment_tier: ${{ inputs.environment_tier }}
+      resource_group: ${{ inputs.resource_group }}
+      webapp_name: ${{ inputs.target_name }}
+      acr_login_server: ${{ inputs.registry }}
+      image_repository: ${{ inputs.image_repository }}
+      image_digest: ${{ inputs.image_digest }}
+      cloud: commercial
+      slot: ${{ inputs.slot }}
+      health_path: ${{ inputs.health_path }}
+      health_retries: ${{ fromJSON(inputs.health_retries) }}
+      health_interval_seconds: ${{ fromJSON(inputs.health_interval_seconds) }}
+    secrets:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+
+  # Build once and push to the registry through the kit's own build path. The digest the registry
+  # confirmed is printed below; a deploy dispatch then names exactly that digest, so the chain
+  # build -> push -> deploy is one artefact identity end to end.
+  build:
+    if: inputs.adapter == 'build'
+    uses: ./.github/workflows/reusable-build-docker.yml
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    with:
+      github_environment: ${{ inputs.github_environment }}
+      acr_login_server: ${{ inputs.registry }}
+      image_repository: ${{ inputs.image_repository }}
+      dockerfile: ${{ format('{0}/Dockerfile', inputs.build_context) }}
+      context: ${{ inputs.build_context }}
+      image_tag: ${{ format('run-{0}-{1}', github.run_id, github.run_attempt) }}
+      push: true
+      cloud: commercial
+    secrets:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+
+  build-record:
+    name: The digest the registry confirmed
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print what a deploy dispatch must name
+        env:
+          DIGEST: ${{ needs.build.outputs.image_digest }}
+          IDENTITY: ${{ needs.build.outputs.artifact_identity }}
+          CONFIG: ${{ needs.build.outputs.image_config_digest }}
+        run: |
+          echo "image_digest=$DIGEST"
+          echo "artifact_identity=$IDENTITY"
+          echo "image_config_digest=$CONFIG"
+          case "$DIGEST" in sha256:*) ;; *) echo "::error::no registry digest came back"; exit 1 ;; esac

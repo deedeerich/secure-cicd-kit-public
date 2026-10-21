@@ -1,8 +1,21 @@
 # Starter: drop this into a calling repo at .github/workflows/build-deploy.yml
-# Replace YOUR_ORG and pin @v1 to a released tag once the kit repo is tagged.
+# Replace YOUR_ORG, and replace every 0000000000000000000000000000000000000000 below with the
+# 40-hex commit SHA of the kit you chose: a branch or moving tag means the verdict came from code
+# nobody chose (templates/security.yml pins the same way).
 #
 # Shape: security gates -> build (scan before push, SBOM) -> deploy BY DIGEST, gated by a
 # GitHub Environment. Note the trigger set: push builds, but push does NOT deploy.
+#
+# WHAT THE LANDING ZONE VENDS (docs/architecture/LZ_KIT_HANDOFF_CONTRACT.md). Per application and
+# environment: AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, AZURE_CLIENT_ID (variables, not secrets: the
+# identity is federated and holds no key) and KIT_RESOURCE_GROUP, KIT_APP_NAME,
+# KIT_ACR_LOGIN_SERVER, KIT_IMAGE_REPOSITORY, KIT_ENVIRONMENT_TIER, KIT_CLOUD. A job that CALLS a
+# reusable workflow cannot declare `environment:`, so the `vars.*` read in this file resolve
+# REPOSITORY (or organisation) variables only. The deploy reusable runs in the deploy environment
+# and binds itself to that environment's own KIT_* values: an empty value here is filled from the
+# environment, and a value here that disagrees with the environment's is refused before login.
+# The build reusable does not bind: set KIT_ACR_LOGIN_SERVER and KIT_IMAGE_REPOSITORY as
+# repository variables (or vend them there too).
 name: Build & Deploy
 
 on:
@@ -16,6 +29,10 @@ on:
         description: "Deploy the build produced by this run"
         type: boolean
         default: false
+      environment:
+        description: "GitHub Environment to deploy into (one per deployment environment, vended by the landing zone)"
+        type: string
+        default: "dev"
 
 permissions:
   contents: read
@@ -23,24 +40,31 @@ permissions:
 jobs:
   # ── Gate 1: security must pass before anything is built ──────────────
   security:
-    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-security.yml@v1
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-security.yml@0000000000000000000000000000000000000000   # pin a commit SHA
     permissions:
       contents: read
       security-events: write
+      actions: read   # the CodeQL job reads workflow metadata on private repositories
+    # The defaults ARE the baseline (language: auto, iac_mode: auto, soft_fail_sast: false): change
+    # nothing to get PROCEED on a clean run. Softening any control is a weakening -- attribute it
+    # (weakening_reason, weakening_authority, weakening_expires) or it routes DECISION_REQUIRED.
     with:
-      language: python
-      enable_iac: false
-      soft_fail_sast: false
+      environment: prod     # the baseline-ledger environment this run is for
     secrets:
       SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
 
   # ── Gate 2: the repo's own pipelines must satisfy supply-chain policy ─
   policy:
-    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/workflow-policy-check.yml@v1
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/workflow-policy-check.yml@0000000000000000000000000000000000000000   # pin a commit SHA
     permissions:
       contents: read
 
   # ── Build: Trivy gate runs BEFORE the push; emits digest + SBOM hash ──
+  #
+  # The BUILD IDENTITY IS NOT THE DEPLOY IDENTITY (hand-off contract): it holds AcrPush on the
+  # application's repository and nothing else, and lives in its own GitHub Environment (`build`
+  # here) whose federated credential is the build's. The deploy identity lives in each deploy
+  # environment and holds no registry role.
   #
   # `github_environment` is REQUIRED whenever push is true (it defaults to true). Pushing needs
   # Azure OIDC, and the federated credential subject is environment-scoped — so the environment
@@ -55,39 +79,180 @@ jobs:
   build:
     needs: [security, policy]
     if: github.event_name != 'pull_request'
-    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-build-docker.yml@v1
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-build-docker.yml@0000000000000000000000000000000000000000   # pin a commit SHA
     permissions:
       contents: read
       id-token: write
+      attestations: write   # the attest job (PROV section 8.2) signs build provenance
     with:
-      github_environment: production        # same Environment the deploy uses
-      acr_login_server: ${{ vars.ACR_LOGIN_SERVER }}
-      image_repository: ${{ vars.IMAGE_REPOSITORY }}
-      cloud: commercial
+      github_environment: build             # the build identity's own Environment, never a deploy one
+      acr_login_server: ${{ vars.KIT_ACR_LOGIN_SERVER }}
+      image_repository: ${{ vars.KIT_IMAGE_REPOSITORY }}
+      cloud: ${{ vars.KIT_CLOUD || 'commercial' }}
     secrets:
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
+
+  # ── Verdict: BRANCH on identity and on the security verdict; render the stamp ──
+  #
+  # `needs: [build]` alone stops a bad identity only as a side effect of the build job failing.
+  # Add `continue-on-error` to the build, or consume a failed job's outputs, and that protection
+  # is gone without a sign (PROVENANCE_AND_ATTESTATION.md section 7). So the decision is made
+  # here, from the outputs the kit emits for exactly this purpose:
+  #   artifact_identity must be REGISTRY_IDENTITY_PROVEN, and
+  #   the precedence-maximum of the security and build routing_result must be PROCEED or
+  #   PROCEED_WITH_ADVISORY (BLOCKED > EVIDENCE_UNTRUSTED > DECISION_REQUIRED > ...).
+  # An absent or unrecognised verdict is EVIDENCE_UNTRUSTED, never a pass. A REQUESTED deploy that
+  # is refused FAILS this job -- a refusal must be visible, not a silently skipped deploy.
+  #
+  # TWO VERDICTS LEAVE THIS JOB. `routing_result` folds in the V1 attestation check and decides
+  # `deploy_allowed`. `deploy_routing_result` is the release verdict the deploy is HANDED: security,
+  # build and identity, without V1 -- because the deploy reusable runs V1 itself before login, and
+  # a plan-held V1 (PROCEED_WITH_ADVISORY) has no registered advisory cause: folded in, it would
+  # reach a uat/prod deploy as an advisory whose cause is absent, which KDEC-014 refuses.
+  #
+  # reusable-security.yml emits `routing_result` (ledger L30/L31). A kit version that predates it
+  # renders the verdict absent, and this job then refuses every deploy: no verdict is not a PROCEED.
+  verdict:
+    needs: [security, build]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: read     # V1 reads; nothing here writes (PROVENANCE_AND_ATTESTATION.md §8.2)
+    outputs:
+      deploy_allowed: ${{ steps.decide.outputs.deploy_allowed }}
+      routing_result: ${{ steps.decide.outputs.routing_result }}
+      deploy_routing_result: ${{ steps.decide.outputs.deploy_routing_result }}
+      version_metadata: ${{ steps.stamp.outputs.metadata }}
+      attestation_outcome: ${{ steps.attestation.outputs.outcome }}
+    steps:
+      # V1 — verification BEFORE any mutation (PROVENANCE_AND_ATTESTATION.md §6.1): the last point
+      # at which refusing costs nothing. Five outcomes routed by rung (§6.3). On a private
+      # repository whose plan offers no attestations it is HELD (IMPLEMENTATION_HELD, trigger: the
+      # plan), not wired red forever (§6.4). Set vars.ATTESTATIONS_AVAILABLE to 'true' on
+      # Enterprise Cloud; a public repository arms regardless.
+      - name: Verify the build-provenance attestation (V1)
+        id: attestation
+        if: needs.build.outputs.artifact_identity == 'REGISTRY_IDENTITY_PROVEN'
+        uses: YOUR_ORG/secure-cicd-kit/.github/actions/verify-attestation@0000000000000000000000000000000000000000   # pin a commit SHA
+        with:
+          image-digest: ${{ needs.build.outputs.image_digest }}
+          subject-name: ${{ vars.KIT_ACR_LOGIN_SERVER }}/${{ vars.KIT_IMAGE_REPOSITORY }}
+          repository: ${{ github.repository }}
+          signer-workflow: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-build-docker.yml
+          rung: run
+          attestations-available: ${{ vars.ATTESTATIONS_AVAILABLE == 'true' }}
+
+      - name: Decide — proven identity and a PROCEED-class verdict, or no deploy
+        id: decide
+        env:
+          SECURITY_ROUTING: ${{ needs.security.outputs.routing_result }}
+          BUILD_ROUTING: ${{ needs.build.outputs.routing_result }}
+          VERIFY_ROUTING: ${{ steps.attestation.outputs.routing_result }}
+          ARTIFACT_IDENTITY: ${{ needs.build.outputs.artifact_identity }}
+          DEPLOY_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy }}
+        run: |
+          set -euo pipefail
+          rank() {
+            case "$1" in
+              PROCEED) echo 0 ;; PROCEED_WITH_ADVISORY) echo 1 ;; DECISION_REQUIRED) echo 2 ;;
+              EVIDENCE_UNTRUSTED) echo 3 ;; BLOCKED) echo 4 ;;
+              *) echo 3 ;;   # absent or unregistered: the input to a decision is missing
+            esac
+          }
+          names=(PROCEED PROCEED_WITH_ADVISORY DECISION_REQUIRED EVIDENCE_UNTRUSTED BLOCKED)
+          s="$(rank "$SECURITY_ROUTING")"; b="$(rank "$BUILD_ROUTING")"
+          release=$(( s > b ? s : b ))
+          # An identity that is not proven means the evidence describes an artifact nobody can
+          # name: EVIDENCE_UNTRUSTED at least, whatever the scanners said.
+          if [ "$ARTIFACT_IDENTITY" != REGISTRY_IDENTITY_PROVEN ] && [ "$release" -lt 3 ]; then
+            release=3
+          fi
+          v="$(rank "$VERIFY_ROUTING")"   # absent (step skipped) ranks as EVIDENCE_UNTRUSTED
+          worst=$(( v > release ? v : release ))
+          route="${names[$worst]}"
+          handed="${names[$release]}"
+          allowed=false
+          if [ "$worst" -le 1 ]; then allowed=true; fi
+          echo "routing_result=$route" >> "$GITHUB_OUTPUT"
+          echo "deploy_routing_result=$handed" >> "$GITHUB_OUTPUT"
+          echo "deploy_allowed=$allowed" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Deploy verdict"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| security routing_result | \`${SECURITY_ROUTING:-absent}\` |"
+            echo "| build routing_result | \`${BUILD_ROUTING:-absent}\` |"
+            echo "| artifact_identity | \`${ARTIFACT_IDENTITY:-absent}\` |"
+            echo "| **release verdict handed to the deploy** | **\`$handed\`** |"
+            echo "| attestation (V1) routing_result | \`${VERIFY_ROUTING:-absent}\` (the deploy re-runs V1 before login) |"
+            echo "| **combined, with V1** | **\`$route\`** |"
+            echo "| deploy allowed | $allowed |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$allowed" != true ] && [ "$DEPLOY_REQUESTED" = true ]; then
+            echo "::error title=Deploy refused::routing_result=$route, artifact_identity=${ARTIFACT_IDENTITY:-absent}. A deploy needs REGISTRY_IDENTITY_PROVEN and PROCEED or PROCEED_WITH_ADVISORY."
+            exit 1
+          fi
+
+      # The stamp the deploy writes. Without this the deploy knows WHICH artifact and nothing about
+      # what was established about it (PROVENANCE_AND_ATTESTATION.md section 2.3).
+      - name: Render version metadata (the identity chain and the build inputs)
+        id: stamp
+        uses: YOUR_ORG/secure-cicd-kit/.github/actions/render-version-metadata@0000000000000000000000000000000000000000   # pin a commit SHA
+        with:
+          image-digest: ${{ needs.build.outputs.image_digest }}
+          sbom-sha256: ${{ needs.build.outputs.sbom_sha256 }}
+          config-digest: ${{ needs.build.outputs.image_config_digest }}
+          artifact-identity: ${{ needs.build.outputs.artifact_identity }}
+          build-inputs: ${{ needs.build.outputs.build_inputs }}
 
   # ── Deploy: dispatch-only and Environment-gated. Never on bare push. ──
+  #
+  # The deploy reads the release VERDICT (routing_result), not a job result, and refuses before
+  # Azure login unless the verdict is PROCEED or PROCEED_WITH_ADVISORY. A kit version whose
+  # security reusable does not emit routing_result yet hands an absent verdict here, and the deploy
+  # refuses -- the honest state: there is no verdict to read. controls_unavailable is recorded in
+  # the deploy's outcome report.
+  #
+  # THE TIER IS THE LANDING ZONE'S, NOT A STRING TYPED HERE. environment_tier decides the
+  # production rules (uat/prod: no irreversible deploy, KDEC-014's version-gap refusal); the deploy
+  # binds it to its environment's KIT_ENVIRONMENT_TIER and refuses a mismatch.
   deploy:
-    needs: [build]
-    if: github.event_name == 'workflow_dispatch' && inputs.deploy
-    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-deploy-containerapp.yml@v1
+    needs: [security, build, verdict]
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy && needs.verdict.outputs.deploy_allowed == 'true'
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-deploy-containerapp.yml@0000000000000000000000000000000000000000   # pin a commit SHA
     permissions:
       contents: read
       id-token: write
+      attestations: read   # the deploy runs V1 itself, before login (P-02)
     with:
-      github_environment: production        # approvals live on the Environment
-      resource_group: ${{ vars.RESOURCE_GROUP }}
-      containerapp_name: ${{ vars.CONTAINERAPP_NAME }}
-      acr_login_server: ${{ vars.ACR_LOGIN_SERVER }}
-      image_repository: ${{ vars.IMAGE_REPOSITORY }}
+      github_environment: ${{ inputs.environment }}       # approvals live on the Environment
+      # V1 inside the deploy: the build workflow that must have signed this digest. On a private
+      # repository whose plan offers no attestations it is HELD, recorded, and the deploy proceeds.
+      attestation_signer_workflow: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-build-docker.yml
+      attestations_available: ${{ vars.ATTESTATIONS_AVAILABLE == 'true' }}
+      environment_tier: ${{ vars.KIT_ENVIRONMENT_TIER }}  # bound to the environment's own value
+      routing_result: ${{ needs.verdict.outputs.deploy_routing_result }}
+      controls_unavailable: ${{ needs.security.outputs.controls_unavailable }}
+      # WHY the verdict is advisory. At uat/prod a VERSION_GAP established by READ ranges is
+      # refused unless a named person accepts it (KDEC-014) through the weakening record --
+      # weakening_authority (the accepter), weakening_reason, weakening_expires (YYYY-MM-DD) --
+      # and this job's GitHub environment requires reviewers. A gap on an UNVERIFIED range is
+      # recorded and proceeds until a seeded corpus proves the range.
+      advisory_causes: ${{ needs.security.outputs.advisory_causes }}
+      resource_group: ${{ vars.KIT_RESOURCE_GROUP }}
+      containerapp_name: ${{ vars.KIT_APP_NAME }}
+      acr_login_server: ${{ vars.KIT_ACR_LOGIN_SERVER }}
+      image_repository: ${{ vars.KIT_IMAGE_REPOSITORY }}
       image_digest: ${{ needs.build.outputs.image_digest }}   # immutable reference
-      cloud: commercial
+      version_metadata: ${{ needs.verdict.outputs.version_metadata }}   # the stamp, not just the digest
+      cloud: ${{ vars.KIT_CLOUD || 'commercial' }}
       health_path: /health
       rollback_on_failure: true
     secrets:
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}

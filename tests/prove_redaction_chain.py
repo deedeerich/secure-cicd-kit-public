@@ -6,10 +6,22 @@ WHAT THIS PROVES THAT THE UNIT TESTS DO NOT
     two pattern sets match and that redaction is ORDERED before every publication step. Neither
     runs the chain.
 
-    This runs the chain, using the redaction script EXTRACTED FROM THE WORKFLOW rather than the
-    canonical file, so it fails if the inlined copy is stale, mis-indented, or never wired in.
-    The ticket-reference gate already taught this lesson: a hand-copied test passes while the shipped original
-    is broken.
+    This runs the chain, using the redaction step AND the scripts it calls EXTRACTED FROM THE
+    WORKFLOW rather than from scripts/ on disk, so it fails if the inlined copy is stale,
+    mis-indented, or never wired in. The ticket-reference gate already taught this lesson: a
+    hand-copied test passes while the shipped original is broken.
+
+    WHAT CHANGED 2026-09-23, AND WHAT IT COSTS
+        The workflow no longer inlines the redactor into every job. One bootstrap job writes the
+        canonical scripts and publishes them as a run-scoped artifact; each job fetches them into
+        /tmp and the step calls /tmp/redact_all.sh. So this harness materialises the workflow's
+        OWN inlined copies into a temp directory and rewrites the single prefix `/tmp/` to point
+        at it -- a test may not write to the runner's real /tmp. That prefix is the ONLY
+        transformation applied to the shipped text.
+
+        This proves the step's logic and the scripts it runs. It CANNOT prove that the artifact
+        actually reaches a consumer's job at run time; that is a property of a live run, and the
+        step fails loudly rather than silently if the fetch did not happen.
 
 THE CHAIN, AND WHY EACH LINK IS CHECKED SEPARATELY
     raw scanner output
@@ -133,13 +145,35 @@ def seed(d):
 
 
 def workflow_redaction_script():
-    """The redaction step's script AS IT SITS IN THE WORKFLOW, not the canonical file."""
+    """The redaction step's script AS IT SITS IN THE WORKFLOW, not the canonical file.
+
+    The FIRST job that publishes scanner output is deliberately not special-cased: every job
+    carrying this step gets the identical generated body, and the generator's --check proves it.
+    """
     doc = yaml.safe_load(io.open(WF, encoding='utf-8'))
     for job, v in (doc.get('jobs') or {}).items():
         for s in (v.get('steps') or []):
             if 'Redact credential' in str(s.get('name') or ''):
                 return s['run'], job
     return (None, None)
+
+
+def workflow_inlined_scripts():
+    """Every canonical script AS INLINED IN THE WORKFLOW -> {basename: body}.
+
+    Read out of the workflow, never off disk. A stale, mis-indented or unwired inlined copy must
+    fail HERE rather than on a consumer's runner, which is the whole reason this file exists.
+    """
+    sys.path.insert(0, os.path.join(ROOT, 'scripts'))
+    import inline_normalizer as gen
+    text = io.open(WF, encoding='utf-8').read()
+    out = {}
+    for canon, token, tag, dest in gen.SCRIPTS:
+        copies = gen.extract(text, token, canon, tag)
+        if not copies:
+            return (None, canon)
+        out[os.path.basename(dest)] = copies[0]
+    return (out, None)
 
 
 def bash():
@@ -168,10 +202,31 @@ def main():
         return 2
     print('using the redaction step as it appears in job `%s`' % job)
 
+    inlined, absent = workflow_inlined_scripts()
+    if inlined is None:
+        print('::error title=No inlined script::reusable-security.yml carries no inlined copy of '
+              '%s, so the step it feeds cannot be exercised. A proof with nothing to run is not '
+              'a pass.' % absent)
+        return 2
+
     d = tempfile.mkdtemp()
     try:
         names = seed(d)
         print('seeded %d secret-bearing report(s): %s' % (len(names), ', '.join(names)))
+
+        # --- LINK 0: the scripts the step calls, taken from the workflow ------------------
+        #
+        # On a runner these arrive in /tmp from the kit-scripts artifact. A test may not write
+        # to the runner's real /tmp, so they go to the sandbox and the single prefix `/tmp/` is
+        # repointed at it -- in the step AND inside the scripts, since they call each other by
+        # the same absolute path. Nothing else about the shipped text is altered.
+        posix_d = d.replace(os.sep, '/').rstrip('/') + '/'
+        for base, body in inlined.items():
+            io.open(os.path.join(d, base), 'w', encoding='utf-8',
+                    newline='\n').write(body.replace('/tmp/', posix_d) + '\n')
+        print('materialised %d inlined script(s) from the workflow: %s'
+              % (len(inlined), ', '.join(sorted(inlined))))
+        script = script.replace('/tmp/', posix_d)
 
         # --- LINK 1: the redactor, run exactly as the workflow runs it -------------------
         sp = os.path.join(d, 'redact.sh')

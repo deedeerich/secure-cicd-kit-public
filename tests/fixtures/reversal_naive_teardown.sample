@@ -1,0 +1,18 @@
+# Fixture: "deployment failed, delete the scope". It must FAIL, on three rules at once.
+name: fixture naive teardown
+on:
+  workflow_call: {}
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy
+        run: az deployment group create --resource-group "$RG" --template-file main.bicep
+
+      - name: Clean up on failure
+        if: failure()
+        run: |
+          set -euo pipefail
+          az group delete --name "$RG" --yes --no-wait

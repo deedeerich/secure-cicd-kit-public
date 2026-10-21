@@ -1,30 +1,159 @@
 name: "Render Version Metadata"
-description: "Emit a deployment metadata JSON object (image digest, git SHA, run ID, SBOM hash, timestamp) for provenance stamping."
+description: >-
+  Emit a deployment provenance metadata object. Carries the artifact identity CHAIN -- the digest
+  that was published, the config digest that was actually scanned, and whether the link between
+  them was established -- not just the digest, because a digest alone reads as proven.
 inputs:
   image-digest:
-    description: "SHA256 digest of the container image"
+    description: "Registry manifest digest of the image being deployed"
     required: true
   sbom-sha256:
     description: "SHA256 hash of the SBOM artifact"
     required: true
+  config-digest:
+    description: >-
+      Config digest of the image the gate and the SBOM actually inspected. This is the identity of
+      the SCANNED artifact. Empty means it was not established -- which is a fact worth stamping,
+      not a field to omit.
+    required: false
+    default: ""
+  artifact-identity:
+    description: >-
+      REGISTRY_IDENTITY_PROVEN | LOCAL_BUILD_ONLY | IDENTITY_UNVERIFIED | NOT_ESTABLISHED.
+      From the build workflow's artifact_identity output. Defaults to the WEAKEST value, so a
+      caller that forgets to pass it under-claims rather than over-claims.
+    required: false
+    default: "NOT_ESTABLISHED"
+  build-inputs:
+    description: >-
+      The build workflow's build_inputs output: a JSON object recording base image digests,
+      lockfile hashes and toolchain versions (PROVENANCE_AND_ATTESTATION.md section 3 links 2-4).
+      Empty means not supplied and is stamped as null -- a fact, not an omission. Anything that is
+      not a JSON object is refused.
+    required: false
+    default: ""
 outputs:
   metadata:
-    description: "Rendered deployment metadata as a compact JSON string"
+    description: "Rendered deployment provenance metadata as a compact JSON string"
     value: ${{ steps.render.outputs.metadata }}
+  artifact_identity:
+    description: "The validated identity class, echoed so a caller can branch on it without parsing the JSON"
+    value: ${{ steps.render.outputs.artifact_identity }}
 runs:
   using: composite
   steps:
     - name: Render metadata
       id: render
       shell: bash
+      env:
+        # Via env, not interpolated into the script body. A composite input is caller-controlled,
+        # and the caller is not always the kit.
+        IMAGE_DIGEST: ${{ inputs.image-digest }}
+        SBOM_SHA256: ${{ inputs.sbom-sha256 }}
+        CONFIG_DIGEST: ${{ inputs.config-digest }}
+        ARTIFACT_IDENTITY: ${{ inputs.artifact-identity }}
+        BUILD_INPUTS: ${{ inputs.build-inputs }}
+        # Context values too. A ref name is chosen by whoever can push a branch, and `$( )` is
+        # legal in one: interpolated into the script it EXECUTED (tests/prove_stamp_consistency.py).
+        GIT_SHA: ${{ github.sha }}
+        GIT_REF: ${{ github.ref_name }}
+        RUN_ID: ${{ github.run_id }}
       run: |
+        set -euo pipefail
+
+        # An unrecognised value must NOT fall through to "fine". A typo that renders as a valid
+        # stamp is worse than a missing field, because a missing field is visible.
+        case "$ARTIFACT_IDENTITY" in
+          REGISTRY_IDENTITY_PROVEN|LOCAL_BUILD_ONLY|IDENTITY_UNVERIFIED|NOT_ESTABLISHED) ;;
+          *)
+            echo "::error title=Unrecognised artifact-identity::'$ARTIFACT_IDENTITY' is not one of REGISTRY_IDENTITY_PROVEN, LOCAL_BUILD_ONLY, IDENTITY_UNVERIFIED, NOT_ESTABLISHED. Refusing to render provenance around a value nothing downstream can interpret."
+            exit 1
+            ;;
+        esac
+
+        # SHAPE VALIDATION, added after the composite's FIRST EXECUTION mangled a hash in front of
+        # us. The probe passed 64 ones as sbom-sha256; YAML typed the unquoted all-digit scalar as a
+        # NUMBER, and what reached the stamp was "1.11111111111111E+63". The composite recorded it
+        # without complaint, because nothing was checking that a hash looked like a hash.
+        #
+        # A real hex SHA-256 almost always contains a letter, so this would have waited a long time
+        # to bite and then bitten silently -- a provenance record carrying a value that cannot
+        # identify anything, which is worse than one carrying no value, because a populated field
+        # reads as an established one.
+        #
+        # Empty is allowed and is not the same as malformed: not-supplied is a fact, and the
+        # identity class already says which fields should be there.
+        for pair in "image-digest:$IMAGE_DIGEST:sha256" "config-digest:$CONFIG_DIGEST:sha256" "sbom-sha256:$SBOM_SHA256:hex"; do
+          field="${pair%%:*}"; rest="${pair#*:}"; value="${rest%:*}"; kind="${rest##*:}"
+          [ -n "$value" ] || continue
+          case "$kind" in
+            sha256) printf '%s' "$value" | grep -Eq '^sha256:[0-9a-f]{64}$' || bad=1 ;;
+            hex)    printf '%s' "$value" | grep -Eq '^[0-9a-f]{64}$'        || bad=1 ;;
+          esac
+          if [ "${bad:-0}" = "1" ]; then
+            echo "::error title=Malformed $field::got '$value'. A provenance stamp carrying a value that cannot identify an artefact is worse than one carrying none -- a populated field reads as an established one. If this looks like scientific notation, an all-digit value was passed unquoted in YAML and typed as a number."
+            exit 1
+          fi
+        done
+
+        # A PROVEN CLAIM CARRIES ITS EVIDENCE. REGISTRY_IDENTITY_PROVEN says the registry was asked
+        # about the pushed digest and agreed it holds the scanned config. With either digest empty
+        # the stamp would assert agreement about a value it does not contain -- the strongest
+        # claim it can make, over a hole. Refused; pass the weaker class instead.
+        if [ "$ARTIFACT_IDENTITY" = REGISTRY_IDENTITY_PROVEN ]; then
+          for pair in "image-digest:$IMAGE_DIGEST" "config-digest:$CONFIG_DIGEST"; do
+            if [ -z "${pair#*:}" ]; then
+              echo "::error title=Proven identity without evidence::artifact-identity is REGISTRY_IDENTITY_PROVEN but ${pair%%:*} is empty. A proven identity names both the pushed digest and the scanned config digest; pass IDENTITY_UNVERIFIED or NOT_ESTABLISHED if they are not known."
+              exit 1
+            fi
+          done
+        fi
+
+        # WHAT WENT INTO THE BUILD travels with the identity of what came out of it. Not supplied is
+        # stamped as null; supplied-but-not-an-object is refused, for the same reason a malformed
+        # hash is: a populated field reads as an established one.
+        if [ -z "$BUILD_INPUTS" ]; then
+          BUILD_INPUTS=null
+        elif ! printf '%s' "$BUILD_INPUTS" | jq -e 'type == "object"' >/dev/null 2>&1; then
+          echo "::error title=Malformed build-inputs::not a JSON object. Pass the build workflow's build_inputs output unchanged."
+          exit 1
+        fi
+
+        # A stamp that carries a digest and nothing else reads, to every later reader, as proof
+        # that the running artefact was assured. It is not. Artefact identity is ONE of eight
+        # conditions for technical provenance -- the others are observed-running, intended traffic,
+        # functional tests, operational validation, dependency verification, required reviews and
+        # state reconciliation, none of which this composite can see. See
+        # docs/architecture/DEPLOYMENT_CONTRACT_RECONCILIATION.md §7.7.
+        #
+        # So the stamp says what it is. technical_provenance is NOT_ESTABLISHED here by
+        # construction, and only the thing that actually evaluates the conjunction may raise it.
         meta=$(jq -cn \
-          --arg digest "${{ inputs.image-digest }}" \
-          --arg sbom   "${{ inputs.sbom-sha256 }}" \
-          --arg sha    "${{ github.sha }}" \
-          --arg run    "${{ github.run_id }}" \
-          --arg ref    "${{ github.ref_name }}" \
-          --arg ts     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-          '{image_digest:$digest, sbom_sha256:$sbom, git_sha:$sha, git_ref:$ref, run_id:$run, built_at:$ts}')
-        echo "metadata=$meta" >> "$GITHUB_OUTPUT"
+          --arg schema   "deploy-provenance/3" \
+          --arg digest   "$IMAGE_DIGEST" \
+          --arg config   "$CONFIG_DIGEST" \
+          --arg identity "$ARTIFACT_IDENTITY" \
+          --arg sbom     "$SBOM_SHA256" \
+          --arg sha      "$GIT_SHA" \
+          --arg run      "$RUN_ID" \
+          --arg ref      "$GIT_REF" \
+          --arg ts       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          --argjson inputs "$BUILD_INPUTS" \
+          '{schema:$schema,
+            image_digest:$digest,
+            scanned_config_digest:$config,
+            artifact_identity:$identity,
+            sbom_sha256:$sbom,
+            build_inputs:$inputs,
+            git_sha:$sha, git_ref:$ref, run_id:$run, built_at:$ts,
+            technical_provenance:"NOT_ESTABLISHED"}')
+
+        {
+          echo "metadata=$meta"
+          echo "artifact_identity=$ARTIFACT_IDENTITY"
+        } >> "$GITHUB_OUTPUT"
         echo "$meta" | jq .
+
+        if [ "$ARTIFACT_IDENTITY" != "REGISTRY_IDENTITY_PROVEN" ]; then
+          echo "::warning title=Provenance stamped without a proven artefact identity::artifact_identity=$ARTIFACT_IDENTITY. This stamp records the digest that was deployed; it does NOT record that the deployed artefact is the one the gate and the SBOM inspected."
+        fi

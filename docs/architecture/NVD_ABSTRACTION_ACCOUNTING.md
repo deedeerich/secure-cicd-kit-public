@@ -70,7 +70,7 @@ restoring by reflex.**
 
 ### 4.2 Sibling-repository scanning
 
-The original probed for `../infra-agent` and `../infra-shared-services` and scanned them if present —
+The original probed for two named sibling repositories (`../<sibling-a>`, `../<sibling-b>`) and scanned them if present —
 one workflow covering multiple checked-out repos. **Not reproduced.** The reusable version scans only
 within the calling repo. Restoring this means the consumer checks out siblings and passes them via
 `scan_paths`.

@@ -1,0 +1,475 @@
+name: Ticket reconcile (reusable)
+
+# TICKETING_BACKENDS.md section 5 and TICKETING_CONTRACT.md section 7, applied (W-1).
+#
+# WHERE THIS RUNS. A job of the CALLER'S run, after the scan, in a protected-branch context only
+# (SINGLE_PIPELINE_TARGET.md section 2.4: the post-scan phase lives in the same run; stages that
+# write to a governance surface are armed only when the ref is the protected default branch). It
+# is NEVER armed by a pull request and never by a run chained off one. The `guard` job decides
+# that WITHOUT holding anything; only then does the `reconcile` job request the protected
+# environment that holds the tracker credential.
+#
+# WHAT IT READS. The findings JSON the report emits in the SAME run (an intra-run artifact, so the
+# default run id is correct by construction), and the ledger from the checkout of the protected
+# branch. Nothing crosses a run boundary but the merge commit.
+#
+# WHAT IT WRITES. Tickets, through ONE credential, in ONE job. Never the repository: the updated
+# ledger is uploaded as a PROPOSAL for the propose-ledger path, which opens a reviewed pull request
+# (ETFB section 5.4). This job never pushes.
+#
+# DATA, NEVER CODE. Every caller value reaches the script through `env:`; no `run:` block contains
+# an expression (TC 7.4). Redaction already ran in the report before findings were written.
+#
+# STATUS: proven locally only (tests/prove_ticket_reconcile_workflow.py extracts and runs the guard
+# and the reconcile step). That GitHub honours the environment's branch policy, and that a real
+# caller wires it, need a hosted run, which is owed.
+
+on:
+  workflow_call:
+    inputs:
+      backend:
+        description: "jira or azdo (TICKETING_BACKENDS.md; KDEC-004). github is kept, not extended."
+        type: string
+        required: true
+      environment:
+        description: "The protected deployment environment holding the tracker credential, with a branch policy refusing every ref but the default branch."
+        type: string
+        required: true
+      default_branch:
+        description: "The protected default branch name. The guard refuses every other ref."
+        type: string
+        required: true
+      mode:
+        description: "reconcile (post-merge: findings -> tickets, plus the deferral sweep) or sweep (schedule: the past-due deferral clock only, no findings)."
+        type: string
+        default: reconcile
+      findings_artifact:
+        description: "Name of the same-run artifact holding the report's findings JSON (findings.json). Required for mode reconcile."
+        type: string
+        default: ""
+      ledger_path:
+        description: "Path of the baseline ledger in the checkout of the protected branch."
+        type: string
+        default: ".security/ticket-ledger.json"
+      apply:
+        description: "Perform the plan. false prints it and writes nothing to the tracker."
+        type: boolean
+        default: false
+      kit_repository:
+        description: "owner/repo of this kit, checked out for its scripts."
+        type: string
+        required: true
+      kit_ref:
+        description: "Full commit SHA of the kit to check out. A tag or branch can move."
+        type: string
+        required: true
+      timeout_minutes:
+        description: "Bound on the reconcile job. An unbounded job turns a tracker outage into billed minutes."
+        type: number
+        default: 15
+      weakening_reason:
+        description: "Why a control on this invocation is weaker than baseline (for example a plan-only run)."
+        type: string
+        default: ""
+      weakening_authority:
+        description: "The role that accepted the weakening. Never a person's name."
+        type: string
+        default: ""
+      weakening_exception_ref:
+        description: "Where the weakening decision is recorded."
+        type: string
+        default: ""
+      weakening_expires:
+        description: "ISO date after which the weakening is no longer attributed. Silence never renews it."
+        type: string
+        default: ""
+    secrets:
+      JIRA_EMAIL:
+        description: "Jira: the account email (basic auth is email:token). From the protected environment."
+        required: false
+      JIRA_TOKEN:
+        description: "Jira: API token. From the protected environment."
+        required: false
+      AZDO_PAT:
+        description: "Azure DevOps: PAT, Work Items read & write, one organisation. From the protected environment."
+        required: false
+    outputs:
+      armed:
+        description: "true only for push/schedule/dispatch on the protected default branch."
+        value: ${{ jobs.guard.outputs.armed }}
+      routing_result:
+        description: "The ticketing claim as a registered routing_result. Empty when not armed."
+        value: ${{ jobs.reconcile.outputs.routing_result || jobs.sweep.outputs.routing_result }}
+      controls_unavailable:
+        description: "Controls that could not be acquired this run. Never read as clean."
+        value: ${{ jobs.reconcile.outputs.controls_unavailable || jobs.sweep.outputs.controls_unavailable }}
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Ticketing armed only after the merge or on a schedule
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      armed: ${{ steps.decide.outputs.armed }}
+    steps:
+      - name: Decide from the trigger context, holding nothing
+        id: decide
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ inputs.default_branch }}
+        run: |
+          set -euo pipefail
+          armed=false
+          why=""
+          case "$EVENT_NAME" in
+            push|schedule|workflow_dispatch) ;;
+            *) why="event '$EVENT_NAME' is not post-merge or scheduled; ticketing is refused in it (TICKETING_CONTRACT.md 7.1)" ;;
+          esac
+          if [ -z "$why" ] && [ -z "$DEFAULT_BRANCH" ]; then
+            why="no default branch was named, so the protected-branch context cannot be established"
+          fi
+          if [ -z "$why" ] && [ "$REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            why="ref '$REF' is not the protected default branch"
+          fi
+          if [ -z "$why" ]; then armed=true; why="armed: $EVENT_NAME on the protected default branch"; fi
+          echo "armed=$armed" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Ticket reconciliation: $([ "$armed" = true ] && echo ARMED || echo NOT ARMED)"
+            echo ""
+            echo "$why"
+            if [ "$armed" != true ]; then
+              echo ""
+              echo "No credential was requested and nothing was written. This is the contract, not a failure."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # THE SCHEDULED DEFERRAL CLOCK, WITH NOTHING IN REACH (T-21, TC 7.2). The sweep reads the ledger
+  # and a date and contacts no tracker, so it runs in its own job: no protected environment, no
+  # secret, contents: read. It used to run inside the reconcile job, which requests the environment
+  # holding the tracker credential -- a credential in reach of a job that needs none.
+  sweep:
+    name: Sweep the past-due deferral clock (no tracker, no credential)
+    needs: guard
+    if: needs.guard.outputs.armed == 'true' && inputs.mode == 'sweep'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    outputs:
+      routing_result: ${{ steps.sweep.outputs.routing_result }}
+      controls_unavailable: ${{ steps.sweep.outputs.controls_unavailable }}
+    steps:
+      - name: Check out the protected branch (the ledger lives here)
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check out the kit at a pinned commit (its scripts)
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.kit_repository }}
+          ref: ${{ inputs.kit_ref }}
+          path: .kit
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Sweep the ledger for elapsed deferrals
+        id: sweep
+        env:
+          KIT_DIR: ${{ github.workspace }}/.kit
+          LEDGER_PATH: ${{ inputs.ledger_path }}
+        run: |
+          set -uo pipefail
+          today="${TODAY_OVERRIDE:-$(date -u +%F)}"
+          # The runner's bash is `-e`: a non-zero exit would end the step before the route is
+          # written, so the exit is captured rather than allowed to abort.
+          rc=0
+          python3 "$KIT_DIR/scripts/reconcile_tickets.py" --sweep-deferrals --ledger "$LEDGER_PATH" --today "$today" || rc=$?
+          # 0 nothing elapsed, 1 a review is owed, 3 no ledger (nothing swept), else misuse. A
+          # sweep that established nothing never reads as clean.
+          case "$rc" in
+            0) route=PROCEED; unav="" ;;
+            1) route=DECISION_REQUIRED; unav="" ;;
+            *) route=EVIDENCE_UNTRUSTED; unav="deferral-sweep" ;;
+          esac
+          echo "routing_result=$route" >> "$GITHUB_OUTPUT"
+          echo "controls_unavailable=$unav" >> "$GITHUB_OUTPUT"
+          echo "| deferral sweep | exit $rc, routing_result **$route** |" >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+  reconcile:
+    name: Reconcile findings to the tracker
+    needs: guard
+    if: needs.guard.outputs.armed == 'true' && inputs.mode != 'sweep'
+    runs-on: ubuntu-latest
+    # The ONE job that holds the tracker credential: from a protected environment whose branch
+    # policy refuses every ref but the default branch (TC 7.2).
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    outputs:
+      routing_result: ${{ steps.posture.outputs.routing_result }}
+      controls_unavailable: ${{ steps.posture.outputs.controls_unavailable }}
+    steps:
+      - name: Check out the protected branch (the ledger lives here)
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check out the kit at a pinned commit (its scripts)
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.kit_repository }}
+          ref: ${{ inputs.kit_ref }}
+          path: .kit
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Fetch the findings this run's report emitted
+        id: findings
+        if: inputs.mode == 'reconcile' && inputs.findings_artifact != ''
+        # An absent artifact is handled as a TYPED state by the next step (exit 3,
+        # EVIDENCE_UNTRUSTED), never as zero findings.
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.findings_artifact }}
+          path: ${{ runner.temp }}/findings
+
+      - name: Reconcile (or, on a schedule, sweep the deferral clock)
+        id: reconcile
+        env:
+          KIT_DIR: ${{ github.workspace }}/.kit
+          MODE: ${{ inputs.mode }}
+          FINDINGS_FILE: ${{ runner.temp }}/findings/findings.json
+          LEDGER_PATH: ${{ inputs.ledger_path }}
+          APPLY: ${{ inputs.apply }}
+          TICKET_BACKEND: ${{ inputs.backend }}
+          # Tracker SETTINGS come from the environment's variables, credentials from its secrets.
+          JIRA_HOST: ${{ vars.JIRA_HOST }}
+          JIRA_PROJECT: ${{ vars.JIRA_PROJECT }}
+          JIRA_STAMP_FIELD: ${{ vars.JIRA_STAMP_FIELD }}
+          JIRA_EPIC_ID: ${{ vars.JIRA_EPIC_ID }}
+          JIRA_CALIBRATION_ISSUE: ${{ vars.JIRA_CALIBRATION_ISSUE }}
+          JIRA_TYPE_CLUSTER: ${{ vars.JIRA_TYPE_CLUSTER }}
+          JIRA_TYPE_INSTANCE: ${{ vars.JIRA_TYPE_INSTANCE }}
+          JIRA_TRANSITION_REOPEN: ${{ vars.JIRA_TRANSITION_REOPEN }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+          AZDO_ORG_URL: ${{ vars.AZDO_ORG_URL }}
+          AZDO_PROJECT: ${{ vars.AZDO_PROJECT }}
+          AZDO_STAMP_FIELD: ${{ vars.AZDO_STAMP_FIELD }}
+          AZDO_EPIC_ID: ${{ vars.AZDO_EPIC_ID }}
+          AZDO_CALIBRATION_ITEM: ${{ vars.AZDO_CALIBRATION_ITEM }}
+          AZDO_TYPE_CLUSTER: ${{ vars.AZDO_TYPE_CLUSTER }}
+          AZDO_TYPE_INSTANCE: ${{ vars.AZDO_TYPE_INSTANCE }}
+          AZDO_STATE_REOPEN: ${{ vars.AZDO_STATE_REOPEN }}
+          AZDO_PAT: ${{ secrets.AZDO_PAT }}
+          TICKET_STAMP_LABEL: ${{ vars.TICKET_STAMP_LABEL }}
+          TICKET_CREATE_CEILING: ${{ vars.TICKET_CREATE_CEILING }}
+          TICKET_RETRY_CEILING: ${{ vars.TICKET_RETRY_CEILING }}
+          TICKET_INSTANCE_THRESHOLD: ${{ vars.TICKET_INSTANCE_THRESHOLD }}
+          TICKET_DEGRADED_RUN_THRESHOLD: ${{ vars.TICKET_DEGRADED_RUN_THRESHOLD }}
+        run: |
+          set -uo pipefail
+          # Only the selected backend's credential may be present (C-2 refuses two at once), so
+          # the other backend's values are cleared here rather than trusted to be empty.
+          case "$TICKET_BACKEND" in
+            jira) unset AZDO_PAT AZDO_ORG_URL AZDO_PROJECT ;;
+            azdo) unset JIRA_TOKEN JIRA_EMAIL JIRA_HOST JIRA_PROJECT ;;
+          esac
+          today="${TODAY_OVERRIDE:-$(date -u +%F)}"
+          record="${RUNNER_TEMP}/ticket-run-record.json"
+          script="$KIT_DIR/scripts/reconcile_tickets.py"
+          # The exit code is the posture record's input (0 proceed, 1 decision owed, 2 misuse,
+          # 3 EVIDENCE_UNTRUSTED), so it is written as an output before the step ends.
+          finish() { echo "rc=$1" >> "$GITHUB_OUTPUT"; exit "$1"; }
+          case "$MODE" in
+            reconcile)
+              if [ ! -s "$FINDINGS_FILE" ]; then
+                {
+                  echo "### Ticket reconciliation: EVIDENCE_UNTRUSTED"
+                  echo ""
+                  echo "The findings this run's report should have emitted are ABSENT. Nothing was"
+                  echo "reconciled. This is not zero findings: the input was never established."
+                } | tee -a "$GITHUB_STEP_SUMMARY"
+                python3 "$script" --sweep-deferrals --ledger "$LEDGER_PATH" --today "$today" || true
+                finish 3
+              fi
+              args=(--findings "$FINDINGS_FILE" --ledger "$LEDGER_PATH" --today "$today" --record "$record")
+              if [ "$APPLY" = "true" ]; then args+=(--apply); fi
+              # Captured, not allowed to abort: the runner's bash is `-e`, and an exit of 1 or 3
+              # must still reach the posture step as rc (it used to end the step first).
+              rc=0
+              python3 "$script" "${args[@]}" || rc=$?
+              # The ledger is a governance artifact: proposed, never pushed (ETFB 5.4).
+              if [ -f "$LEDGER_PATH" ]; then cp "$LEDGER_PATH" "${RUNNER_TEMP}/ticket-ledger-proposal.json"; fi
+              finish $rc
+              ;;
+            *)
+              # mode sweep runs in the credential-free sweep job (T-21), never here.
+              echo "::error title=Unknown mode::this job serves mode reconcile; sweep has its own job"
+              finish 2
+              ;;
+          esac
+
+      # Vocabulary: assurance-taxonomy.yaml :: control_weakening, routing_result. The enumeration
+      # is TOTAL over this workflow's inputs (tests/check_weakening_record.py). The pattern is
+      # workflow-policy-check.yml's, unchanged.
+      - name: Control posture -- what ticketing did, what it could not, and who decided
+        id: posture
+        if: always()
+        env:
+          W_FINDINGS_ARTIFACT: ${{ inputs.findings_artifact }}
+          W_APPLY: ${{ inputs.apply }}
+          W_WEAKENING_REASON: ${{ inputs.weakening_reason }}
+          W_WEAKENING_AUTHORITY: ${{ inputs.weakening_authority }}
+          W_WEAKENING_EXCEPTION_REF: ${{ inputs.weakening_exception_ref }}
+          W_WEAKENING_EXPIRES: ${{ inputs.weakening_expires }}
+          RC: ${{ steps.reconcile.outputs.rc }}
+          RECORD: ${{ runner.temp }}/ticket-run-record.json
+        run: |
+          set -u
+          req=""; exe=""; skp=""; red=""; wk=""; inforce=0; badclass=0
+          at_baseline() {
+            case "$2" in
+              NONEMPTY) [ -n "$1" ] ;;
+              *)        [ "$1" = "$2" ] ;;
+            esac
+          }
+          # posture <input> <control_weakening class> <baseline> <control> "<value>"
+          posture() {
+            n="$1"; cls="$2"; base="$3"; ctl="$4"; val="${5-}"; st=WEAKENING_AT_BASELINE
+            case "$cls" in
+              NOT_A_CONTROL_SURFACE|EXCEPTION_ATTRIBUTION)
+                return 0 ;;
+              TARGET_NOT_SUPPLIED)
+                req="$req,$ctl"
+                if at_baseline "$val" "$base"; then exe="$exe,$ctl"; else skp="$skp,$ctl"; fi ;;
+              CONTROL_DISABLED)
+                req="$req,$ctl"
+                if at_baseline "$val" "$base"; then
+                  exe="$exe,$ctl"
+                else
+                  st=WEAKENING_IN_FORCE; skp="$skp,$ctl"; inforce=$((inforce+1))
+                fi ;;
+              *)
+                echo "::error title=Unregistered control_weakening class::$cls on input $n"
+                badclass=1; return 0 ;;
+            esac
+            wk="$wk,{\"input\":\"$n\",\"class\":\"$cls\",\"control\":\"$ctl\",\"baseline\":\"$base\",\"value\":\"$val\",\"state\":\"$st\"}"
+          }
+
+          posture backend                 NOT_A_CONTROL_SURFACE - -
+          posture environment             NOT_A_CONTROL_SURFACE - -
+          posture default_branch          NOT_A_CONTROL_SURFACE - -
+          posture mode                    NOT_A_CONTROL_SURFACE - -
+          posture findings_artifact       TARGET_NOT_SUPPLIED NONEMPTY ticket-reconciliation "$W_FINDINGS_ARTIFACT"
+          posture ledger_path             NOT_A_CONTROL_SURFACE - -
+          posture apply                   CONTROL_DISABLED  true         ticket-writes  "$W_APPLY"
+          posture kit_repository          NOT_A_CONTROL_SURFACE - -
+          posture kit_ref                 NOT_A_CONTROL_SURFACE - -
+          posture timeout_minutes         NOT_A_CONTROL_SURFACE - -
+          posture weakening_reason        EXCEPTION_ATTRIBUTION - -
+          posture weakening_authority     EXCEPTION_ATTRIBUTION - -
+          posture weakening_exception_ref EXCEPTION_ATTRIBUTION - -
+          posture weakening_expires       EXCEPTION_ATTRIBUTION - -
+
+          # UNAVAILABLE IS NOT CLEAN: no exit code, misuse (2) or an untrusted claim (3) means the
+          # ticketing control never reached a verdict it could stand behind.
+          unav=""
+          case "${RC:-}" in
+            0|1) ;;
+            '') unav="ticket-reconciliation" ;;   # no exit code recorded: stated, not left to *)
+            *) unav="ticket-reconciliation" ;;
+          esac
+          # A POLICY DEFECT IS AN OBSERVED REFUSAL (TC 4.6): two backends configured at once
+          # "fails the policy check, by name".
+          defect=0
+          if [ -f "$RECORD" ] && grep -q 'CONFIGURATION DEFECT' "$RECORD"; then defect=1; fi
+
+          dedupe() {
+            printf '%s' "${1#,}" | tr ',' '\n' | sed '/^$/d' | sort -u | tr '\n' ',' | sed 's/,$//'
+          }
+          REQ="$(dedupe "$req")"; EXE="$(dedupe "$exe")"
+          SKP="$(dedupe "$skp")"; RED="$(dedupe "$red")"; UNAV="$(dedupe "$unav")"
+
+          auth=WEAKENING_AT_BASELINE
+          if [ "$inforce" -gt 0 ]; then
+            if [ -n "$W_WEAKENING_REASON" ] && [ -n "$W_WEAKENING_AUTHORITY" ]; then
+              auth=WEAKENING_ATTRIBUTED
+              # AN EXPIRY NOBODY CAN READ HAS NOT "NOT ARRIVED". Dates compare as strings below, which
+              # is correct only for a real YYYY-MM-DD: `never` or `31/12/1999` sorted after every ISO
+              # date and read as unexpired forever. Anything that is not a valid calendar date reverts
+              # to owing a decision, and says why. tests/prove_gate_routing.py, expiry_* scenarios.
+              if [ -n "$W_WEAKENING_EXPIRES" ]; then
+                if ! printf '%s' "$W_WEAKENING_EXPIRES" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' ||
+                   [ "$(date -u -d "$W_WEAKENING_EXPIRES" +%Y-%m-%d 2>/dev/null)" != "$W_WEAKENING_EXPIRES" ]; then
+                  echo "::warning title=Unreadable weakening expiry::'$W_WEAKENING_EXPIRES' is not a"
+                  echo "YYYY-MM-DD calendar date, so the exception cannot be shown to be in force."
+                  auth=WEAKENING_EXCEPTION_EXPIRED
+                elif [ "$(date -u +%Y-%m-%d)" ">" "$W_WEAKENING_EXPIRES" ]; then
+                  auth=WEAKENING_EXCEPTION_EXPIRED
+                fi
+              fi
+            else
+              auth=WEAKENING_UNATTRIBUTED
+            fi
+          fi
+
+          # The TICKETING claim only. A ticketing result never softens, and never hardens, the
+          # findings' own routing under the rung (TC 4.1).
+          route=PROCEED
+          if [ "$defect" = "1" ]; then
+            route=BLOCKED
+          elif [ -n "$UNAV" ] || [ "$badclass" = "1" ]; then
+            route=EVIDENCE_UNTRUSTED
+          elif [ "${RC:-}" = "1" ] || [ "$auth" = "WEAKENING_UNATTRIBUTED" ] || [ "$auth" = "WEAKENING_EXCEPTION_EXPIRED" ]; then
+            route=DECISION_REQUIRED
+          elif [ "$inforce" -gt 0 ]; then
+            route=PROCEED_WITH_ADVISORY
+          fi
+
+          emit() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
+          emit routing_result "$route"
+          emit controls_required "$REQ"
+          emit controls_executed "$EXE"
+          emit controls_unavailable "$UNAV"
+          emit controls_reduced "$RED"
+          emit controls_skipped "$SKP"
+          emit weakenings "[${wk#,}]"
+          emit weakening_attribution "$auth"
+          emit weakening_record "{\"reason\":\"$W_WEAKENING_REASON\",\"authority\":\"$W_WEAKENING_AUTHORITY\",\"exception_ref\":\"$W_WEAKENING_EXCEPTION_REF\",\"expires\":\"$W_WEAKENING_EXPIRES\"}"
+          {
+            echo "### Control posture -- ticket reconciliation"
+            echo ""
+            echo "| row | value |"
+            echo "|---|---|"
+            echo "| routing_result | **$route** |"
+            echo "| controls executed | ${EXE:-none} |"
+            echo "| controls unavailable | ${UNAV:-none} |"
+            echo "| controls skipped | ${SKP:-none} |"
+            echo "| weakening attribution | $auth |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the run record and the ledger proposal
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ticket-reconcile-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/ticket-run-record.json
+            ${{ runner.temp }}/ticket-ledger-proposal.json
+          if-no-files-found: ignore
+          retention-days: 30

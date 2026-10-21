@@ -12,6 +12,34 @@ on:
         description: "GitHub Environment that gates this deploy (approvals/secrets live there)"
         type: string
         required: true
+      routing_result:
+        description: >-
+          REQUIRED gate verdict from the calling run's gate stage (assurance-taxonomy.yaml
+          routing_result). Only PROCEED or PROCEED_WITH_ADVISORY lets the deploy proceed; every
+          other value, an empty value included, refuses BEFORE Azure login. Pass the gate's
+          verdict OUTPUT, never `needs.<gate>.result`.
+        type: string
+        required: true
+      controls_unavailable:
+        description: >-
+          The gate's controls_unavailable output (comma-separated), recorded verbatim in this
+          deploy's outcome report so a release that proceeded with a control missing says so.
+          Recording only: it changes no decision here.
+        type: string
+        required: false
+        default: ""
+      advisory_causes:
+        description: >-
+          The security gate's cause list for a PROCEED_WITH_ADVISORY verdict, comma-separated
+          (values registered in assurance-taxonomy.yaml, e.g. VERSION_GAP). Pass the
+          gate's output beside routing_result. At uat and prod a VERSION_GAP (established by
+          READ ranges) is refused before login unless the governance fields below record an
+          attributed exception (a named accepter, a reason, an unexpired expiry); a
+          VERSION_GAP_UNVERIFIED is recorded and proceeds; a PROCEED_WITH_ADVISORY whose cause is
+          absent or unregistered is refused (KDEC-014).
+        type: string
+        required: false
+        default: ""
       resource_group:
         description: "Resource group containing the Web App"
         type: string
@@ -37,11 +65,28 @@ on:
         type: string
         required: false
         default: "gov"
+      environment_tier:
+        description: >-
+          REQUIRED consequence tier of the target (assurance-taxonomy.yaml environment_tier):
+          sandbox | dev | test | uat | prod. uat and prod are BOTH production tiers. Any other
+          value is refused before login.
+        type: string
+        required: true
       slot:
-        description: "Deployment slot to stage into ('' deploys straight to production)"
+        description: >-
+          Deployment slot to stage into. '' deploys straight to production with no pre-traffic
+          health check, and is REFUSED at the production tiers (uat, prod).
         type: string
         required: false
         default: "staging"
+      rollback_on_failure:
+        description: >-
+          Reverse this run's changes (scoped to its change manifest, per-object preconditions
+          from live state) when verification fails. false leaves the failed change in place and
+          the outcome report says so.
+        type: boolean
+        required: false
+        default: true
       swap_on_healthy:
         description: "Swap the slot into production once the health probe passes"
         type: boolean
@@ -63,7 +108,69 @@ on:
         required: false
         default: 10
       version_metadata:
-        description: "Provenance JSON from render-version-metadata; stamped as an app setting"
+        description: "Provenance JSON from render-version-metadata. Stamped (digest + metadata sha256, as tags on the serving object) only after health and a live read"
+        type: string
+        required: false
+        default: ""
+      # ── V1: ATTESTATION VERIFICATION BEFORE LOGIN (P-02; PROVENANCE_AND_ATTESTATION.md 6.1) ──
+      attestation_signer_workflow:
+        description: >-
+          The kit build workflow that must have signed the digest's build provenance, as
+          <owner>/<repo>/.github/workflows/reusable-build-docker.yml (gh attestation verify
+          --signer-workflow). V1 runs inside this deploy, before login. Empty means the signer
+          cannot be pinned: wherever verification is armed it reads ATTESTATION_NOT_ESTABLISHABLE
+          and the deploy is refused.
+        type: string
+        required: false
+        default: ""
+      attestation_rung:
+        description: >-
+          crawl | walk | run -- the enforcement rung whose section 6.3 column routes V1. At run
+          (the baseline) an absent attestation is DECISION_REQUIRED; at crawl it is an advisory.
+          Empty reads as run.
+        type: string
+        required: false
+        default: "run"
+      attestations_available:
+        description: >-
+          true when the plan offers attestations on a PRIVATE repository (Enterprise Cloud). On
+          a private repository without it V1 is HELD (ATTESTATION_HELD_BY_PLAN, IMPLEMENTATION_HELD):
+          the deploy proceeds with the hold recorded and gh is never called. A public repository
+          arms V1 regardless.
+        type: boolean
+        required: false
+        default: false
+      # ── GOVERNANCE OF WEAKENINGS ────────────────────────────────────────────────────────
+      # A WEAKENING IS A GOVERNED EXCEPTION, NOT A BOOLEAN PREFERENCE. Optional, so no existing
+      # caller breaks; a caller who supplies none gets identical behaviour PLUS a record saying
+      # any weakening in force is unattributed -- which is the truth and was previously invisible.
+      weakening_reason:
+        description: >-
+          Why a control on this invocation is weaker than baseline. Empty means the record says
+          WEAKENING_UNATTRIBUTED and routing_result becomes DECISION_REQUIRED -- not a failure and
+          not a pass: a decision nobody has made yet.
+        type: string
+        required: false
+        default: ""
+      weakening_authority:
+        description: >-
+          WHO decided. A role, a team, a named approver. A reason without an authority is an
+          explanation, not a decision, and both are required before a weakening is attributed.
+        type: string
+        required: false
+        default: ""
+      weakening_exception_ref:
+        description: >-
+          Where the exception or deferral is recorded -- a ticket, a disposition id, a register
+          entry. Its ABSENCE is reported too: an exception nobody can find is one nobody can
+          review or expire.
+        type: string
+        required: false
+        default: ""
+      weakening_expires:
+        description: >-
+          ISO date (YYYY-MM-DD) on which the weakening lapses. A past date routes to
+          DECISION_REQUIRED -- silence must never renew a weakening.
         type: string
         required: false
         default: ""
@@ -81,6 +188,48 @@ on:
       app_url:
         description: "Public URL that received the deploy (slot URL if not swapped)"
         value: ${{ jobs.deploy.outputs.app_url }}
+      # ── THE CONTROL POSTURE RECORD ──────────────────────────────────────────────────────
+      # What this deploy should have run, what ran, what was weakened, and who decided; the same
+      # nine rows the other reusables emit (tests/check_weakening_record.py W1-W7). routing_result
+      # is what the deploy DID, by the registered precedence: a refusal before the point of no
+      # return is BLOCKED whatever weakening the caller recorded. Vocabulary:
+      # assurance-taxonomy.yaml :: control_weakening, routing_result.
+      routing_result:
+        description: >-
+          PROCEED | PROCEED_WITH_ADVISORY | DECISION_REQUIRED | BLOCKED | EVIDENCE_UNTRUSTED.
+          Never weaker than the gate verdict this deploy was given; BLOCKED on any refusal before
+          the point of no return or a failed verification; EVIDENCE_UNTRUSTED when the outcome
+          could not be reconciled (STATUS_UNTRUSTED, PARTIAL_APPLY) or a required control was
+          unavailable.
+        value: ${{ jobs.deploy.outputs.routing_result }}
+      controls_required:
+        description: "Comma list of the controls this deploy should have run."
+        value: ${{ jobs.deploy.outputs.controls_required }}
+      controls_executed:
+        description: "Comma list of the controls that actually ran. Never includes a skipped one."
+        value: ${{ jobs.deploy.outputs.controls_executed }}
+      controls_unavailable:
+        description: "Controls that were required and could not be provided. NOT the same as clean."
+        value: ${{ jobs.deploy.outputs.controls_unavailable }}
+      controls_reduced:
+        description: "Controls that ran with their scope or threshold changed from baseline."
+        value: ${{ jobs.deploy.outputs.controls_reduced }}
+      controls_skipped:
+        description: "Controls that were switched off."
+        value: ${{ jobs.deploy.outputs.controls_skipped }}
+      weakenings:
+        description: >-
+          JSON array, one object per declared input that governs a control. The enumeration is
+          TOTAL over this workflow's inputs -- a hand-written list is a list that goes stale.
+        value: ${{ jobs.deploy.outputs.weakenings }}
+      weakening_attribution:
+        description: >-
+          WEAKENING_AT_BASELINE | WEAKENING_ATTRIBUTED | WEAKENING_UNATTRIBUTED |
+          WEAKENING_EXCEPTION_EXPIRED.
+        value: ${{ jobs.deploy.outputs.weakening_attribution }}
+      weakening_record:
+        description: "Reason, authority, exception reference and expiry as one JSON object."
+        value: ${{ jobs.deploy.outputs.weakening_record }}
 
 # Concurrency for a CHANGE workflow is the opposite of concurrency for a validation
 # workflow. Validation cancels the superseded run — the answer is stale, killing it costs
@@ -92,126 +241,2689 @@ on:
 # So: serialize per target, never cancel in flight. GitHub keeps at most one run PENDING
 # per group and discards older pending ones, which is safe — a pending run has mutated
 # nothing.
+#
+# The key is the APP, never the slot (L99). Every slot path ends in a swap INTO PRODUCTION, so two
+# runs staging into two slots of one app both write production; keyed per slot, they would not
+# queue. Proven by tests/prove_deploy_concurrency.py.
 concurrency:
-  group: deploy-appservice-${{ inputs.github_environment }}-${{ inputs.resource_group }}-${{ inputs.webapp_name }}-${{ inputs.slot }}
+  group: deploy-appservice-${{ inputs.github_environment }}-${{ inputs.resource_group }}-${{ inputs.webapp_name }}
   cancel-in-progress: false
 
 permissions:
   contents: read
   id-token: write   # OIDC
+  attestations: read   # V1 reads the digest's signed build provenance (P-02); nothing here writes one
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: ${{ inputs.github_environment }}
     outputs:
-      app_url: ${{ steps.resolve.outputs.app_url }}
+      app_url: ${{ steps.serving.outputs.app_url }}
+      routing_result: ${{ steps.posture.outputs.routing_result }}
+      controls_required: ${{ steps.posture.outputs.controls_required }}
+      controls_executed: ${{ steps.posture.outputs.controls_executed }}
+      controls_unavailable: ${{ steps.posture.outputs.controls_unavailable }}
+      controls_reduced: ${{ steps.posture.outputs.controls_reduced }}
+      controls_skipped: ${{ steps.posture.outputs.controls_skipped }}
+      weakenings: ${{ steps.posture.outputs.weakenings }}
+      weakening_attribution: ${{ steps.posture.outputs.weakening_attribution }}
+      weakening_record: ${{ steps.posture.outputs.weakening_record }}
+    # SAFE_ENV_TRANSPORT (L100/L38). Every caller input reaches the scripts below as DATA in the
+    # environment, never as text substituted into a script body. The digest guard used to read
+    # `d='${{ inputs.image_digest }}'` -- validation that ran after bash had already parsed the
+    # value it was validating. tests/prove_deploy_inputs_via_env.py fails on any `$`-double-brace expression in a
+    # `run:` body of this file.
+    env:
+      WEBAPP_NAME: ${{ inputs.webapp_name }}
+      RESOURCE_GROUP: ${{ inputs.resource_group }}
+      ACR_LOGIN_SERVER: ${{ inputs.acr_login_server }}
+      IMAGE_REPOSITORY: ${{ inputs.image_repository }}
+      IMAGE_DIGEST: ${{ inputs.image_digest }}
+      CLOUD: ${{ inputs.cloud }}
+      SLOT: ${{ inputs.slot }}
+      SWAP_ON_HEALTHY: ${{ inputs.swap_on_healthy }}
+      HEALTH_PATH: ${{ inputs.health_path }}
+      HEALTH_RETRIES: ${{ inputs.health_retries }}
+      HEALTH_INTERVAL_SECONDS: ${{ inputs.health_interval_seconds }}
+      VERSION_METADATA: ${{ inputs.version_metadata }}
+      ROUTING_RESULT: ${{ inputs.routing_result }}
+      CONTROLS_UNAVAILABLE: ${{ inputs.controls_unavailable }}
+      ADVISORY_CAUSES: ${{ inputs.advisory_causes }}
+      # KDEC-014: the existing weakening record is also the version-gap exception, and the
+      # GitHub environment this job runs in (whose required reviewers approve it) is recorded.
+      WEAKENING_REASON: ${{ inputs.weakening_reason }}
+      WEAKENING_AUTHORITY: ${{ inputs.weakening_authority }}
+      WEAKENING_EXCEPTION_REF: ${{ inputs.weakening_exception_ref }}
+      WEAKENING_EXPIRES: ${{ inputs.weakening_expires }}
+      DEPLOY_ENVIRONMENT: ${{ inputs.github_environment }}
+      ROLLBACK_ON_FAILURE: ${{ inputs.rollback_on_failure }}
+      ENVIRONMENT_TIER: ${{ inputs.environment_tier }}
+      # B-13 / LZ-1: what the landing zone vended into THIS job's GitHub environment. A caller job
+      # cannot read an environment's variables; this job runs in it, and the bind step below holds
+      # every input to them (tests/prove_deploy_environment_binding.py).
+      KIT_BOUND_ENVIRONMENT_TIER: ${{ vars.KIT_ENVIRONMENT_TIER }}
+      KIT_BOUND_RESOURCE_GROUP: ${{ vars.KIT_RESOURCE_GROUP }}
+      KIT_BOUND_APP_NAME: ${{ vars.KIT_APP_NAME }}
+      KIT_BOUND_ACR_LOGIN_SERVER: ${{ vars.KIT_ACR_LOGIN_SERVER }}
+      KIT_BOUND_IMAGE_REPOSITORY: ${{ vars.KIT_IMAGE_REPOSITORY }}
+      KIT_BOUND_CLOUD: ${{ vars.KIT_CLOUD }}
     steps:
+      - name: Materialise the deploy contract scripts
+        # GENERATED by scripts/inline_deploy_scripts.py from scripts/ -- do not edit
+        # here; edit the script and run `--write`. self-test fails on any drift.
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/kit-deploy"
+          cat > "$RUNNER_TEMP/kit-deploy/deploy_contract.py" <<'kit_deploy_contract_py'
+          #!/usr/bin/env python3
+          """The deploy contract, executed: what a deploy run captured, changed, verified and now serves.
+
+          WHY THIS EXISTS (docs/architecture/DEPLOYMENT_CONTRACT_RECONCILIATION.md, ROLLBACK_CONTRACT.md)
+
+              Both deploy reusables reported the digest the run TRIED to deploy beside a health result,
+              with nothing read back from the target. This module is the part of each deploy job that
+              talks to live state and decides what may be claimed about it. The workflows call it one
+              subcommand per step, so the ORDER of the contract (capture, mutate, verify, reverse,
+              provenance, report) stays visible in the workflow file where a reviewer reads it.
+
+              It is INLINED into both deploy reusables by scripts/inline_deploy_scripts.py (a reusable
+              workflow called cross-repo cannot read this repository's scripts/), and the copies are
+              checked for drift in self-test.
+
+          LABELS (assurance-taxonomy.yaml serving_claim)
+              ATTEMPTED     what the run tried to deploy; may be echoed from inputs
+              NOW SERVING   read back from live state; echoing an input here is the defect. When it cannot
+                            be read the value is `unknown` -- never the attempted value.
+
+          USAGE (from a workflow step; names and the digest arrive through env:)
+              deploy_contract.py report --adapter containerapp|appservice
+          """
+          import argparse
+          import io
+          import json
+          import os
+          import shutil
+          import subprocess
+          import sys
+
+          UNKNOWN = 'unknown'
+
+
+          # ----------------------------------------------------------------------------- plumbing
+          def evidence_dir():
+              d = os.path.join(os.environ.get('RUNNER_TEMP') or '.', 'deploy-evidence')
+              os.makedirs(d, exist_ok=True)
+              return d
+
+
+          def write_evidence(name, obj):
+              io.open(os.path.join(evidence_dir(), name), 'w', encoding='utf-8').write(
+                  json.dumps(obj, indent=1, sort_keys=True))
+
+
+          def read_evidence(name):
+              try:
+                  return json.load(io.open(os.path.join(evidence_dir(), name), encoding='utf-8'))
+              except (OSError, ValueError):
+                  return None
+
+
+          def az(*args):
+              """-> (ok, parsed JSON or None, error text). A failed read is reported, never blanked."""
+              exe = shutil.which('az')
+              if not exe:
+                  return False, None, 'az CLI not found'
+              try:
+                  p = subprocess.run([exe] + list(args) + ['-o', 'json'], capture_output=True, text=True,
+                                     encoding='utf-8', errors='replace')
+              except OSError as e:
+                  return False, None, str(e)
+              if p.returncode != 0:
+                  return False, None, (p.stderr or p.stdout or 'exit %d' % p.returncode).strip()[:400]
+              try:
+                  return True, json.loads(p.stdout) if p.stdout.strip() else None, ''
+              except ValueError:
+                  return False, None, 'unparseable az output'
+
+
+          def az_raw(*args):
+              """-> (ok, text, error text) for a call whose answer is not JSON (a log file)."""
+              exe = shutil.which('az')
+              if not exe:
+                  return False, '', 'az CLI not found'
+              try:
+                  p = subprocess.run([exe] + list(args), capture_output=True, text=True,
+                                     encoding='utf-8', errors='replace')
+              except OSError as e:
+                  return False, '', str(e)
+              if p.returncode != 0:
+                  return False, '', (p.stderr or p.stdout or 'exit %d' % p.returncode).strip()[:400]
+              return True, p.stdout or '', ''
+
+
+          def utc_now():
+              import time
+              return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+
+
+          def output(**kv):
+              path = os.environ.get('GITHUB_OUTPUT')
+              for k, v in kv.items():
+                  line = '%s=%s' % (k, '' if v is None else v)
+                  print(line)
+                  if path:
+                      io.open(path, 'a', encoding='utf-8').write(line + '\n')
+
+
+          def summary(text):
+              path = os.environ.get('GITHUB_STEP_SUMMARY')
+              if path:
+                  io.open(path, 'a', encoding='utf-8').write(text + '\n')
+
+
+          def env(name, default=''):
+              """Read a job environment variable. Names are written lower-case here and upper-cased on
+              lookup: they are SETTINGS (an app name, a digest), not states, and spelling them in capitals
+              would present them to scripts/reconcile_taxonomy.py as undefined vocabulary (remedy 4)."""
+              return os.environ.get(name.upper(), default)
+
+
+          def intended_ref():
+              return '%s/%s@%s' % (env('acr_login_server'), env('image_repository'), env('image_digest'))
+
+
+          # ----------------------------------------------------------------------------- live reads
+          def containerapp_serving():
+              """-> list of {revision, weight, image} receiving traffic, or None when unreadable."""
+              app, rg = env('containerapp_name'), env('resource_group')
+              ok, shown, _ = az('containerapp', 'show', '-n', app, '-g', rg)
+              if not ok or not isinstance(shown, dict):
+                  return None
+              ok, revs, _ = az('containerapp', 'revision', 'list', '-n', app, '-g', rg, '--all')
+              if not ok or not isinstance(revs, list):
+                  return None
+              props = shown.get('properties') or {}
+              latest = props.get('latestRevisionName') or ''
+              traffic = ((props.get('configuration') or {}).get('ingress') or {}).get('traffic') or []
+              by_name = {r.get('name'): r for r in revs}
+              out = []
+              for t in traffic:
+                  w = t.get('weight') or 0
+                  if w <= 0:
+                      continue
+                  name = latest if t.get('latestRevision') else t.get('revisionName')
+                  r = by_name.get(name)
+                  if r is None:
+                      return None
+                  rp = r.get('properties') or {}
+                  image = (((rp.get('template') or {}).get('containers') or [{}])[0]).get('image', '')
+                  out.append({'revision': name, 'weight': w, 'image': image if rp.get('active') else '',
+                              'active': bool(rp.get('active'))})
+              return out
+
+
+          def appservice_slot_image(slot):
+              args = ['webapp', 'config', 'show', '-n', env('webapp_name'), '-g', env('resource_group')]
+              if slot and slot != 'production':
+                  args += ['--slot', slot]
+              ok, cfg, _ = az(*args)
+              if not ok or not isinstance(cfg, dict):
+                  return None
+              fx = cfg.get('linuxFxVersion') or ''
+              return fx.split('|', 1)[1] if '|' in fx else ''
+
+
+          def now_serving(adapter):
+              """-> list of (field, value) NOW SERVING rows, read from live state."""
+              if adapter == 'containerapp':
+                  live = containerapp_serving()
+                  if live is None:
+                      return [('image', UNKNOWN), ('revision', UNKNOWN)], None
+                  if not live:
+                      return [('image', 'nothing (no revision receives traffic)')], []
+                  rows = []
+                  for t in live:
+                      rows.append(('revision', '%s (%d%%)' % (t['revision'], t['weight'])))
+                      rows.append(('image', t['image'] or UNKNOWN))
+                  return rows, live
+              image, started = appservice_production_now()
+              rows = [(CONFIGURED_ROW, UNKNOWN if image is None else
+                       (image or 'nothing (no container configured)')),
+                      (STARTED_ROW, started)]
+              # DCR-2: when this run changed production (directly, or by a swap), what RUNS there is the
+              # verdict, read from the start record since that change -- not the configured image.
+              NOW['running'] = None
+              if run_since() and (not env('slot') or env('swapped') == 'success'):
+                  NOW['running'] = appservice_running('production', intended_ref())
+                  rows.append((RUNNING_ROW, running_text(NOW['running'], intended_ref())))
+              return rows, image
+
+
+          NOW = {'running': None}
+
+
+          # App Service exposes no running digest. Two readings exist and they are different claims: the
+          # CONFIGURED image (linuxFxVersion -- what the platform will start next) and the platform's own
+          # container log (which image it last reported started). Each row names which one it is.
+          CONFIGURED_ROW = 'production image (configured)'
+          STARTED_ROW = 'production container (last start the platform reported)'
+
+
+          def appservice_last_start(slot='production'):
+              """-> text: the image of the last container the platform's container log reports created AND
+              started on `slot`, with any later creation that has not reported a start. Never the configured
+              image: when the log cannot be read the answer is unknown, and says why."""
+              args = ['webapp', 'show', '-n', env('webapp_name'), '-g', env('resource_group')]
+              if slot != 'production':
+                  args += ['--slot', slot]
+              ok, shown, err = az(*args)
+              host = (shown or {}).get('defaultHostName', '') if ok and isinstance(shown, dict) else ''
+              if not host or '.' not in host:
+                  return '%s (the site could not be read: %s)' % (UNKNOWN, err or 'no host name')
+              first, rest = host.split('.', 1)
+              res = ('--resource', 'https://management.azure.com/')
+              ok, listing, err = az('rest', '--method', 'get', '--url',
+                                    'https://%s.scm.%s/api/logs/docker' % (first, rest), *res)
+              if not ok or not isinstance(listing, list):
+                  return '%s (container log unreadable: %s)' % (UNKNOWN, err or 'not a JSON list')
+              started, pending = '', ''
+              for item in sorted(listing, key=lambda e: e.get('lastUpdated') or ''):
+                  if not item.get('href'):
+                      continue
+                  ok, text, err = az_raw('rest', '--method', 'get', '--url', item['href'], *res)
+                  if not ok:
+                      return '%s (container log unreadable: %s)' % (UNKNOWN, err)
+                  for line in text.splitlines():
+                      if CREATE_MARK in line:
+                          pending = line.split(CREATE_MARK, 1)[1].split(' from registry', 1)[0].strip()
+                      elif 'Site started' in line and pending:
+                          started, pending = pending, ''
+              later = ('; a later container from %s was created and has not reported a start' % pending
+                       if pending else '')
+              if started:
+                  return started + later
+              return 'none reported started in the container log' + later
+
+
+          def appservice_production_now():
+              """-> (configured image or None when unreadable, start-record text), read live just now."""
+              return appservice_slot_image('production'), appservice_last_start('production')
+
+
+          # ----------------------------------------------------------------------------- capture
+          def _unknown(reason, snapshot):
+              """L97: a capture that cannot establish the previous state FAILS LOUDLY. It does not
+              degrade a read error into an absence -- that is how a throttled API became "no rollback
+              needed" (DCR gap 4)."""
+              snapshot.update(previous_state='UNKNOWN', reason=reason)
+              write_evidence('snapshot.json', snapshot)
+              output(previous_state='UNKNOWN')
+              print('::error title=Previous state UNKNOWN::%s Nothing has been changed. A read failure is '
+                    'not an empty target, and an unknown previous state never resolves toward mutation.'
+                    % reason)
+              return 1
+
+
+          def capture_containerapp():
+              app, rg = env('containerapp_name'), env('resource_group')
+              snap = {'adapter': 'containerapp', 'app': app, 'resource_group': rg}
+              ok, shown, err = az('containerapp', 'show', '-n', app, '-g', rg)
+              if not ok or not isinstance(shown, dict):
+                  return _unknown('The container app could not be read (%s).' % err, snap)
+              ok, revs, err = az('containerapp', 'revision', 'list', '-n', app, '-g', rg, '--all')
+              if not ok or not isinstance(revs, list):
+                  return _unknown('The revision list could not be read (%s).' % err, snap)
+              props = shown.get('properties') or {}
+              conf = props.get('configuration') or {}
+              revisions = {}
+              for r in revs:
+                  rp = r.get('properties') or {}
+                  revisions[r.get('name')] = {
+                      'active': bool(rp.get('active')), 'created': rp.get('createdTime'),
+                      'image': (((rp.get('template') or {}).get('containers') or [{}])[0]).get('image', '')}
+              traffic = (conf.get('ingress') or {}).get('traffic') or []
+              serving = [t for t in traffic if (t.get('weight') or 0) > 0]
+              previous = ''
+              for t in serving:
+                  previous = props.get('latestRevisionName') if t.get('latestRevision') else t.get('revisionName')
+              snap.update(revision_mode=conf.get('activeRevisionsMode') or 'unknown',
+                          latest_revision=props.get('latestRevisionName') or '', traffic=traffic,
+                          revisions=revisions, tags=shown.get('tags') or {}, app_id=shown.get('id', ''))
+              # EMPTY is MEASURED: both reads succeeded and nothing is active and nothing takes traffic.
+              any_active = any(r['active'] for r in revisions.values())
+              state = 'EXISTING_DEPLOYMENT' if (serving or any_active) else 'EMPTY'
+              snap['previous_state'] = state
+              write_evidence('snapshot.json', snap)
+              output(previous_state=state, previous=previous, revision_mode=snap['revision_mode'])
+              print('Previous state %s (mode %s, serving %s).' % (state, snap['revision_mode'],
+                                                                  previous or 'nothing'))
+              return 0
+
+
+          def capture_appservice():
+              slot = env('slot')
+              snap = {'adapter': 'appservice', 'app': env('webapp_name'),
+                      'resource_group': env('resource_group'), 'target': slot or 'production'}
+              images = {}
+              for s in sorted({'production', slot or 'production'}):
+                  img = appservice_slot_image(s)
+                  if img is None:
+                      return _unknown('The %s slot configuration could not be read.' % s, snap)
+                  images[s] = img
+              snap['images'] = images
+              state = 'EXISTING_DEPLOYMENT' if images[slot or 'production'] else 'EMPTY'
+              snap['previous_state'] = state
+              write_evidence('snapshot.json', snap)
+              output(previous_state=state)
+              print('Previous state %s: %s' % (state, images))
+              return 0
+
+
+          def cmd_capture(a):
+              return capture_containerapp() if a.adapter == 'containerapp' else capture_appservice()
+
+
+          # ----------------------------------------------------------------------------- capability
+          PRODUCTION_TIERS = ('uat', 'prod')
+
+
+          def cmd_capability(a):
+              """DCR gap 9 / 3.5: establish rollback_capability BEFORE the point of no return, and let the
+              environment tier decide whether the mutation may proceed. A gate after the mutation is a
+              report, not a gate."""
+              snap = read_evidence('snapshot.json') or {}
+              prev = snap.get('previous_state')
+              tier = env('environment_tier')
+              if tier not in ('sandbox', 'dev', 'test') + PRODUCTION_TIERS:
+                  print('::error::environment_tier is not one of the registered tiers (sandbox, dev, test, '
+                        'uat, prod); the consequence of this deploy cannot be judged.')
+                  return 1
+              if env('rollback_on_failure') != 'true':
+                  cap, why = 'UNAVAILABLE', 'reversal authority withheld by the caller (rollback_on_failure false)'
+              elif prev == 'EMPTY':
+                  cap, why = 'NO_PRIOR_STATE', 'the target is measured empty; reversal removes what this run creates'
+              elif prev != 'EXISTING_DEPLOYMENT':
+                  cap, why = 'UNAVAILABLE', 'previous state not established'
+              elif a.adapter == 'containerapp' and snap.get('revision_mode') != 'Multiple':
+                  cap, why = 'UNAVAILABLE', ('single revision mode: the prior revision cannot be reactivated '
+                                             'beside the new one, so no valid reversal mechanism exists')
+              else:
+                  cap, why = 'AVAILABLE', ('prior state captured; %s' % (
+                      'traffic weights and revision reactivation are valid in multiple revision mode'
+                      if a.adapter == 'containerapp' else 'swap back / restore the captured image'))
+              blocked = cap == 'UNAVAILABLE' and tier in PRODUCTION_TIERS
+              write_evidence('capability.json', {'rollback_capability': cap, 'why': why, 'tier': tier,
+                                                 'decision': 'refused' if blocked else (
+                                                     'accepted risk, recorded' if cap == 'UNAVAILABLE'
+                                                     else 'proceed')})
+              output(rollback_capability=cap)
+              if blocked:
+                  print('::error title=Refused before the point of no return::rollback_capability '
+                        'UNAVAILABLE at production tier %s: %s.' % (tier, why))
+                  return 1
+              if cap == 'UNAVAILABLE':
+                  print('::warning::rollback_capability UNAVAILABLE at tier %s (%s). Proceeding as a '
+                        'recorded accepted risk; a failure will need manual recovery.' % (tier, why))
+              else:
+                  print('rollback_capability %s: %s' % (cap, why))
+              return 0
+
+
+          # ----------------------------------------------------------------------------- manifest
+          def release_id():
+              return 'run-%s-%s' % (env('github_run_id') or 'local', env('github_run_attempt') or '1')
+
+
+          def stamp_value(post):
+              """RELEASE_OWNERSHIP_STAMP (DCR 8.3): who claims the object, and the post-state it left.
+
+              `post` is the image reference, never `DOCKER|<ref>`: the value travels on an az command line,
+              and on a Windows host az is a .cmd file, where `|` is a pipe."""
+              return 'release_id=%s;run=%s;post=%s' % (release_id(), env('github_run_id') or 'local', post)
+
+
+          def manifest():
+              return read_evidence('manifest.json') or {'release_id': release_id(), 'status': 'planned',
+                                                        'entries': []}
+
+
+          def save_manifest(m):
+              write_evidence('manifest.json', m)
+
+
+          def cmd_mutate(a):
+              """DCR gap 6. Record what THIS run will change BEFORE changing it, then what it did.
+
+              The manifest is written as `planned` before the first mutating call, so a run that dies
+              mid-change still says what it was about to do; it becomes `applied` only when the call
+              returns. Container Apps used to infer its own revision as "the newest by creation time" --
+              a guess about ownership, wrong the moment anyone else deploys -- so the revision is now taken
+              from the update's own response, and the ownership stamp travels WITH the mutation (8.3 rule
+              1) as an environment variable of the revision it creates.
+              """
+              snap = read_evidence('snapshot.json') or {}
+              if snap.get('previous_state') not in ('EXISTING_DEPLOYMENT', 'EMPTY'):
+                  print('::error::No established pre-change snapshot; refusing to mutate.')
+                  return 1
+              m = manifest()
+              ref = intended_ref()
+              if a.adapter == 'containerapp':
+                  app, rg = env('containerapp_name'), env('resource_group')
+                  follows = [t for t in snap.get('traffic') or []
+                             if t.get('latestRevision') and (t.get('weight') or 0) > 0]
+                  if snap.get('revision_mode') == 'Multiple' and follows:
+                      # Traffic that FOLLOWS THE LATEST REVISION moves to the revision the update creates,
+                      # at once -- observed live on a sandbox Container App: the public health path went
+                      # from 200 to 404 on an unverified image the moment the update returned. Pin what
+                      # serves now to explicit revision names first, recorded as a REDIRECTION, so the
+                      # verification below really happens before traffic moves.
+                      weights, post = [], []
+                      for t in snap.get('traffic') or []:
+                          w = t.get('weight') or 0
+                          if w <= 0:
+                              continue
+                          n = snap.get('latest_revision') if t.get('latestRevision') else t.get('revisionName')
+                          weights.append('%s=%d' % (n, w))
+                          post.append({'revisionName': n, 'weight': w})
+                      m['entries'].append({'action': 'REDIRECTED', 'object_type': 'traffic',
+                                           'object': 'traffic', 'prior': snap.get('traffic') or [],
+                                           'post': post, 'stamp': stamp_value(ref), 'purpose': 'pin'})
+                      save_manifest(m)
+                      output(mutation_started='true')
+                      ok, _, err = az('containerapp', 'ingress', 'traffic', 'set', '-n', app, '-g', rg,
+                                      '--revision-weight', *weights)
+                      if not ok:
+                          print('::error::Pinning traffic before the update did not confirm (%s); nothing '
+                                'was created, the manifest stays `planned`.' % err)
+                          return 1
+                      print('Traffic followed the latest revision; pinned to %s before the update.'
+                            % ', '.join(weights))
+                  entry = {'action': 'CREATED', 'object_type': 'revision', 'object': None,
+                           'post': ref, 'stamp': stamp_value(ref), 'prior': None}
+                  m['entries'].append(entry)
+                  save_manifest(m)
+                  output(mutation_started='true')
+                  ok, shown, err = az('containerapp', 'update', '-n', app, '-g', rg, '--image', ref,
+                                      '--set-env-vars', 'release_ownership_stamp=%s' % entry['stamp'])
+                  if not ok or not isinstance(shown, dict):
+                      print('::error::The update did not confirm (%s). It may or may not have applied; the '
+                            'manifest stays `planned`.' % err)
+                      return 1
+                  rev = (shown.get('properties') or {}).get('latestRevisionName') or ''
+                  entry['object'] = rev
+                  m['status'] = 'applied'
+                  save_manifest(m)
+                  print('Created revision %s (recorded from the update response, not guessed).' % rev)
+                  return 0
+              slot = env('slot') or 'production'
+              prior_img = (snap.get('images') or {}).get(slot, '')
+              entry = {'action': 'MODIFIED', 'object_type': 'slot-container', 'object': slot,
+                       'prior': ('DOCKER|' + prior_img) if prior_img else '', 'post': 'DOCKER|' + ref,
+                       'stamp': stamp_value(ref), 'mutated_at': utc_now()}
+              m['entries'].append(entry)
+              save_manifest(m)
+              output(mutation_started='true')
+              rid, err = resource_id('appservice', slot)
+              steps = []
+              if rid:
+                  steps.append(('tag', 'update', '--resource-id', rid, '--operation', 'Merge', '--tags',
+                                'release_ownership_stamp=%s' % entry['stamp']))
+              base = ['-n', env('webapp_name'), '-g', env('resource_group')] + (
+                  ['--slot', slot] if slot != 'production' else [])
+              steps.append(tuple(['webapp', 'config', 'container', 'set'] + base +
+                                 ['--container-image-name', ref]))
+              steps.append(tuple(['webapp', 'restart'] + base))
+              if not rid:
+                  print('::error::The target could not be read to stamp ownership (%s).' % err)
+                  return 1
+              for s in steps:
+                  ok, _, err = az(*s)
+                  if not ok:
+                      print('::error::%s did not confirm (%s); the manifest stays `planned`.' % (s[:4], err))
+                      return 1
+              m['status'] = 'applied'
+              save_manifest(m)
+              print('Set %s on %s; prior %s recorded.' % (ref, slot, entry['prior'] or '(empty)'))
+              return 0
+
+
+          def cmd_swap(a):
+              """Record the swap as a REDIRECTION in the manifest before performing it."""
+              slot = env('slot')
+              m = manifest()
+              snap = read_evidence('snapshot.json') or {}
+              # DCR-OWN (8.3 rule 1, the stamp travels with the mutation). Tags do not move with a swap, so
+              # the slot's stamp never reaches production: production is stamped with this release BEFORE
+              # the swap, and its previous stamp is kept for the swap-back to restore.
+              stamp = stamp_value(intended_ref())
+              ok, shown, err = az('webapp', 'show', '-n', env('webapp_name'), '-g', env('resource_group'))
+              if not ok or not isinstance(shown, dict) or not shown.get('id'):
+                  print('::error::Production could not be read to stamp ownership before the swap (%s); '
+                        'nothing is swapped.' % (err or 'no resource id'))
+                  return 1
+              prior_stamp = (shown.get('tags') or {}).get('release_ownership_stamp', '')
+              ok, _, err = az('tag', 'update', '--resource-id', shown['id'], '--operation', 'Merge',
+                              '--tags', 'release_ownership_stamp=%s' % stamp)
+              if not ok:
+                  print('::error::Production\'s ownership stamp could not be written (%s); nothing is '
+                        'swapped.' % err)
+                  return 1
+              m['entries'].append({'action': 'REDIRECTED', 'object_type': 'slot-swap', 'object': 'production',
+                                   'from_slot': slot, 'prior': 'DOCKER|' + (snap.get('images') or {}).get('production', ''),
+                                   'post': 'DOCKER|' + intended_ref(), 'stamp': stamp,
+                                   'prior_stamp': prior_stamp, 'production_id': shown['id']})
+              m['status'] = 'planned'
+              save_manifest(m)
+              ok, _, err = az('webapp', 'deployment', 'slot', 'swap', '-n', env('webapp_name'), '-g',
+                              env('resource_group'), '--slot', slot, '--target-slot', 'production')
+              if not ok:
+                  print('::error::The swap did not confirm (%s).' % err)
+                  return 1
+              m['status'] = 'applied'
+              save_manifest(m)
+              print('Swapped %s -> production (recorded as REDIRECTED).' % slot)
+              return 0
+
+
+          # ----------------------------------------------------------------------------- verification
+          def probe(url):
+              """-> True when the endpoint answered 200 within the configured attempts."""
+              import time
+              exe = shutil.which('curl')
+              tries = max(1, int(env('health_retries') or '1'))
+              wait = float(env('health_interval_seconds') or '0')
+              for i in range(1, tries + 1):
+                  code = '000'
+                  if exe:
+                      p = subprocess.run([exe, '-sS', '-o', os.devnull, '-w', '%{http_code}', '--max-time',
+                                          '10', url], capture_output=True, text=True)
+                      code = (p.stdout or '000').strip()[-3:] or '000'
+                  print('  attempt %d/%d -> HTTP %s  (%s)' % (i, tries, code, url))
+                  if code == '200':
+                      return True
+                  if i < tries:
+                      time.sleep(wait)
+              return False
+
+
+          def wake(url):
+              """Send one request whose answer is deliberately ignored (it proves nothing)."""
+              exe = shutil.which('curl')
+              if exe:
+                  subprocess.run([exe, '-sS', '-o', os.devnull, '--max-time', '10', url],
+                                 capture_output=True, text=True)
+
+
+          def record_verification(**layers):
+              v = read_evidence('verification.json') or {}
+              v.update(layers)
+              write_evidence('verification.json', v)
+              return v
+
+
+          def created_revision():
+              made = [e for e in manifest()['entries'] if e.get('action') == 'CREATED' and e.get('object')]
+              return made[-1]['object'] if made else ''
+
+
+          CREATE_MARK = 'Creating container with image: '
+          LOG_READ = {'error': ''}
+
+
+          def appservice_started(host, ref, since):
+              """-> True when the platform's container log shows a container created from `ref` at or after
+              `since` and a site start after that creation; False when the log reads and shows no such start
+              (yet); None when the log cannot be read.
+
+              WHY: the configured image is not the running one. After `config container set` + `restart` the
+              PREVIOUS container keeps answering until the platform has started the new one, so a 200 in that
+              window is the old artefact's (live run 38857408542: DEPLOY_HEALTHY reported, production then
+              served 404). App Service exposes no running digest; its container log -- what Kudu serves at
+              /api/logs/docker, read here with the deploy identity's Entra token -- is the platform's own
+              record of which image it started, and when."""
+              if not host or '.' not in host:
+                  return None
+              first, rest = host.split('.', 1)
+              scm = '%s.scm.%s' % (first, rest)
+              res = ('--resource', 'https://management.azure.com/')
+              ok, listing, err = az('rest', '--method', 'get', '--url', 'https://%s/api/logs/docker' % scm, *res)
+              if not ok or not isinstance(listing, list):
+                  LOG_READ['error'] = err or 'the listing was not a JSON list'
+                  return None
+              cut = (since or '')[:19]
+              created, started = None, False
+              for item in sorted(listing, key=lambda e: e.get('lastUpdated') or ''):
+                  if (item.get('lastUpdated') or '')[:19] < cut or not item.get('href'):
+                      continue
+                  ok, text, err = az_raw('rest', '--method', 'get', '--url', item['href'], *res)
+                  if not ok:
+                      LOG_READ['error'] = err
+                      return None
+                  for line in text.splitlines():
+                      ts = line.split(' ', 1)[0][:19]
+                      if ts < cut:
+                          continue
+                      if CREATE_MARK in line:
+                          created = line.split(CREATE_MARK, 1)[1].split(' from registry', 1)[0].strip()
+                          started = False
+                      elif 'Site started' in line and created is not None:
+                          started = True
+              return created == ref and started
+
+
+          def run_since():
+              """The moment this run first mutated an App Service target (its MODIFIED entries), or ''.
+              A start record older than that describes somebody else's deploy, so it is not read."""
+              times = [e.get('mutated_at') for e in manifest()['entries']
+                       if e.get('action') == 'MODIFIED' and e.get('mutated_at')]
+              return min(times) if times else ''
+
+
+          def appservice_host(slot):
+              args = ['webapp', 'show', '-n', env('webapp_name'), '-g', env('resource_group')]
+              if slot and slot != 'production':
+                  args += ['--slot', slot]
+              ok, shown, _ = az(*args)
+              return (shown or {}).get('defaultHostName', '') if ok and isinstance(shown, dict) else ''
+
+
+          def appservice_running(slot, ref, waits=1):
+              """DCR-2 / L101 (B-02): -> True when the platform's container log shows `ref` as the latest
+              container created on `slot` since this run's mutation, and started; False when it reads and
+              shows anything else (another image, or none started yet); None when it cannot be read, or this
+              run mutated nothing. The CONFIGURED image is never the answer: it is what the platform will
+              start next, not what runs. `waits` > 1 re-reads a not-yet-started record, waking the site."""
+              since = run_since()
+              host = appservice_host(slot)
+              if not since or not host:
+                  LOG_READ['error'] = LOG_READ['error'] or ('this run changed nothing on the target'
+                                                            if not since else 'the site could not be read')
+                  return None
+              started = None
+              for i in range(1, max(1, waits) + 1):
+                  started = appservice_started(host, ref, since)
+                  if started is not False:
+                      return started
+                  if i < waits:
+                      wake('https://%s/' % host)
+                      import time
+                      time.sleep(float(env('health_interval_seconds') or '0'))
+              return started
+
+
+          RUNNING_ROW = 'production container (started since this run\'s change)'
+
+
+          def running_text(running, ref):
+              if running is True:
+                  return ref
+              if running is False:
+                  # Never names the attempted image: a NOW SERVING cell that holds it reads as serving it.
+                  return ('not this release: the platform last created another image since this run\'s '
+                          'change, or has not reported a start (the start-record row names what it last '
+                          'started)')
+              return '%s (%s)' % (UNKNOWN, LOG_READ['error'] or 'the start record could not be read')
+
+
+          def cmd_verify(a):
+              """L101 / DCR 3.1: the intended artefact is LOADED (read back) and HEALTHY (probed on the
+              object this run changed) -- before any traffic moves. A 200 from the app's public name can
+              come from the previous revision or from someone else's image; a 200 is not a digest."""
+              ref = intended_ref()
+              path = env('health_path')
+              if a.adapter == 'containerapp':
+                  rev = created_revision()
+                  ok, shown, err = az('containerapp', 'revision', 'show', '-n', env('containerapp_name'),
+                                      '-g', env('resource_group'), '--revision', rev)
+                  if not ok or not isinstance(shown, dict):
+                      record_verification(runtime_deployed=None, health_verified=None,
+                                          reason='revision %s could not be read back (%s)' % (rev, err))
+                      print('::error::The revision this run created could not be read back; what is loaded '
+                            'is not established.')
+                      return 1
+                  rp = shown.get('properties') or {}
+                  image = (((rp.get('template') or {}).get('containers') or [{}])[0]).get('image', '')
+                  host = rp.get('fqdn') or ''
+              else:
+                  target = env('slot') or 'production'
+                  image = appservice_slot_image(target)
+                  if image is None:
+                      record_verification(runtime_deployed=None, health_verified=None,
+                                          reason='the %s slot could not be read back' % target)
+                      print('::error::The target could not be read back; what is loaded is not established.')
+                      return 1
+                  ok, shown, _ = az('webapp', 'show', '-n', env('webapp_name'), '-g', env('resource_group'),
+                                    *(['--slot', target] if target != 'production' else []))
+                  host = (shown or {}).get('defaultHostName', '') if ok else ''
+                  if image == ref:
+                      since = ''
+                      for e in manifest()['entries']:
+                          if e.get('action') == 'MODIFIED' and e.get('object') == target:
+                              since = e.get('mutated_at') or ''
+                      started = False
+                      tries = max(1, int(env('health_retries') or '1'))
+                      for i in range(1, tries + 1):
+                          started = appservice_started(host, ref, since) if since else None
+                          print('  container start %d/%d -> %s' % (i, tries, {True: 'started from the intended image',
+                                False: 'not started yet', None: 'log unreadable'}[started]))
+                          if started is not False:
+                              break
+                          # An idle site on a plan that unloads it starts its container only when a request
+                          # arrives (live run 38867771912, F1): wait without asking and nothing ever starts.
+                          # The answer to this wake-up is NOT evidence -- it may be the previous container's
+                          # -- so it is discarded; only the platform's start record is read.
+                          wake('https://%s/' % host)
+                          if i < tries:
+                              import time
+                              time.sleep(float(env('health_interval_seconds') or '0'))
+                      if started is not True:
+                          record_verification(runtime_deployed=None if started is None else False,
+                                              health_verified=None,
+                                              reason='the platform did not report a site started from the '
+                                                     'intended image (%s)' % (('container log unreadable: '
+                                                                               + LOG_READ['error'])
+                                                                              if started is None else
+                                                                              'never started'))
+                          if started is None:
+                              print('::warning title=Container log unreadable::%s' % LOG_READ['error'][:300])
+                          print('::error::The platform never reported a container started from %s. A 200 '
+                                'now would be the PREVIOUS container answering; health is not probed.' % ref)
+                          return 1
+              if image != ref:
+                  record_verification(runtime_deployed=False, health_verified=None, loaded=image)
+                  print('::error::The target is running %s, not %s. Something other than this run wrote it, '
+                        'or the write did not take; a probe of it would test the wrong artefact.'
+                        % (image or 'nothing', ref))
+                  return 1
+              healthy = bool(host) and probe('https://%s%s' % (host, path))
+              record_verification(runtime_deployed=True, health_verified=healthy, probed=host)
+              if not healthy:
+                  print('::error::Health probe never returned 200 for the intended artefact at %s%s.'
+                        % (host, path))
+                  return 1
+              print('Intended artefact loaded and healthy on %s.' % host)
+              return 0
+
+
+          def cmd_redirect(a):
+              """Container Apps, multiple-revision mode: move traffic to the VERIFIED revision, recorded
+              in the manifest as a REDIRECTION (with the prior weights) before it is issued."""
+              snap = read_evidence('snapshot.json') or {}
+              if snap.get('revision_mode') != 'Multiple':
+                  print('Single-revision mode: the platform moved traffic with the update; nothing to do.')
+                  return 0
+              rev = created_revision()
+              m = manifest()
+              m['entries'].append({'action': 'REDIRECTED', 'object_type': 'traffic', 'object': 'traffic',
+                                   'prior': snap.get('traffic') or [],
+                                   'post': [{'revisionName': rev, 'weight': 100}],
+                                   'stamp': stamp_value(intended_ref())})
+              m['status'] = 'planned'
+              save_manifest(m)
+              ok, _, err = az('containerapp', 'ingress', 'traffic', 'set', '-n', env('containerapp_name'),
+                              '-g', env('resource_group'), '--revision-weight', '%s=100' % rev)
+              if not ok:
+                  print('::error::The traffic shift did not confirm (%s).' % err)
+                  return 1
+              m['status'] = 'applied'
+              save_manifest(m)
+              print('Traffic moved to %s (recorded as REDIRECTED).' % rev)
+              return 0
+
+
+          def cmd_serving(a):
+              """DCR 3.1 serving_verified: the path a consumer uses reaches the intended artefact. Read
+              the routing back from live state, then probe the consumer-facing name."""
+              ref = intended_ref()
+              path = env('health_path')
+              if a.adapter == 'containerapp':
+                  live = containerapp_serving()
+                  if live is None:
+                      record_verification(serving_verified=None, reason='routing could not be read back')
+                      print('::error::What receives traffic could not be read back.')
+                      return 1
+                  if not live or any(t['image'] != ref for t in live):
+                      record_verification(serving_verified=False, routing=live)
+                      print('::error::Traffic does not route only to %s: %s' % (ref, live))
+                      return 1
+                  ok, shown, _ = az('containerapp', 'show', '-n', env('containerapp_name'),
+                                    '-g', env('resource_group'))
+                  host = ((((shown or {}).get('properties') or {}).get('configuration') or {})
+                          .get('ingress') or {}).get('fqdn', '') if ok else ''
+              else:
+                  if env('slot') and env('swapped') != 'success':
+                      record_verification(serving_verified='not-applicable')
+                      print('Staged on %s without a swap: production is deliberately unchanged.' % env('slot'))
+                      return 0
+                  image = appservice_slot_image('production')
+                  if image != ref:
+                      record_verification(serving_verified=None if image is None else False, loaded=image)
+                      print('::error::Production is not configured with %s (read back: %s).' % (ref, image))
+                      return 1
+                  # DCR-2 / L101: the configured image is what the platform will start next. What RUNS is
+                  # read from production's own start record -- after a swap too, where nothing re-read it.
+                  running = appservice_running('production', ref,
+                                               waits=max(1, int(env('health_retries') or '1')))
+                  if running is not True:
+                      record_verification(serving_verified=None if running is None else False,
+                                          running=running, running_read=running_text(running, ref))
+                      print('::error::Production is configured with %s, but its start record does not show '
+                            'it running: %s. A 200 now could come from another container; serving is not '
+                            'verified.' % (ref, running_text(running, ref)))
+                      return 1
+                  host = appservice_host('production')
+              if host:
+                  # The consumer-facing URL is published whether or not it answers, so a caller can see
+                  # what was probed; `serving_verified` says whether it served the intended artefact.
+                  output(app_url='https://%s' % host)
+              good = bool(host) and probe('https://%s%s' % (host, path))
+              record_verification(serving_verified=good)
+              if not good:
+                  print('::error::The consumer-facing name %s does not answer 200 for the intended artefact.'
+                        % host)
+                  return 1
+              print('Serving verified: %s routes to %s and answers 200.' % (host, ref))
+              return 0
+
+
+          # ----------------------------------------------------------------------------- reversal
+          def _derive(entries):
+              """Per-object dispositions from scripts/derive_reversal_disposition.py (inlined beside this
+              file). Imported, not re-implemented: one derivation, proven in one place."""
+              sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+              import derive_reversal_disposition as drd
+              return [drd.derive(e, release_id()) for e in entries]
+
+
+          def _rev_stamp(rev_props):
+              for c in ((rev_props.get('template') or {}).get('containers') or []):
+                  for e in c.get('env') or []:
+                      if e.get('name') == 'release_ownership_stamp':
+                          return e.get('value', '')
+              return ''
+
+
+          def _stamp_release(stamp):
+              for part in (stamp or '').split(';'):
+                  if part.startswith('release_id='):
+                      return part.split('=', 1)[1]
+              return ''
+
+
+          def _canon(traffic, latest):
+              return json.dumps(sorted(
+                  [(latest if t.get('latestRevision') else t.get('revisionName'), t.get('weight') or 0)
+                   for t in traffic or [] if (t.get('weight') or 0) > 0]))
+
+
+          def _containerapp_live(app, rg):
+              """One fresh read of what the reversal is judged against.
+
+              Every revision list here passes --all: without it the CLI omits INACTIVE revisions, so once
+              the reversal deactivated the revision this run created, its ownership stamp vanished from the
+              read the next entry was judged by, and the run withheld its own traffic pin as UNTRUSTED
+              (live run 38856714492)."""
+              ok1, shown, _ = az('containerapp', 'show', '-n', app, '-g', rg)
+              ok2, revs, _ = az('containerapp', 'revision', 'list', '-n', app, '-g', rg, '--all')
+              readable = ok1 and ok2 and isinstance(shown, dict) and isinstance(revs, list)
+              props = (shown or {}).get('properties') or {}
+              latest = props.get('latestRevisionName') or ''
+              traffic = ((props.get('configuration') or {}).get('ingress') or {}).get('traffic') or []
+              by_name = {r.get('name'): r.get('properties') or {} for r in (revs or [])}
+              ours = created_revision()
+              ours_props = by_name.get(ours) or {}
+              our_created = ours_props.get('createdTime') or ''
+              newer = [(n, p) for n, p in by_name.items() if n != ours and (p.get('createdTime') or '') > our_created]
+              descendants = []
+              for n, p in newer:
+                  if not p.get('active'):
+                      continue
+                  rel = _stamp_release(_rev_stamp(p))
+                  if not rel:
+                      descendants = None   # an unstamped later revision: the graph cannot be read
+                      break
+                  descendants.append(rel)
+              return readable, latest, traffic, ours, ours_props, descendants
+
+
+          def reverse_containerapp(m, snap):
+              """Each entry is judged against live state AS IT STANDS WHEN ITS TURN COMES. A single read
+              taken before the first undo judged a later entry against state this same reversal was about to
+              change -- so a run that pinned traffic, then moved it, then had both undone, called its own
+              pin a conflict with an external actor."""
+              app, rg = env('containerapp_name'), env('resource_group')
+              results = []
+              for entry in reversed(m.get('entries') or []):
+                  readable, latest, traffic, ours, ours_props, descendants = _containerapp_live(app, rg)
+                  r = _reverse_containerapp_entry(m, snap, entry, readable, latest, traffic, ours,
+                                                  ours_props, descendants, app, rg)
+                  if r is not None:
+                      results.append(r)
+              return results
+
+
+          def _reverse_containerapp_entry(m, snap, entry, readable, latest, traffic, ours, ours_props,
+                                          descendants, app, rg):
+              """-> the reversal record for ONE manifest entry, judged against the live read just taken."""
+              if entry['action'] == 'REDIRECTED':
+                  prop = dict(entry, **{
+                      'object': 'traffic', 'stamp': _rev_stamp(ours_props) if readable else None,
+                      'current_version': _canon(traffic, latest) if readable else None,
+                      'recorded_post_version': _canon(entry.get('post'), latest),
+                      'later_releases': [], 'descendants': descendants, 'other_claims': [],
+                      # Traffic configuration carries no dependents of its own (adapter declaration).
+                      'dependents': [], 'prior_traffic': entry.get('prior') or [],
+                      'prior_latest': snap.get('latest_revision', '')})
+              elif entry['action'] == 'CREATED':
+                  # Who still routes to, or labels, this revision NOW. Redirections recorded after the
+                  # creation have already been undone by the time this entry's turn comes (entries are
+                  # reversed newest first, each against a fresh read), so traffic still on it is a real
+                  # dependency -- or a restore that did not take -- and either way it is not removed.
+                  deps = []
+                  for t in traffic:
+                      name = latest if t.get('latestRevision') else t.get('revisionName')
+                      if name != ours:
+                          continue
+                      if t.get('label'):
+                          deps.append('traffic label %s' % t['label'])
+                      elif (t.get('weight') or 0) > 0:
+                          deps.append('traffic weight %s%%' % t['weight'])
+                  image = (((ours_props.get('template') or {}).get('containers') or [{}])[0]).get('image')
+                  prop = dict(entry, **{
+                      'stamp': _rev_stamp(ours_props) if readable and ours_props else None,
+                      'current_version': image if readable and ours_props else None,
+                      'recorded_post_version': entry.get('post'),
+                      # A revision is immutable: no later release can rewrite it (adapter declaration).
+                      'later_releases': [], 'descendants': descendants, 'other_claims': [],
+                      'dependents': deps if readable else None})
+              else:
+                  return None
+              d = _derive([prop])[0]
+              r = dict(d, object=prop.get('object'), performed=False)
+              disp = d['reversal_disposition']
+              if prop['action'] == 'REDIRECTED' and disp == 'REVERSAL_RESTORE_PRIOR':
+                  weights = []
+                  for t in prop['prior_traffic']:
+                      if (t.get('weight') or 0) <= 0:
+                          continue
+                      name = prop['prior_latest'] if t.get('latestRevision') else t.get('revisionName')
+                      weights.append('%s=%d' % (name, t['weight']))
+                  done = True
+                  for w in weights:
+                      okk, _, err = az('containerapp', 'revision', 'activate', '-n', app, '-g', rg,
+                                       '--revision', w.rsplit('=', 1)[0])
+                      done = done and okk
+                  if weights:
+                      okk, _, err = az('containerapp', 'ingress', 'traffic', 'set', '-n', app, '-g', rg,
+                                       '--revision-weight', *weights)
+                      done = done and okk
+                      r['error'] = '' if okk else err
+                  r['performed'] = done
+              elif (prop['action'] == 'CREATED'
+                    and snap.get('revision_mode') != 'Multiple'
+                    and snap.get('previous_state') == 'EXISTING_DEPLOYMENT'):
+                  # DCR gap 7: the mechanism must be valid for the OBSERVED configuration. In single-
+                  # revision mode the prior revision cannot be reactivated beside ours, and traffic
+                  # weights cannot be set; deactivating ours would leave nothing serving.
+                  r['not_reversed_because'] = ('mechanism not valid for the observed configuration: '
+                                               'single revision mode cannot reactivate the prior '
+                                               'revision or set traffic weights')
+              elif prop['action'] == 'CREATED' and disp == 'REVERSAL_REMOVE':
+                  okk, _, err = az('containerapp', 'revision', 'deactivate', '-n', app, '-g', rg,
+                                   '--revision', prop['object'])
+                  r['performed'] = okk
+                  r['error'] = '' if okk else err
+              return r
+
+
+          def reverse_appservice(m, snap):
+              """Each entry is judged against live state AS IT STANDS WHEN ITS TURN COMES, as the Container
+              Apps reversal is. One read taken before acting on any entry judged the slot entry of a
+              slot-and-swap run against the state BEFORE the swap-back: the slot then held the prior image
+              swapped out of production, so the run called its own slot change a conflict with an external
+              actor and left it in place."""
+              base = ['-n', env('webapp_name'), '-g', env('resource_group')]
+              target = env('slot') or 'production'
+              results = []
+              for entry in reversed(m.get('entries') or []):
+                  slot = 'production' if entry['action'] == 'REDIRECTED' else entry['object']
+                  # DCR-OWN: each entry is judged by the stamp on the object IT names -- production for the
+                  # swap, the slot for the slot's image -- never by the deploy target's stamp.
+                  ok, shown, _ = az('webapp', 'show', *(base + (['--slot', slot]
+                                                                if slot != 'production' else [])))
+                  stamp = ((shown or {}).get('tags') or {}).get('release_ownership_stamp', '') \
+                      if ok and isinstance(shown, dict) else None
+                  img = appservice_slot_image(slot)
+                  prop = dict(entry, **{
+                      'stamp': stamp, 'current_version': None if img is None else ('DOCKER|' + img if img else ''),
+                      'recorded_post_version': entry.get('post'),
+                      # Within this run no other kit release can write this app: the concurrency group
+                      # serialises them. A configuration value has no dependents of its own.
+                      'later_releases': [], 'descendants': [], 'other_claims': [], 'dependents': [],
+                      'slot': slot})
+                  d = _derive([prop])[0]
+                  r = dict(d, object=prop.get('object'), performed=False)
+                  if d['reversal_disposition'] == 'REVERSAL_RESTORE_PRIOR':
+                      if prop['action'] == 'REDIRECTED':
+                          calls = [('webapp', 'deployment', 'slot', 'swap', *base, '--slot', prop['from_slot'],
+                                    '--target-slot', 'production')]
+                      else:
+                          sarg = ['--slot', prop['slot']] if prop['slot'] != 'production' else []
+                          prior = (prop.get('prior') or '').split('|', 1)[-1] if prop.get('prior') else ''
+                          calls = [(('webapp', 'config', 'container', 'set', *base, *sarg,
+                                     '--container-image-name', prior) if prior else
+                                    ('webapp', 'config', 'set', *base, *sarg, '--linux-fx-version', '')),
+                                   ('webapp', 'restart', *base, *sarg)]
+                      done, err = True, ''
+                      for c in calls:
+                          okk, _, e = az(*c)
+                          done, err = done and okk, err or e
+                      if done and prop['action'] == 'REDIRECTED' and prop.get('production_id'):
+                          # The swap is undone; so is this release's claim on production (DCR-OWN).
+                          okk, _, e = az('tag', 'update', '--resource-id', prop['production_id'],
+                                         '--operation', 'Merge', '--tags',
+                                         'release_ownership_stamp=%s' % (prop.get('prior_stamp') or ''))
+                          r['stamp_restored'] = okk
+                          err = err or e
+                      r['performed'], r['error'] = done, err
+                  results.append(r)
+              return results
+
+
+          def cmd_reverse(a):
+              """DCR gaps 5 and 7, ROLLBACK_CONTRACT.md: undo only what the manifest says this run did,
+              each object only as far as live-state preconditions allow (DCR section 8)."""
+              m = read_evidence('manifest.json')
+              snap = read_evidence('snapshot.json') or {}
+              if not m or not m.get('entries'):
+                  write_evidence('reversal.json', {'reversal_path': 'none', 'entries': [],
+                                                   'reason': 'no change manifest: nothing is attributable '
+                                                             'to this run, so nothing may be reversed'})
+                  print('::error::No change manifest; nothing is reversed.')
+                  return 1
+              path = 'ROLLBACK_TO_EMPTY' if snap.get('previous_state') == 'EMPTY' else 'ROLLBACK_TO_PRIOR'
+              results = (reverse_containerapp if a.adapter == 'containerapp' else reverse_appservice)(m, snap)
+              for r in results:
+                  print('  %-12s %-34s performed=%s  %s' % (r['object'], r['reversal_disposition'],
+                                                           r['performed'], r['reason']))
+              # DCR gap 7: the terminal state is RECONCILED REALITY. Command exit is an input to the
+              # comparison, never a substitute for it -- read live state back and compare it with the
+              # pre-change snapshot, absences included.
+              verification = (verify_containerapp_reversal if a.adapter == 'containerapp'
+                              else verify_appservice_reversal)(snap)
+              # DCR 8.2 / 8.5: an entry this reversal did not reverse -- refused, withheld, deferred, or
+              # whose mechanism was not valid -- leaves the rollback PARTIAL at minimum, whatever live state
+              # happens to equal. Live run 38879879589: the reversal REFUSED (an external actor had set
+              # production meanwhile, to an image that happened to be the prior one), the snapshot
+              # comparison was coincidentally true, and the run reported ROLLBACK_VERIFIED. Only entries
+              # this reversal set out to reverse are decided by the live comparison (exit status is not).
+              not_reversed = [{'object': r['object'], 'reversal_disposition': r['reversal_disposition'],
+                               'reversal_conflict': r.get('reversal_conflict'),
+                               'reason': r.get('not_reversed_because') or r['reason']}
+                              for r in results if r['reversal_disposition'] not in REVERSING
+                              or r.get('not_reversed_because')]
+              if verification is None:
+                  result = 'STATUS_UNTRUSTED'
+              elif results and all(r['reversal_disposition'] == 'REVERSAL_WITHHELD_UNTRUSTED' for r in results):
+                  result = 'STATUS_UNTRUSTED'       # DCR 8.5: no reversal was performed at all
+              elif not_reversed:
+                  result = 'ROLLBACK_PARTIAL'       # DCR 8.2: never rounds up to verified
+              elif verification['matches_snapshot']:
+                  result = 'ROLLBACK_VERIFIED'
+              else:
+                  result = 'ROLLBACK_PARTIAL'
+              rv = {'reversal_path': path, 'entries': results, 'verification': verification,
+                    'not_reversed': not_reversed, 'result': result}
+              write_evidence('reversal.json', rv)
+              if result != 'ROLLBACK_VERIFIED':
+                  print('::warning::Reversal result %s via %s. Not reversed: %s. Residue against the '
+                        'snapshot: %s' % (result, path, json.dumps(not_reversed) if not_reversed else 'none',
+                                          json.dumps((verification or {}).get(
+                                              'residual', 'live state could not be read back'))))
+                  return 1
+              print('%s, verified: %s matches the pre-change snapshot.' % (path, verification['compared']))
+              return 0
+
+
+          # The two dispositions under which this reversal ACTS on an entry (DCR 8.2 "contributes to a
+          # complete reversal"). Every other disposition leaves that entry's change in place.
+          REVERSING = ('REVERSAL_REMOVE', 'REVERSAL_RESTORE_PRIOR')
+
+
+          def verify_containerapp_reversal(snap):
+              """-> {matches_snapshot, residual, ...} from a fresh live read, or None if unreadable."""
+              app, rg = env('containerapp_name'), env('resource_group')
+              ok1, shown, _ = az('containerapp', 'show', '-n', app, '-g', rg)
+              ok2, revs, _ = az('containerapp', 'revision', 'list', '-n', app, '-g', rg, '--all')
+              if not (ok1 and ok2 and isinstance(shown, dict) and isinstance(revs, list)):
+                  return None
+              props = shown.get('properties') or {}
+              traffic = ((props.get('configuration') or {}).get('ingress') or {}).get('traffic') or []
+              live_traffic = _canon(traffic, props.get('latestRevisionName') or '')
+              want_traffic = _canon(snap.get('traffic') or [], snap.get('latest_revision') or '')
+              active = sorted(r.get('name') for r in revs if (r.get('properties') or {}).get('active'))
+              want_active = sorted(n for n, r in (snap.get('revisions') or {}).items() if r.get('active'))
+              residual = []
+              if live_traffic != want_traffic:
+                  residual.append({'field': 'traffic', 'snapshot': want_traffic, 'now': live_traffic})
+              extra = [n for n in active if n not in want_active]
+              missing = [n for n in want_active if n not in active]
+              if extra:
+                  residual.append({'field': 'active revisions not in the snapshot', 'now': extra})
+              if missing:
+                  residual.append({'field': 'snapshot revisions no longer active', 'now': missing})
+              return {'matches_snapshot': not residual, 'residual': residual,
+                      'compared': 'live state (traffic and active revisions)',
+                      'still_absent_checked': [created_revision()],
+                      'created_revision_active': created_revision() in active}
+
+
+          def verify_appservice_reversal(snap):
+              images = snap.get('images') or {}
+              residual = []
+              for slot, want in sorted(images.items()):
+                  now = appservice_slot_image(slot)
+                  if now is None:
+                      return None
+                  if now != want:
+                      residual.append({'field': '%s image (configured)' % slot, 'snapshot': want, 'now': now})
+              # What this comparison CAN establish: the configured image of each slot. App Service exposes
+              # no running digest, and a restored configuration is not a restarted container; the platform's
+              # start record is reported beside it in the outcome report, as its own row.
+              return {'matches_snapshot': not residual, 'residual': residual,
+                      'compared': 'the configured image (linuxFxVersion) of each slot',
+                      'not_compared': 'the running container: the outcome report reads the platform\'s '
+                                      'container start record for production as a separate row'}
+
+
+          # ----------------------------------------------------------------------------- provenance
+          def resource_id(adapter, slot=''):
+              if adapter == 'containerapp':
+                  ok, shown, err = az('containerapp', 'show', '-n', env('containerapp_name'),
+                                      '-g', env('resource_group'))
+              else:
+                  args = ['webapp', 'show', '-n', env('webapp_name'), '-g', env('resource_group')]
+                  if slot and slot != 'production':
+                      args += ['--slot', slot]
+                  ok, shown, err = az(*args)
+              if not ok or not isinstance(shown, dict) or not shown.get('id'):
+                  return None, err or 'no resource id in the response'
+              return shown['id'], ''
+
+
+          def cmd_provenance(a):
+              """DCR gap 3: stamp ONLY what is verified to be running, on the object that serves it.
+
+              Provenance means "this is running and it works", so the stamp is written after health,
+              after a fresh live read confirms the intended artefact is what serves, and onto the serving
+              object as resource TAGS. Not an app setting or a revision environment variable: on Container
+              Apps an environment change CREATES A NEW REVISION, so the old stamp mutated the very thing it
+              described after it had been checked, and on App Service a setting change restarts the app.
+              """
+              adapter, intended = a.adapter, intended_ref()
+              if adapter == 'containerapp':
+                  live = containerapp_serving()
+                  target = ''
+                  verified = bool(live) and all(t['image'] == intended for t in live)
+              else:
+                  target = 'production' if (not env('slot') or env('swapped') == 'success') else env('slot')
+                  # Configured AND started: a stamp says "this is running", and only the start record can.
+                  verified = appservice_slot_image(target) == intended and \
+                      appservice_running(target, intended) is True
+              if not verified:
+                  print('::error::Provenance NOT stamped: live state does not show %s serving. A stamp is a '
+                        'claim about reality and is written only when reality supports it.' % intended)
+                  output(provenance_state='not-stamped')
+                  return 1
+              rid, err = resource_id(adapter, target)
+              if rid is None:
+                  print('::error::Provenance NOT stamped: the serving object could not be read (%s).' % err)
+                  output(provenance_state='not-stamped')
+                  return 1
+              import hashlib
+              meta = env('version_metadata')
+              tags = ['deploy_provenance_digest=%s' % env('image_digest'),
+                      'deploy_provenance_metadata_sha256=%s' % hashlib.sha256(meta.encode('utf-8')).hexdigest(),
+                      'deploy_provenance_run=%s-%s' % (env('github_run_id'), env('github_run_attempt'))]
+              ok, _, err = az('tag', 'update', '--resource-id', rid, '--operation', 'Merge', '--tags', *tags)
+              if not ok:
+                  print('::error::Provenance NOT stamped: the tag write failed (%s).' % err)
+                  output(provenance_state='not-stamped')
+                  return 1
+              write_evidence('provenance.json', {'resource_id': rid, 'tags': tags, 'version_metadata': meta})
+              output(provenance_state='stamped')
+              print('Provenance stamped on %s after health and a live read of what serves.' % rid)
+              return 0
+
+
+          def cmd_unhealthy(a):
+              """DCR gap 1(b) on the direct path: production was modified and the change is unhealthy.
+
+              What production holds NOW is read back from live state when this message is written, never
+              echoed from the run's inputs or its recorded post-state. Live run 38879879589 said production
+              "now serves" the image this run set, while a second actor had already replaced it. The image
+              this run set is named as what it SET (ATTEMPTED); the live readings are named as what they
+              are -- the configured image, and the platform's container start record."""
+              if a.adapter != 'appservice':
+                  print('Nothing to report: only the App Service direct path mutates production unverified.')
+                  return 0
+              ref = intended_ref()
+              configured, started = appservice_production_now()
+              prior = ((read_evidence('snapshot.json') or {}).get('images') or {}).get('production')
+              if configured is None:
+                  whose = 'the read failed'
+              elif configured == ref:
+                  whose = 'the image this run set'
+              elif prior is not None and configured == prior:
+                  whose = 'the pre-change image'
+              else:
+                  whose = "neither this run's image nor the pre-change one: another actor wrote it"
+              print("::error::PRODUCTION was modified by this run and the change is unhealthy: this run set "
+                    "%s directly on production (slot ''). Production NOW, read back just now: configured "
+                    "image %s (%s); last container the platform reported started: %s. What the reversal "
+                    "restored, and what it did not, is in the outcome report below."
+                    % (ref, UNKNOWN if configured is None else (configured or 'nothing'), whose, started))
+              return 0
+
+
+          # ----------------------------------------------------------------------------- outcome
+          def derive_outcome(adapter, live):
+              """-> (deployment_outcome, why). Asserted from evidence and live state, never from intent.
+
+              DCR gap 8: a run that mutated and then lost track is not "failed" -- failure implies nothing
+              changed. PARTIAL_APPLY when the mutation was issued and never confirmed; STATUS_UNTRUSTED
+              when it applied and the run can no longer describe what serves. Missing proof downgrades.
+              """
+              m = read_evidence('manifest.json')
+              snap = read_evidence('snapshot.json') or {}
+              rv = read_evidence('reversal.json')
+              deploy = env('deploy_outcome')
+              if not m or not m.get('entries'):
+                  why = ('previous_state UNKNOWN: the capture could not read the target'
+                         if snap.get('previous_state') == 'UNKNOWN' else
+                         'refused before the first mutation (gate verdict, tier, digest or capability)')
+                  return 'DEPLOY_REFUSED', why
+              if deploy != 'success':
+                  return 'PARTIAL_APPLY', ('the mutation was issued and never confirmed; objects may exist '
+                                           'that no record describes (manifest status %s)' % m.get('status'))
+              if env('cancelled') == 'true' and not rv:
+                  return 'STATUS_UNTRUSTED', 'cancelled after the mutation, before reconciliation'
+              if rv and rv.get('result'):
+                  why = 'verification failed; reversal %s via %s' % (rv['result'], rv.get('reversal_path'))
+                  left = rv.get('not_reversed') or []
+                  if left:
+                      why += '; NOT reversed: %s' % '; '.join(
+                          '%s %s (%s)' % (n.get('object'), n.get('reversal_disposition'),
+                                          n.get('reversal_conflict') or 'none') for n in left)
+                  return rv['result'], why
+              if env('serving_outcome') == 'success':
+                  if live is None:
+                      return 'STATUS_UNTRUSTED', 'serving was verified, then the live read-back failed'
+                  ref = intended_ref()
+                  if adapter == 'containerapp':
+                      ok = bool(live) and all(t['image'] == ref for t in live)
+                  else:
+                      staged_only = env('slot') and env('swapped') != 'success'
+                      running = NOW.get('running')
+                      if not staged_only and live == ref and running is None:
+                          return 'STATUS_UNTRUSTED', ('production is configured with the intended image, '
+                                                      'and its start record could not be read: what runs '
+                                                      'is not established')
+                      ok = staged_only or (live == ref and running is True)
+                  return ('DEPLOY_HEALTHY', 'the intended artefact is loaded, healthy and serving') if ok \
+                      else ('STATUS_UNTRUSTED', 'live state no longer shows what was verified moments ago')
+              v = read_evidence('verification.json') or {}
+              if v.get('runtime_deployed') is None and 'runtime_deployed' in v:
+                  return 'STATUS_UNTRUSTED', 'the change applied and what it loaded could not be read back'
+              return 'MANUAL_RECOVERY_REQUIRED', ('verification failed and no reversal ran (rollback '
+                                                  'disabled, or the run stopped before it); the failed '
+                                                  'change is still in place')
+
+
+          # ----------------------------------------------------------------------------- promotion
+          # DCR gap 11 / 7.7. Deployment success is not trust progression. Verified-for-promotion is a
+          # CONJUNCTION; this run credits the conditions it established and names the rest. The verified
+          # state is not emitted while any condition is unestablished -- and three of them have no evidence
+          # source in this kit yet, so on today's kit it is never emitted. That is the honest reading.
+          PROMOTION_CONDITIONS = ['exact artefact identity established', 'expected artefact observed running',
+                                  'intended traffic observed', 'functional tests passed',
+                                  'operational validation passed', 'dependencies verified',
+                                  'required reviews and gates passed', 'state reconciliation complete']
+
+
+          def promotion(outcome):
+              v = read_evidence('verification.json') or {}
+              held = []
+              # P-02: V1 inside the deploy VERIFIED the signed provenance of exactly this digest -- the one
+              # promotion condition this run can establish about identity. A held or absent V1 credits nothing.
+              if outcome == 'DEPLOY_HEALTHY' and env('attestation_outcome') == 'ATTESTATION_VERIFIED':
+                  held.append('exact artefact identity established')
+              if outcome == 'DEPLOY_HEALTHY':
+                  if v.get('runtime_deployed') is True:
+                      held.append('expected artefact observed running')
+                  if v.get('serving_verified') in (True, 'not-applicable'):
+                      held.append('intended traffic observed')
+                  held.append('state reconciliation complete')
+                  if env('routing_result') == 'PROCEED' and not env('controls_unavailable').strip():
+                      held.append('required reviews and gates passed')
+              missing = [c for c in PROMOTION_CONDITIONS if c not in held]
+              return {'state': 'not-verified' if missing else 'verified-for-promotion',
+                      'established': held, 'missing': missing,
+                      'note': 'health is one probe, not functional or operational validation; artefact '
+                              'identity is credited only when V1 in this deploy verified the digest\'s signed '
+                              'build provenance; no dependency verification exists in this kit'}
+
+
+          # ----------------------------------------------------------------------------- six questions
+          # L96 / DCR 3.4. Questions 4 and 5 are separate on purpose: "a fix exists" and "a machine may apply
+          # it" are different claims. Owners are ROLES, never individuals; channels and service levels are
+          # policy placeholders the adopting team sets (numbers are never constants in this kit).
+          EVIDENCE_FILES = ['manifest.json', 'snapshot.json', 'capability.json', 'verification.json',
+                            'reversal.json', 'outcome.json']
+          MAY = ['re-read live state and re-evaluate the reversal preconditions',
+                 'gather the evidence files named in required_artefacts',
+                 'identify the resolution owner and draft the request',
+                 'propose compensating changes for a human to approve']
+          MAY_NOT = ['mutate infrastructure', 'retry or widen the deployment or the reversal',
+                     'suppress or rewrite the outcome', 'invent or self-grant an approval',
+                     're-stamp ownership metadata', 'proceed to apply']
+
+          SIX_QUESTIONS = {
+              'DEPLOY_HEALTHY': (False, 'release owner (deploying team)', 'not applicable', True,
+                                 'Nothing is blocked. To ADVANCE a tier, collect control-effectiveness '
+                                 'evidence: deployed and healthy is not verified for promotion.'),
+              'DEPLOY_REFUSED': (True, 'owner of the refusing control: the gate verdict owner, or platform '
+                                 'operations for an unreadable target or unavailable rollback capability',
+                                 'yes -- resolve the named refusal reason', False,
+                                 'Resolve the refusal reason and re-run. Nothing was changed, so there is '
+                                 'nothing to recover.'),
+              'ROLLBACK_VERIFIED': (True, 'application team that owns the released artefact',
+                                    'no -- the artefact failed verification; the fix is a new release',
+                                    False, 'Investigate the failed artefact from the evidence and ship a '
+                                    'fix as a new release. Service is verified back on the prior state.'),
+              'ROLLBACK_PARTIAL': (True, 'platform operations', 'no -- each residual item needs a decision',
+                                   False, 'Work through the residue in reversal.json item by item; the '
+                                   'escalation contract below says what an automated actor may do.'),
+              'MANUAL_RECOVERY_REQUIRED': (True, 'platform operations', 'no automated path is available',
+                                           False, 'Recover by hand from the snapshot and manifest; the '
+                                           'failed change is still in place.'),
+              'PARTIAL_APPLY': (True, 'platform operations', 'no -- the extent of the change is unknown',
+                                False, 'Reconcile live state against the planned manifest by hand before '
+                                'any further deploy to this target.'),
+              'STATUS_UNTRUSTED': (True, 'platform operations', 'no -- what serves is not known to this run',
+                                   False, 'Restore the ability to observe the target, then reconcile live '
+                                   'state against the snapshot and manifest.'),
+          }
+
+
+          def six_questions(outcome, why):
+              blocked, owner, known, may, nxt = SIX_QUESTIONS.get(
+                  outcome, (True, 'platform operations', 'no', False, 'Escalate: unrecognised outcome.'))
+              q = {'progression_blocked': blocked, 'why': why, 'resolution_owner': owner,
+                   'remediation_known': known, 'automated_actor_may_proceed': may, 'next_action': nxt}
+              esc = None
+              if blocked and not may:
+                  esc = {'resolution_owner': owner,
+                         'request_channel': 'the deploy environment\'s change or incident queue (set by policy)',
+                         'request_type': {'DEPLOY_REFUSED': 'refusal review'}.get(outcome, 'recovery decision'),
+                         'required_artefacts': EVIDENCE_FILES,
+                         'service_level': 'placeholder: set by the adopting team\'s policy',
+                         'permitted_agent_action': {'may': MAY, 'may_not': MAY_NOT}}
+              return q, esc
+
+
+          # ----------------------------------------------------------------------------- report
+          def cmd_report(a):
+              adapter = a.adapter
+              attempted = [('image', intended_ref())]
+              if adapter == 'containerapp' and env('attempted_revision'):
+                  attempted.append(('revision', env('attempted_revision')))
+              if adapter == 'appservice':
+                  attempted.append(('target', env('slot') or 'production (direct)'))
+              if read_evidence('snapshot.json') is None:
+                  # Refused before the capture ran: the run never authenticated and changed nothing, so
+                  # there is no live read to make. Said, not guessed.
+                  rows, live = [('image', 'not read: the run stopped before login and changed nothing')], None
+              else:
+                  rows, live = now_serving(adapter)
+              unavailable = [c.strip() for c in env('controls_unavailable').split(',') if c.strip()]
+              causes = [c.strip() for c in env('advisory_causes').split(',') if c.strip()]
+              # KDEC-014: the version-gap ruling the verdict step made, and the exception weighed for it --
+              # the existing weakening record (accepter = weakening_authority). Recorded whenever a proven
+              # gap was ruled on, so a refused exception is on the record too.
+              ruling = env('version_gap_ruling')
+              exc = {'accepted_by': env('weakening_authority'), 'reason': env('weakening_reason'),
+                     'exception_ref': env('weakening_exception_ref'), 'expires': env('weakening_expires')}
+              exc = exc if ruling in ('VERSION_GAP_EXCEPTION_ACCEPTED', 'VERSION_GAP_REFUSED') else None
+              outcome, why = derive_outcome(adapter, live)
+              report = {'deployment_outcome': outcome, 'why': why,
+                        'adapter': adapter, 'attempted': dict(attempted),
+                        'now_serving': [{'field': f, 'value': v} for f, v in rows],
+                        'health': env('health_outcome') or 'not run',
+                        # L93: the verdict the deploy proceeded (or refused) on, and the controls the gate
+                        # could not run. Recorded, never re-decided here.
+                        'gate': {'routing_result': env('routing_result'),
+                                 'controls_unavailable': unavailable,
+                                 'advisory_causes': causes,
+                                 'version_gap_ruling': ruling or None,
+                                 'version_gap_exception': exc,
+                                 # The GitHub environment the job ran in; at uat/prod its required
+                                 # reviewers are the approval half of a version-gap exception.
+                                 'github_environment': env('deploy_environment')}}
+              # P-02: what V1 established about this digest, before login. Empty when the run stopped first.
+              report['attestation'] = {'outcome': env('attestation_outcome') or None,
+                                       'routing_result': env('attestation_route') or None,
+                                       'debt': env('attestation_debt') or None}
+              report['promotion'] = promotion(outcome)
+              q, esc = six_questions(outcome, why)
+              report['six_questions'] = q
+              report['escalation'] = esc
+              write_evidence('outcome.json', report)
+              lines = ['### Deploy outcome (%s): `%s`' % (adapter, outcome), '', why, '',
+                       'Every identifier is ATTEMPTED (what this run tried) or NOW SERVING (read back from '
+                       'live state just now). `unknown` means the read failed; it never means the attempt.',
+                       '', '| Claim | Field | Value |', '|---|---|---|']
+              for f, v in attempted:
+                  lines.append('| ATTEMPTED | %s | `%s` |' % (f, v))
+              for f, v in rows:
+                  lines.append('| NOW SERVING | %s | `%s` |' % (f, v))
+              lines.append('')
+              lines.append('Health of the attempt: `%s`' % report['health'])
+              lines.append('Gate verdict: `%s`; controls the gate could not run: %s' % (
+                  report['gate']['routing_result'] or 'none',
+                  ', '.join('`%s`' % c for c in unavailable) if unavailable else 'none recorded'))
+              if causes or report['gate']['version_gap_ruling']:
+                  # Caller text stays in outcome.json; the summary shows only registered-shape tokens.
+                  lines.append('Advisory causes: %s; version-gap ruling (KDEC-014): `%s`%s' % (
+                      ', '.join('`%s`' % c for c in causes if c.replace('_', '').isalnum()) or 'none',
+                      report['gate']['version_gap_ruling'] or 'not reported',
+                      ' -- exception recorded in outcome.json' if exc else ''))
+              if ruling == 'VERSION_GAP_UNVERIFIED_RECORDED':
+                  lines.append('**VERSION GAP AT A PRODUCTION TIER, RECORDED AND NOT ENFORCED (KDEC-014):** the '
+                               'gap rests on an UNVERIFIED scanner range; enforcement turns on when a seeded '
+                               'corpus proves it.')
+              lines.append('GitHub environment: `%s`' % (
+                  env('deploy_environment') if env('deploy_environment').replace('-', '').replace('_', '')
+                  .replace('.', '').isalnum() else '(not shown: not a plain name)'))
+              lines.append('Promotion: `%s`; not yet established: %s' % (
+                  report['promotion']['state'], ', '.join(report['promotion']['missing']) or 'nothing'))
+              lines += ['', '| Question | Answer |', '|---|---|',
+                        '| Is progression blocked? | %s |' % ('yes' if q['progression_blocked'] else 'no'),
+                        '| Why? | %s |' % q['why'],
+                        '| Who owns resolution? | %s |' % q['resolution_owner'],
+                        '| Is a remediation known? | %s |' % q['remediation_known'],
+                        '| May an automated actor proceed unattended? | %s |'
+                        % ('yes' if q['automated_actor_may_proceed'] else 'no'),
+                        '| What is the exact next action? | %s |' % q['next_action']]
+              if esc:
+                  lines += ['', '**Escalation contract.** Owner: %s. Channel: %s. Artefacts: %s. Service '
+                            'level: %s.' % (esc['resolution_owner'], esc['request_channel'],
+                                            ', '.join(esc['required_artefacts']), esc['service_level']),
+                            'An automated actor MAY: %s.' % '; '.join(esc['permitted_agent_action']['may']),
+                            'It MAY NOT: %s.' % '; '.join(esc['permitted_agent_action']['may_not'])]
+              summary('\n'.join(lines))
+              print('\n'.join(lines))
+              output(deployment_outcome=outcome)
+              if outcome != 'DEPLOY_HEALTHY':
+                  print('::error title=Deploy outcome %s::%s' % (outcome, why))
+                  return 1
+              return 0
+
+
+          def main(argv):
+              ap = argparse.ArgumentParser(description='deploy contract engine')
+              sub = ap.add_subparsers(dest='cmd', required=True)
+              cmds = {'capture': cmd_capture, 'capability': cmd_capability, 'mutate': cmd_mutate, 'swap': cmd_swap,
+                      'verify': cmd_verify, 'redirect': cmd_redirect, 'serving': cmd_serving,
+                      'reverse': cmd_reverse, 'unhealthy': cmd_unhealthy,
+                      'provenance': cmd_provenance, 'report': cmd_report}
+              for name in cmds:
+                  p = sub.add_parser(name)
+                  p.add_argument('--adapter', choices=('containerapp', 'appservice'), required=True)
+              sub.add_parser('created-revision')
+              a = ap.parse_args(argv)
+              if a.cmd == 'created-revision':
+                  # Prints ONLY the revision the manifest records as CREATED (empty if none).
+                  sys.stdout.write(created_revision() + '\n')
+                  return 0
+              return cmds[a.cmd](a)
+
+
+          if __name__ == '__main__':
+              sys.exit(main(sys.argv[1:]))
+          kit_deploy_contract_py
+          cat > "$RUNNER_TEMP/kit-deploy/derive_reversal_disposition.py" <<'kit_derive_reversal_disposition_py'
+          #!/usr/bin/env python3
+          """Derive what a reversal may do to ONE object, from what live state said about it.
+
+          WHY THIS EXISTS (L98; docs/architecture/DEPLOYMENT_CONTRACT_RECONCILIATION.md section 8)
+
+              A change manifest is a record of the past. A reversal acts on the present. Release R1 creates
+              X; another onboarding process later modifies X or takes a dependency on it; R1's manifest
+              still truthfully says "I created X", and that is no longer sufficient AUTHORITY to delete X.
+              So every manifest entry is a PROPOSAL, and this script turns a proposal plus the live reads
+              an adapter made into exactly one `reversal_disposition` (assurance-taxonomy.yaml).
+
+          THE RULE IT EXISTS TO HOLD
+              THE UNKNOWN BRANCH AND THE DESTRUCTIVE BRANCH ARE NOT THE SAME BRANCH. Exactly one value
+              removes anything -- REVERSAL_REMOVE -- and it is reachable only when every one of P1-P6 was
+              POSITIVELY established. "No conflict was found" is also what a failed conflict query returns,
+              so an input that is absent is unknown, never empty: every flag below defaults to unknown.
+
+          THE PRECONDITIONS (section 8.1), each read by the ADAPTER from live state and passed in here
+              P1  ownership    the RELEASE_OWNERSHIP_STAMP on the live object (--stamp); other claims on it
+              P2  version      the object's current version handle against the recorded post-state
+              P3  later        releases that wrote this object since (the release graph)
+              P4  external     P2 differs AND no release claims the difference -- derived, never observed,
+                               and only once P3 itself succeeded
+              P5  dependents   anything introduced later that depends on the object
+              P6  ancestry     descendant releases still standing, whether or not they touched the object
+
+              For ENTRY actions (a release-owned entry on a shared surface, section 8.1 "the unit of
+              conflict is the mutation"), a moved parent version is a trigger to look closer, not a
+              verdict: is OUR entry still byte-identical, does removing it alter anything another actor
+              owns, can the surface address it independently.
+
+          WHAT IT CANNOT ESTABLISH
+              Whether the adapter's reads were TRUE. It decides correctly from the facts it is given; a
+              stamp an external actor forged, or a dependency read that missed an edge, is an adapter and
+              acceptance-matrix question (section 8.6, 7.8). The stamp is evidence, not proof (section 8.3
+              rule 4).
+
+          USAGE
+              Single entry (key=value lines on stdout, for `>> "$GITHUB_OUTPUT"`):
+                derive_reversal_disposition.py --release R --stamp S --current-version V
+                    [--action CREATED|MODIFIED|REDIRECTED|ENTRY] [--recorded-post-version P]
+                    [--stamp-unreadable] [--current-version-unreadable]
+                    [--later-releases none|unknown|a,b] [--descendants none|unknown|a,b]
+                    [--dependents none|unknown|a,b] [--other-claims none|unknown|a,b]
+                    [--classification EXCLUSIVE|OWNED_BINDING|SHARED_CONFIGURATION_ENTRY|PLATFORM_OWNED_SHARED]
+                    [--entry-unchanged yes|no|unknown] [--entry-side-effect-free yes|no|unknown]
+                    [--entry-independent yes|no|unknown]
+              Batch (a JSON list of entries in, a JSON list of derivations out):
+                derive_reversal_disposition.py --release R --entries entries.json
+                Entry keys mirror the flags; null means unknown, [] means positively none.
+              derive_reversal_disposition.py --self-test
+
+          EXIT  0 derived (whatever the disposition)   2 the input could not be read, or the self-test failed
+          """
+          import argparse
+          import io
+          import json
+          import sys
+
+          REMOVE = 'REVERSAL_REMOVE'
+          RESTORE = 'REVERSAL_RESTORE_PRIOR'
+          DEFER = 'REVERSAL_DEFERRED_TO_SUCCESSOR'
+          SCOPED = 'REVERSAL_ENTRY_SCOPED'
+          CONFLICT = 'REVERSAL_REFUSED_CONFLICT'
+          DEPENDENCY = 'REVERSAL_WITHHELD_DEPENDENCY'
+          UNTRUSTED = 'REVERSAL_WITHHELD_UNTRUSTED'
+
+          ACTIONS = ('CREATED', 'MODIFIED', 'REDIRECTED', 'ENTRY')
+          FALSE, UNEVALUABLE = 'established-false', 'unevaluable'
+
+
+          def parse_stamp(raw):
+              """-> dict, or None when unreadable. '' (read, nothing there) -> {}."""
+              if raw is None:
+                  return None
+              raw = str(raw).strip()
+              if not raw:
+                  return {}
+              fields = {}
+              for part in raw.split(';'):
+                  if '=' in part:
+                      k, v = part.split('=', 1)
+                      fields[k.strip()] = v.strip()
+              if not fields:
+                  fields = {'release_id': raw}
+              return fields
+
+
+          def result(entry, disposition, ownership, conflict, precondition, status, reason):
+              return {'object': entry.get('object', ''), 'action': entry.get('action', ''),
+                      'reversal_disposition': disposition, 'release_ownership': ownership,
+                      'reversal_conflict': conflict or 'none', 'deciding_precondition': precondition,
+                      'precondition_status': status, 'reason': reason}
+
+
+          def derive(entry, release):
+              """The section 8 derivation. Every unknown resolves somewhere non-destructive."""
+              action = entry.get('action') or 'CREATED'
+              classification = entry.get('classification') or 'EXCLUSIVE'
+              stamp = parse_stamp(entry.get('stamp'))
+              later = entry.get('later_releases')
+              descendants = entry.get('descendants')
+              dependents = entry.get('dependents')
+              claims = entry.get('other_claims')
+              current = entry.get('current_version')
+              post = entry.get('recorded_post_version')
+
+              if action not in ACTIONS:
+                  return result(entry, UNTRUSTED, 'OWNERSHIP_UNESTABLISHED', 'PRECONDITION_UNESTABLISHED',
+                                'P1', UNEVALUABLE, 'unrecognised manifest action %r; nothing destructive'
+                                % action)
+              if classification == 'PLATFORM_OWNED_SHARED':
+                  return result(entry, DEPENDENCY, 'PLATFORM_OWNED_SHARED', None, 'classification',
+                                FALSE, 'the platform owns this resource; an application rollback cannot act '
+                                'on it whatever its manifest says (section 8.3a)')
+              if classification == 'REFERENCE_ONLY':
+                  return result(entry, DEPENDENCY, 'REFERENCE_ONLY', None, 'classification', FALSE,
+                                'consumption left no trace to reverse; the referenced resource belongs to '
+                                'somebody else (section 8.3a)')
+
+              # P1 -- ownership, read off the live object.
+              if stamp is None:
+                  return result(entry, UNTRUSTED, 'OWNERSHIP_UNESTABLISHED', None, 'P1', UNEVALUABLE,
+                                'the ownership stamp could not be read')
+              owner = stamp.get('release_id', '')
+              if not owner:
+                  return result(entry, UNTRUSTED, 'OWNERSHIP_UNESTABLISHED', None, 'P1', UNEVALUABLE,
+                                'the live object carries no ownership stamp')
+              if owner != release:
+                  if later is None:
+                      return result(entry, UNTRUSTED, 'OWNED_BY_ANOTHER_RELEASE', 'PRECONDITION_UNESTABLISHED',
+                                    'P3', UNEVALUABLE, 'the stamp names %s and the release graph could not '
+                                    'be read to say whether it is a later release' % owner)
+                  if owner in later:
+                      return result(entry, DEFER, 'OWNED_BY_ANOTHER_RELEASE', 'SUPERSEDED_BY_LATER_RELEASE',
+                                    'P3', FALSE, 'later release %s wrote the current state; reverse it '
+                                    'first' % owner)
+                  return result(entry, CONFLICT, 'OWNED_BY_ANOTHER_RELEASE', None, 'P1', FALSE,
+                                'OWNED_BY_ANOTHER_RELEASE: the stamp names %s, not %s; the manifest and live '
+                                'state disagree about who made this' % (owner, release))
+              if claims is None:
+                  return result(entry, UNTRUSTED, 'OWNERSHIP_UNESTABLISHED', None, 'P1', UNEVALUABLE,
+                                'other ownership claims on the object could not be read')
+              if claims:
+                  return result(entry, DEPENDENCY, 'OWNED_SHARED', None, 'P1', FALSE,
+                                'co-owned by %s; shared ownership withdraws the removal branch'
+                                % ', '.join(map(str, claims)))
+              ownership = 'OWNED_BINDING' if classification == 'OWNED_BINDING' else (
+                  'SHARED_CONFIGURATION_ENTRY' if classification == 'SHARED_CONFIGURATION_ENTRY'
+                  else 'OWNED_EXCLUSIVE')
+
+              # P6 -- reverse-ancestry order, about the graph rather than the object.
+              if descendants is None:
+                  return result(entry, UNTRUSTED, ownership, 'PRECONDITION_UNESTABLISHED', 'P6', UNEVALUABLE,
+                                'the release graph could not be traversed for descendants')
+              if descendants:
+                  return result(entry, DEFER, ownership, 'REVERSE_ORDER_VIOLATED', 'P6', FALSE,
+                                'descendant release(s) %s still stand; reverse them first'
+                                % ', '.join(map(str, descendants)))
+
+              # P3 -- has a later release written it (needed before P4 can be derived at all).
+              if later is None:
+                  return result(entry, UNTRUSTED, ownership, 'PRECONDITION_UNESTABLISHED', 'P3', UNEVALUABLE,
+                                'the release graph could not be read for later writers')
+              if later:
+                  # The stamp still names us, yet the graph records a later writer of this object. Either
+                  # the later release did not re-stamp or the stamp was restored; both say the current
+                  # state is not solely ours, and the later release is reversed first.
+                  return result(entry, DEFER, ownership, 'SUPERSEDED_BY_LATER_RELEASE', 'P3', FALSE,
+                                'later release(s) %s wrote this object since; reverse them first'
+                                % ', '.join(map(str, later)))
+
+              # P2 -- is it still the post-state this release left behind?
+              if current is None or post is None:
+                  return result(entry, UNTRUSTED, ownership, 'PRECONDITION_UNESTABLISHED', 'P2', UNEVALUABLE,
+                                'the %s could not be read' % ('current version handle' if current is None
+                                                              else 'recorded post-state version'))
+              if str(current) != str(post):
+                  if action != 'ENTRY':
+                      # P4 -- the difference no release in the graph claims.
+                      return result(entry, CONFLICT, ownership, 'MODIFIED_BY_EXTERNAL_ACTOR', 'P4', FALSE,
+                                    'MODIFIED_BY_EXTERNAL_ACTOR: current version %s is not the recorded '
+                                    'post-state %s and no release claims the change' % (current, post))
+                  unchanged = entry.get('entry_unchanged')
+                  if unchanged is None:
+                      return result(entry, UNTRUSTED, ownership, 'PRECONDITION_UNESTABLISHED', 'P4',
+                                    UNEVALUABLE, 'the parent moved and our entry could not be compared')
+                  if not unchanged:
+                      return result(entry, CONFLICT, ownership, 'MODIFIED_BY_EXTERNAL_ACTOR', 'P4', FALSE,
+                                    'this release\'s own entry was altered by someone else')
+                  free = entry.get('entry_side_effect_free')
+                  if free is None:
+                      return result(entry, UNTRUSTED, ownership, 'PRECONDITION_UNESTABLISHED', 'P5',
+                                    UNEVALUABLE, 'whether removing the entry changes the evaluation '
+                                    'outcome for other entries could not be established')
+                  if not free:
+                      return result(entry, DEPENDENCY, ownership, 'DEPENDENT_INTRODUCED_LATER', 'P5', FALSE,
+                                    'removing this entry alters the effective behaviour of entries another '
+                                    'actor owns')
+                  if entry.get('entry_independent') is not True:
+                      return result(entry, UNTRUSTED, ownership, 'PRECONDITION_UNESTABLISHED', 'P4',
+                                    UNEVALUABLE, 'the surface cannot be shown to address this entry '
+                                    'independently -- granularity unestablished')
+
+              # P5 -- does anything introduced later depend on it?
+              if dependents is None:
+                  return result(entry, UNTRUSTED, ownership, 'PRECONDITION_UNESTABLISHED', 'P5', UNEVALUABLE,
+                                'the dependency read failed or the adapter cannot read dependents')
+              if dependents:
+                  return result(entry, DEPENDENCY, ownership, 'DEPENDENT_INTRODUCED_LATER', 'P5', FALSE,
+                                'preserved because %s depends on it' % ', '.join(map(str, dependents)))
+
+              if action == 'ENTRY':
+                  if str(current) != str(post):
+                      return result(entry, SCOPED, ownership, None, 'all', 'all-established',
+                                    'the parent changed, this release\'s entry did not; the entry alone is '
+                                    'reversed')
+                  return result(entry, RESTORE, ownership, None, 'all', 'all-established',
+                                'entry unchanged since this release wrote it; restore the recorded prior')
+              if action == 'CREATED':
+                  return result(entry, REMOVE, ownership, None, 'all', 'all-established',
+                                'created by this release, unchanged since, exclusively owned, nothing '
+                                'depends on it, no descendant stands')
+              return result(entry, RESTORE, ownership, None, 'all', 'all-established',
+                            'still the post-state this release recorded; restore the captured prior')
+
+
+          def tri(v):
+              if v is None:
+                  return None
+              v = str(v).strip().lower()
+              return True if v in ('yes', 'true') else False if v in ('no', 'false') else None
+
+
+          def listish(v):
+              if v is None or str(v).strip().lower() == 'unknown':
+                  return None
+              v = str(v).strip()
+              if v.lower() in ('none', ''):
+                  return []
+              return [x.strip() for x in v.split(',') if x.strip()]
+
+
+          def self_test():
+              rel = 'r1'
+              base = {'object': 'o', 'action': 'CREATED', 'stamp': 'release_id=r1', 'current_version': 'v',
+                      'recorded_post_version': 'v', 'later_releases': [], 'descendants': [],
+                      'dependents': [], 'other_claims': []}
+              cases = [({}, REMOVE), ({'stamp': None}, UNTRUSTED), ({'current_version': 'w'}, CONFLICT),
+                       ({'dependents': None}, UNTRUSTED), ({'dependents': ['d']}, DEPENDENCY),
+                       ({'descendants': ['r2']}, DEFER), ({'action': 'MODIFIED'}, RESTORE),
+                       ({'stamp': 'release_id=r2', 'later_releases': ['r2']}, DEFER),
+                       ({'stamp': 'release_id=r9'}, CONFLICT)]
+              bad = []
+              for over, want in cases:
+                  e = dict(base, **over)
+                  got = derive(e, rel)['reversal_disposition']
+                  if got != want:
+                      bad.append('%r -> %s, wanted %s' % (over, got, want))
+              # Unset keys are UNKNOWN: an entry that says nothing must never be removable.
+              if derive({'object': 'o', 'action': 'CREATED', 'stamp': 'release_id=r1'}, rel)[
+                      'reversal_disposition'] == REMOVE:
+                  bad.append('an entry with no P2-P6 evidence derived REMOVE')
+              if bad:
+                  for b in bad:
+                      print('SELF-TEST FAILED: ' + b)
+                  return 2
+              print('self-test ok: %d derivations, and an entry with unasked preconditions is not removable'
+                    % (len(cases) + 1))
+              return 0
+
+
+          def main(argv):
+              ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+              ap.add_argument('--self-test', action='store_true')
+              ap.add_argument('--release', default='')
+              ap.add_argument('--entries')
+              ap.add_argument('--object', default='')
+              ap.add_argument('--action', default='CREATED')
+              ap.add_argument('--stamp')
+              ap.add_argument('--stamp-unreadable', action='store_true')
+              ap.add_argument('--current-version')
+              ap.add_argument('--current-version-unreadable', action='store_true')
+              ap.add_argument('--recorded-post-version')
+              ap.add_argument('--later-releases')
+              ap.add_argument('--descendants')
+              ap.add_argument('--dependents')
+              ap.add_argument('--other-claims')
+              ap.add_argument('--classification', default='EXCLUSIVE')
+              ap.add_argument('--entry-unchanged')
+              ap.add_argument('--entry-side-effect-free')
+              ap.add_argument('--entry-independent')
+              a = ap.parse_args(argv)
+              if a.self_test:
+                  return self_test()
+              if not a.release:
+                  print('::error::--release is required: a disposition is relative to the release being '
+                        'reversed.', file=sys.stderr)
+                  return 2
+              if a.entries:
+                  try:
+                      entries = json.load(io.open(a.entries, encoding='utf-8'))
+                      if not isinstance(entries, list):
+                          raise ValueError('not a JSON list')
+                  except (OSError, ValueError) as e:
+                      print('::error::entries unreadable (%s). Nothing is derived from an unread manifest.'
+                            % e, file=sys.stderr)
+                      return 2
+                  print(json.dumps([derive(e if isinstance(e, dict) else {}, a.release) for e in entries],
+                                   indent=1))
+                  return 0
+              entry = {
+                  'object': a.object, 'action': a.action, 'classification': a.classification,
+                  'stamp': None if a.stamp_unreadable else a.stamp,
+                  'current_version': None if a.current_version_unreadable else a.current_version,
+                  'recorded_post_version': a.recorded_post_version,
+                  'later_releases': listish(a.later_releases), 'descendants': listish(a.descendants),
+                  'dependents': listish(a.dependents), 'other_claims': listish(a.other_claims),
+                  'entry_unchanged': tri(a.entry_unchanged),
+                  'entry_side_effect_free': tri(a.entry_side_effect_free),
+                  'entry_independent': tri(a.entry_independent),
+              }
+              r = derive(entry, a.release)
+              for k in ('reversal_disposition', 'release_ownership', 'reversal_conflict',
+                        'deciding_precondition', 'precondition_status'):
+                  print('%s=%s' % (k, r[k]))
+              print('reason=%s' % r['reason'].replace('\n', ' '))
+              return 0
+
+
+          if __name__ == '__main__':
+              sys.exit(main(sys.argv[1:]))
+          kit_derive_reversal_disposition_py
+
+      - name: Bind the tier and target to the GitHub environment (refuse before login)
+        id: bind
+        # B-13 / LZ-1 (ledger P-01). The landing zone vends the tier and the target as VARIABLES of
+        # this job's GitHub environment (docs/architecture/LZ_KIT_HANDOFF_CONTRACT.md). A caller job
+        # cannot read them, so the tier was whatever string the caller typed -- `prod` in the
+        # starter template, for every target -- and the tier decides the production rules. This job
+        # runs IN the environment: an empty input is filled from the vended value (GITHUB_ENV, read
+        # by every later step), an input that disagrees with it is refused here, before the verdict
+        # is weighed and before login, and an environment that vends nothing leaves the inputs as
+        # given (UNBOUND, recorded). The body is identical in both deploy reusables.
+        # tests/prove_deploy_environment_binding.py.
+        env:
+          APP_VARIABLE: WEBAPP_NAME
+          APP_INPUT: webapp_name
+        run: |
+          set -u
+          # A value is named in a message only when it is a plain name: caller or vended text could
+          # otherwise carry a workflow command (`::`) into the log.
+          # The whole value, never line by line (grep would pass a value whose first line is plain).
+          plain() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]]; }
+          shown() {
+            if [ -z "$1" ]; then printf '(none)'
+            elif plain "$1"; then printf "'%s'" "$1"
+            else printf '(a value that is not a plain name, not shown)'; fi
+          }
+          refuse() {
+            echo "target_binding=REFUSED" >> "$GITHUB_OUTPUT"
+            echo "::error title=Deploy refused before login::$1"
+            printf '### Deploy refused before login\n\n%s\n' "$1" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+          bound=0
+          # bind <job variable> <input name> <the value this environment vends>
+          bind() {
+            var="$1"; name="$2"; vended="$3"; given="${!var:-}"
+            [ -n "$vended" ] || return 0
+            plain "$vended" ||
+              refuse "This GitHub environment vends ${name} as a value that is not a plain name. It is not echoed, and nothing is deployed against it."
+            if [ -n "$given" ] && [ "$given" != "$vended" ]; then
+              refuse "${name} is $(shown "$given") in the call, but GitHub environment $(shown "${DEPLOY_ENVIRONMENT:-}") vends '${vended}'. A deploy runs under the tier, and against the target, the landing zone vended to the environment that holds its identity. Pass an empty value, or the vended one."
+            fi
+            if [ -z "$given" ]; then
+              fills+=("${var}=${vended}")
+              echo "${name}: filled from this environment ('${vended}')."
+            fi
+            bound=$((bound + 1))
+          }
+          fills=()
+          bind ENVIRONMENT_TIER environment_tier "${KIT_BOUND_ENVIRONMENT_TIER:-}"
+          bind RESOURCE_GROUP resource_group "${KIT_BOUND_RESOURCE_GROUP:-}"
+          bind "$APP_VARIABLE" "$APP_INPUT" "${KIT_BOUND_APP_NAME:-}"
+          bind ACR_LOGIN_SERVER acr_login_server "${KIT_BOUND_ACR_LOGIN_SERVER:-}"
+          bind IMAGE_REPOSITORY image_repository "${KIT_BOUND_IMAGE_REPOSITORY:-}"
+          # azure/login reads the cloud from the input itself, so a vended cloud is CHECKED, never
+          # filled: an empty or other value logs in to the commercial cloud.
+          if [ -n "${KIT_BOUND_CLOUD:-}" ]; then
+            login=commercial
+            if [ "${CLOUD:-}" = "gov" ]; then login=gov; fi
+            plain "$KIT_BOUND_CLOUD" ||
+              refuse "This GitHub environment vends cloud as a value that is not a plain name. It is not echoed, and nothing is deployed against it."
+            if [ "$KIT_BOUND_CLOUD" != "$login" ]; then
+              refuse "GitHub environment $(shown "${DEPLOY_ENVIRONMENT:-}") vends cloud '${KIT_BOUND_CLOUD}', and this call would log in to ${login}. Pass cloud: ${KIT_BOUND_CLOUD}."
+            fi
+            bound=$((bound + 1))
+          fi
+          # Written only once every value has been checked: a refused binding fills nothing.
+          for f in ${fills[@]+"${fills[@]}"}; do echo "$f" >> "$GITHUB_ENV"; done
+          if [ "$bound" -gt 0 ]; then
+            echo "target_binding=BOUND" >> "$GITHUB_OUTPUT"
+            echo "Bound to ${bound} value(s) this GitHub environment vends."
+          else
+            echo "target_binding=UNBOUND" >> "$GITHUB_OUTPUT"
+            echo "This GitHub environment vends no KIT_* values: the inputs are used as given (UNBOUND)."
+          fi
+
+      - name: Gate verdict (refuse before login)
+        id: verdict
+        # L93. SINGLE_PIPELINE_TARGET.md section 5.2: "The deploy stage reads the verdict, not
+        # needs.gate.result." A job result cannot tell DECISION_REQUIRED from BLOCKED and cannot
+        # express PROCEED_WITH_ADVISORY; the routing_result can. Read FIRST, before login, so a
+        # refused deploy never holds the deploy identity. Proven by tests/prove_deploy_gate.py.
+        env:
+          ROUTING_RESULT: ${{ inputs.routing_result }}
+        run: |
+          refuse() {
+            echo "::error title=Deploy refused before login::$1"
+            {
+              echo "### Deploy refused before login"
+              echo ""
+              echo "$1"
+            } >> "$GITHUB_STEP_SUMMARY"
+            not_engaged_unless_ruled
+            echo "verdict_permits=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          }
+          # KDEC-014 (owner, 2026-10-16): "Version-gap-only PROCEED_WITH_ADVISORY is DEV/TEST
+          # ONLY. UAT and prod refuse it until the scanner gap is closed or a named person accepts
+          # it as an attributed exception." The gate names WHY a verdict is advisory
+          # (advisory_causes). ROLLOUT (owner, same day): enforcement is DATA-DRIVEN. A
+          # VERSION_GAP is a gap every candidate's READ range establishes (resolve
+          # proven_gap_jobs), and at uat/prod it -- wholly or partly -- needs the weakening record
+          # as the exception: a named accepter (weakening_authority), a reason and an unexpired
+          # YYYY-MM-DD weakening_expires, approved by the GitHub environment's required reviewers.
+          # A VERSION_GAP_UNVERIFIED rests on an UNVERIFIED range: it proceeds, recorded loudly,
+          # until a seeded corpus makes the range READ. An advisory whose cause is absent or
+          # unregistered cannot be shown not to be a gap and is refused at uat/prod. Other causes
+          # are unchanged. Vocabulary: assurance-taxonomy.yaml :: advisory_cause,
+          # version_gap_ruling. tests/prove_version_gap_production.py.
+          # EXACTLY ONE RULING ON EVERY PATH THAT REACHES THIS STEP, refused or not --
+          # VERSION_GAP_NOT_ENGAGED where no version-gap rule applied. The posture step reads an
+          # EMPTY ruling as "the verdict step never answered" (EVIDENCE_UNTRUSTED), so silence here
+          # can never be read as "not engaged" (scripts/trace_assurance_flow.py UNGUARDED).
+          ruled=0
+          ruling() { echo "version_gap_ruling=$1" >> "$GITHUB_OUTPUT"; ruled=1; }
+          not_engaged_unless_ruled() { [ "$ruled" = "1" ] || ruling VERSION_GAP_NOT_ENGAGED; }
+          version_gap_ruling() {
+            gap=0; unverified=0; unknown=0
+            for c in $(printf '%s' "${ADVISORY_CAUSES:-}" | tr ',' ' '); do
+              case "$c" in
+                VERSION_GAP) gap=1 ;;
+                VERSION_GAP_UNVERIFIED) unverified=1 ;;
+                COVERAGE_PARTIAL|WEAKENING_ATTRIBUTED|FINDINGS_NOT_BLOCKED) ;;
+                *) unknown=1 ;;
+              esac
+            done
+            [ -n "$(printf '%s' "${ADVISORY_CAUSES:-}" | tr -d ', ')" ] || unknown=1
+            case "${ENVIRONMENT_TIER:-}" in
+              uat|prod) ;;
+              *)
+                if [ "$gap" = "1" ] || [ "$unverified" = "1" ]; then
+                  ruling VERSION_GAP_RECORDED
+                  echo "::warning title=Version gap recorded (KDEC-014)::No carried scanner can read the target version. Permitted below uat and recorded."
+                fi
+                return 0 ;;
+            esac
+            if [ "$unknown" = "1" ]; then
+              ruling ADVISORY_CAUSE_UNKNOWN
+              refuse "KDEC-014: the gate verdict is PROCEED_WITH_ADVISORY at ${ENVIRONMENT_TIER}, and its advisory cause is absent or not a registered advisory_cause value (VERSION_GAP, VERSION_GAP_UNVERIFIED, COVERAGE_PARTIAL, WEAKENING_ATTRIBUTED, FINDINGS_NOT_BLOCKED). It cannot be shown not to be a version gap. Pass the security gate's advisory_causes output."
+            fi
+            if [ "$gap" != "1" ]; then
+              if [ "$unverified" = "1" ]; then
+                ruling VERSION_GAP_UNVERIFIED_RECORDED
+                echo "::warning title=VERSION GAP AT ${ENVIRONMENT_TIER}, RECORDED NOT ENFORCED (KDEC-014)::No carried scanner can read the target version, and the gap rests on an UNVERIFIED scanner range. Until a seeded corpus proves that range, ${ENVIRONMENT_TIER} proceeds with this advisory recorded in the posture record and outcome.json; once the range is READ, this deploy is refused without an attributed exception."
+                {
+                  echo "### Version gap at ${ENVIRONMENT_TIER}: recorded, not enforced (KDEC-014)"
+                  echo ""
+                  echo "No carried scanner can read the target version, and the gap rests on an UNVERIFIED range. Enforcement turns on when a seeded corpus proves the range (READ); until then this release proceeds with the gap on record."
+                } >> "$GITHUB_STEP_SUMMARY"
+              fi
+              return 0
+            fi
+            why=""
+            [ -n "$(printf '%s' "${WEAKENING_AUTHORITY:-}" | tr -d '[:space:]')" ] ||
+              why="no named accepter (weakening_authority)"
+            [ -n "$(printf '%s' "${WEAKENING_REASON:-}" | tr -d '[:space:]')" ] ||
+              why="${why:+$why; }no reason (weakening_reason)"
+            exp="${WEAKENING_EXPIRES:-}"
+            if [ -z "$exp" ]; then
+              why="${why:+$why; }no expiry (weakening_expires)"
+            elif ! printf '%s' "$exp" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' ||
+                 [ "$(date -u -d "$exp" +%Y-%m-%d 2>/dev/null)" != "$exp" ]; then
+              why="${why:+$why; }an expiry that is not a YYYY-MM-DD calendar date"
+            elif [ "$(date -u +%Y-%m-%d)" ">" "$exp" ]; then
+              why="${why:+$why; }an exception that expired on $exp"
+            fi
+            if [ -n "$why" ]; then
+              ruling VERSION_GAP_REFUSED
+              refuse "KDEC-014: the gate verdict is PROCEED_WITH_ADVISORY caused by a VERSION_GAP (no carried scanner can read the target version, established by READ ranges), and ${ENVIRONMENT_TIER} is a production tier. Close the scanner gap, or record an attributed exception in the weakening record: ${why}."
+            fi
+            ruling VERSION_GAP_EXCEPTION_ACCEPTED
+            echo "::warning title=Version gap accepted by attributed exception (KDEC-014)::Proceeding at ${ENVIRONMENT_TIER} on a named person's exception (the weakening record), expiring ${exp}, in a GitHub environment whose required reviewers approved this job. The record is in the posture summary and outcome.json."
+          }
+          case "$ROUTING_RESULT" in
+            PROCEED)
+              ruling VERSION_GAP_NOT_ENGAGED
+              echo "verdict_permits=true" >> "$GITHUB_OUTPUT"
+              echo "Gate verdict ${ROUTING_RESULT}: the deploy may proceed." ;;
+            PROCEED_WITH_ADVISORY)
+              version_gap_ruling
+              not_engaged_unless_ruled
+              echo "verdict_permits=true" >> "$GITHUB_OUTPUT"
+              echo "Gate verdict ${ROUTING_RESULT}: the deploy may proceed." ;;
+            BLOCKED)
+              refuse "Gate verdict BLOCKED: a control refused this release. Nothing was deployed." ;;
+            DECISION_REQUIRED)
+              refuse "Gate verdict DECISION_REQUIRED: a weakening or exception is in force that nobody has attributed. A decision is owed before this can ship." ;;
+            EVIDENCE_UNTRUSTED)
+              refuse "Gate verdict EVIDENCE_UNTRUSTED: the evidence for this release could not be relied on. Re-collect it; a deploy may not convert it into a successful state." ;;
+            '')
+              refuse "There is no gate verdict. routing_result was empty, and no verdict is not a permissive verdict. Pass the gate stage's routing_result output." ;;
+            *)
+              # Named only when it is a plain token: caller text could otherwise carry a
+              # workflow command (`::`) or markup into the annotation and the summary.
+              # The WHOLE value, not each line of it: grep matches per line, so a value whose
+              # first line is a plain token passed and its second line became a workflow command.
+              if [[ "$ROUTING_RESULT" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then
+                shown="'${ROUTING_RESULT}'"
+              else
+                shown="The supplied value (not echoed: it holds characters outside [A-Za-z0-9_-])"
+              fi
+              refuse "${shown} is not a registered routing_result value (PROCEED, PROCEED_WITH_ADVISORY, DECISION_REQUIRED, EVIDENCE_UNTRUSTED, BLOCKED). A near-miss spelling is refused, not interpreted." ;;
+          esac
+
+      - name: Environment tier and target (refuse before login)
+        id: tier
+        # DCR section 5 gap 1(a). `slot: ''` sets the image on production, restarts production and
+        # only THEN probes it: there is no pre-traffic check and, until reversal exists, no way
+        # back. At a production tier that path is refused here, before the deploy identity is
+        # even acquired. Proven by tests/prove_deploy_direct_to_production.py.
+        run: |
+          refuse() {
+            echo "::error title=Deploy refused before login::$1"
+            printf '### Deploy refused before login\n\n%s\n' "$1" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+          case "$ENVIRONMENT_TIER" in
+            sandbox|dev|test|uat|prod) ;;
+            *) refuse "environment_tier is not one of the registered tiers (sandbox, dev, test, uat, prod). The consequence of this deploy cannot be judged from an unregistered value." ;;
+          esac
+          if [ -z "$SLOT" ] && { [ "$ENVIRONMENT_TIER" = "uat" ] || [ "$ENVIRONMENT_TIER" = "prod" ]; }; then
+            refuse "slot '' deploys direct to production with no pre-traffic health check, and ${ENVIRONMENT_TIER} is a production tier. Stage into a slot; the swap is what lets the probe run before traffic moves."
+          fi
+          echo "Tier ${ENVIRONMENT_TIER}, target ${SLOT:-production (direct)}: permitted."
+
       - name: Validate digest (refuse mutable tags)
         run: |
-          d='${{ inputs.image_digest }}'
-          if ! echo "$d" | grep -Eq '^sha256:[a-f0-9]{64}$'; then
-            echo "::error::image_digest must be a full sha256 digest (got '$d'). Tag-based deploys are not permitted."
+          d="$IMAGE_DIGEST"
+          if ! printf '%s' "$d" | grep -Eq '^sha256:[a-f0-9]{64}$'; then
+            echo "::error::image_digest must be a full sha256 digest. Tag-based deploys are not permitted."
             exit 1
           fi
-          echo "Deploying immutable reference: ${{ inputs.acr_login_server }}/${{ inputs.image_repository }}@$d"
+          echo "Deploying immutable reference: ${ACR_LOGIN_SERVER}/${IMAGE_REPOSITORY}@$d"
+
+      - name: Verify the build-provenance attestation (V1, refuse before login)
+        id: attestation
+        # GENERATED by scripts/inline_deploy_scripts.py from .github/actions/verify-attestation/action.yml -- do not
+        # edit here; edit the composite and run `--write`. self-test fails on any drift.
+        # P-02 (PROVENANCE_AND_ATTESTATION.md section 6.1): V1 runs IN the deploy, before the
+        # point of no return, so no caller deploys an unverified digest by calling this
+        # reusable directly. Five outcomes routed by rung (section 6.3); a plan that offers no
+        # attestations is HELD (PROCEED_WITH_ADVISORY, IMPLEMENTATION_HELD, gh never called).
+        # tests/prove_deploy_attestation.py.
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+          SIGNER: ${{ inputs.attestation_signer_workflow }}
+          RUNG: ${{ inputs.attestation_rung }}
+          VISIBILITY: ${{ github.event.repository.visibility }}
+          AVAILABLE: ${{ inputs.attestations_available }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The digest and target this job deploys (after the bind step), never a second copy.
+          DIGEST="$IMAGE_DIGEST"
+          SUBJECT="${ACR_LOGIN_SERVER}/${IMAGE_REPOSITORY}"
+          RUNG="${RUNG:-run}"   # an empty rung reads as the strictest, never as a weaker one
+          case "$RUNG" in crawl|walk|run) ;; *)
+            echo "::error title=Unknown rung::'$RUNG' is not crawl, walk or run."; exit 1 ;; esac
+          if ! printf '%s' "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error title=Malformed digest::'$DIGEST' is not sha256:<64 hex>."; exit 1
+          fi
+          debt=""
+          # PLAN UNAVAILABILITY IS NOT A MISSING ATTESTATION (section 6.4). Spelled differently,
+          # never calls the API, and carried as held debt whose trigger is the plan, not a date.
+          if [ "$VISIBILITY" != public ] && [ "$AVAILABLE" != true ]; then
+            outcome=ATTESTATION_HELD_BY_PLAN; debt=IMPLEMENTATION_HELD
+          elif [ -z "$SIGNER" ]; then
+            # No signer to pin: "GitHub signed something" would pass for "the kit's build signed
+            # this digest" (section 4.5). The check cannot be performed as specified; gh is not asked.
+            outcome=ATTESTATION_NOT_ESTABLISHABLE
+          elif ! command -v gh >/dev/null 2>&1; then
+            outcome=ATTESTATION_NOT_ESTABLISHABLE
+          else
+            set +e
+            out="$(gh attestation verify "oci://$SUBJECT@$DIGEST" --repo "$REPO" \
+                     --signer-workflow "$SIGNER" --deny-self-hosted-runners --format json 2>err.txt)"
+            rc=$?
+            set -e
+            err="$(cat err.txt 2>/dev/null)"; rm -f err.txt
+            if [ "$rc" = 0 ]; then
+              # Defence in depth: every verified statement must name THIS digest.
+              want="${DIGEST#sha256:}"
+              if printf '%s' "$out" | jq -e --arg d "$want" \
+                   'type == "array" and length > 0 and
+                    all(.[]; [.verificationResult.statement.subject[]?.digest.sha256] | index($d))' \
+                   >/dev/null 2>&1; then
+                outcome=ATTESTATION_VERIFIED
+              else
+                outcome=ATTESTATION_CONTRADICTED
+              fi
+            elif printf '%s' "$err" | grep -qiE 'no attestations found|HTTP 404'; then
+              outcome=ATTESTATION_ABSENT
+            elif printf '%s' "$err" | grep -qiE 'failed to verify|does not match|signature|certificate|mismatch|expected'; then
+              outcome=ATTESTATION_CONTRADICTED
+            else
+              # Unreachable, unauthorised, rate-limited, or something unrecognised: the check could
+              # not be performed. Never a pass, never a contradiction.
+              outcome=ATTESTATION_NOT_ESTABLISHABLE
+            fi
+            [ -z "$err" ] || echo "gh: ${err%%$'\n'*}"
+          fi
+          case "$outcome:$RUNG" in
+            ATTESTATION_VERIFIED:*)            route=PROCEED ;;
+            ATTESTATION_ABSENT:crawl)          route=PROCEED_WITH_ADVISORY ;;
+            ATTESTATION_ABSENT:*)              route=DECISION_REQUIRED ;;
+            ATTESTATION_CONTRADICTED:*)        route=BLOCKED ;;
+            # Held: neither a permanent stop nor a clean pass -- visible, and owed.
+            ATTESTATION_HELD_BY_PLAN:*)        route=PROCEED_WITH_ADVISORY ;;
+            *)                                 route=EVIDENCE_UNTRUSTED ;;
+          esac
+          {
+            echo "outcome=$outcome"
+            echo "routing_result=$route"
+            echo "debt=$debt"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Attestation verification (V1)"
+            echo ""
+            echo "| subject | outcome | rung | routing |"
+            echo "|---|---|---|---|"
+            echo "| \`$SUBJECT@$DIGEST\` | **$outcome** | $RUNG | \`$route\` |"
+            if [ -n "$debt" ]; then
+              echo ""
+              echo "> Held, not failed: this repository's plan offers no attestations (PROVENANCE_AND_ATTESTATION.md section 6.4). Debt \`$debt\`; trigger: the plan moves to Enterprise Cloud or the repository is public."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "attestation: $outcome -> $route"
+          # The deploy acts on the route: anything but PROCEED or PROCEED_WITH_ADVISORY stops here.
+          case "$route" in
+            PROCEED|PROCEED_WITH_ADVISORY)
+              echo "Attestation V1 ${outcome}: the deploy may proceed (${route})." ;;
+            *)
+              echo "::error title=Deploy refused before login (V1)::attestation ${outcome} at rung ${RUNG} routes ${route}. The digest about to be deployed is not shown to be the one the kit build signed. Nothing was deployed."
+              { echo "### Deploy refused before login (V1)"; echo ""
+                echo "${outcome} routes ${route} at rung ${RUNG}."; } >> "$GITHUB_STEP_SUMMARY"
+              exit 1 ;;
+          esac
 
       - name: Azure login (OIDC)
         uses: azure/login@v3
+        # The hand-off contract vends the identifiers as VARIABLES of this environment (the
+        # identity is federated and holds no key); a secret of the same name, when one exists, wins.
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
           environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
 
-      - name: Set container image (digest-pinned)
-        run: |
-          set -euo pipefail
-          slot_arg=""
-          [ -n '${{ inputs.slot }}' ] && slot_arg="--slot ${{ inputs.slot }}"
-          # shellcheck disable=SC2086
-          az webapp config container set \
-            -n '${{ inputs.webapp_name }}' -g '${{ inputs.resource_group }}' $slot_arg \
-            --container-image-name '${{ inputs.acr_login_server }}/${{ inputs.image_repository }}@${{ inputs.image_digest }}' \
-            --output none
-          echo "Image set on target: ${{ inputs.slot != '' && inputs.slot || 'production' }}"
+      - name: Capture pre-change state (rollback point)
+        # DCR gap 4 / L97. App Service captured NOTHING before mutating: the image set below was
+        # the first thing to touch the target. previous_state now takes exactly one of three
+        # values (EXISTING_DEPLOYMENT, EMPTY measured, UNKNOWN), read from the target slot and
+        # from production, and an UNKNOWN fails this step before anything is changed.
+        id: before
+        run: python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" capture --adapter appservice
 
-      - name: Stamp provenance
-        if: inputs.version_metadata != ''
-        run: |
-          slot_arg=""
-          [ -n '${{ inputs.slot }}' ] && slot_arg="--slot ${{ inputs.slot }}"
-          # shellcheck disable=SC2086
-          az webapp config appsettings set \
-            -n '${{ inputs.webapp_name }}' -g '${{ inputs.resource_group }}' $slot_arg \
-            --settings DEPLOY_PROVENANCE='${{ inputs.version_metadata }}' \
-            --output none
-          echo '${{ inputs.version_metadata }}'
+      - name: Establish rollback capability (before the point of no return)
+        # DCR gap 9 / 3.5. Nothing established whether this change could be reversed before
+        # making it, and the environment/enforcement axis never reached the deploy. Now
+        # rollback_capability (AVAILABLE, UNAVAILABLE, NO_PRIOR_STATE) is decided here, from the
+        # captured state and the adapter's mechanism, and at a production tier (uat, prod)
+        # UNAVAILABLE refuses BEFORE the first mutation. Lower tiers proceed with the risk
+        # recorded in deploy-evidence/capability.json.
+        id: capability
+        run: python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" capability --adapter appservice
 
-      - name: Restart target
-        run: |
-          slot_arg=""
-          [ -n '${{ inputs.slot }}' ] && slot_arg="--slot ${{ inputs.slot }}"
-          # shellcheck disable=SC2086
-          az webapp restart -n '${{ inputs.webapp_name }}' -g '${{ inputs.resource_group }}' $slot_arg --output none
+      - name: Set container image (digest-pinned) and restart
+        # DCR gap 6. The change manifest (deploy-evidence/manifest.json) is written as `planned`
+        # BEFORE the first mutating call: a MODIFIED entry carrying the captured prior image and
+        # the post-state, with the ownership stamp tagged onto the target first.
+        id: deploy
+        run: python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" mutate --adapter appservice
 
-      - name: Resolve target URL
-        id: resolve
-        run: |
-          slot_arg=""
-          [ -n '${{ inputs.slot }}' ] && slot_arg="--slot ${{ inputs.slot }}"
-          # shellcheck disable=SC2086
-          host=$(az webapp show -n '${{ inputs.webapp_name }}' -g '${{ inputs.resource_group }}' $slot_arg \
-            --query defaultHostName -o tsv)
-          echo "app_url=https://${host}" >> "$GITHUB_OUTPUT"
-          echo "Target URL: https://${host}"
-
-      - name: Health check (before any traffic move)
+      - name: Verify the intended digest is loaded and healthy (before any traffic move)
+        # L101. A 200 from the target is not a digest: someone else's image written to the slot
+        # after ours answered 200 and was swapped into production as this run's healthy deploy.
+        # Now: read the target's image back from live state and require the intended digest,
+        # then probe it. App Service does not expose the running digest of a restarted site;
+        # the configured image read back after the restart is the strongest available reading.
+        # suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE -- the outcome is read by the swap,
+        # reversal, provenance and report steps, and the last step fails the job on it.
         id: health
         continue-on-error: true
-        run: |
-          url='${{ steps.resolve.outputs.app_url }}${{ inputs.health_path }}'
-          for i in $(seq 1 ${{ inputs.health_retries }}); do
-            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$url" || echo 000)
-            echo "  attempt $i/${{ inputs.health_retries }} -> HTTP $code"
-            if [ "$code" = "200" ]; then
-              echo "Healthy after $i attempt(s)."
-              exit 0
-            fi
-            sleep ${{ inputs.health_interval_seconds }}
-          done
-          echo "::error::Health probe never returned 200 at $url"
-          exit 1
+        run: python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" verify --adapter appservice
 
       - name: Swap slot into production
+        id: swap
         if: steps.health.outcome == 'success' && inputs.swap_on_healthy && inputs.slot != ''
-        run: |
-          az webapp deployment slot swap \
-            -n '${{ inputs.webapp_name }}' -g '${{ inputs.resource_group }}' \
-            --slot '${{ inputs.slot }}' --target-slot production --output none
-          echo "Swapped ${{ inputs.slot }} -> production."
+        # Recorded in the change manifest as a REDIRECTION before it is performed.
+        run: python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" swap --adapter appservice
 
-      - name: Held back (unhealthy)
-        if: steps.health.outcome == 'failure' && inputs.slot != ''
-        run: |
-          echo "::warning::Health probe failed on slot '${{ inputs.slot }}' — no swap performed. Production is untouched."
+      - name: Verify the consumer path reaches it
+        # DCR 3.1 serving_verified: production's image read back and its public name probed.
+        # On a slot staged without a swap, production is deliberately unchanged and this says so.
+        # suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE -- as above.
+        id: serving
+        continue-on-error: true
+        if: steps.health.outcome == 'success'
+        env:
+          SWAPPED: ${{ steps.swap.outcome }}
+        run: python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" serving --adapter appservice
 
-      - name: Summary
+      - name: Reverse this run's changes
+        # DCR gaps 1(c) and 5. App Service had NO reversal step: a failed direct deploy left
+        # production serving the failed digest. Reversal reads the CHANGE MANIFEST, and each
+        # entry is a proposal whose disposition is derived from live state by
+        # scripts/derive_reversal_disposition.py (DCR section 8): swap back what this run
+        # swapped, restore the captured prior image -- or the measured empty configuration --
+        # where the target is still exactly as this run left it. deploy-evidence/reversal.json.
+        # suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE -- a partial reversal is a terminal
+        # state the report must describe, so the job continues to the report.
+        id: reversal
+        continue-on-error: true
+        if: >-
+          !cancelled() && steps.deploy.outcome == 'success' && inputs.rollback_on_failure &&
+          (steps.health.outcome == 'failure' || steps.swap.outcome == 'failure' ||
+          steps.serving.outcome == 'failure')
+        run: python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" reverse --adapter appservice
+
+      - name: Stamp provenance (after health and a live read)
+        # DCR gap 3. Provenance means "this is running and it works". It was stamped as an app
+        # setting BEFORE the health probe, so a failed deploy left the target advertising a
+        # version that never passed health. Now: only after health (and after the swap, when
+        # there is one), only once a fresh live read shows the intended artefact on the target,
+        # as tags on the object that serves it. A failed deploy writes nothing.
+        id: provenance
+        if: steps.serving.outcome == 'success' && inputs.version_metadata != ''
+        env:
+          SWAPPED: ${{ steps.swap.outcome }}
+        run: python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" provenance --adapter appservice
+
+      - name: Report an unhealthy target
+        # DCR gap 1(b). This step was gated on `inputs.slot != ''`, so the only path that printed
+        # anything about production was the path that never touched it. Its firing condition is
+        # now invariant across both paths; only the TEXT differs, because only the slot path can
+        # truthfully say production is untouched. On the direct path what production holds NOW is
+        # read back from live state here, after the reversal -- never echoed from the inputs: live
+        # run 38879879589 said production "now serves" this run's image while a second actor had
+        # replaced it. tests/prove_deploy_outcome.py live_appservice_refused_reversal_is_not_verified.
+        if: steps.health.outcome == 'failure'
+        run: |
+          if [ -n "$SLOT" ]; then
+            echo "::warning::Health probe failed on slot '${SLOT}' — no swap performed. Production is untouched."
+          else
+            python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" unhealthy --adapter appservice
+          fi
+
+      - name: Reconcile and report outcome
+        id: report
+        # DCR gap 2. The summary printed the digest this run TRIED to deploy beside a health
+        # cell, with no row that could say what production actually serves. Every identifier is
+        # now ATTEMPTED or NOW SERVING, and NOW SERVING is read back from live state --
+        # `unknown` when the read fails, never the attempted value.
         if: always()
+        env:
+          HEALTH_OUTCOME: ${{ steps.health.outcome }}
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          ATTESTATION_OUTCOME: ${{ steps.attestation.outputs.outcome }}
+          ATTESTATION_ROUTE: ${{ steps.attestation.outputs.routing_result }}
+          ATTESTATION_DEBT: ${{ steps.attestation.outputs.debt }}
+          SERVING_OUTCOME: ${{ steps.serving.outcome }}
+          CANCELLED: ${{ job.status == 'cancelled' }}   # cancelled() is not allowed in env: (actionlint)
+          VERSION_GAP_RULING: ${{ steps.verdict.outputs.version_gap_ruling }}
+          SWAPPED: ${{ steps.swap.outcome }}
+        # Exit 0 only for DEPLOY_HEALTHY: this step's outcome IS the job's verdict (DCR gap 8).
+        run: python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" report --adapter appservice
+
+      # ── CONTROL POSTURE RECORD ────────────────────────────────────────────────────────────
+      #
+      # A WEAKENING IS A GOVERNED EXCEPTION, NOT A BOOLEAN PREFERENCE.
+      #
+      # This workflow declared weakening inputs and recorded none of them: a caller who switched
+      # reversal off, or re-pointed the health probe, was reported exactly like one who deployed
+      # at baseline. The enumeration below is TOTAL over this workflow's declared inputs
+      # (tests/check_weakening_record.py W1-W7, whose dated exemption for this file is deleted),
+      # and the record ROUTES what the deploy did -- by the registered precedence, and never
+      # weaker than the gate verdict it was given. A deploy that cannot be reversed at a
+      # production tier was already refused by the capability step, so that path is BLOCKED
+      # whatever the caller recorded about it. tests/prove_deploy_posture.py.
+      #
+      # Vocabulary: assurance-taxonomy.yaml :: control_weakening, routing_result.
+      - name: Control posture — required, executed, unavailable, reduced, skipped, and who decided
+        id: posture
+        if: always()
+        env:
+          # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
+          W_ROUTING_RESULT: ${{ inputs.routing_result }}
+          W_ROLLBACK_ON_FAILURE: ${{ inputs.rollback_on_failure }}
+          W_SLOT: ${{ inputs.slot }}
+          W_SWAP_ON_HEALTHY: ${{ inputs.swap_on_healthy }}
+          W_HEALTH_PATH: ${{ inputs.health_path }}
+          W_HEALTH_RETRIES: ${{ inputs.health_retries }}
+          W_HEALTH_INTERVAL_SECONDS: ${{ inputs.health_interval_seconds }}
+          W_WEAKENING_REASON: ${{ inputs.weakening_reason }}
+          W_WEAKENING_AUTHORITY: ${{ inputs.weakening_authority }}
+          W_WEAKENING_EXCEPTION_REF: ${{ inputs.weakening_exception_ref }}
+          W_WEAKENING_EXPIRES: ${{ inputs.weakening_expires }}
+          W_ADVISORY_CAUSES: ${{ inputs.advisory_causes }}
+          W_GITHUB_ENVIRONMENT: ${{ inputs.github_environment }}
+          W_ATTESTATION_RUNG: ${{ inputs.attestation_rung }}
+          ATTEST_OUTCOME: ${{ steps.attestation.outcome }}
+          ATTEST_ROUTE: ${{ steps.attestation.outputs.routing_result }}
+          ATTEST_RESULT: ${{ steps.attestation.outputs.outcome }}
+          ATTEST_DEBT: ${{ steps.attestation.outputs.debt }}
+          VERSION_GAP_RULING: ${{ steps.verdict.outputs.version_gap_ruling }}
+          # What the deploy's own controls established, as data.
+          JOB_STATUS: ${{ job.status }}
+          BIND_OUTCOME: ${{ steps.bind.outcome }}
+          TARGET_BINDING: ${{ steps.bind.outputs.target_binding }}
+          VERDICT_OUTCOME: ${{ steps.verdict.outcome }}
+          TIER_OUTCOME: ${{ steps.tier.outcome }}
+          CAPABILITY_OUTCOME: ${{ steps.capability.outcome }}
+          ROLLBACK_CAPABILITY: ${{ steps.capability.outputs.rollback_capability }}
+          REPORT_OUTCOME: ${{ steps.report.outcome }}
+          DEPLOYMENT_OUTCOME: ${{ steps.report.outputs.deployment_outcome }}
         run: |
+          set -u
+          req=""; exe=""; skp=""; red=""; wk=""; dead=""; inforce=0; badclass=0
+
+          # AT BASELINE MEANS "AS STRONG AS THIS KIT SHIPS IT".
+          #   NONEMPTY  at baseline when any value was supplied
+          #   max:N     at baseline when the number is N or below
+          #   literal   at baseline on exact equality
+          at_baseline() {
+            case "$2" in
+              NONEMPTY) [ -n "$1" ] ;;
+              max:*)    [ -n "$1" ] && [ "$1" -le "${2#max:}" ] 2>/dev/null ;;
+              *)        [ "$1" = "$2" ] ;;
+            esac
+          }
+
+          # posture <input> <control_weakening class> <baseline> <control> "<value>"
+          posture() {
+            n="$1"; cls="$2"; base="$3"; ctl="$4"; val="${5-}"; st=WEAKENING_AT_BASELINE
+            case "$cls" in
+              NOT_A_CONTROL_SURFACE|EXCEPTION_ATTRIBUTION)
+                return 0 ;;
+              CONTROL_SURFACE_DEAD)
+                at_baseline "$val" "$base" || dead="$dead,$n" ;;
+              TARGET_NOT_SUPPLIED)
+                req="$req,$ctl"
+                if at_baseline "$val" "$base"; then exe="$exe,$ctl"; else skp="$skp,$ctl"; fi ;;
+              CONTROL_DISABLED)
+                req="$req,$ctl"
+                if at_baseline "$val" "$base"; then
+                  exe="$exe,$ctl"
+                else
+                  st=WEAKENING_IN_FORCE; skp="$skp,$ctl"; inforce=$((inforce+1))
+                fi ;;
+              GATE_SOFTENED)
+                req="$req,$ctl"; exe="$exe,$ctl"
+                at_baseline "$val" "$base" || {
+                  st=WEAKENING_IN_FORCE; red="$red,$ctl"; inforce=$((inforce+1)); } ;;
+              SCOPE_NARROWED|SEVERITY_RAISED|DEPTH_REDUCED)
+                # Different is not provably weaker, and calling it baseline would be the silence
+                # this record exists to end -- so it owes a decision.
+                req="$req,$ctl"; exe="$exe,$ctl"
+                at_baseline "$val" "$base" || {
+                  st=CONTROL_RECONFIGURED; red="$red,$ctl"; inforce=$((inforce+1)); } ;;
+              *)
+                echo "::error title=Unregistered control_weakening class::$cls on input $n is not"
+                echo "a term in assurance-taxonomy.yaml. The posture record cannot be trusted."
+                badclass=1; return 0 ;;
+            esac
+            wk="$wk,{\"input\":\"$n\",\"class\":\"$cls\",\"control\":\"$ctl\",\"baseline\":\"$base\",\"value\":\"$val\",\"state\":\"$st\"}"
+          }
+
+          posture github_environment      NOT_A_CONTROL_SURFACE - -
+          # The gate verdict this deploy was given. The verdict GUARD is the control; this input
+          # is what it examines, as the digest is what the digest guard examines.
+          posture routing_result          NOT_A_CONTROL_SURFACE - -
+          posture controls_unavailable    NOT_A_CONTROL_SURFACE - -
+          # What the verdict guard examines beside routing_result (KDEC-014). The exception that
+          # lets a proven version gap through at uat/prod is the weakening record below.
+          posture advisory_causes         NOT_A_CONTROL_SURFACE - -
+          posture resource_group          NOT_A_CONTROL_SURFACE - -
+          posture webapp_name             NOT_A_CONTROL_SURFACE - -
+          posture acr_login_server        NOT_A_CONTROL_SURFACE - -
+          posture image_repository        NOT_A_CONTROL_SURFACE - -
+          posture image_digest            NOT_A_CONTROL_SURFACE - -
+          posture cloud                   NOT_A_CONTROL_SURFACE - -
+          posture environment_tier        NOT_A_CONTROL_SURFACE - -
+          # slot '' deploys straight to production: the pre-traffic health check -- the probe that
+          # runs BEFORE production traffic moves -- does not exist on that path. Refused at uat/prod
+          # by the tier guard; at lower tiers it is a control switched off, and recorded as one.
+          posture slot                    CONTROL_DISABLED      NONEMPTY        pre-traffic-health "$W_SLOT"
+          # Reversal is shipped ON. Off leaves a failed change in place (the outcome report says so).
+          posture rollback_on_failure     CONTROL_DISABLED      "true"          reversal           "$W_ROLLBACK_ON_FAILURE"
+          # Off stages into the slot and never swaps: production is untouched and the serving
+          # verification of production does not run. A deliberate shape, and still a control off.
+          posture swap_on_healthy         CONTROL_DISABLED      "true"          production-swap    "$W_SWAP_ON_HEALTHY"
+          # What the probe is pointed at. A path that answers 200 for anything proves nothing.
+          posture health_path             SCOPE_NARROWED        "/health"       health-probe       "$W_HEALTH_PATH"
+          # The threshold at which the deploy is declared failed. More attempts, or a longer wait
+          # between them, tolerates an artefact the shipped probe would have failed; fewer is
+          # stricter and at baseline. The kit cannot tell patience from hiding, so above the
+          # shipped values it owes a decision.
+          posture health_retries          SEVERITY_RAISED       "max:18"        health-probe       "$W_HEALTH_RETRIES"
+          posture health_interval_seconds SEVERITY_RAISED       "max:10"        health-probe       "$W_HEALTH_INTERVAL_SECONDS"
+          posture version_metadata        NOT_A_CONTROL_SURFACE - -
+          posture weakening_reason        EXCEPTION_ATTRIBUTION - -
+          posture weakening_authority     EXCEPTION_ATTRIBUTION - -
+          posture weakening_exception_ref EXCEPTION_ATTRIBUTION - -
+          posture weakening_expires       EXCEPTION_ATTRIBUTION - -
+          # V1 (P-02). The signer and the plan flag say WHAT is verified and WHETHER the plan can;
+          # the rung is how hard an absent attestation is refused -- run is the baseline, any other
+          # rung is a change from it that someone must own.
+          posture attestation_signer_workflow NOT_A_CONTROL_SURFACE - -
+          posture attestations_available  NOT_A_CONTROL_SURFACE - -
+          # V1 reads an empty rung as run (its strictest), so the record does too.
+          W_ATTESTATION_RUNG="${W_ATTESTATION_RUNG:-run}"
+          posture attestation_rung        GATE_SOFTENED         "run"           attestation-verify "$W_ATTESTATION_RUNG"
+
+          # THE GUARDS BEFORE THE POINT OF NO RETURN ARE CONTROLS TOO. Each is required and
+          # executed when it ran -- whether it permitted or REFUSED (a refusal is the control
+          # working) -- and absent from the record when an earlier guard stopped the job first.
+          ran() {
+            case "$2" in success|failure) req="$req,$1"; exe="$exe,$1" ;; esac
+          }
+          ran target-binding "${BIND_OUTCOME:-}"
+          ran gate-verdict "${VERDICT_OUTCOME:-}"
+          ran attestation-verify "${ATTEST_OUTCOME:-}"
+          ran tier-guard "${TIER_OUTCOME:-}"
+          ran rollback-capability "${CAPABILITY_OUTCOME:-}"
+
+          # UNAVAILABLE IS NOT CLEAN. Reversal was REQUIRED (the caller did not switch it off)
+          # and the capability step established it could not be provided -- no prior state, or a
+          # mechanism that is not valid for the observed configuration -- and the deploy went
+          # ahead at a lower tier as a recorded risk. Named here so a promotion can see it.
+          # A capability step that succeeded and wrote no verdict has established nothing, so
+          # its silence reads as UNAVAILABLE, never as available (trace_assurance_flow UNGUARDED).
+          unav=""
+          if [ "$W_ROLLBACK_ON_FAILURE" = "true" ] && [ "${CAPABILITY_OUTCOME:-}" = "success" ] &&
+             [ "${ROLLBACK_CAPABILITY:-UNAVAILABLE}" = "UNAVAILABLE" ]; then
+            unav="$unav,reversal"
+          fi
+
+          dedupe() {
+            printf '%s' "${1#,}" | tr ',' '\n' | sed '/^$/d' | sort -u | tr '\n' ',' | sed 's/,$//'
+          }
+          REQ="$(dedupe "$req")"; EXE="$(dedupe "$exe")"
+          SKP="$(dedupe "$skp")"; RED="$(dedupe "$red")"; UNAV="$(dedupe "$unav")"
+          for c in $(printf '%s' "$SKP" | tr ',' ' '); do
+            EXE="$(printf '%s' "$EXE" | tr ',' '\n' | grep -vx "$c" | tr '\n' ',' | sed 's/,$//')"
+          done
+
+          auth=WEAKENING_AT_BASELINE
+          if [ "$inforce" -gt 0 ]; then
+            if [ -n "$W_WEAKENING_REASON" ] && [ -n "$W_WEAKENING_AUTHORITY" ]; then
+              auth=WEAKENING_ATTRIBUTED
+              # AN EXPIRY NOBODY CAN READ HAS NOT "NOT ARRIVED". Anything that is not a valid
+              # calendar date reverts to owing a decision, and says why.
+              if [ -n "$W_WEAKENING_EXPIRES" ]; then
+                if ! printf '%s' "$W_WEAKENING_EXPIRES" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' ||
+                   [ "$(date -u -d "$W_WEAKENING_EXPIRES" +%Y-%m-%d 2>/dev/null)" != "$W_WEAKENING_EXPIRES" ]; then
+                  echo "::warning title=Unreadable weakening expiry::'$W_WEAKENING_EXPIRES' is not a"
+                  echo "YYYY-MM-DD calendar date, so the exception cannot be shown to be in force."
+                  auth=WEAKENING_EXCEPTION_EXPIRED
+                elif [ "$(date -u +%Y-%m-%d)" ">" "$W_WEAKENING_EXPIRES" ]; then
+                  auth=WEAKENING_EXCEPTION_EXPIRED
+                fi
+              fi
+            else
+              auth=WEAKENING_UNATTRIBUTED
+            fi
+          fi
+
+          # ROUTING, by the registered precedence:
+          #   BLOCKED > EVIDENCE_UNTRUSTED > DECISION_REQUIRED > PROCEED_WITH_ADVISORY > PROCEED
+          # NEVER WEAKER THAN THE GATE VERDICT: a deploy refused on BLOCKED, DECISION_REQUIRED or
+          # EVIDENCE_UNTRUSTED carries that verdict forward; a refusal by the tier guard or the
+          # capability step (which is where a deploy that cannot be reversed at uat/prod stops)
+          # is an OBSERVED refusal, BLOCKED, and outranks any weakening the caller recorded.
+          # An outcome the run could not reconcile is evidence nobody can rely on.
+          route=PROCEED
+          if [ "${VERDICT_OUTCOME:-}" = "failure" ]; then
+            case "$W_ROUTING_RESULT" in
+              BLOCKED)           route=BLOCKED ;;
+              DECISION_REQUIRED) route=DECISION_REQUIRED ;;
+              *)                 route=EVIDENCE_UNTRUSTED ;;
+            esac
+            # KDEC-014: a version gap refused at uat/prod owes a named person's decision.
+            if [ "${VERSION_GAP_RULING:-}" = "VERSION_GAP_REFUSED" ]; then route=DECISION_REQUIRED; fi
+          elif [ "${ATTEST_OUTCOME:-}" = "failure" ]; then
+            # P-02: V1 refused before login; its own route stands (section 6.3), never weakened.
+            case "${ATTEST_ROUTE:-}" in
+              BLOCKED)           route=BLOCKED ;;
+              DECISION_REQUIRED) route=DECISION_REQUIRED ;;
+              *)                 route=EVIDENCE_UNTRUSTED ;;
+            esac
+          elif [ "${ATTEST_OUTCOME:-}" = "success" ] && [ -z "${ATTEST_ROUTE:-}" ]; then
+            route=EVIDENCE_UNTRUSTED   # V1 ran and answered nothing: not a verification
+          elif [ "${BIND_OUTCOME:-}" = "failure" ] || [ "${TIER_OUTCOME:-}" = "failure" ] ||
+               [ "${CAPABILITY_OUTCOME:-}" = "failure" ]; then
+            route=BLOCKED
+          elif [ "${REPORT_OUTCOME:-}" = "failure" ] || [ "${JOB_STATUS:-success}" != "success" ]; then
+            case "${DEPLOYMENT_OUTCOME:-}" in
+              STATUS_UNTRUSTED|PARTIAL_APPLY|'') route=EVIDENCE_UNTRUSTED ;;
+              *)                                 route=BLOCKED ;;
+            esac
+          elif [ -n "$UNAV" ] || [ "$badclass" = "1" ]; then
+            route=EVIDENCE_UNTRUSTED
+          elif [ "$auth" = "WEAKENING_UNATTRIBUTED" ] || [ "$auth" = "WEAKENING_EXCEPTION_EXPIRED" ]; then
+            route=DECISION_REQUIRED
+          elif [ "$inforce" -gt 0 ] || [ "$W_ROUTING_RESULT" = "PROCEED_WITH_ADVISORY" ] ||
+               [ "${ATTEST_ROUTE:-}" = "PROCEED_WITH_ADVISORY" ]; then
+            route=PROCEED_WITH_ADVISORY
+          fi
+
+          # KDEC-014: AN ABSENT RULING IS NOT "NOT ENGAGED". The verdict step writes exactly one
+          # registered ruling (VERSION_GAP_NOT_ENGAGED included) on every path that reaches it, so
+          # an EMPTY one means it never ran or never finished -- an answer nobody gave, which is
+          # evidence nobody can rely on. Never weaker than the precedence above: BLOCKED stands.
+          if [ -z "${VERSION_GAP_RULING:-}" ] && [ "$route" != "BLOCKED" ]; then
+            route=EVIDENCE_UNTRUSTED
+          fi
+
+          emit() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
+          emit routing_result "$route"
+          emit controls_required "$REQ"
+          emit controls_executed "$EXE"
+          emit controls_unavailable "$UNAV"
+          emit controls_reduced "$RED"
+          emit controls_skipped "$SKP"
+          emit weakenings "[${wk#,}]"
+          emit weakening_attribution "$auth"
+          emit weakening_record "{\"reason\":\"$W_WEAKENING_REASON\",\"authority\":\"$W_WEAKENING_AUTHORITY\",\"exception_ref\":\"$W_WEAKENING_EXCEPTION_REF\",\"expires\":\"$W_WEAKENING_EXPIRES\"}"
+
           {
-            echo "### App Service deploy"
+            echo "### Control posture — deploy (App Service)"
             echo ""
-            echo "| Field | Value |"
+            echo "| Row | Value |"
             echo "|---|---|"
-            echo "| App | \`${{ inputs.webapp_name }}\` |"
-            echo "| Partition | \`${{ inputs.cloud }}\` |"
-            echo "| Digest | \`${{ inputs.image_digest }}\` |"
-            echo "| Staged on | \`${{ inputs.slot != '' && inputs.slot || 'production' }}\` |"
-            echo "| Health | \`${{ steps.health.outcome }}\` |"
-            echo "| Swapped | \`${{ steps.health.outcome == 'success' && inputs.swap_on_healthy && inputs.slot != '' }}\` |"
+            echo "| controls required | \`${REQ:-none}\` |"
+            echo "| controls executed | \`${EXE:-none}\` |"
+            echo "| controls unavailable | \`${UNAV:-none}\` — required and not provided; NOT the same as clean |"
+            echo "| controls reduced | \`${RED:-none}\` |"
+            echo "| controls skipped | \`${SKP:-none}\` |"
+            echo "| reason | ${W_WEAKENING_REASON:-_(none recorded)_} |"
+            echo "| authority | ${W_WEAKENING_AUTHORITY:-_(none recorded)_} |"
+            echo "| exception / deferral id | ${W_WEAKENING_EXCEPTION_REF:-_(none recorded)_} |"
+            echo "| expiry | ${W_WEAKENING_EXPIRES:-_(no expiry set)_} |"
+            echo "| attribution | \`$auth\` |"
+            echo "| gate verdict given | \`${W_ROUTING_RESULT:-none}\` |"
+            echo "| advisory causes given | \`${W_ADVISORY_CAUSES:-none}\` |"
+            echo "| version-gap ruling (KDEC-014) | \`${VERSION_GAP_RULING:-not reported}\` |"
+            echo "| GitHub environment | \`${W_GITHUB_ENVIRONMENT:-none}\` — at uat/prod its required reviewers approve the deploy (KDEC-014) |"
+            echo "| attestation (V1) | \`${ATTEST_RESULT:-not run}\` routes \`${ATTEST_ROUTE:-none}\`${ATTEST_DEBT:+ — held: \`$ATTEST_DEBT\`, trigger: the plan} |"
+            echo "| tier and target binding (B-13) | \`${TARGET_BINDING:-not reported}\` — BOUND: held to the values this environment vends; UNBOUND: it vends none |"
+            if [ "${VERSION_GAP_RULING:-}" = "VERSION_GAP_EXCEPTION_ACCEPTED" ]; then
+              echo "| **version-gap exception ACCEPTED** | accepted by ${W_WEAKENING_AUTHORITY}; reason ${W_WEAKENING_REASON}; expires ${W_WEAKENING_EXPIRES} (the weakening record) |"
+            fi
+            echo "| **routing result** | **\`$route\`** |"
+            echo ""
+            if [ -n "$dead" ]; then
+              echo "> **Dead input(s) set:** \`${dead#,}\` — declared and read by nothing."
+              echo ""
+            fi
+            if [ "${VERSION_GAP_RULING:-}" = "VERSION_GAP_REFUSED" ]; then
+              echo "> **A version gap at a production tier (KDEC-014).** Close the scanner gap, or"
+              echo "> record a named accepter (\`weakening_authority\`), a reason and an unexpired"
+              echo "> \`weakening_expires\`, in an environment whose required reviewers approve."
+              echo ""
+            elif [ "${VERSION_GAP_RULING:-}" = "VERSION_GAP_UNVERIFIED_RECORDED" ]; then
+              echo "> **VERSION GAP AT A PRODUCTION TIER, RECORDED AND NOT ENFORCED (KDEC-014).** The"
+              echo "> gap rests on an UNVERIFIED scanner range; enforcement turns on when a seeded"
+              echo "> corpus proves it. This release proceeded with the gap on record."
+              echo ""
+            elif [ "$route" = "DECISION_REQUIRED" ]; then
+              echo "> **A weakening is in force and nobody has said why.** Record"
+              echo "> \`weakening_reason\` and \`weakening_authority\`, or restore the baseline."
+              echo ""
+            fi
+            if [ -z "${VERSION_GAP_RULING:-}" ]; then
+              echo "> **No version-gap ruling was reported (KDEC-014).** The verdict step answers on"
+              echo "> every path it reaches; none means it never ran or never finished."
+              echo ""
+            fi
+            if [ "$route" = "EVIDENCE_UNTRUSTED" ]; then
+              echo "> **This result cannot be relied on.** The outcome could not be reconciled, the"
+              echo "> gate verdict was not usable, or a required control (\`${UNAV:-none}\`) was unavailable."
+              echo ""
+            fi
+            echo "Vocabulary: \`assurance-taxonomy.yaml\` :: \`control_weakening\`, \`routing_result\`."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Fail the deploy if unhealthy
-        if: steps.health.outcome == 'failure'
-        run: exit 1
+          printf 'routing_result=%s attribution=%s in_force=%s\n' "$route" "$auth" "$inforce"
+
+      - name: Keep the run record (deploy evidence)
+        # The snapshot, change manifest, capability, verification, reversal and outcome files are
+        # the record a later recovery reads (ROLLBACK_CONTRACT.md: "the run record is the thing a
+        # cancelled run does not finish"). Uploaded on every path, including refusals and
+        # cancellation, so it does not die with the runner.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: deploy-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/deploy-evidence
+          if-no-files-found: warn
+          retention-days: 30

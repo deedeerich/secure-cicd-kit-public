@@ -30,14 +30,21 @@ runs:
     - name: Decide
       id: decide
       shell: bash
+      env:
+        # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py). A
+        # component name interpolated into the body truncated on a quote and could carry `$( )`;
+        # the filter's output is a list derived from the caller's filters and gets the same
+        # treatment.
+        COMPONENT: ${{ inputs.component }}
+        FILTERED: ${{ steps.filter.outputs.changes }}
       run: |
-        comp="${{ inputs.component }}"
+        comp="$COMPONENT"
         if [ "$comp" = "all" ]; then
           echo 'changes=["all"]' >> "$GITHUB_OUTPUT"; echo "any=true" >> "$GITHUB_OUTPUT"
         elif [ -n "$comp" ]; then
           echo "changes=[\"$comp\"]" >> "$GITHUB_OUTPUT"; echo "any=true" >> "$GITHUB_OUTPUT"
         else
-          c='${{ steps.filter.outputs.changes }}'
+          c="$FILTERED"
           [ -z "$c" ] && c='[]'
           echo "changes=$c" >> "$GITHUB_OUTPUT"
           if [ "$c" != "[]" ]; then echo "any=true" >> "$GITHUB_OUTPUT"; else echo "any=false" >> "$GITHUB_OUTPUT"; fi

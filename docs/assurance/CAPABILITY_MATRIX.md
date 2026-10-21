@@ -227,6 +227,15 @@ fixes: **167**.
 |---|---|---|
 | `azure-oidc-auth` | `verify-azure-oidc.yml`, environment-scoped subject, `az account show` returned, **0 resources created** | **observed** |
 | Environment deployment branch policy | non-`main` branch dispatched at an environment restricted to `main` → **refused in ~2s with 0 steps executed**, no OIDC token minted | **observed** |
+| `authorization-boundary-isolation` | probe rewritten 2026-09-22 to assert reachable scopes REACHED and sibling / opposite-tier / subscription-scope attempts REFUSED **on authorization**. No dispatch has occurred, so no REFUSED has been observed | **unknown** |
+
+The first row is narrower than it reads, and the third is why. `azure-oidc-auth` establishes that a
+federated subject is accepted and mints a usable session. It says nothing about how much that
+session is allowed to do — and **printing a different client ID per environment is not evidence of
+isolation**, because three identities holding Contributor across the whole subscription would print
+three different client IDs too. Isolation is a claim about the **effective authorization boundary**,
+and only a denial establishes one. That claim is now made, separately, and it is `unknown` until a
+run returns an `AuthorizationFailed` body rather than merely a non-zero exit code.
 
 The second is the more interesting result. It proves the authorization boundary sits **before** token
 issuance: the branch is refused by GitHub, not by Azure. Enforcing the same rule through a
@@ -235,8 +244,11 @@ decision as an authentication error. See `SETUP.md` §1.2 and §4.
 
 ## Deploy workflows — blocked on a design requirement, not only on environment
 
-`deploy-appservice`, `deploy-containerapp` and `image-push` are **not** merely waiting for an Azure
-tenant. They are blocked on **[`ROLLBACK_CONTRACT.md`](../architecture/ROLLBACK_CONTRACT.md)**.
+`deploy-appservice` and `deploy-containerapp` are **not** merely waiting for an Azure tenant. They
+are blocked on **[`ROLLBACK_CONTRACT.md`](../architecture/ROLLBACK_CONTRACT.md)**. (`image-push`
+was listed here too; it closed 2026-10-15 by proof against a real local registry,
+`tests/prove_build_push_round_trip.py` -- its reversal path is the push capability step, proven in
+the same run. An ACR behind Azure identity is the live acceptance run, not a design gate.)
 
 Rollback must be **state-aware and change-scoped**: remove only what this run created, restore what
 this run modified, and verify live state afterward. Full deletion is permitted only for resources
@@ -246,7 +258,7 @@ empty beforehand. **A rollback command exiting 0 is not proof of restored servic
 Shipping "cleanup = delete the resource group" as a reusable production behavior would be a defect
 with a much larger blast radius than anything else in this kit.
 
-## CodeQL — added 2026-09-09, and not yet proven
+## CodeQL — added 2026-09-09, observed on the Level 2 consumer 2026-10-15
 
 `github/codeql-action` appeared **twelve times** in `reusable-security.yml`. Every one was
 `upload-sarif` — the transport that publishes *other* scanners' SARIF to the Security tab.
@@ -268,10 +280,24 @@ supported ecosystems. It attempts real analysis and declares its own outcome:
 `UNAVAILABLE` and `COLLECTION_FAILED` both feed `undetermined`, so a consumer cannot read a passing
 gate as *"CodeQL found nothing"* when CodeQL never ran.
 
-**Assurance state: DECLARED.** The job exists and the YAML parses. It has **not** been observed
-running — not against a GHAS-enabled repository, and not against one without it. Until both paths
-have been seen, this row is a claim about configuration, not about detection. Do not cite it as
-coverage.
+**Assurance state: OBSERVED (Level 2, 2026-10-15).** A separate private repository called the kit
+by `owner/repo@sha` with seeded Python and JavaScript flaws and no Go, C#, Java or C/C++:
+
+| Run | Kit | What it showed |
+|---|---|---|
+| `38817782084` | `1a5f6f9` | CodeQL 2.27.2, `security-extended`: **5 Python results** under `/language:python/` and **4 JavaScript results** under `/language:javascript-typescript/`; the four absent languages `NOT_APPLICABLE`; publication to the Security tab **refused** (no licence) while the analysis ran and its SARIF was retained |
+| `38820564939` | `f7a7ed1` | same results; the gate's rows now read them — both legs `APPLICABLE` / `COMPLETE` / SARIF `RETAINED` / `PASS` |
+
+Two things the table above had wrong, found only by that dispatch and fixed on it:
+
+- **The licence governs publication, not analysis.** On a private repository without GitHub
+  Advanced Security `init`, `autobuild` and `analyze` all succeed and write the SARIF; only
+  `upload-sarif` is refused. `UNAVAILABLE` therefore means *init did not run*, and a discovered
+  language whose SARIF arrived is applicable whatever the platform pre-flight said. The resolve
+  position still caps the job on that pre-flight — `docs/KNOWN_DEFECTS.md` D-10.
+- **The SARIF is named by CodeQL's language id, not the matrix leg**: `javascript.sarif`,
+  `java.sarif`, `cpp.sarif`. The gate read `<leg>.sarif` and rendered a retained four-result
+  analysis as NONE. `tests/prove_codeql_rows_read_sarif.py` holds both corrections.
 
 ## What is missing — by layer, not one junk drawer
 

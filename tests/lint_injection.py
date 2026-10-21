@@ -50,6 +50,35 @@ WHAT IT CANNOT ESTABLISH
     protected branch the same hit needs write access first. Both are reported; the trigger is
     shown so a reader can tell which they are looking at.
 
+REFUSED, NOT REPORTED, WHERE THE KIT HAS FINISHED THE MOVE (ledger L38)
+    In the files named by BLOCKING -- every reusable workflow the kit ships
+    (`.github/workflows/reusable-*.yml`, and workflow-policy-check.yml, which is called the same
+    way) and every consumer overlay workflow -- CALLER_CONTROLLED_INPUT_INTERPOLATION exits 1
+    like an untrusted one. Every caller input there reaches its script through `env:`; a new
+    `${{ inputs.x }}` inside `run:` is a regression, and a report nobody is obliged to act on is
+    how the fourteen `paths` sites survived. Holding only the flagship to the rule left eleven
+    more in the NVD, build and policy-check reusables (`az acr login --name "$(echo
+    '${{ inputs.acr_login_server }}' | cut -d. -f1)"` among them): a shared kit may not let a
+    malformed caller value become shell in any workflow it ships, so the scope is every one.
+    The kit's own caller workflows (self-test, nvd-cve, the consumer-path tests) stay
+    report-only: nothing calls them with inputs.
+
+    Overlay workflows (overlays/*/workflows) are scanned too: they are workflows a consumer
+    runs, and skipping them was a blind spot (G1-2).
+
+COMPOSITE ACTIONS ARE SCANNED, AND HELD TO THE BLOCKING RULE (provenance lane report)
+    `.github/actions/<name>/action.yml` has `runs.steps`, not `jobs`, so this sweep never read
+    one -- and the stamp composite interpolated `github.ref_name` into its script body, where a
+    branch name carrying `$( )` would have executed. A composite's `inputs.*` are caller-controlled
+    exactly as a reusable workflow's are, and it has no trigger of its own: exploitability is the
+    CALLER's trigger, which this file cannot see, so a composite is reported with no trigger
+    rather than with a reassuring one. Every composite is BLOCKING: the kit's composites all
+    transport their inputs through `env:` now, and a new `${{ inputs.x }}` inside `run:` is a
+    regression.
+
+    `github.ref_name` and `github.ref` are UNTRUSTED. A ref name is chosen by whoever can push a
+    branch, and the characters a branch name may contain include the ones a shell executes.
+
 USAGE
     python3 tests/lint_injection.py [path ...]      default: the repo this file sits in
     python3 tests/lint_injection.py --self-test
@@ -57,6 +86,7 @@ USAGE
 EXIT
     0 clean      1 untrusted interpolation found      2 self-test failed
 """
+import fnmatch
 import io
 import os
 import re
@@ -82,6 +112,9 @@ UNTRUSTED = [
     r'github\.event\.workflow_run\.head_(branch|commit)',
     r'github\.event\.pages',
     r'github\.head_ref',
+    # A branch name is chosen by whoever can push one, and `$( )` is legal in one. ref_type and
+    # ref_protected are constrained by GitHub and are not matched (the \b stops at `ref`).
+    r'github\.ref(_name)?\b',
     r'github\.event\.release\.(body|tag_name|name)',
     r'github\.event\.milestone\.(title|description)',
     r'github\.event\.issue\.user\.login',
@@ -94,7 +127,40 @@ HOSTILE_TRIGGERS = {'pull_request_target', 'issue_comment', 'issues', 'pull_requ
                     'pull_request_review_comment', 'discussion', 'discussion_comment',
                     'workflow_run', 'fork', 'watch', 'public'}
 
+# Repo-relative globs in which CALLER_CONTROLLED_INPUT_INTERPOLATION is a failure (L38). Every
+# reusable workflow and every composite action is on the list: all of the kit's transport their
+# inputs through `env:`.
+BLOCKING = ['.github/workflows/reusable-*.yml', '.github/workflows/reusable-*.yaml',
+            '.github/workflows/workflow-policy-check.yml', 'overlays/*/workflows/*.yml',
+            'overlays/*/workflows/*.yaml', '.github/actions/*/action.yml',
+            '.github/actions/*/action.yaml']
+
 UNTRUSTED_RE = [re.compile(p) for p in UNTRUSTED]
+
+
+def is_blocking(path, root):
+    rel = os.path.relpath(path, root).replace(os.sep, '/')
+    return any(fnmatch.fnmatch(rel, g) for g in BLOCKING)
+
+
+def is_workflow_dir(dp):
+    d = dp.replace('\\', '/').rstrip('/')
+    return d.endswith('.github/workflows') or bool(re.search(r'(^|/)overlays/[^/]+/workflows$', d))
+
+
+def shown(path):
+    """How a file is named in the report: a composite is `<name>/action.yml`, since every
+    composite's file is called action.yml and a bare basename names none of them."""
+    if is_composite_file(path):
+        return os.path.basename(os.path.dirname(path)) + '/' + os.path.basename(path)
+    return os.path.basename(path)
+
+
+def is_composite_file(path):
+    """True for `.github/actions/<name>/action.yml` (or .yaml): a composite's steps live under
+    `runs.steps`, so a sweep that reads `jobs` never sees them."""
+    p = path.replace('\\', '/')
+    return bool(re.search(r'(^|/)\.github/actions/[^/]+/action\.ya?ml$', p))
 SEMI_RE = [re.compile(p) for p in SEMI]
 
 
@@ -127,10 +193,16 @@ def scan_file(path):
         return ([], '%s: %s' % (type(e).__name__, str(e)[:120]))
     if not isinstance(doc, dict):
         return ([], 'not a workflow mapping')
-    trig = triggers_of(doc)
+    runs = doc.get('runs')
+    if isinstance(runs, dict) and 'steps' in runs:
+        # A composite action: one anonymous job, no trigger of its own. Its caller's trigger
+        # decides who can reach it, and this file cannot see the caller.
+        jobs, trig = {'(composite)': {'steps': runs.get('steps') or []}}, set()
+    else:
+        jobs, trig = (doc.get('jobs') or {}), triggers_of(doc)
     hostile = sorted(trig & HOSTILE_TRIGGERS)
     out = []
-    for jname, job in (doc.get('jobs') or {}).items():
+    for jname, job in jobs.items():
         if not isinstance(job, dict):
             continue
         for i, step in enumerate(job.get('steps') or []):
@@ -186,6 +258,51 @@ def self_test():
         fails.append('flagged a value passed safely through env: -- the fix would look broken')
     if f_trust:
         fails.append('flagged github.repository, which GitHub constrains')
+    # L38: in a BLOCKING file a caller input in run: is refused; env: transport is not.
+    root = d
+    wf = os.path.join(d, '.github', 'workflows')
+    os.makedirs(wf)
+    flag = os.path.join(wf, 'reusable-security.yml')
+    io.open(flag, 'w', encoding='utf-8').write(
+        'on:\n  workflow_call:\njobs:\n  j:\n    steps:\n'
+        '      - run: find "${{ inputs.paths }}"\n')
+    f_flag, _ = scan_file(flag)
+    if not (is_blocking(flag, root) and [f for f in f_flag if f['tier'] == 'SEMI']):
+        fails.append('a caller input in run: inside the flagship was not refused')
+    ov = os.path.join(d, 'overlays', 'x', 'workflows')
+    os.makedirs(ov)
+    if not (is_workflow_dir(ov) and is_blocking(os.path.join(ov, 'o.yml'), root)):
+        fails.append('overlay workflows are not scanned, or not held to the blocking rule')
+    for name in ('reusable-deploy.yml', 'reusable-nvd-cve.yml', 'reusable-build-docker.yml',
+                 'workflow-policy-check.yml'):
+        if not is_blocking(os.path.join(wf, name), root):
+            fails.append('the shipped reusable %s is not held to the blocking rule' % name)
+    other = os.path.join(wf, 'self-test.yml')
+    if is_blocking(other, root):
+        fails.append('a caller workflow outside BLOCKING was made blocking')
+    # Composites: `runs.steps` is scanned, a caller input in run: is refused, env: is not, and a
+    # ref name in a script body is UNTRUSTED.
+    act = os.path.join(d, '.github', 'actions', 'stamp')
+    os.makedirs(act)
+    comp = os.path.join(act, 'action.yml')
+    io.open(comp, 'w', encoding='utf-8').write(
+        'name: x\nruns:\n  using: composite\n  steps:\n'
+        '    - shell: bash\n      run: |\n        echo "${{ inputs.tag }} ${{ github.ref_name }}"\n')
+    f_comp, err = scan_file(comp)
+    tiers = sorted(f['tier'] for f in f_comp)
+    if err or tiers != ['SEMI', 'UNTRUSTED']:
+        fails.append('a composite interpolating an input and github.ref_name into run: was not '
+                     'flagged as SEMI + UNTRUSTED (got %s, %r)' % (tiers, err))
+    if not (is_composite_file(comp) and is_blocking(comp, root)):
+        fails.append('composites are not scanned, or not held to the blocking rule')
+    good_comp = os.path.join(act, 'action.yaml')
+    io.open(good_comp, 'w', encoding='utf-8').write(
+        'name: x\nruns:\n  using: composite\n  steps:\n'
+        '    - shell: bash\n      env:\n        TAG: ${{ inputs.tag }}\n        REF: ${{ github.ref_name }}\n'
+        '      run: echo "$TAG $REF"\n')
+    f_good_comp, _ = scan_file(good_comp)
+    if f_good_comp:
+        fails.append('flagged a composite that transports its input and the ref through env:')
     # A file that cannot be parsed must be reported, never silently skipped.
     broken = os.path.join(d, 'broken.yml')
     io.open(broken, 'w', encoding='utf-8').write('jobs: [unclosed\n')
@@ -198,7 +315,7 @@ def self_test():
             print('  - %s' % f)
         return False
     print('self-test ok: run: interpolation flagged, env: NOT flagged, trusted contexts ignored, '
-          'unparseable files reported')
+          'unparseable files reported, composites scanned and blocking, ref names untrusted')
     return True
 
 
@@ -215,19 +332,26 @@ def main():
         for dp, _dn, fn in os.walk(root):
             if os.sep + '.git' + os.sep in dp + os.sep:
                 continue
-            if not dp.replace('\\', '/').endswith('.github/workflows'):
-                continue
+            # A subdirectory holding its own `.git` is a different checkout (a nested worktree or
+            # clone), not this repository's code: its stale copies are not what ships.
+            _dn[:] = [d for d in _dn if not os.path.exists(os.path.join(dp, d, '.git'))]
             for f in sorted(fn):
-                if f.endswith(('.yml', '.yaml')):
-                    files.append(os.path.join(dp, f))
+                p = os.path.join(dp, f)
+                if (is_workflow_dir(dp) and f.endswith(('.yml', '.yaml'))) or is_composite_file(p):
+                    files.append(p)
+    blocked = []
     for p in files:
         got, err = scan_file(p)
         findings.extend(got)
         if err:
             errors.append((p, err))
+        root = next((r for r in roots if os.path.abspath(p).startswith(os.path.abspath(r))),
+                    roots[0])
+        if is_blocking(p, root):
+            blocked += [f for f in got if f['tier'] == 'SEMI']
 
     print('')
-    print('scanned %d workflow file(s) under %d root(s)' % (len(files), len(roots)))
+    print('scanned %d workflow and composite file(s) under %d root(s)' % (len(files), len(roots)))
     if errors:
         print('')
         print('UNPARSEABLE -- not scanned, and therefore NOT established as clean:')
@@ -272,12 +396,21 @@ def main():
         for p in sorted(byfile, key=lambda k: -len(byfile[k])):
             g = byfile[p]
             jobs = sorted(set(x['job'] for x in g))
-            print('  %-52s %5d  %s' % (os.path.basename(p)[:52], len(g), ','.join(jobs)[:34]))
+            print('  %-52s %5d  %s' % (shown(p)[:52], len(g), ','.join(jobs)[:34]))
 
+    print('')
+    if blocked:
+        print('')
+        print('REFUSED -- CALLER INPUT IN A SCRIPT BODY WHERE THE KIT REQUIRES env: (L38): %d site(s)'
+              % len(blocked))
+        print('-' * 100)
+        for f in blocked:
+            print('  %s :: job %s / step %s (line %d)  ${{ %s }}'
+                  % (shown(f['file']), f['job'], f['step'], f['line'], f['expr']))
     print('')
     print('STATIC. This proves an interpolation exists in a script body. Exploitability depends')
     print('on the trigger and on who can reach it -- both shown above, neither decided here.')
-    return 1 if un else 0
+    return 1 if (un or blocked) else 0
 
 
 if __name__ == '__main__':

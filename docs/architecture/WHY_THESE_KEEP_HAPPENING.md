@@ -167,6 +167,20 @@ The fix for each failure is a **control that cannot be satisfied by intention**.
 - **Fail closed on missing information.** The gate already does this for unrecognised states.
   It must be the rule, not one instance.
 
+**Built against Failure 1, and each one currently RED by design** — these are gates, not reports,
+and two of them fail today because the defect they name is open:
+
+| Gate | Asks | State |
+|---|---|---|
+| `tests/prove_hollow_scan.py` | can a scan that ran and examined nothing render as clean? | **RED** — five shapes can |
+| `tests/prove_identity_durability.py` | does one finding keep one non-empty identity across a scanner rewording and version bump? | **RED** — the identity is empty for every finding |
+| `tests/check_context_current.py` | is the continuity record reconciled against work that has actually landed? | green |
+| `scripts/check_env.py` | is a required credential field a known absence rather than a 401? | advisory, operator-run |
+
+A red gate whose failure is recorded in `docs/KNOWN_DEFECTS.md` is the state this section asks for.
+A defect in prose with no gate is the state it exists to replace: prose does not fail a build, so
+the condition it describes can outlive everyone who read it.
+
 ### Against Failure 2 — assert the claim, not its neighbour
 
 - **Attribution is mandatory in assertions.** Every expected signal names *which component* must
@@ -283,6 +297,23 @@ for being "internal scaffolding":
 
 > **A harness that interprets collection failure as zero, while testing whether production code
 > correctly distinguishes collection failure from zero, is a lying lie detector.**
+
+**Observed 2026-10-08, in the harness, in the other direction.** `tests/prove_bootstrap_failure.py`
+resolved its shell with `shutil.which('bash')`. On Windows that returns the WSL launcher stub,
+which exists, is executable, and fails every invocation when no distribution is installed. All four
+scenarios therefore got exit 1 and an empty `$GITHUB_OUTPUT`, and the file reported
+`FAIL: all_green — the CONTROL did not go green` and exited 1.
+
+The gate was fine. Pointed at Git Bash the control goes green and all three failure scenarios
+block — which is precisely what that file exists to establish. So the harness rendered *nothing was
+looked at* as *the control is broken*: two of the four states this kit refuses to merge, merged
+inside the file that enforces the refusal. Its own header already promised exit 2 for
+"could not be checked"; it honoured the never-as-PASS half and dropped the report-as-UNKNOWN half.
+
+**A false failure is not the safe direction.** It looks conservative and is not: a gate that cries
+wolf is a gate that gets ignored, and the next real failure arrives in a file nobody reads any
+more. The fix is a capability probe rather than a path lookup — run a script that must exit 7 and
+write a known line, and require both before trusting the shell with anything.
 
 ### And the process fix
 

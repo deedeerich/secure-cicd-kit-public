@@ -2,65 +2,101 @@
 
 ## What's in it
 
-**Reusable workflows** (`workflow_call` — reference them from a calling repo):
+**Reusable workflows** (`workflow_call` — reference them from a calling repo). The "caller grants"
+column is what the CALLING job (or its workflow) must grant: GitHub caps a called workflow at the
+caller's permissions and refuses the whole run before any job starts (`startup_failure`, no log)
+when a called job asks for more. `tests/check_caller_permissions.py` holds the kit's own callers and
+templates to this rule.
 
-| Workflow | Purpose | Cloud deps |
-|---|---|---|
-| `reusable-security.yml` | Secret · code-quality · SAST · dependency · IaC scans + enforcing gate | none |
-| `workflow-policy-check.yml` | Governance gate over the calling repo's own workflows | none |
-| `reusable-build-docker.yml` | Buildx build → Trivy gate **before** push → Syft SPDX SBOM → digest-pinned push | OIDC |
-| `reusable-deploy-containerapp.yml` | Container Apps deploy by digest, gated, health-checked, auto-rollback | OIDC |
-| `reusable-deploy-appservice.yml` | App Service deploy by digest, slot-staged, swap only when healthy | OIDC |
+| Workflow | Purpose | Cloud deps | Caller grants |
+|---|---|---|---|
+| `reusable-security.yml` | Discovery → secret · code-quality · SAST · CodeQL · dependency · IaC · malware · SBOM · image scans → report → gate → `routing_result` | none | `contents: read`, `security-events: write`, `actions: read` |
+| `reusable-nvd-cve.yml` | Trivy + OWASP Dependency-Check against the public NIST NVD; re-scan of an SBOM or image | none (optional `NVD_API_KEY`) | `contents: read`, `security-events: write` |
+| `workflow-policy-check.yml` | Governance gate over the calling repo's own workflows | none | `contents: read` |
+| `reusable-build-docker.yml` | Build once → Trivy gate **before** push → Syft SPDX SBOM → push those bytes → digest read back → attest | OIDC | `contents: read`, `id-token: write`, `attestations: write` |
+| `reusable-deploy-containerapp.yml` | Container Apps deploy by digest, verdict-gated, revision probed before traffic, reversible | OIDC | `contents: read`, `id-token: write` |
+| `reusable-deploy-appservice.yml` | App Service deploy by digest, verdict-gated, slot-staged (or direct below uat), reversible | OIDC | `contents: read`, `id-token: write` |
+| `reusable-propose-ledger.yml` | Proposes baseline-ledger changes as a pull request (protected default branch only) | none | `contents: write`, `pull-requests: write` |
+| `reusable-ticket-reconcile.yml` | Findings → Jira or Azure DevOps tickets, post-merge or scheduled | tracker | `contents: read` |
+| `verify-azure-oidc.yml` | Zero-resource check of the OIDC subject, the session context and the authorization boundary | OIDC | `contents: read`, `id-token: write` |
 
 **Composite actions** (`.github/actions/*` — for repos that build inside their own workflows):
 `setup-python`, `setup-node`, `setup-terraform`, `azure-login-oidc`, `docker-build-push`,
-`render-version-metadata`, `determine-changes`.
+`render-version-metadata`, `determine-changes`, `verify-attestation`. The flagship's own
+`discover`, `resolve`, `scan-report` and `propose-ledger` composites are called by the kit, not by
+consumers.
 
-The reusable workflows **inline** their logic rather than calling `uses: ./…`. Relative action
-references resolve against the *caller's* checkout, not the kit's, so they break silently
-cross-repo. The composite actions ship separately for direct use; the duplication is deliberate.
+The flagship reaches its own composites with `uses: $/.github/actions/<name>`, which resolves to
+the **kit's** repository at the commit the caller pinned (requires a current github.com runner).
+A plain relative `uses: ./…` would resolve against the *caller's* checkout and break silently
+cross-repo, which is why nothing in a reusable workflow uses that form.
 
-**Templates** (`templates/`): `security.yml`, `policy.yml`, `build-deploy.yml` — copy into a calling
-repo's `.github/workflows/` and fill in the org and inputs.
+`reusable-security.yml` does not inline each script at every call site. One bootstrap job,
+`kit-scripts`, writes the canonical scripts once and publishes them as a **run-scoped artifact**
+with a pinned SHA-256 manifest that every other job downloads and verifies; an artifact belongs to
+the run rather than to a repository, so a cross-repo consumer's runner receives exactly what the
+kit's own runner receives. Per-call-site inlining is what took that file to 608.8 KB, past GitHub's
+size ceiling, after which it did not fail — it never started.
+
+**Templates** (`templates/`): `security.yml`, `policy.yml`, `build-deploy.yml`, `nvd-cve.yml` and
+`policy-registration.example.json` — copy into a calling repo's `.github/workflows/`, replace
+the placeholder organisation, and pin the kit by commit SHA.
 
 **Profiles** (`profiles/`): declarative statements of what a class of repo gets. They are intent
 records validated by `profiles/profile.schema.json` — the reusable workflows are the implementation.
-Nothing reads a profile at runtime yet; wiring that up is a deliberate follow-on.
+Nothing reads a profile at runtime yet, and their vocabulary predates `iac_mode` (they still say
+`enable_iac`); wiring them up is a deliberate follow-on.
 
 ## Adoption sequence
 
-1. Extract `secure-cicd-kit/` to its own repository under your org.
-2. Run `scripts/pin-actions.sh --apply` (see [PINNING.md](../assurance/PINNING.md)) and commit the SHAs.
-3. Flip `self-test.yml` to `require_sha_pinning: true`, `soft_fail: false`. Let it go green.
-4. Tag `v1`.
-5. In a **pilot repo**: copy `templates/security.yml`, point it at `@v1`, and let it run. Expect a
-   first-run shakeout — see the caveat below.
-6. Add `templates/policy.yml` with `soft_fail: true`, fix what it reports, then flip it to blocking.
-7. Only then wire build + deploy, and add the checks to branch protection.
+1. Host the kit in a repository your organisation owns and let it be consumed (SETUP.md §1.5).
+2. Pick a kit **commit SHA** to consume. Branches and tags move; a verdict is only as trustworthy as
+   the code that produced it.
+3. In a **pilot repo**: copy `templates/security.yml`, point it at that SHA, and let it run. The first
+   run will find things — that is the system working ([`FINDING_CLASSIFICATION.md`](../operations/FINDING_CLASSIFICATION.md)).
+4. Add `templates/policy.yml` with `soft_fail: true` (an attributed weakening), fix what it reports,
+   then flip it to blocking.
+5. Only then wire build + deploy (`templates/build-deploy.yml`), and add the checks to branch
+   protection. The required check is the caller job's `Security gate`, e.g. `security / Security gate`.
 
 ## Cloud identity
 
 Nothing environment-specific is baked in. Every deploy input arrives from the caller:
 
-- **Secrets** — `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_CLIENT_ID` (OIDC federation only;
-  no client secret exists anywhere in this kit).
-- **Vars** — registry login server, image repository, resource group, app name.
+- **Secrets** — `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_CLIENT_ID`, passed explicitly to
+  the build and deploy reusables (OIDC federation only; no client secret exists anywhere in this kit).
+  They are identifiers, so a landing zone may hold them as environment **variables** and pass them in
+  the `secrets:` block (LZ_KIT_HANDOFF_CONTRACT.md).
+- **Vars** — registry login server, image repository, resource group, app name, environment tier.
 - **Partition** — the `cloud` input (`commercial` | `gov`) selects the Azure environment. The same
-  pipeline shape serves both; there is no forked sovereign pipeline to drift out of sync.
+  pipeline shape serves both; there is no forked sovereign pipeline to drift out of sync. Defaults
+  differ: `commercial` for Container Apps and the build, `gov` for App Service — set it explicitly.
 
-Grant `permissions: { id-token: write, contents: read }` on the *calling job* — a reusable workflow
-cannot grant itself more than the caller has.
+Grant `permissions` on the *calling job* as in the table above — a reusable workflow cannot grant
+itself more than the caller has. The kit's policy gate rejects workflow-level `id-token: write`.
 
 ## Deploy contract
 
-Build emits `image_digest` and `sbom_sha256`. Deploy takes `image_digest` and refuses anything that
-isn't a full `sha256:` value. That is the whole reproducibility story: the artifact that was scanned
-is provably the artifact that ships, and `render-version-metadata` stamps the digest, SBOM hash, git
-SHA, and run ID onto the running app as `DEPLOY_PROVENANCE`.
+Build emits `image_digest`, `image_config_digest`, `artifact_identity` and `sbom_sha256`. Deploy takes
+`image_digest` and refuses anything that isn't a full `sha256:` value. Deploy is only safe to treat as
+deployment provenance when `artifact_identity` is `REGISTRY_IDENTITY_PROVEN`: the artifact that was
+scanned is provably the artifact that ships. **The deploy reusables do not read
+`artifact_identity` themselves** — `templates/build-deploy.yml` checks it in its `verdict` job, and a
+caller that calls a deploy reusable directly must make that check itself.
+
+The deploy reusables read the security verdict: `routing_result` is a **required** input, and anything
+but `PROCEED` or `PROCEED_WITH_ADVISORY` is refused **before login**, naming the value. At `uat` and
+`prod` a `PROCEED_WITH_ADVISORY` caused by a proven `VERSION_GAP` is refused unless a named person
+accepts it through the weakening record (KDEC-014) — pass `advisory_causes` beside `routing_result`.
+After health and a fresh live read of what serves, the deploy writes provenance **tags** on the
+serving object (`deploy_provenance_digest`, `deploy_provenance_metadata_sha256`,
+`deploy_provenance_run`) from the `render-version-metadata` stamp the template passes as
+`version_metadata`.
 
 Deploys are gated by a GitHub Environment and reached by `workflow_dispatch`, never by a bare push.
-Health checks run **before** traffic moves — Container Apps rolls back to the previous revision,
-App Service simply never swaps the slot.
+Health checks run **before** traffic moves: Container Apps probes the new revision on its own name
+before any traffic shifts and reverses only what the run changed; App Service health-checks the slot
+and never swaps an unhealthy one (a direct deploy with `slot: ''` is refused at `uat`/`prod`).
 
 ## Branching model — what runs where
 
@@ -83,28 +119,38 @@ any of this and runs anywhere.
 
 ```yaml
 with:
-  advisory_mode: true      # everything runs, everything reports, NOTHING blocks
+  advisory_mode: true      # everything runs, everything reports; only the block is withheld
+  weakening_reason: "first adoption on an inherited backlog"
+  weakening_authority: "security lead"
+  weakening_expires: "2026-12-31"
 ```
 
-`advisory_mode` covers **every** enforcement point — SAST, lint, dependency scanning and secret
-scanning. (`soft_fail_sast` governs SAST only, which is why "run it non-blocking to learn the
-baseline" was not previously achievable.)
+`advisory_mode` withholds the block on SAST, lint, dependency and IaC findings. **It never withholds
+it on secrets**: a secret in source, in history or baked into an image, and a known-malicious
+package, block in every mode (`tests/prove_secrets_always_block.py`, `tests/prove_image_scan_enforces.py`,
+`tests/prove_malicious_deps_enforces.py`). A toolchain, discovery or report failure also blocks in
+every mode. (`soft_fail_sast` governs SAST only.)
 
 Nothing is disabled, scoped away or hidden by it. Every scanner still runs, every finding is still
 produced, published and persisted. **Only the block is withheld.** Detection is never what gets
 turned off.
+
+Advisory mode is a **recorded weakening** (`GATE_SOFTENED`): without `weakening_reason` and
+`weakening_authority` the verdict is `DECISION_REQUIRED`, and after `weakening_expires` it is
+`DECISION_REQUIRED` again until someone re-decides. Attributed, a clean or advisory run routes
+`PROCEED_WITH_ADVISORY`.
 
 Why it exists: dropping a hard gate onto an unknown backlog freezes development and gets the control
 bypassed wholesale, which costs far more coverage than the gate was going to buy. Learn the inherited
 baseline, classify it (see [`FINDING_CLASSIFICATION.md`](../operations/FINDING_CLASSIFICATION.md)), then enforce.
 
 > **Advisory mode is a baseline tool, not a resting state.** It announces itself on every enforcement
-> point and reports `GATE=ADVISORY`, because a silent permanent advisory mode is indistinguishable
-> from having no gate at all.
+> point and the gate reports `enforcement_state: ADVISORY`, because a silent permanent advisory mode
+> is indistinguishable from having no gate at all.
 
-`enforce_lint` (default **false**) is separate: `ruff` findings are advisory because **lint style is
-not a security control**, and hard-failing on it blocked adoption of a security workflow on day one.
-Turn it on when your team chooses to.
+`enforce_lint` (default **false**) is separate: `ruff` and ESLint findings are advisory because **lint
+style is not a security control**, and hard-failing on it blocked adoption of a security workflow on
+day one. Turn it on when your team chooses to.
 
 ## What each scanner needs in order to see anything
 
@@ -119,7 +165,8 @@ seeded fixture that a green job failed to detect.
 | .NET SCA | `.csproj` / `.sln` so `dotnet restore` can resolve | dependency audit finds nothing |
 | .NET / Java SAST | `.cs` / `.java` sources under `paths` | job reports "no sources", skips, and says so |
 | Python SAST | `.py` sources under `paths` | skipped with a notice |
-| IaC | `enable_iac: true` **and** Terraform/Dockerfile under `paths` | job skips — `enable_iac` defaults **false** |
+| IaC | Terraform, Bicep, ARM, Kubernetes, Helm or a Dockerfile under `paths`; `iac_mode` (default `auto`) not `disabled` | `NOT_APPLICABLE` with the path searched. `iac_mode: required` makes absence a finding; `disabled` is a recorded weakening. (`enable_iac` is deprecated and ignored — the run says so) |
+| Container image | `image_ref` (prefer a digest) | `NOT_APPLICABLE`, never a clean result |
 | Everything Semgrep | Your code must not sit under a path Semgrep ignores by default (`tests/`, `fixtures/`, …) | **the kit overrides this** with its own `.semgrepignore`, because the default caused silent empty results |
 
 **Absence of a language is always reported, never inferred from a green job.** A skipped scanner
@@ -128,29 +175,31 @@ that as a defect in the kit and open an issue — silence is the one outcome tha
 
 ### What `language:` actually selects
 
-`language` chooses which analyzer families are **considered**. It does not force any of them to run.
-**Applicability is decided by discovery, against the content under `paths`.**
+The default is **`auto`**: scan every ecosystem discovery finds. **Applicability is decided by
+discovery, against the content under `paths`** — a selector can only narrow it.
 
 | `language:` | Meaning |
 |---|---|
-| `python`, `node`, `dotnet`, `java`, `go`, `cpp` | Consider that family's analyzers, plus the ones that always run |
-| **`multi`** | **Consider every family.** Each still runs only if discovery finds something for it to analyze |
+| **`auto`** (default), `multi` | Consider every family. Each still runs only if discovery finds something for it to analyze. `multi` is a synonym |
+| a list of `python`, `node`, `dotnet`, `java`, `go`, `cpp`, `iac` (aliases `js`/`ts`, `py`, `c#`, `c++`, `tf`) | **Exclude** every discovered ecosystem not listed. It can never add one discovery did not find, and the narrowing is recorded as a weakening (`SCOPE_NARROWED`) — attribute it or the verdict is `DECISION_REQUIRED` |
 
-So `language: multi` on a repository containing Python and Terraform runs the Python and IaC paths
-and **skips** Go, Java, .NET and C/C++. That is the correct outcome, not a coverage gap. Running a Go
+So the default on a repository containing Python and Terraform runs the Python and IaC paths and
+**skips** Go, Java, .NET and C/C++. That is the correct outcome, not a coverage gap. Running a Go
 analyzer against a repository with no Go produces no assurance — only cost, runtime, and a green job
-that means nothing.
+that means nothing. A language that is present but that no kit scanner can read is reported as
+`COVERAGE_GAP`, so a green result is never read as full coverage.
 
 **The union is the failure case, not the default.** When discovery *cannot establish* what is
 present — an unreadable tree, a permission denial, a survey that did not complete — the safe move is
-to scan broadly or emit `COLLECTION_FAILED`. **What must never happen is a quiet skip**, because a
-skip and an unexamined ecosystem are indistinguishable from the outside.
+to scan broadly and report `DISCOVERY_UNAVAILABLE`. **What must never happen is a quiet skip**, because
+a skip and an unexamined ecosystem are indistinguishable from the outside.
 
 > **Why this is written down.** The consumer contract previously asserted that `multi` made *every*
 > language analyzer run. That assertion passed for months — because four analyzers were ignoring their
 > `paths` scope entirely and walking the whole checkout, so they always found something. Fixing the
 > scoping made the test fail, and the failure was the contract, not the code. A semantic that only
-> exists in an assertion is a semantic nobody can consume correctly. (Decided 2026-09-02.)
+> exists in an assertion is a semantic nobody can consume correctly. (Decided 2026-09-02.) Until
+> KDEC-008 OD-7 the default was `python`, which made every caller that changed nothing a weakened run.
 
 ### Manifests are discovered, not assumed at the root
 
@@ -178,27 +227,28 @@ expected environment   == requested environment
 ```
 
 A mismatch is a **hard fail before mutation**, not a warning. `verify-azure-oidc.yml` implements
-this assertion and is the reference for the deploy adapters.
+this assertion (`expect_tenant_id`, `expect_subscription_id`, `expect_client_id`) and is the
+reference for the deploy adapters; its refusal is proven on a real tenant (run 38826929579).
 
 > This is not hypothetical. A three-year-old profile from a *former client* was found as the default
 > Azure CLI context on a workstation actively used for unrelated personal cloud work. No live token
 > remained, so nothing was reachable — but automation that trusted the ambient context would have
 > aimed at the wrong estate without a single error.
 
-## Proven state — read `docs/assurance/CAPABILITY_MATRIX.md` for the evidence
+## Proven state — read `docs/assurance/RELEASE_1_EVIDENCE_MANIFEST.md` for the evidence
 
-Do not read this section as marketing. Each row is a distinct claim with distinct evidence.
+Do not read this section as marketing. Each row is a distinct claim with distinct evidence; the
+manifest gives the run id or proof, what it asserted, and its scope.
 
 | Surface | State |
 |---|---|
-| **Scanner tools** (11 detectors) | **observed** — executed *and* detected seeded conditions |
-| **Assurance mechanisms** (negative control, gate enumeration) | **observed** |
-| **Azure OIDC auth** | **observed** against a real tenant, zero resources created |
+| **`reusable-security.yml` end-to-end as a consumer calls it** | **proven on GitHub**: input threading, discovery, every scanner job, report and gate from a consumer-style caller — 20/20 seeded signals detected by the right scanner, negative control clean, caller blocked (run 38934329462 on `main` `ef4b15d`, negative 38934348351 failed as designed; earlier 38811950471 on trunk `13f1518`) |
+| **CodeQL** | **proven on a separate consumer repository** calling by `owner/repo@sha` (runs 38817782084, 38820564939) |
+| **Azure OIDC, context integrity, authorization boundary** | **proven on a real tenant**, zero resources created (runs 38826929579, 38832628162, 38832634828, 38850408850) |
 | **Environment branch policy** | **observed** — non-`main` refused in ~2s, 0 steps, no token minted |
-| **`reusable-security.yml` end-to-end as a consumer calls it** | **NOT PROVEN** — the 11 probes test the *tools*, not the reusable contract: input threading, language selectors, SARIF categories, skip semantics, gate wiring and failure propagation are all unproven |
-| **Composite actions** | **NOT PROVEN** — no probes yet |
-| **Build / push / deploy workflows** | **NEVER EXECUTED.** Blocked on [`ROLLBACK_CONTRACT.md`](../architecture/ROLLBACK_CONTRACT.md), which is a *design* gate — having tenant access does not unblock it |
+| **Build and push** | **proven live** to a cloud registry, digest read back (runs 38857011286, 38857017667, 38857024014) |
+| **Deploy and rollback, both adapters** | **proven live** on a sandbox subscription — refusal, healthy deploy, verified rollback, second actor refused, App Service slot swap. Not live: empty/unknown prior state, partial apply, provenance tags written, a scan → deploy chain in one run |
+| **Composite actions** | `setup-python`/`setup-node` installs and `render-version-metadata` proven (self-test probes and local proofs); `determine-changes` and `setup-terraform` held (no consumer yet); `verify-attestation` held by plan |
+| **Ticketing** | reconciler proven live on a personal Jira; the armed workflow has no hosted run; Azure DevOps against stubs only |
 
-**Validate on one repo before rolling out.** Expect first-run shakeout on version-specific details in
-the unproven rows: Checkov's SARIF output path, the Semgrep flag combination, `az containerapp
-revision` query shapes, and exact action tags.
+**Validate on one repo before rolling out**, on the kit commit you pinned.

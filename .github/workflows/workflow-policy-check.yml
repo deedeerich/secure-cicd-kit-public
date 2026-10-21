@@ -39,6 +39,75 @@ on:
         type: boolean
         required: false
         default: false
+      # ── GOVERNANCE OF WEAKENINGS ────────────────────────────────────────────────────────
+      # `soft_fail` and `require_sha_pinning: false` both weaken this gate, and until now
+      # neither appeared in the summary, an output or an annotation. A weakening is a governed
+      # exception, not a boolean preference. Optional inputs, so no existing caller breaks.
+      weakening_reason:
+        description: >-
+          Why a control on this invocation is weaker than baseline. Empty means the record says
+          WEAKENING_UNATTRIBUTED and routing_result becomes DECISION_REQUIRED.
+        type: string
+        required: false
+        default: ""
+      weakening_authority:
+        description: >-
+          WHO decided. A reason without an authority is an explanation, not a decision, and both
+          are required before a weakening is attributed.
+        type: string
+        required: false
+        default: ""
+      weakening_exception_ref:
+        description: >-
+          Where the exception or deferral is recorded. Its ABSENCE is reported too: an exception
+          nobody can find is one nobody can review or expire.
+        type: string
+        required: false
+        default: ""
+      weakening_expires:
+        description: >-
+          ISO date (YYYY-MM-DD) on which the weakening lapses. A past date routes to
+          DECISION_REQUIRED — silence must never renew a weakening.
+        type: string
+        required: false
+        default: ""
+    outputs:
+      # ── THE CONTROL POSTURE RECORD ──────────────────────────────────────────────────────
+      # This workflow previously exposed NO outputs at all, so a consumer could not tell a clean
+      # policy run from one whose gate had been softened to reporting. Vocabulary:
+      # assurance-taxonomy.yaml :: control_weakening, routing_result.
+      routing_result:
+        description: >-
+          PROCEED | PROCEED_WITH_ADVISORY | DECISION_REQUIRED | BLOCKED | EVIDENCE_UNTRUSTED.
+        value: ${{ jobs.policy-check.outputs.routing_result }}
+      controls_required:
+        description: "Comma list of the controls this invocation should have run."
+        value: ${{ jobs.policy-check.outputs.controls_required }}
+      controls_executed:
+        description: "Comma list of the controls that actually ran."
+        value: ${{ jobs.policy-check.outputs.controls_executed }}
+      controls_unavailable:
+        description: "Controls whose evidence could not be collected. NOT the same as clean."
+        value: ${{ jobs.policy-check.outputs.controls_unavailable }}
+      controls_reduced:
+        description: "Controls that ran with enforcement withheld or scope narrowed."
+        value: ${{ jobs.policy-check.outputs.controls_reduced }}
+      controls_skipped:
+        description: "Controls that were not run at all."
+        value: ${{ jobs.policy-check.outputs.controls_skipped }}
+      weakenings:
+        description: >-
+          JSON array, one object per declared input that governs a control. TOTAL over this
+          workflow's inputs.
+        value: ${{ jobs.policy-check.outputs.weakenings }}
+      weakening_attribution:
+        description: >-
+          WEAKENING_AT_BASELINE | WEAKENING_ATTRIBUTED | WEAKENING_UNATTRIBUTED |
+          WEAKENING_EXCEPTION_EXPIRED.
+        value: ${{ jobs.policy-check.outputs.weakening_attribution }}
+      weakening_record:
+        description: "Reason, authority, exception reference and expiry as one JSON object."
+        value: ${{ jobs.policy-check.outputs.weakening_record }}
 
 permissions:
   contents: read
@@ -47,6 +116,16 @@ jobs:
   policy-check:
     name: Workflow policy
     runs-on: ubuntu-latest
+    outputs:
+      routing_result: ${{ steps.posture.outputs.routing_result }}
+      controls_required: ${{ steps.posture.outputs.controls_required }}
+      controls_executed: ${{ steps.posture.outputs.controls_executed }}
+      controls_unavailable: ${{ steps.posture.outputs.controls_unavailable }}
+      controls_reduced: ${{ steps.posture.outputs.controls_reduced }}
+      controls_skipped: ${{ steps.posture.outputs.controls_skipped }}
+      weakenings: ${{ steps.posture.outputs.weakenings }}
+      weakening_attribution: ${{ steps.posture.outputs.weakening_attribution }}
+      weakening_record: ${{ steps.posture.outputs.weakening_record }}
     # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
     # converts a dependency failure into uncontrolled cost).
     # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
@@ -93,12 +172,19 @@ jobs:
           DIGEST_LIT = re.compile(r"@sha256:[a-f0-9]{64}")
 
           # Attacker-controllable expression contexts that must never reach a shell unquoted.
+          # `inputs.*` and `github.event.inputs.*` are in it (ledger L83): a workflow_dispatch input
+          # is typed by whoever can dispatch, and a reusable workflow's input by whatever caller
+          # invokes it -- text either way, and the kit's own lint (tests/lint_injection.py) has
+          # refused it in every reusable since the C-series fixes. Pass it through `env:`.
           INJECTABLE = re.compile(
               r"github\.event\.(issue|pull_request|comment|discussion|review)\.(title|body)"
               r"|github\.event\.head_commit\.message"
               r"|github\.event\.pull_request\.head\.(ref|label)"
-              r"|github\.head_ref",
+              r"|github\.head_ref"
+              r"|github\.event\.inputs\."
+              r"|(?<![\w.])inputs\.",
           )
+          IMAGE_DIGEST = re.compile(r"@sha256:[a-f0-9]{64}$")
 
           findings = []  # (severity, file, message)
 
@@ -125,10 +211,42 @@ jobs:
                   return {k: None for k in on}
               return on if isinstance(on, dict) else {}
 
+          def check_ref(path, where, uses):
+              """R1/R2 for any `uses:` -- a step's, or a JOB's call of a reusable workflow."""
+              if "@" not in uses:
+                  add("ERROR", path, f"{where}`uses: {uses}` has no ref — always pin a version")
+                  return
+              repo, ref = uses.rsplit("@", 1)
+              owner = repo.split("/", 1)[0].lower()
+              if ref in ("main", "master", "HEAD") or ref.startswith("refs/heads/"):
+                  add("ERROR", path, f"{where}`{uses}` tracks a moving branch — a repoint silently ships new code into CI")
+              elif NEED_SHA and owner not in TRUSTED and not SHA40.match(ref):
+                  add("ERROR", path, f"{where}`{uses}` is untrusted-owner and not SHA-pinned — pin to a full 40-char commit SHA")
+
+          def check_image(path, where, image):
+              """Container and service images run with the job's authority, like an action does."""
+              image = str(image or "").strip()
+              if not image or OPEN in image:
+                  return            # an expression: resolved at run time, not statically checkable
+              name = image.split("@", 1)[0]
+              tag = name.rsplit(":", 1)[1] if ":" in name.rsplit("/", 1)[-1] else ""
+              if IMAGE_DIGEST.search(image):
+                  return
+              if not tag or tag == "latest":
+                  add("ERROR", path, f"{where}image `{image}` is unpinned (no tag, or `latest`) — pin it by `@sha256:` digest")
+              elif NEED_SHA:
+                  add("ERROR", path, f"{where}image `{image}` is pinned by a mutable tag — pin it by `@sha256:` digest")
+
           files = sorted(glob.glob(os.path.join(WF_DIR, "*.yml")) + glob.glob(os.path.join(WF_DIR, "*.yaml")))
+          # NOTHING INSPECTED IS NOT NOTHING WRONG (ledger L83). This exited 0, so a wrong
+          # `workflows_path` -- a typo, a moved directory -- produced a green policy gate over zero
+          # files. It now fails, and the posture record calls the gate UNAVAILABLE.
+          with open("/tmp/policy_files_scanned", "w", encoding="utf-8") as fh:
+              fh.write(str(len(files)))
           if not files:
-              print(f"No workflow files found under {WF_DIR} — nothing to check.")
-              sys.exit(0)
+              print(f"::error title=Nothing inspected::No workflow files found under {WF_DIR}. A gate "
+                    "that read nothing has established nothing; check `workflows_path`.")
+              sys.exit(2)
 
           for path in files:
               raw = open(path, encoding="utf-8").read()
@@ -146,20 +264,31 @@ jobs:
 
               # ── R1/R2: action reference pinning ────────────────────────────
               for job_name, job in walk_jobs(doc):
+                  # A JOB-LEVEL `uses:` calls a reusable workflow, which runs with this caller's
+                  # secrets and token. It was never checked (ledger L83); same rules as a step.
+                  juses = job.get("uses")
+                  if isinstance(juses, str) and not juses.startswith(("./", "$/")):
+                      check_ref(path, f"{job_name}: (reusable workflow) ", juses)
+                  # Container and service images (ledger L83).
+                  cont = job.get("container")
+                  check_image(path, f"{job_name}: container ", cont.get("image") if isinstance(cont, dict) else cont)
+                  for svc_name, svc in (job.get("services") or {}).items():
+                      if isinstance(svc, dict):
+                          check_image(path, f"{job_name}: service {svc_name} ", svc.get("image"))
                   for step in steps_of(job):
                       uses = step.get("uses")
-                      if not isinstance(uses, str) or uses.startswith(("./", "docker://")):
+                      if isinstance(uses, str) and uses.startswith("docker://"):
+                          check_image(path, f"{job_name}: step ", uses[len("docker://"):])
                           continue
+                      # `./` and `$/` resolve to this repository at the running commit: no ref to pin.
+                      if not isinstance(uses, str) or uses.startswith(("./", "$/")):
+                          continue
+                      check_ref(path, f"{job_name}: ", uses)
                       if "@" not in uses:
-                          add("ERROR", path, f"{job_name}: `uses: {uses}` has no ref — always pin a version")
                           continue
                       repo, ref = uses.rsplit("@", 1)
                       owner = repo.split("/", 1)[0].lower()
-                      if ref in ("main", "master", "HEAD") or ref.startswith("refs/heads/"):
-                          add("ERROR", path, f"{job_name}: `{uses}` tracks a moving branch — a repoint silently ships new code into CI")
-                      elif NEED_SHA and owner not in TRUSTED and not SHA40.match(ref):
-                          add("ERROR", path, f"{job_name}: `{uses}` is untrusted-owner and not SHA-pinned — pin to a full 40-char commit SHA")
-                      elif owner not in TRUSTED and SHA40.match(ref) and "#" not in raw.split(uses, 1)[-1][:80]:
+                      if owner not in TRUSTED and SHA40.match(ref) and "#" not in raw.split(uses, 1)[-1][:80]:
                           add("NOTE", path, f"{job_name}: `{repo}` SHA-pinned (good) — add a trailing `# vX.Y.Z` comment so upgrades stay reviewable")
 
               # ── R3: GITHUB_TOKEN permissions ───────────────────────────────
@@ -259,17 +388,12 @@ jobs:
                   if not isinstance(step, dict):
                       continue
                   uses = step.get("uses")
-                  if not isinstance(uses, str) or uses.startswith(("./", "docker://")):
+                  if isinstance(uses, str) and uses.startswith("docker://"):
+                      check_image(path, "step ", uses[len("docker://"):])
                       continue
-                  if "@" not in uses:
-                      add("ERROR", path, f"`uses: {uses}` has no ref — always pin a version")
+                  if not isinstance(uses, str) or uses.startswith(("./", "$/")):
                       continue
-                  repo, ref = uses.rsplit("@", 1)
-                  owner = repo.split("/", 1)[0].lower()
-                  if ref in ("main", "master", "HEAD") or ref.startswith("refs/heads/"):
-                      add("ERROR", path, f"`{uses}` tracks a moving branch — a repoint silently ships new code into CI")
-                  elif NEED_SHA and owner not in TRUSTED and not SHA40.match(ref):
-                      add("ERROR", path, f"`{uses}` is untrusted-owner and not SHA-pinned — pin to a full 40-char commit SHA")
+                  check_ref(path, "", uses)
 
           # ── Report ────────────────────────────────────────────────────────
           order = {"ERROR": 0, "WARN": 1, "NOTE": 2}
@@ -297,13 +421,227 @@ jobs:
           print(f"\n{errors} error(s), {warns} warning(s).")
           sys.exit(1 if errors else 0)
           PYEOF
-          python /tmp/policy_check.py
+          rm -f /tmp/policy_files_scanned
+          rc=0
+          python /tmp/policy_check.py || rc=$?
+          # The count of files the linter read, for the posture record (zero is UNAVAILABLE, L83).
+          # A count the linter never wrote is UNKNOWN, never zero and never a number.
+          files_scanned=UNKNOWN
+          if [ -s /tmp/policy_files_scanned ]; then files_scanned="$(cat /tmp/policy_files_scanned)"; fi
+          echo "files_scanned=$files_scanned" >> "$GITHUB_OUTPUT"
+          exit "$rc"
         continue-on-error: ${{ inputs.soft_fail }}
 
+      # ── CONTROL POSTURE RECORD ────────────────────────────────────────────────────────────
+      #
+      # A WEAKENING IS A GOVERNED EXCEPTION, NOT A BOOLEAN PREFERENCE.
+      #
+      # `soft_fail: true` turned this gate into a report and said so nowhere a machine could
+      # read and nowhere a reviewer would look. `require_sha_pinning: false` removed the
+      # supply-chain control this workflow's own threat model names first. Both were silent, and
+      # a silent weakening is indistinguishable from a clean run — which is exactly the collapse
+      # this kit refuses everywhere else.
+      #
+      # PLACED BEFORE THE VERDICT, deliberately. The verdict step exits non-zero on a hard fail,
+      # and a record emitted after it would be missing from precisely the runs that most need
+      # one. `steps.policy.outcome` is already decided here.
+      #
+      # The enumeration is TOTAL over this workflow's inputs; tests/check_weakening_record.py
+      # fails the build when an input exists without a class.
+      # Vocabulary: assurance-taxonomy.yaml :: control_weakening, routing_result.
+      - name: Control posture — required, executed, unavailable, reduced, skipped, and who decided
+        id: posture
+        if: always()
+        env:
+          # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
+          W_WORKFLOWS_PATH: ${{ inputs.workflows_path }}
+          W_TRUSTED_ORGS: ${{ inputs.trusted_orgs }}
+          W_REQUIRE_SHA_PINNING: ${{ inputs.require_sha_pinning }}
+          W_ALLOW_DEPLOY_ON_PUSH: ${{ inputs.allow_deploy_on_push }}
+          W_SOFT_FAIL: ${{ inputs.soft_fail }}
+          W_WEAKENING_REASON: ${{ inputs.weakening_reason }}
+          W_WEAKENING_AUTHORITY: ${{ inputs.weakening_authority }}
+          W_WEAKENING_EXCEPTION_REF: ${{ inputs.weakening_exception_ref }}
+          W_WEAKENING_EXPIRES: ${{ inputs.weakening_expires }}
+          POLICY_OUTCOME: ${{ steps.policy.outcome }}
+          POLICY_FILES_SCANNED: ${{ steps.policy.outputs.files_scanned }}
+        run: |
+          set -u
+          req=""; exe=""; skp=""; red=""; wk=""; dead=""; inforce=0; badclass=0
+
+          # AT BASELINE MEANS "AS STRONG AS THIS KIT SHIPS IT", NOT "AS STRONG AS IT COULD BE".
+          #   NONEMPTY  at baseline when any value was supplied
+          #   max:N     at baseline when the number is N or below
+          #   literal   at baseline on exact equality
+          at_baseline() {
+            case "$2" in
+              NONEMPTY) [ -n "$1" ] ;;
+              max:*)    [ -n "$1" ] && [ "$1" -le "${2#max:}" ] 2>/dev/null ;;
+              *)        [ "$1" = "$2" ] ;;
+            esac
+          }
+
+          # posture <input> <control_weakening class> <baseline> <control> "<value>"
+          posture() {
+            n="$1"; cls="$2"; base="$3"; ctl="$4"; val="${5-}"; st=WEAKENING_AT_BASELINE
+            case "$cls" in
+              NOT_A_CONTROL_SURFACE|EXCEPTION_ATTRIBUTION)
+                return 0 ;;
+              CONTROL_SURFACE_DEAD)
+                at_baseline "$val" "$base" || dead="$dead,$n" ;;
+              TARGET_NOT_SUPPLIED)
+                req="$req,$ctl"
+                if at_baseline "$val" "$base"; then exe="$exe,$ctl"; else skp="$skp,$ctl"; fi ;;
+              CONTROL_DISABLED)
+                req="$req,$ctl"
+                if at_baseline "$val" "$base"; then
+                  exe="$exe,$ctl"
+                else
+                  st=WEAKENING_IN_FORCE; skp="$skp,$ctl"; inforce=$((inforce+1))
+                fi ;;
+              GATE_SOFTENED)
+                req="$req,$ctl"; exe="$exe,$ctl"
+                at_baseline "$val" "$base" || {
+                  st=WEAKENING_IN_FORCE; red="$red,$ctl"; inforce=$((inforce+1)); } ;;
+              SCOPE_NARROWED|SEVERITY_RAISED|DEPTH_REDUCED)
+                req="$req,$ctl"; exe="$exe,$ctl"
+                at_baseline "$val" "$base" || {
+                  st=CONTROL_RECONFIGURED; red="$red,$ctl"; inforce=$((inforce+1)); } ;;
+              *)
+                echo "::error title=Unregistered control_weakening class::$cls on input $n is not"
+                echo "a term in assurance-taxonomy.yaml. The posture record cannot be trusted."
+                badclass=1; return 0 ;;
+            esac
+            wk="$wk,{\"input\":\"$n\",\"class\":\"$cls\",\"control\":\"$ctl\",\"baseline\":\"$base\",\"value\":\"$val\",\"state\":\"$st\"}"
+          }
+
+          posture workflows_path          SCOPE_NARROWED   ".github/workflows"  workflow-policy        "$W_WORKFLOWS_PATH"
+          posture trusted_orgs            SCOPE_NARROWED   "actions,github,azure,docker,hashicorp" action-pinning "$W_TRUSTED_ORGS"
+          posture require_sha_pinning     CONTROL_DISABLED true                 action-pinning         "$W_REQUIRE_SHA_PINNING"
+          posture allow_deploy_on_push    GATE_SOFTENED    false                deploy-trigger-policy  "$W_ALLOW_DEPLOY_ON_PUSH"
+          posture soft_fail               GATE_SOFTENED    false                workflow-policy        "$W_SOFT_FAIL"
+          posture weakening_reason        EXCEPTION_ATTRIBUTION - -
+          posture weakening_authority     EXCEPTION_ATTRIBUTION - -
+          posture weakening_exception_ref EXCEPTION_ATTRIBUTION - -
+          posture weakening_expires       EXCEPTION_ATTRIBUTION - -
+
+          # UNAVAILABLE IS NOT CLEAN. `skipped` or `cancelled` means the linter never reached a
+          # verdict, so an empty finding list is a failure to observe rather than an observation.
+          unav=""
+          case "${POLICY_OUTCOME:-skipped}" in
+            success|failure) ;;
+            *) unav="$unav,workflow-policy,action-pinning,deploy-trigger-policy" ;;
+          esac
+          # A linter that found ZERO files reached no verdict either (ledger L83): unavailable,
+          # not findings and not clean. So is a count nobody reported: absence is not a number.
+          case "${POLICY_FILES_SCANNED:-}" in
+            ''|0|UNKNOWN) unav="$unav,workflow-policy,action-pinning,deploy-trigger-policy" ;;
+            *) ;;
+          esac
+
+          dedupe() {
+            printf '%s' "${1#,}" | tr ',' '\n' | sed '/^$/d' | sort -u | tr '\n' ',' | sed 's/,$//'
+          }
+          REQ="$(dedupe "$req")"; EXE="$(dedupe "$exe")"
+          SKP="$(dedupe "$skp")"; RED="$(dedupe "$red")"; UNAV="$(dedupe "$unav")"
+          for c in $(printf '%s' "$SKP" | tr ',' ' '); do
+            EXE="$(printf '%s' "$EXE" | tr ',' '\n' | grep -vx "$c" | tr '\n' ',' | sed 's/,$//')"
+          done
+
+          auth=WEAKENING_AT_BASELINE
+          if [ "$inforce" -gt 0 ]; then
+            if [ -n "$W_WEAKENING_REASON" ] && [ -n "$W_WEAKENING_AUTHORITY" ]; then
+              auth=WEAKENING_ATTRIBUTED
+              # AN EXPIRY NOBODY CAN READ HAS NOT "NOT ARRIVED". Dates compare as strings below, which
+              # is correct only for a real YYYY-MM-DD: `never` or `31/12/1999` sorted after every ISO
+              # date and read as unexpired forever. Anything that is not a valid calendar date reverts
+              # to owing a decision, and says why. tests/prove_gate_routing.py, expiry_* scenarios.
+              if [ -n "$W_WEAKENING_EXPIRES" ]; then
+                if ! printf '%s' "$W_WEAKENING_EXPIRES" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' ||
+                   [ "$(date -u -d "$W_WEAKENING_EXPIRES" +%Y-%m-%d 2>/dev/null)" != "$W_WEAKENING_EXPIRES" ]; then
+                  echo "::warning title=Unreadable weakening expiry::'$W_WEAKENING_EXPIRES' is not a"
+                  echo "YYYY-MM-DD calendar date, so the exception cannot be shown to be in force."
+                  auth=WEAKENING_EXCEPTION_EXPIRED
+                elif [ "$(date -u +%Y-%m-%d)" ">" "$W_WEAKENING_EXPIRES" ]; then
+                  auth=WEAKENING_EXCEPTION_EXPIRED
+                fi
+              fi
+            else
+              auth=WEAKENING_UNATTRIBUTED
+            fi
+          fi
+
+          # A REFUSAL IS OBSERVED HERE, not inferred: the linter reached a verdict and the gate
+          # was not softened. Violations that exist while `soft_fail` is on are findings that
+          # were recorded and not blocked, which is PROCEED_WITH_ADVISORY at best and
+          # DECISION_REQUIRED while nobody has said why.
+          findings=0
+          [ "${POLICY_OUTCOME:-skipped}" = "failure" ] && findings=1
+          route=PROCEED
+          if [ -n "$UNAV" ] || [ "$badclass" = "1" ]; then
+            route=EVIDENCE_UNTRUSTED
+          elif [ "$findings" = "1" ] && [ "$W_SOFT_FAIL" != "true" ]; then
+            route=BLOCKED
+          elif [ "$auth" = "WEAKENING_UNATTRIBUTED" ] || [ "$auth" = "WEAKENING_EXCEPTION_EXPIRED" ]; then
+            route=DECISION_REQUIRED
+          elif [ "$inforce" -gt 0 ] || [ "$findings" = "1" ]; then
+            route=PROCEED_WITH_ADVISORY
+          fi
+
+          emit() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
+          emit routing_result "$route"
+          emit controls_required "$REQ"
+          emit controls_executed "$EXE"
+          emit controls_unavailable "$UNAV"
+          emit controls_reduced "$RED"
+          emit controls_skipped "$SKP"
+          emit weakenings "[${wk#,}]"
+          emit weakening_attribution "$auth"
+          emit weakening_record "{\"reason\":\"$W_WEAKENING_REASON\",\"authority\":\"$W_WEAKENING_AUTHORITY\",\"exception_ref\":\"$W_WEAKENING_EXCEPTION_REF\",\"expires\":\"$W_WEAKENING_EXPIRES\"}"
+
+          {
+            echo "### Control posture — workflow policy gate"
+            echo ""
+            echo "| Row | Value |"
+            echo "|---|---|"
+            echo "| controls required | \`${REQ:-none}\` |"
+            echo "| controls executed | \`${EXE:-none}\` |"
+            echo "| controls unavailable | \`${UNAV:-none}\` — never reached a verdict; NOT the same as clean |"
+            echo "| controls reduced | \`${RED:-none}\` |"
+            echo "| controls skipped | \`${SKP:-none}\` |"
+            echo "| reason | ${W_WEAKENING_REASON:-_(none recorded)_} |"
+            echo "| authority | ${W_WEAKENING_AUTHORITY:-_(none recorded)_} |"
+            echo "| exception / deferral id | ${W_WEAKENING_EXCEPTION_REF:-_(none recorded)_} |"
+            echo "| expiry | ${W_WEAKENING_EXPIRES:-_(no expiry set)_} |"
+            echo "| attribution | \`$auth\` |"
+            echo "| **routing result** | **\`$route\`** |"
+            echo ""
+            if [ -n "$dead" ]; then
+              echo "> **Dead input(s) set:** \`${dead#,}\` — declared and read by nothing."
+              echo ""
+            fi
+            if [ "$route" = "DECISION_REQUIRED" ]; then
+              echo "> **A weakening is in force and nobody has said why.** Record"
+              echo "> \`weakening_reason\` and \`weakening_authority\`, or restore the baseline."
+              echo ""
+            fi
+            if [ "$route" = "EVIDENCE_UNTRUSTED" ]; then
+              echo "> **This result cannot be relied on.** The policy linter never reached a"
+              echo "> verdict, so an empty finding list establishes nothing."
+              echo ""
+            fi
+            echo "Vocabulary: \`assurance-taxonomy.yaml\` :: \`control_weakening\`, \`routing_result\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          printf 'routing_result=%s attribution=%s in_force=%s\n' "$route" "$auth" "$inforce"
+
       - name: Policy verdict
+        env:
+          # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
+          SOFT_FAIL: ${{ inputs.soft_fail }}
         run: |
           if [ "${{ steps.policy.outcome }}" = "failure" ]; then
-            if [ "${{ inputs.soft_fail }}" = "true" ]; then
+            if [ "$SOFT_FAIL" = "true" ]; then
               echo "::warning::Workflow policy violations found (soft_fail enabled — not blocking)."
             else
               echo "::error::Workflow policy violations found. See the job summary."

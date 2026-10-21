@@ -333,6 +333,25 @@ namespaces:
           - explicitly accepted external dependency assumption
         note: >-
           Choose one deliberately. Do not let silence choose.
+      DISTINCTION_OBSERVABLE:
+        definition: >-
+          The control established that its OWN CHANNEL can tell two adjacent outcomes apart,
+          proven by a calibration probe whose answer is known in advance rather than assumed
+          from the channel's documentation.
+        rule: >-
+          Only a control that has DEMONSTRATED the distinction may report either side of it at
+          full strength.
+      DISTINCTION_NOT_OBSERVABLE:
+        definition: >-
+          The control established that its channel COLLAPSES two outcomes it is required to keep
+          apart. Azure returns 403 for a resource group that does not exist whenever the caller
+          holds no subscription-level read, so "denied" and "absent" arrive identically.
+        rule: >-
+          The result STILL HOLDS, at the reduced strength it actually has. It must be neither
+          reported at full strength nor discarded. A refusal observed through a collapsed channel
+          proves the name is unreachable; it does not prove the name denotes a real thing.
+          Restoring the distinction needs a SECOND observer with different authority, so this
+          value is a routing instruction to correlate, not a licence to stop reporting.
 
   # ─────────────────────────────────────────────────────────────────────────
   scanner_state:
@@ -380,6 +399,1104 @@ namespaces:
         note: Not a finding, not clean, not a scanner defect. A fourth thing.
 
   # ─────────────────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────────────
+  version_applicability:
+    description: >-
+      Whether a control can meaningfully inspect the version of the thing in front of it. Emitted
+      by the resolve composite (.github/actions/resolve) since 2026-10-15; this entry said "NOT
+      implemented" until 2026-10-16. See D6.
+    consumers: [discover, resolve, security-gate]
+    rule: >-
+      A SCANNER THAT RAN IS NOT A SCANNER THAT COULD READ THE INPUT. Version support is established
+      or it is a gap; it is never assumed from the scanner having exited zero.
+    values:
+      VERSION_DISCOVERED:
+        definition: The version the REPOSITORY targets was established -- from a pin file, a manifest or a declared requirement.
+        rule: >-
+          Distinct from the version the runner installed. A repo can target 3.13 while the workflow
+          sets up 3.11, and then every scanner is reading code written for a version it was never
+          handed.
+      SCANNER_SUPPORTS:
+        definition: This scanner declares it can process the discovered target version.
+        rule: >-
+          Declared PER SCANNER, never kit-wide. bandit, semgrep, CodeQL, gosec and trivy each have
+          their own range, and a single shared table would be a convenient fiction whose first
+          exception is silently wrong.
+      VERSION_UNSUPPORTED:
+        definition: The target version is outside what this scanner can process. A COVERAGE_GAP, not a clean result.
+        rule: >-
+          The code is here, a control is owed, THE CONTROL RAN, and it could not see. The state a
+          green run hides best -- the scanner exits zero having skipped or mis-parsed the file, and
+          zero findings is indistinguishable from clean unless the version question was asked first.
+      VERSION_SUPPORT_UNDETERMINED:
+        definition: A scanner exists and its compatibility with the target version could not be established.
+        rule: >-
+          Treated as a gap, never as support. Could-not-establish is not established-absent and is
+          certainly not established-present -- the same rule as a failed discovery probe.
+      VERSION_GAP:
+        definition: >-
+          No scanner the kit carries for this capability can read the root at its target version
+          (every candidate is VERSION_UNSUPPORTED or VERSION_SUPPORT_UNDETERMINED). KDEC-010.
+        rule: >-
+          The scan still runs where it can, the result is annotated with the gap and the registry row
+          that would close it, and the job is capped at PARTIAL -- never PASS. Its findings still
+          count. Closed by data (a READ range from a seeded corpus), never by relabelling.
+      PLATFORM_UNAVAILABLE:
+        definition: >-
+          A candidate scanner declares a range that could read the target, but the platform
+          withdrew the job on this repository (e.g. code scanning UNAVAILABLE for CodeQL), so it
+          cannot be selected. Emitted by the resolve composite per (capability, root).
+        rule: >-
+          A declared range is not a scanner that can be reached: never capable, never selected.
+          It describes the PRE-FLIGHT only; a job that ran and retained its analysis anyway is
+          read from its own evidence (docs/KNOWN_DEFECTS.md D-10).
+      NOT_SELECTED:
+        definition: >-
+          This scanner cannot read the root at its target version and another carried scanner that
+          can was selected instead (a SUBSTITUTION). KDEC-010.
+        rule: >-
+          The not-selected scanner's own PASS renders PARTIAL for that root; the substitute's result
+          is labelled a substitution and is never presented as equivalent coverage.
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  toolchain_currency:
+    description: >-
+      Whether the tools the pipeline itself runs are current, supported and safe to keep running.
+      NOT implemented; declared so the vocabulary exists before two implementations do. See D7.
+    consumers: [toolchain inventory, release promotion]
+    rule: >-
+      "NEWER EXISTS" IS NOT "UPGRADE NOW". An upgrade changes detection, so it may not promote until
+      the seeded corpus proves the new version still detects what the old one did.
+    values:
+      CURRENT:
+        definition: Running a supported, reasonably recent version.
+      UPDATE_AVAILABLE:
+        definition: A newer release exists and nothing forces taking it.
+        rule: A backlog item, not a finding. Distinguishing this from the next one is the whole point.
+      SECURITY_UPDATE_REQUIRED:
+        definition: The version gap is itself the vulnerability.
+        rule: The only currency state that is a finding rather than a backlog item.
+      DEPRECATED:
+        definition: Still runs; no longer maintained.
+      UNSUPPORTED:
+        definition: Past end of support. Rule packs and advisories have stopped.
+        rule: A scanner nobody maintains still exits zero. Age is invisible in a run log.
+      VERSION_UNKNOWN:
+        definition: The running version could not be established.
+        rule: A gap, never a pass. A tool that cannot say what it is cannot be assessed for currency.
+      UPDATE_BLOCKED_BY_COMPATIBILITY:
+        definition: A newer version exists and breaks something NAMED.
+        rule: >-
+          The block must name what breaks. "We cannot upgrade" without a named incompatibility is a
+          deferral wearing a technical costume.
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  artifact_identity:
+    description: >-
+      Whether the artefact a control inspected is provably the artefact that was published. Emitted
+      by the build workflow beside image_digest, because a bare digest reads as proven to every
+      consumer that receives it.
+    consumers: [reusable-build-docker.yml, render-version-metadata, tests/check_artifact_identity.py]
+    rule: >-
+      THREE ANSWERS, NEVER A BOOLEAN. Proven, nothing-was-pushed and could-not-establish are
+      different facts, and collapsing them is how an unverified digest inherits a verified reading.
+    values:
+      REGISTRY_IDENTITY_PROVEN:
+        definition: The registry was asked and confirmed the pushed manifest's config digest is the one that was scanned.
+        rule: The only value that licenses treating the digest as assurance-bearing.
+      LOCAL_BUILD_ONLY:
+        definition: Nothing was pushed, so there is no registry claim to agree or disagree with.
+        rule: Not a weaker proof. A different question, correctly unanswered.
+      IDENTITY_UNVERIFIED:
+        definition: A push occurred and the link between scanned and published could not be established.
+        rule: >-
+          COULD-NOT-ESTABLISH IS NEVER ESTABLISHED. The SBOM is still published, under a name that
+          says so -- withholding it loses triage value, mislabelling it manufactures provenance.
+      NOT_ESTABLISHED:
+        definition: The question was not reached at all — no artefact, or the run never got there.
+        rule: Distinct from IDENTITY_UNVERIFIED, which means it was asked and failed.
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Registered 2026-10-14 when the mechanism landed (ledger L89), from the lowercase candidates
+  # in PROVENANCE_AND_ATTESTATION.md section 10. The fifth value answers that section's open
+  # question -- fifth value or reason field -- as a VALUE, because section 6.4 requires plan
+  # unavailability to render differently from a missing attestation, and section 6.3 says
+  # not-establishable is EVIDENCE_UNTRUSTED "and never anything else".
+  attestation_verification:
+    description: >-
+      What checking a signed build-provenance attestation for a digest established, at deploy time
+      (V1), before any mutation. Not artifact_identity: that asks whether two byte-streams inside
+      one run are the same; this asks whether a signed third-party statement about a digest checks
+      out, far downstream of the run that made it.
+    consumers: [.github/actions/verify-attestation, templates/build-deploy.yml,
+                tests/prove_attestation_verify.py]
+    rule: >-
+      FIVE ANSWERS, NEVER A BOOLEAN. absent and contradicted need OPPOSITE treatment (a hole vs an
+      alarm); absent and not-establishable are a gap in production vs a control that could not be
+      acquired; held-by-plan is a billing fact nobody in the estate can fix. Each maps onto
+      routing_result per rung (PROVENANCE_AND_ATTESTATION.md section 6.3); none is a new routing value.
+    values:
+      ATTESTATION_VERIFIED:
+        definition: >-
+          Signature valid; subject digest equals the digest being deployed; the expected signer
+          workflow signed it; predicate type is the expected one.
+        rule: The only value that contributes PROCEED.
+      ATTESTATION_ABSENT:
+        definition: The lookup succeeded and returned no attestation for this digest.
+        rule: >-
+          A gap in PRODUCTION, never BLOCKED even at run: blocking it makes every pre-existing image
+          undeployable the day the control is switched on. ADVISORY at crawl, DECISION_REQUIRED above.
+      ATTESTATION_CONTRADICTED:
+        definition: An attestation exists and does not check out (signature, subject, signer or predicate).
+        rule: BLOCKED at every rung, crawl included -- an active disagreement, not a severity.
+      ATTESTATION_NOT_ESTABLISHABLE:
+        definition: The check could not be performed -- unreachable, unauthorised, verifier absent.
+        rule: EVIDENCE_UNTRUSTED at every rung and never anything else. Never a pass.
+      ATTESTATION_HELD_BY_PLAN:
+        definition: >-
+          The repository is private and its plan offers no attestations (Free/Pro/Team); the check
+          was not armed and the API was not called.
+        rule: >-
+          NOT ABSENT and NOT NOT_ESTABLISHABLE. Carried as validation_debt_state IMPLEMENTATION_HELD
+          whose trigger is the plan, not a date. Renders as advisory, never as a permanent stop and
+          never as a clean pass.
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  finding_subject:
+    description: >-
+      What a finding is ABOUT. A finding's subject is not always a digest, and a release is a
+      relationship it may carry rather than the identity it is named by.
+    consumers: [D5 finding lifecycle, correlation]
+    rule: >-
+      A FINDING WHOSE SUBJECT IS A RUNNING RESOURCE OUTLIVES EVERY RELEASE THAT TOUCHED IT. Naming
+      it by release loses it at the next deploy. See DEPLOYMENT_CONTRACT_RECONCILIATION.md §7.2.
+    forbidden: >-
+      SOURCE AND SOURCE_DEPENDENCY MUST NOT BE COLLAPSED. They are the two values a tired
+      implementation merges, because a dependency finding arrives from a file in the repository
+      and so looks like repository state. It is not: the subject is the package coordinate, and
+      the manifest that lists it is incidental. Collapsing them is defect D-3 -- SOURCE requires
+      a matched construct, a package vulnerability has none, and every dependency finding in the
+      estate was therefore unfingerprintable while carrying a perfect advisory id and purl.
+    values:
+      IMAGE:      {definition: A container image, identified by digest.}
+      SOURCE:     {definition: Repository state, identified by commit.}
+      SOURCE_DEPENDENCY:
+        definition: >-
+          A vulnerable PACKAGE COORDINATE declared by something in the repository -- a lockfile,
+          a manifest, a project file. The subject is the ecosystem/name/version triple, not the
+          file that lists it.
+        rule: >-
+          Its locus is the purl and NOT the manifest path: `requirements.txt` is the same string
+          for every dependency finding in a repository, so including it adds nothing and loses
+          every finding when the manifest moves. It has NO matched construct, so CONTENT is a
+          declared CONTENT_NOT_APPLICABLE_FOR_SUBJECT read from the specification rather than
+          inferred from an absent field -- the same shape as IMAGE, because it is the same kind
+          of fact about a different artifact. A dependency finding with no purl REFUSES with
+          WHERE_UNDERIVABLE; it does not fall back to the path.
+        consumers: [scripts/finding_identity.py, scripts/finding_subject.py, scripts/scan_report.py]
+      IAC_PLAN:   {definition: A proposed infrastructure change, identified by plan hash.}
+      RESOURCE:   {definition: A deployed cloud resource, identified by resource id.}
+      IDENTITY_ASSIGNMENT: {definition: An identity or RBAC grant.}
+      RUNTIME_OBSERVATION: {definition: Something observed of a running system, not of an artefact.}
+      POLICY:     {definition: A control or policy definition itself.}
+      RELEASE:    {definition: The release as an aggregate — used when no narrower subject is the real one.}
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # THE THREE NAMESPACES BELOW ARE THE IDENTITY MODEL'S OWN WORDS.
+  #
+  # They were driving `scripts/finding_identity.py` and were defined nowhere, which is the exact
+  # condition this registry exists to refuse -- and the one most worth refusing here, because a
+  # consumer that cannot tell WHY an identity was not computed has no choice but to treat an
+  # uncomputable identity as a new finding, which grandfathers nothing and re-raises everything.
+
+  identity_refusal:
+    description: >-
+      WHY a durable finding identity could not be computed. Returned instead of a hash, never
+      beside one.
+    consumers: [scripts/finding_identity.py, scripts/scan_report.py, tests/prove_identity_durability.py]
+    rule: >-
+      REFUSE, NEVER DEGRADE. A component that cannot be derived produces UNFINGERPRINTABLE and
+      one of these reasons -- never a hash of the fields that happened to be present. Hashing a
+      partial record manufactures a stable-looking identity out of an incomplete one, and a hash
+      is opaque: nobody downstream can tell a full identity from a shrug.
+    forbidden: >-
+      CONTENT_UNDERIVABLE AND CONTENT_NOT_APPLICABLE_FOR_SUBJECT MUST NOT COLLAPSE. "This finding
+      has a matched construct and we could not read it" and "this subject has no matched
+      construct" are different facts about different things. Collapsing them is defect D-3, and
+      the permissive direction of that collapse lets two findings at one locus share one
+      approval.
+    values:
+      SUBJECT_NOT_DECLARED:
+        definition: >-
+          No finding_subject was supplied. There is no default, because a default would apply one
+          subject's locus rule to another subject's finding.
+      SUBJECT_NOT_REGISTERED:
+        definition: A finding_subject was supplied and is not a registered value.
+        rule: >-
+          A near-miss spelling is worse than a wild one: consumers read it as blank, and blank
+          renders as unqualified.
+      SUBJECT_NOT_ESTABLISHED:
+        definition: >-
+          Nothing could establish which subject the finding is about -- an unmapped scanner, or a
+          multi-modal scanner whose locator does not settle its mode.
+        rule: >-
+          Produced by the reporter rather than by the identity model, and distinct from
+          SUBJECT_NOT_DECLARED: there the caller said nothing, here the caller could not find out.
+      WHAT_UNDERIVABLE:
+        definition: >-
+          No advisory id, no purl, and no CWE-plus-rule-family. The defect class cannot be named.
+        rule: >-
+          A bare rule_id is NOT an acceptable substitute -- it is the field a scanner upgrade
+          renames, which is the event the identity exists to survive.
+      WHERE_UNDERIVABLE:
+        definition: A required field of the subject's locus is absent, or present and empty.
+        rule: >-
+          The refusal NAMES the missing fields. A refusal that does not say what is absent is a
+          shrug, and nobody can close a gap they cannot name.
+      CONTENT_UNDERIVABLE:
+        definition: >-
+          The subject requires a matched construct and the record does not carry one.
+        rule: >-
+          Says the record is INCOMPLETE. Never produced for a subject that structurally has no
+          construct -- see CONTENT_NOT_APPLICABLE_FOR_SUBJECT.
+      CONTENT_NOT_APPLICABLE_FOR_SUBJECT:
+        definition: >-
+          A DECLARED STRUCTURAL ABSENCE: this subject has no matched construct at all, so there
+          is nothing to hash. Read from the subject's specification, never from the absence of
+          data.
+        rule: >-
+          NOT A REFUSAL. An identity is still computed. It must not be reachable by accident,
+          which is why it comes from the specification table rather than from an empty field.
+      SYMBOL_REQUIRED_FOR_COARSE_WHAT:
+        definition: >-
+          The defect class is CWE-only, which is coarse enough that genuinely different findings
+          share it, and no symbol-level locus was available to separate them.
+        rule: >-
+          Refuses rather than collapsing two findings into one identity, because the second would
+          silently inherit the first's risk acceptance.
+      SECRET_SUBJECT_NOT_BASELINEABLE:
+        definition: >-
+          The finding is credential material. It has no baseline identity by design.
+        rule: >-
+          The baseline has NO AUTHORITY over secrets: they block at every rung and are never
+          grandfathered, so the remedy is rotation. Refusing here also means nothing in any
+          ledger ever holds secret-derived material, which would otherwise be an
+          offline-crackable oracle on a readable branch.
+
+  identity_scope:
+    description: >-
+      How far a computed finding identity may be trusted. A SECOND AXIS -- it does not rank
+      against identity_refusal, and a computable identity can still be undurable.
+    consumers: [scripts/finding_identity.py]
+    rule: >-
+      A FINDING WHOSE SUBJECT IS A RUNNING RESOURCE OUTLIVES EVERY RELEASE THAT TOUCHED IT.
+      Saying the scope out loud is the point: the alternative is a key that works in testing and
+      quietly loses every finding at the next deploy.
+    values:
+      DURABLE_ACROSS_RUNS_AND_UPGRADES:
+        definition: >-
+          Valid as a baseline ledger key: it survives a rescan, a scanner swap, a version bump, a
+          rule rename and a line move.
+      VALID_WITHIN_ONE_RELEASE_ONLY:
+        definition: >-
+          Computable and NOT durable. Valid for comparisons inside one release and worthless
+          across releases.
+        rule: >-
+          MUST NEVER be used as a baseline ledger key. Carried by RELEASE, whose own registered
+          rule warns about exactly this misuse.
+
+  content_normalisation_policy:
+    description: >-
+      How a matched construct is normalised before it is hashed. TWO policies, because a literal
+      value is noise in one place and the entire finding in another.
+    consumers: [scripts/finding_identity.py]
+    rule: >-
+      WHICH POLICY RAN GOES INTO THE HASH. Without that, the same construct normalised two ways
+      produces two hashes with nothing recording the difference, which is a silent
+      duplicate-finding generator.
+    forbidden: >-
+      LITERALS_PLACEHOLDERED MUST NOT BE APPLIED TO DECLARATIVE STATE. There the value IS the
+      finding: `publicNetworkAccess = Enabled` and `= Disabled` are an open finding and a fixed
+      one, and placeholdering them means a remediated finding keeps matching its ledger entry and
+      reads as still open -- or an introduced one matches a closed entry and gets grandfathered.
+    values:
+      LITERALS_PLACEHOLDERED:
+        definition: >-
+          String and numeric literals are replaced before hashing. For source constructs, where
+          `if (x == 41)` and `if (x == 42)` are the same defect.
+        rule: >-
+          Also what makes hashing a matched construct safe: a literal destroyed before it is
+          hashed cannot be recovered from the hash.
+      VALUES_VERBATIM:
+        definition: >-
+          The value is hashed as written. For declarative state -- IaC, resources, policy, RBAC
+          -- where the value is the finding.
+        rule: >-
+          A remediation MUST change the identity here. That is the whole purpose of the policy
+          and it is the opposite of the other one.
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # THE SEVEN NAMESPACES BELOW EXIST BECAUSE AN IDENTITY THAT IS DURABLE STILL SOMETIMES CHANGES.
+  #
+  # finding_subject above and the identity model under it answer "is this the same finding I saw
+  # before". They cannot answer the question underneath it: a package is renamed upstream, a file
+  # moves, an advisory gains an alias, a subject specification is corrected, or an extraction bug
+  # is FIXED -- and at that moment every disposition, exception and ticket keyed on the old
+  # identity is orphaned. Silently. The operator sees a resolved finding reappear as new, or an
+  # exception stop applying, with nothing saying why.
+  #
+  # The silence is the defect. A finding whose identity moved and a finding that is genuinely new
+  # are indistinguishable to every consumer unless something kept a record of the move.
+  # See scripts/finding_lineage.py and tests/prove_lineage_durability.py.
+
+  lineage_relation:
+    description: >-
+      How one set of finding identities relates to another across an identity change. The
+      CARDINALITY is part of each definition and is enforced at write time.
+    consumers: [scripts/finding_lineage.py, tests/prove_lineage_durability.py]
+    rule: >-
+      THERE IS NO GENERIC "CHANGED" RELATION. The relation is the word a reader trusts, so a
+      relation whose cardinality does not match its name is refused rather than normalised.
+    forbidden: >-
+      A MERGE AND A SPLIT MUST NOT COLLAPSE INTO EACH OTHER. Two findings turning out to be one
+      is not one finding becoming two, and the asymmetry is load-bearing: resolution of a merge
+      source reaches the survivor, while resolution of a split source REFUSES. Recording a split
+      as two SUPERSEDES events would collapse them and silently resolve to whichever was written
+      first, so a second supersession for an identity that already has one is refused by name.
+    values:
+      SUPERSEDES:
+        definition: One identity was replaced by exactly one other. Cardinality 1 -> 1.
+        rule: >-
+          Two sources is a merge wearing the wrong word; two targets is a split wearing the wrong
+          word. Both are refused.
+      MERGED_INTO:
+        definition: >-
+          Two or more identities were established to be one condition. Cardinality N -> 1, N >= 2.
+        rule: >-
+          Resolution of ANY source reaches the survivor, and a disposition on any source carries
+          to it -- each was an approval of the same condition, so each still applies.
+      SPLIT_INTO:
+        definition: >-
+          One identity was established to be several distinct conditions. Cardinality 1 -> N,
+          N >= 2.
+        rule: >-
+          Resolution of the source is LINEAGE_SPLIT_UNRESOLVED and names the candidates. It MUST
+          NOT pick one: that would transfer the finding's approval to a condition nobody approved
+          and drop the others entirely.
+
+  lineage_resolution:
+    description: >-
+      The answer to "what is this identity now". Five outcomes, and a consumer branches on these
+      and on nothing else.
+    consumers: [scripts/finding_lineage.py, tests/prove_lineage_durability.py]
+    rule: >-
+      ONLY LINEAGE_TERMINAL AND LINEAGE_RESOLVED CARRY A CURRENT IDENTITY. The other three carry
+      none. A resolver that returned its input on failure would make "not known", "split" and
+      "cycle" all read as "this identity is current", which is the collapse this namespace exists
+      to prevent.
+    forbidden: >-
+      LINEAGE_UNKNOWN AND LINEAGE_TERMINAL ARE DIFFERENT ANSWERS. One says the finding is new to
+      the estate; the other says it is the live form of something with a recorded history. They
+      are the pair a one-line resolver merges, and merging them makes a tracked finding read
+      exactly like untracked new work.
+    values:
+      LINEAGE_UNKNOWN:
+        definition: The ledger has no record of this identity on either side of any event.
+        rule: Not a failure. It is the normal answer for a genuinely new finding.
+      LINEAGE_TERMINAL:
+        definition: >-
+          The ledger knows this identity and records no successor for it, so it is the current
+          form.
+      LINEAGE_RESOLVED:
+        definition: >-
+          One or more hops were followed to a current identity. The route is reported, because
+          the route is the evidence.
+        rule: >-
+          Resolution follows the WHOLE chain. A one-hop resolver loses every identity that moved
+          twice, which is the normal case after a scanner upgrade followed by a refactor.
+      LINEAGE_CYCLE_REFUSED:
+        definition: Following the chain returns to an identity already in it.
+        rule: >-
+          REFUSED, never followed and never silently truncated. A resolver that loops turns a
+          data error into a hung job; one that returns the last identity it saw reports a guess
+          as a resolution. Termination is structural -- the visited set cannot grow past the
+          identities the ledger mentions -- rather than a hop budget, which would also report a
+          long honest chain as a cycle.
+      LINEAGE_SPLIT_UNRESOLVED:
+        definition: >-
+          The identity was split into several, so no single successor exists. The candidates are
+          named.
+        rule: Distinct from LINEAGE_CYCLE_REFUSED -- a different fault with a different remedy.
+
+  lineage_cause:
+    description: >-
+      What moved the identity. Recorded on every event, and an event without one is refused.
+    consumers: [scripts/finding_lineage.py]
+    rule: >-
+      THE CAUSE IS WHAT LETS A CARRY BE WEIGHED. An operator told "this is the finding you
+      accepted in March" needs to know whether that is because a directory was renamed or
+      because the kit changed its own mind about how it computes identity. Those warrant
+      different amounts of trust in the same link.
+    forbidden: >-
+      There is deliberately no "unknown" or "other" value. The weak state is made UNWRITABLE
+      instead of registered: an event with an unrecognised cause is refused, so nothing can
+      accumulate links that assert a change with nothing behind them.
+    values:
+      SCANNER_VERSION_CHANGE:
+        definition: A scanner upgrade changed what it reports about the same condition.
+      RULE_RENAMED:
+        definition: A rule was renamed or split, changing the rule family that composes WHAT.
+      ADVISORY_ALIAS_ADDED:
+        definition: >-
+          An upstream feed added an alias to an advisory, so the alias SET that composes WHAT is
+          no longer the same set.
+        rule: >-
+          Nothing in the repository and nothing in the scanner changed. This is the cause nobody
+          sees coming, and the asserter is the FEED rather than this kit.
+      PACKAGE_RENAMED:
+        definition: A package was renamed or relocated upstream, so the purl moved.
+      PATH_MOVED:
+        definition: A file or directory moved, so the canonical path moved with it.
+        rule: >-
+          The most common cause and the least understood: nobody changed the code, and every
+          finding under the directory became NEW.
+      EXTRACTION_CORRECTED:
+        definition: >-
+          This kit fixed a defect in how it derives identity from scanner output, so findings
+          acquired the identity they should always have had.
+        rule: >-
+          The cause with the widest blast radius, because it moves every affected finding in the
+          estate at once. Defect D-2 was one of these.
+      SUBJECT_SPEC_CHANGED:
+        definition: A subject's locus or content specification changed, moving its identities.
+      CORRELATION_ESTABLISHED:
+        definition: >-
+          Correlation established that findings from two tools are one condition. The input to a
+          MERGED_INTO event.
+        rule: >-
+          Correlation and identity stack rather than merge -- correlation asks whether two TOOLS
+          saw one thing in THIS run. Its conclusion ARRIVES here as an event; it is not computed
+          here.
+
+  lineage_attribution:
+    description: >-
+      What asserted a lineage link. An alias is an ASSERTION BY SOMETHING, and the class of
+      asserter is recorded because the three are not interchangeable evidence.
+    consumers: [scripts/finding_lineage.py]
+    rule: >-
+      AN UNATTRIBUTED ALIAS IS NOT EVIDENCE. It is a claim with nobody behind it, and a ledger of
+      those would let a chain of anonymous links extend a human approval to a finding no human
+      ever saw. An event with no asserter is refused at append time.
+    values:
+      OPERATOR:
+        definition: A human decision, recorded as a ROLE rather than a person.
+        rule: A role, never a person -- nothing orphans at handoff.
+      TOOL:
+        definition: A tool's output, naming the tool.
+      ADVISORY_FEED:
+        definition: An upstream advisory source re-aliasing or restating an advisory.
+      ATTRIBUTION_ABSENT:
+        definition: >-
+          A link arrived with no asserter. READ, NEVER WRITTEN -- the writer refuses such an
+          event.
+        rule: >-
+          Exists so a ledger produced elsewhere can be NAMED as unattributed rather than read as
+          trusted. It must never be rendered as an asserter.
+
+  lineage_ledger_integrity:
+    description: >-
+      Whether the append-only lineage record can be relied on. Established by re-deriving each
+      event's id over its own content AND its link to the previous event. ALSO the readability
+      states of the BASELINE ledger (scripts/baseline_ledger.py): absent, empty, intact and
+      unparseable are the same four facts about any governance ledger, and a second spelling of
+      them would be the drift this registry exists to stop. The baseline ledger has no hash chain
+      -- its integrity is the protected branch's review -- so it never reports LEDGER_TAMPERED;
+      it reports a malformed entry as LEDGER_LINE_UNPARSEABLE.
+    consumers: [scripts/finding_lineage.py, tests/prove_lineage_durability.py,
+                scripts/finding_match.py, scripts/baseline_ledger.py,
+                tests/prove_ledger_read_authority.py]
+    rule: >-
+      APPEND-ONLY IS A CONTROL OR IT IS A COMMENT. Hashing each line independently detects edits
+      and not deletions, which is the half the claim actually needs, so the link is inside the
+      hash and a removed or reordered line is detectable.
+    forbidden: >-
+      LEDGER_ABSENT AND LEDGER_EMPTY MUST NOT COLLAPSE. They answer every question identically
+      and mean opposite things: one says nobody is keeping a lineage record at all, which is a
+      finding in itself; the other says somebody is and nothing has moved yet.
+    values:
+      LEDGER_ABSENT:
+        definition: No ledger exists.
+        rule: >-
+          An orphaned approval is then indistinguishable from a new finding, by construction.
+          Never a clean result.
+      LEDGER_EMPTY:
+        definition: A ledger exists and holds no events.
+      LEDGER_INTACT:
+        definition: >-
+          Every event's id matches its content and its link to the preceding event, from the
+          first event to the last, and the last is the one the head anchor records.
+      LEDGER_TAMPERED:
+        definition: >-
+          An event was edited, removed, inserted or reordered after it was written: the chain does
+          not re-derive, or it does not END at its recorded head anchor, or the head anchor is
+          absent over a non-empty ledger, or the ledger was emptied or deleted under a head that
+          records events, or an external head anchor disagrees.
+        rule: >-
+          The chain is anchored at its first event and so cannot see the LAST one removed; the head
+          anchor is what makes tail truncation detectable. A ledger that cannot exclude truncation
+          is not intact. Appending to such a ledger is REFUSED: a new event must not be chained
+          onto a sequence nobody can verify.
+      LEDGER_LINE_UNPARSEABLE:
+        definition: A line is not a parseable event object.
+        rule: >-
+          REPORTED by line number, never skipped. Skipping is how an evidence store comes to
+          answer confidently from a subset of itself. Appending is refused here too.
+
+  disposition_carry:
+    description: >-
+      How an approved exception reached the finding it is being applied to. Read from the
+      register; this never re-keys an approval.
+    consumers: [scripts/finding_lineage.py, tests/prove_lineage_durability.py]
+    rule: >-
+      AN INFERENCE NEVER OVERWRITES AN OBSERVATION. The approver approved a specific key. A
+      carried approval is a human decision extended by machine assertions, so it is reported as
+      CARRIED with the route, the cause and the asserter at every hop, and flagged for
+      reaffirmation -- which is what lets a consumer agree with the extension rather than
+      inherit it silently.
+    forbidden: >-
+      DISPOSITION_CARRIED_BY_LINEAGE MUST NOT BE RENDERED AS DISPOSITION_KEYED_DIRECTLY. Doing so
+      lets an unbounded chain of machine-asserted links suppress findings on the authority of one
+      old human decision.
+    values:
+      DISPOSITION_KEYED_DIRECTLY:
+        definition: The register holds an entry keyed on this identity itself.
+        rule: Requires no reaffirmation. This is what was actually approved.
+      DISPOSITION_CARRIED_BY_LINEAGE:
+        definition: >-
+          The register holds an entry keyed on an identity this one descends from through
+          recorded lineage events.
+        rule: >-
+          Always flagged for reaffirmation, and always reported with the identity that was
+          actually approved and the causes of each hop between.
+      DISPOSITION_NOT_FOUND:
+        definition: >-
+          No entry is keyed on this identity or on any identity it descends from.
+        rule: >-
+          Carries the lineage_resolution state alongside it, so "untriaged and new to the estate"
+          stays distinct from "untriaged, but the live form of something with a history".
+
+  identity_proof_failure:
+    description: >-
+      The failure vocabulary of tests/prove_identity_durability.py. Separate words because an
+      identity that MOVED is a normalisation bug and one that was NEVER COMPUTED is an extraction
+      bug, and the two remedies share nothing.
+    consumers: [tests/prove_identity_durability.py]
+    rule: >-
+      IDENTITY_NEVER_COMPUTED MUST NEVER BE REPORTED AS IDENTITY_MOVED, OR AS A PASS. Two empty
+      identities compare equal, so an equality assertion alone reports durable identity over a
+      pipeline that computes none -- which is why non-emptiness is asserted first and separately.
+    values:
+      IDENTITY_NEVER_COMPUTED:
+        definition: >-
+          The identity is empty: identify() was called and refused. An EXTRACTION defect -- the
+          record reaching the identity model could not satisfy any subject's specification.
+        rule: >-
+          Reported with the refusal reason, so the missing field is named rather than implied.
+      IDENTITY_MOVED:
+        definition: >-
+          A non-empty identity changed across a vendor-side event it is specified to survive. A
+          NORMALISATION defect.
+        rule: >-
+          Every disposition approved against the old key is orphaned and the finding reappears as
+          new at the next scan.
+      IDENTITY_COLLIDED:
+        definition: >-
+          Two genuinely different findings produced one identity, or a record that should have
+          refused produced a hash.
+        rule: >-
+          The permissive direction, and the worst of the three: the second finding silently
+          inherits the first's risk acceptance.
+      IDENTITY_NOT_DURABLE:
+        definition: The proof's overall verdict when any of the above was observed.
+
+  lineage_proof_failure:
+    description: >-
+      The failure vocabulary of tests/prove_lineage_durability.py. Separate words because these
+      have separate fixes and reporting them under one would send the next reader to the wrong
+      file.
+    consumers: [tests/prove_lineage_durability.py]
+    rule: >-
+      IDENTITY_NEVER_MOVED IS NOT A PASS AND NOT A NORMAL FAILURE. It means the proof could not
+      test anything: with no move, the register matches by exact key and the ledger is never
+      consulted, so every other assertion in the file would be satisfied vacuously.
+    values:
+      IDENTITY_NEVER_MOVED:
+        definition: >-
+          Two identities that the fixture intended to differ are equal, so there is no identity
+          change to carry a disposition across.
+      DISPOSITION_ORPHANED:
+        definition: >-
+          An approval that should have been carried across a recorded identity change was not
+          found. This is the defect the ledger exists to end.
+      LINEAGE_CHAIN_BROKEN:
+        definition: >-
+          A chain did not resolve to its far end, a cycle was followed, or a carry did not cite
+          the event, cause or asserter that authorised it.
+      MERGE_AND_SPLIT_COLLAPSED:
+        definition: >-
+          A merge and a split over the same identities produced the same answers, so the relation
+          is being treated as a symmetric edge.
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # THE TWO NAMESPACES BELOW ARE THE BASELINE CASCADE'S OWN WORDS (ETFB section 5.3, L44).
+  #
+  # Proposed as CANDIDATES in ENFORCEMENT_TIERS_AND_FINDING_BASELINE.md section 12.1 and 12.2 and held
+  # back "because registering them would assert they had been decided". They are registered now
+  # because the mechanism that branches on them exists (scripts/finding_match.py) -- registration
+  # follows the consumer, never precedes it. Checked first, per TAXONOMY_DRIFT remedy 2:
+  # artifact_identity is about bytes and a registry; provenance_identity CARRIES an identity and
+  # does not match two; finding_classification owns what a RED result MEANS (and already owns
+  # POTENTIALLY_ABSENT, reused below rather than respelled); disposition_type is an AUTHORISED
+  # decision, and baseline state is an OBSERVATION nobody authorises. Section 12.6's merge advice is
+  # taken: the generation-change event lives in finding_baseline_state, not in a namespace of its
+  # own, and the candidate MOVED value is not registered here -- a move is a match outcome
+  # (IDENTITY_MATCHED_MOVED), and a moved finding's baseline state is whatever its entry licenses.
+
+  finding_identity_match:
+    description: >-
+      The outcome of matching a current finding against the baseline ledger. Five answers, never a
+      boolean, because "could not compute" and "no match" are opposite facts about the evidence.
+    consumers: [scripts/finding_match.py, tests/prove_baseline_cascade.py,
+                scripts/propose_ledger.py]
+    rule: >-
+      AMBIGUITY IS RESOLVED BY CARDINALITY, NEVER BY GUESSING WHICH ONE MOVED WHERE. The model
+      records that it does not know which is which, and enforces on the count, which it does know.
+    forbidden: >-
+      IDENTITY_UNCOMPUTABLE MUST NEVER BE READ AS IDENTITY_UNMATCHED. An identity that could not be
+      computed is not a NEW finding and not a match; it is EVIDENCE_UNTRUSTED for that finding.
+    values:
+      IDENTITY_MATCHED_EXACT:
+        definition: WHAT, WHERE and CONTENT all agree with a ledger entry in the evaluated environment.
+        rule: first_seen is carried forward untouched.
+      IDENTITY_MATCHED_MOVED:
+        definition: >-
+          WHAT and CONTENT agree at a different locus, and exactly one unmatched ledger entry and
+          exactly one unmatched observation hold that pair.
+        rule: A move is an EVENT, recorded, never a reset. first_seen is carried forward.
+      IDENTITY_AMBIGUOUS:
+        definition: >-
+          A (subject, WHAT, CONTENT) group holds more than one unmatched entry or more than one
+          unmatched observation.
+        rule: >-
+          min(N,M) are continuations, surplus is NEW, deficit is POTENTIALLY_ABSENT. The ambiguity
+          about WHICH is recorded and changes no enforcement outcome.
+      IDENTITY_UNMATCHED:
+        definition: No ledger entry in the evaluated environment shares subject, WHAT and CONTENT.
+        rule: The finding is NEW.
+      IDENTITY_UNCOMPUTABLE:
+        definition: >-
+          A component could not be derived, the label and the components disagree, or the identity
+          is not durable (RELEASE scope), so no match was attempted.
+        rule: NOT a NEW finding and NOT a match. EVIDENCE_UNTRUSTED for this finding.
+
+  finding_baseline_state:
+    description: >-
+      Whether this finding existed before the baseline for this (repo, environment) cell, and on
+      what evidence. An OBSERVATION, never an authorization.
+    consumers: [scripts/finding_match.py, tests/prove_baseline_cascade.py, scripts/rule_family.py,
+                tests/prove_rule_family_upgrade.py,
+                security-gate at the run rung (not built), remediation track (not built)]
+    rule: >-
+      A BASELINE STATE THAT COULD NOT BE COMPUTED IS NOT PRE-EXISTING. Identity failure and ledger
+      failure resolve to EVIDENCE_UNTRUSTED, never to the permissive side.
+    values:
+      NEW:
+        definition: No matching identity in the ledger read from the protected default branch.
+      PRE_EXISTING_BASELINED:
+        definition: >-
+          Matched an entry whose first_seen came from a claimable observation time (age_established
+          is true).
+      PRE_EXISTING_AGE_NOT_ESTABLISHED:
+        definition: >-
+          Matched an entry with no claimable observation time for its earliest observation. Older
+          than the baseline by at least the baseline's own age; how much older is unknown.
+        rule: >-
+          MUST NOT be reported as PRE_EXISTING_BASELINED. An entry that does not say its age was
+          established is read as this, never as established -- defaults are suspicious at
+          assurance boundaries.
+      PRE_EXISTING_BY_DETECTION_CHANGE:
+        definition: >-
+          Admitted to the ledger only because a scanner generation or rule set changed, through an
+          accepted reconciliation report. The code is not new; the detection is.
+        rule: >-
+          Never NEW, and never an open-ended grant. Its age is not established and is never
+          asserted as the upgrade date.
+      BASELINE_UNAVAILABLE:
+        definition: >-
+          The ledger could not be read, is malformed, or contradicts its own integrity state, so NEW
+          and PRE-EXISTING cannot be distinguished.
+        rule: >-
+          Yields routing_result.EVIDENCE_UNTRUSTED for every finding. MUST NOT default to either
+          side -- one bypasses the rung entirely and the other blocks the estate.
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  change_artefact:
+    description: >-
+      The four distinct records of what a deployment changed. They are not four views of one thing,
+      and rollback reads only the last two.
+    consumers: [deployment contract, rollback planner]
+    rule: >-
+      A GIT DIFF CANNOT TELL YOU A DEPLOYMENT SHIFTED THREE TRAFFIC WEIGHTS AND HALF-APPLIED A
+      MIGRATION. OBSERVED minus PLANNED is work nobody asked for, and is currently unrepresentable.
+    values:
+      SOURCE_DELTA:
+        definition: What changed in code and configuration. Produced by determine-changes.
+        rule: The weakest of the four. Never sufficient for a reversal decision.
+      PLANNED_MUTATION_SET:
+        definition: What the deployment INTENDS to alter, established before the change.
+      OBSERVED_MUTATION_SET:
+        definition: What actually changed, established by post-change reconciliation.
+      REVERSAL_MANIFEST:
+        definition: How each observed mutation can be compensated, per mutation.
+        rule: Absence of an entry is UNKNOWN_REVERSIBILITY, never reversible.
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # THE THREE NAMESPACES BELOW EXIST BECAUSE A CHANGE MANIFEST IS A RECORD OF THE PAST AND
+  # REVERSAL ACTS ON THE PRESENT.
+  #
+  # `change_artefact` above says what a run did. It cannot say whether the objects it names are
+  # still the objects it left behind. Release R1 creates resource X; another onboarding process
+  # later modifies X or takes a dependency on it; R1's manifest still truthfully says "I created
+  # X" and that sentence is no longer sufficient authority to delete X.
+  #
+  # So every reversal entry is a PROPOSAL evaluated against live state at reversal time. These
+  # namespaces are that evaluation's vocabulary: who owns the object now, what has happened to
+  # it since, and what recovery is therefore permitted to do to it.
+  # See DEPLOYMENT_CONTRACT_RECONCILIATION.md section 8.
+
+  release_ownership:
+    description: >-
+      Whether a live object is still attributable to the release that is being reversed. Read from
+      the object itself at reversal time, never from the change manifest -- the manifest records
+      what a run did, and cannot record what happened afterwards.
+    consumers: [reversal planner, deploy workflows, tests/check_reversal_preconditions.py]
+    rule: >-
+      NOT artifact_identity. That namespace asks whether the artefact a control inspected is the
+      artefact that was published -- a question about bytes and a registry. This asks whether a
+      DEPLOYED OBJECT is still owned by one release -- a question about a live resource and a
+      release graph. An object can have REGISTRY_IDENTITY_PROVEN and be owned by somebody else.
+    forbidden: >-
+      AN UNREADABLE STAMP IS NOT AN ABSENT OWNER. OWNERSHIP_UNESTABLISHED and OWNED_EXCLUSIVE are
+      the two values a tired implementation collapses, because "no owner found" is one line of
+      shell away from "I own it, delete it". The whole namespace exists to keep them apart.
+    values:
+      OWNED_EXCLUSIVE:
+        definition: >-
+          The live object carries this release's ownership stamp and no other release or external
+          claim is recorded against it.
+        rule: >-
+          The ONLY ownership value from which removal is available. Every other value means the
+          object outlived this release's exclusive authority over it.
+      OWNED_SHARED:
+        definition: >-
+          The object carries this release's stamp AND at least one other claim -- a later release
+          that adopted it, or an external owner recorded against it.
+        rule: >-
+          Shared ownership withdraws the removal branch, it does not weaken it. The other owner
+          was never asked, and "I made it first" is not consent on their behalf.
+      # ── SHARED INFRASTRUCTURE IS THE NORMAL CASE, NOT THE EXCEPTION ──────────────
+      #
+      # OWNED_SHARED above describes two RELEASES both claiming one object. The four values
+      # below describe something different and far more common: a release's relationship to
+      # PLATFORM infrastructure it did not create and must not reverse -- a hub firewall, a
+      # shared registry, a Log Analytics workspace, a private DNS zone, an App Service plan.
+      #
+      # The framing that produced these: SHARED INFRASTRUCTURE MAY EXIST ACROSS WORKLOADS;
+      # SHARED WRITE AUTHORITY MUST NOT AUTOMATICALLY EXIST ACROSS WORKLOAD DEPLOYMENT
+      # IDENTITIES. Existence and authority are different questions, and collapsing them is
+      # how an application rollback ends up entitled to delete a workspace.
+      #
+      # Without these, a rollback planner reading OWNED_SHARED cannot tell "I added a
+      # diagnostic setting to their workspace" from "I merely reference their subnet" from
+      # "the platform pipeline owns this outright". Those need three different behaviours and
+      # only one of them involves removing anything.
+      OWNED_BINDING:
+        definition: >-
+          This release created a BINDING on a resource it does not own -- a diagnostic setting,
+          a private endpoint, a role assignment, a firewall rule entry.
+        rule: >-
+          REVERSE THE BINDING, NEVER THE HOST. The binding is release-owned; the thing it binds
+          to is not. Deleting the workspace because you created a diagnostic setting on it is
+          the failure this value exists to make unrepresentable.
+      SHARED_CONFIGURATION_ENTRY:
+        definition: >-
+          This release added an ENTRY to a shared configuration surface -- a DNS record, an ACR
+          repository path, a route, a policy exemption.
+        rule: >-
+          Revert only the identified entry, and only if it is unchanged since this release wrote
+          it. The surface itself is platform state. An entry another actor has since edited is a
+          conflict, not a stale value to overwrite.
+      REFERENCE_ONLY:
+        definition: >-
+          This release CONSUMES a shared resource without having created or modified it -- joining
+          an approved subnet, emitting to a workspace, pulling from a registry, using a plan.
+        rule: >-
+          NEVER REVERSIBLE. There is nothing to undo: consumption left no trace to remove. A
+          planner that treats a reference as a mutation will try to un-join a subnet, and the
+          subnet belongs to somebody else.
+      PLATFORM_OWNED_SHARED:
+        definition: >-
+          The resource is owned by the platform or infrastructure pipeline. An application release
+          may reference or bind to it and may never modify or remove it.
+        rule: >-
+          An application rollback CANNOT act on this, whatever its manifest says. The manifest
+          records what a run did; this records what a run was entitled to do, and the second one
+          wins. Changes here belong to the platform pipeline and carry their own release history.
+      OWNED_BY_ANOTHER_RELEASE:
+        definition: >-
+          The stamp names a release that is not the one being reversed.
+        rule: >-
+          A CONTRADICTION, NOT A LICENCE. The manifest says this run created the object and live
+          state says otherwise; something re-created it, adopted it, or the manifest is wrong.
+          Resolving that toward deletion acts on the reading that happens to be destructive.
+      OWNERSHIP_UNESTABLISHED:
+        definition: >-
+          The stamp could not be read, the object carries none, or the resource class has no
+          metadata channel that could carry one.
+        rule: >-
+          NEVER RESOLVES TOWARD REMOVAL. This is the per-object form of the run-level do-no-harm
+          rule in ROLLBACK_CONTRACT.md, and it is the row that matters most: an unknown must not
+          resolve toward destruction because destruction is the easier branch to code.
+    artifacts:
+      RELEASE_OWNERSHIP_STAMP:
+        definition: >-
+          Metadata written ONTO the live object, in the adapter's native channel -- a resource
+          tag, a label, an annotation, deployment metadata -- carrying the release id, the parent
+          release id, the run that wrote it, the version handle of the post-state that run left,
+          and when it was written.
+        rule: >-
+          WRITTEN WITH THE MUTATION, NOT AFTER IT. A stamp applied in a later step is absent from
+          every object a cancelled run created before it died -- which is precisely the population
+          a reversal has to reason about. It also lives on the OBJECT rather than only in the run
+          record, because the run record is the thing a cancelled run does not finish.
+        note: >-
+          A claim the run makes about itself. Evidence of ownership, not proof against an actor
+          who can write tags. Where the resource class cannot carry one, ownership is
+          OWNERSHIP_UNESTABLISHED by construction and removal is permanently unavailable for that
+          class -- a rollback_capability fact, established BEFORE the mutation, not discovered
+          during the reversal.
+
+  reversal_conflict:
+    description: >-
+      Why a proposed reversal entry could not be actioned as written. Established by comparing the
+      live object against the post-state the release recorded, and against the release graph.
+    consumers: [reversal planner, outcome report, incident response]
+    rule: >-
+      NOT rollback_state. That namespace answers "what may be done about a change that failed" for
+      the RUN. These answer "what happened to THIS OBJECT since" -- and a run may be
+      AUTO_ROLLBACK_ALLOWED while one object in it is still un-reversible. A run-level disposition
+      that cannot describe a single dissenting object reports the reversal as total.
+    values:
+      SUPERSEDED_BY_LATER_RELEASE:
+        definition: >-
+          The object's current state was written by a release later than the one being reversed.
+        rule: >-
+          AN ORDERING PROBLEM, NOT A REFUSAL. Reversing this release first would discard the later
+          release's state while the later release still believes it is standing. The later
+          releases are reversed first, or this entry is not actioned at all.
+      MODIFIED_BY_EXTERNAL_ACTOR:
+        definition: >-
+          The object's current version differs from the recorded post-state and no release in the
+          graph claims the change.
+        rule: >-
+          STOP, DO NOT COMPENSATE. The pre-state this release captured describes a world that no
+          longer exists, so restoring it would overwrite a change nobody in the release graph can
+          describe. This is the onboarded-in-between case stated precisely.
+      DEPENDENT_INTRODUCED_LATER:
+        definition: >-
+          Something created after this release now depends on the object.
+        rule: >-
+          Preservation is the correct outcome and it MUST BE REPORTED, not silently skipped. An
+          object deliberately retained is legitimate WHEN STATED; unstated retention is a false
+          claim about the terminal state.
+      REVERSE_ORDER_VIOLATED:
+        definition: >-
+          A descendant release of the one being reversed has not itself been reversed, whether or
+          not it touched this particular object.
+        rule: >-
+          Distinct from SUPERSEDED_BY_LATER_RELEASE, which is about THIS OBJECT. This is about the
+          GRAPH. A descendant that never touched the object can still depend on it existing, and
+          checking only per-object drift misses that entirely.
+      PRECONDITION_UNESTABLISHED:
+        definition: >-
+          One of the reversal preconditions could not be evaluated -- the version handle was
+          unreadable, the release graph could not be traversed, or the dependency query failed.
+        rule: >-
+          A READ FAILURE IS NOT AN ABSENCE OF CONFLICT. The same defect as inferring an empty
+          previous state from a swallowed error, arriving one layer later: an unevaluated
+          precondition must never read as a satisfied one.
+
+  reversal_disposition:
+    description: >-
+      What recovery is permitted to do to ONE object, derived from its release_ownership and any
+      reversal_conflict against it. The value carried by each entry of a REVERSAL_MANIFEST.
+    consumers: [reversal planner, outcome report, tests/check_reversal_preconditions.py]
+    rule: >-
+      DERIVED, NEVER ASSERTED. A disposition is computed from preconditions read out of live state
+      at reversal time. A disposition written into the manifest when the manifest was authored is
+      a statement about a world that has since moved on.
+    forbidden: >-
+      THE UNKNOWN BRANCH AND THE DESTRUCTIVE BRANCH ARE NOT THE SAME BRANCH. Exactly one value
+      below removes anything, and it is reachable only from OWNED_EXCLUSIVE with no conflict. Any
+      implementation in which a failed precondition can fall through into REVERSAL_REMOVE has
+      broken the taxonomy even though every word it used was valid.
+    values:
+      REVERSAL_REMOVE:
+        definition: >-
+          The object was created by this release, is unchanged since, and is OWNED_EXCLUSIVE.
+          Remove it.
+        rule: >-
+          The only destructive value, and it requires ALL of its preconditions to have been
+          positively established. Not "no conflict was found" -- conflicts were looked for and the
+          look succeeded.
+      REVERSAL_RESTORE_PRIOR:
+        definition: >-
+          The object existed before this release, this release modified it, and its current state
+          still equals the post-state this release recorded. Restore the recorded pre-state.
+        rule: >-
+          Requires the post-state comparison to have SUCCEEDED. Restoring a pre-state over an
+          object somebody else has since changed is destruction with a recovery label on it.
+      REVERSAL_DEFERRED_TO_SUCCESSOR:
+        definition: >-
+          A later release owns the object's current state. This entry is not actioned until the
+          later releases have been reversed.
+        rule: >-
+          NOT a failure and NOT a completion. Reporting it as either is how a multi-release
+          recovery reports success halfway through.
+      REVERSAL_ENTRY_SCOPED:
+        definition: >-
+          The parent object changed since this release wrote to it, this release's own entry did
+          not, removing that entry alters nothing another actor owns, and the surface can address
+          the entry independently. The entry is reversed; the parent is untouched.
+        rule: >-
+          THE UNIT OF CONFLICT IS THE MUTATION, NOT THE OBJECT. A second actor adding their rule
+          changes a Front Door profile's ETag while leaving ours byte-identical; refusing on that
+          basis means "something else touched it, so do not even look", which withholds a safe
+          reversal on the majority of shared surfaces and leaves our change in production forever.
+          A WITHHELD-BUT-SAFE REVERSAL IS NOT THE HARMLESS DIRECTION -- it trains operators to
+          override the check. Ordering is the catch: on a priority-ordered surface, removing our
+          entry can change the EVALUATION OUTCOME for entries we never touched. An adapter that
+          cannot establish independence for its surface resolves to REVERSAL_WITHHELD_UNTRUSTED.
+      REVERSAL_REFUSED_CONFLICT:
+        definition: >-
+          THIS RELEASE'S OWN ENTRY was altered by someone else, or the stamp names another
+          release. Narrowed from "the object changed" -- see REVERSAL_ENTRY_SCOPED, which covers
+          the far more common case of a neighbour editing a different entry on the same object. Automatic
+          reversal stops for this object and a conflict is reported.
+        rule: >-
+          Carries the escalation contract. A refusal with no named owner and no permitted agent
+          action is a dead end, and the observed consequence of dead ends is automation that
+          retries, fabricates a remediation, or routes around the gate.
+      REVERSAL_WITHHELD_DEPENDENCY:
+        definition: >-
+          Something introduced later depends on the object, or the object is now OWNED_SHARED.
+          It is preserved, and the dependent or co-owner that preserved it is named.
+        rule: >-
+          Projects to ROLLBACK_PARTIAL at the run level. Partial never rounds up to verified, and
+          a preserved object omitted from the report is indistinguishable from one that was
+          removed.
+      REVERSAL_WITHHELD_UNTRUSTED:
+        definition: >-
+          Ownership or current state could not be established. Nothing destructive happens to this
+          object and the run says so.
+        rule: >-
+          THE ROW THAT MATTERS MOST. Could-not-establish must never resolve toward a destructive
+          branch. ROLLBACK_CONTRACT.md already says this for a run whose previous state is
+          unknown; this is the same rule applied per object, which is where a run with a perfectly
+          good previous state still meets an object it cannot vouch for.
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  transition_reason:
+    description: >-
+      Why a release moved. Recorded on the transition, not inferred from the endpoints.
+    consumers: [release graph, dashboarding]
+    rule: >-
+      "R47 -> R46" IS NOT A FACT ANYONE CAN ACT ON. Two releases produce that identical arrow for
+      opposite reasons, and only one of them leaves technical_provenance VERIFIED standing.
+    values:
+      HEALTH_FAILURE:      {definition: Health or readiness validation failed after the change.}
+      VALIDATION_FAILURE:  {definition: Functional or operational validation failed.}
+      BUSINESS_DECISION:   {definition: Technically healthy and withdrawn anyway. Case E.}
+      SECURITY_FINDING:    {definition: Reversed because of a security finding against the release.}
+      DEPENDENCY_FAILURE:  {definition: Something the release depends on failed, not the release itself.}
+      OPERATOR_DIRECTED:   {definition: A human directed it, with no other class applying.}
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  selftest_reach:
+    description: >-
+      How a workflow is actually exercised by this repository's own CI. The self-test reported
+      green for six days over a workflow that started zero times, and this vocabulary exists so a
+      green can never again be read as covering more than it does.
+    consumers: [tests/check_selftest_coverage.py, self-test.yml]
+    rule: >-
+      SCHEDULE IS NOT PUSH. A weekly job does not catch a break introduced by the commit that
+      caused it, and collapsing the two hides the exact gap that cost six days. Counted on
+      2026-09-22: 3 of 12 workflows run on the commit that could break them.
+    values:
+      EXERCISED_ON_PUSH:
+        definition: Invoked on push or pull_request -- on the commit that could break it.
+        rule: The only class that catches a regression at the moment it is introduced.
+      EXERCISED_ON_SCHEDULE:
+        definition: Invoked only by a cron, directly or through a scheduled caller.
+        rule: >-
+          A break lands and WAITS. Not a failure state, but never to be counted alongside
+          EXERCISED_ON_PUSH when reporting what the suite covers.
+      EXERCISED_ON_DISPATCH:
+        definition: Invoked only when a human asks -- its own workflow_dispatch, or a dispatch-only caller.
+        rule: >-
+          Human-runnable is not unreachable. An earlier draft of the checker called these
+          "exercised by nothing" because it looked only at who CALLS a workflow, which is a false
+          finding, and a checker that reports false findings teaches people to distrust the column.
+      EXERCISED_BY_NOTHING:
+        definition: Nothing in this repository invokes it, by any trigger.
+        rule: >-
+          NOT automatically a failure -- a workflow needing a real cloud target is honestly
+          unexercisable here. It must be ACCOUNTED FOR by a dated deferral. Unexercised AND
+          undeclared is the state that produced the six days.
+
+  capability_maturity:
+    description: >-
+      How far a capability has actually been PROVEN, from a name in a file to a control shown to
+      block something. Every rung is a different claim and collapsing any two produces a false green.
+    consumers: [tests/capability_inventory.py, security-gate]
+    rule: >-
+      A CAPABILITY MAY NOT BE RECORDED AT A RUNG IT HAS NOT REACHED, AND A STATIC CENSUS MAY NEVER
+      AWARD ANYTHING ABOVE IMPLEMENTED.
+    values:
+      IMPLEMENTED:
+        definition: A step exists that would call the tool. Provable by reading the workflow.
+        rule: The ceiling of static analysis. Everything above requires a runner.
+      EXECUTED:
+        definition: The job ran on a real runner and completed.
+        rule: >-
+          NOT detection. Proven 2026-09-15: CodeQL executed, uploaded its analysis and reported
+          zero results over a file containing three XSS sinks; gitleaks executed and reported zero
+          over a planted credential. Both green. A green job is the most persuasive possible
+          evidence for a control that did nothing.
+      DETECTION_PROVEN:
+        definition: It found a planted defect that a NAMED rule or query is documented to catch.
+        rule: >-
+          The fixture must be valid for the detector's threat model. Both zeroes above were the
+          FIXTURE: an allowlisted published example key, and sinks fed by a React prop, which no
+          taint engine treats as a source. Name the rule in advance or a zero is unattributable.
+      ENFORCEMENT_PROVEN:
+        definition: A real finding actually blocked a real promotion under the policy in force.
+        rule: Detection that cannot block is a report. The gate must be shown to fail, not assumed to.
+      REVALIDATED:
+        definition: Proven again after the code stopped changing and the vulnerability feed moved.
+        rule: Same artifact, same SBOM, new intelligence. The assurance state changed without the software changing.
+
   capability_metadata:
     description: >-
       Capability-SPECIFIC facts a consumer may want, carried ALONGSIDE the shared assurance
@@ -537,6 +1654,26 @@ namespaces:
       DISABLED:   {definition: Explicitly turned off. An exception, reported loudly, never a default.}
       MISSING_BUT_REQUIRED:
         definition: Profile declares this must exist and it does not. ABSENCE IS THE FINDING.
+      ARTIFACT_PRESENT:
+        definition: An artifact of this class was discovered in scope. Presence is established; nothing is yet claimed about whether it was examined.
+        rule: Presence and examination are different facts. A pipeline that reports only the second lets the first disappear.
+      CAPABILITY_REQUIRED:
+        definition: This artifact class needs a control. The obligation is asserted independently of whether anything can currently satisfy it.
+        rule: >-
+          An obligation nobody can meet is still an obligation. Deriving it from the available
+          tooling lets the tooling define the standard.
+      SCANNER_UNAVAILABLE:
+        definition: No capable scanner exists in this kit for a discovered artifact class. A platform statement, not a developer one.
+        rule: Distinct from UNAVAILABLE, which means a scanner exists and could not run here.
+      COVERAGE_GAP:
+        definition: ARTIFACT_PRESENT + CAPABILITY_REQUIRED + SCANNER_UNAVAILABLE. The code is here, a control is owed, and nothing looked.
+        rule: >-
+          THE THIRD ANSWER, and the one most often collapsed. NOT_APPLICABLE means the artifact is
+          not here, so there is nothing to find. CLEAN means a scanner ran and found nothing --
+          evidence of absence. COVERAGE_GAP is ABSENCE OF EVIDENCE, and reporting it as either of
+          the others converts a hole into a reassurance. Proven live 2026-09-16: shell and GitHub
+          Actions workflows were present in a scanned repository with no capable scanner, and the
+          run was green.
       UNDETERMINED_PRESENT:
         definition: This ecosystem's probe failed. Presence was neither confirmed nor ruled out.
         rule: >-
@@ -595,6 +1732,8 @@ namespaces:
       ASSURANCE_PREREQUISITE_GAP: {definition: A condition prevented a claim being established., action: state the coverage boundary}
       FALSE_POSITIVE:             {definition: Produced, but does not mean what it appears to., action: narrow disposition with evidence}
       EXECUTION_UNAVAILABLE:      {definition: Never ran., action: clear the cause and re-run}
+      POTENTIALLY_ABSENT:         {definition: Present earlier and absent now, where the later observation is NOT shown to have covered the scope it lived in., action: establish coverage before calling it fixed -- absence of the scope is not absence of the thing}
+      REOPENED_BY_LAPSE:          {definition: The finding never changed; its disposition expired., action: re-decide with a named approver and a new expiry -- silence must never renew a disposition}
       UNKNOWN:                    {definition: Not yet established., action: NEVER assume clean}
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -657,6 +1796,526 @@ namespaces:
       buys passage.
 
   # ─────────────────────────────────────────────────────────────────────────
+  ticket_class:
+    description: >-
+      WHAT A TICKET IS ASKING FOR. Five classes, and the first of them asks nobody for anything —
+      it is work. The other four are REQUESTS for a disposition, and a request is made by a person.
+      Proposed as CANDIDATE in docs/architecture/TICKETING_CONTRACT.md section 9.1 and registered
+      here on 2026-10-08 because scripts/reconcile_tickets.py now branches on the distinction.
+    consumers: [scripts/reconcile_tickets.py, promotion review, audit]
+    rule: >-
+      A CLASS NEVER SUPPRESSES ANYTHING. The class says what is being asked for; disposition_type
+      says what was granted; and they are different objects in different places. Reading a class as
+      an outcome is how anyone who can file a ticket comes to authorise an exception.
+    invariant: >-
+      Each class names the ONE disposition_type it may result in, and naming it is not granting it.
+      The arrow only points one way: a ticket carries a reference to a disposition request, a
+      request becomes a disposition only on merge to the protected default branch, and nothing in
+      the tracker can travel back up that chain.
+    values:
+      REMEDIATION_WORK_ITEM:
+        definition: >-
+          The finding is real and is being fixed. The only class this kit's automation opens, and
+          the only one that is not a request for an authorization.
+        results_in: REMEDIATED
+        rule: >-
+          Nobody approves it. Its terminal state is established by a scanner no longer reproducing
+          the finding, never granted by a person — which is why REMEDIATED is self_invalidating.
+          CLOSING THIS TICKET DOES NOT CLEAR THE FINDING.
+      FALSE_POSITIVE_REQUEST:
+        definition: A request to establish that the detector is wrong about this finding.
+        results_in: FALSE_POSITIVE
+        rule: >-
+          Approved by Security, distinct from the requester. A secret finding takes the much
+          narrower disposition_type.secrets_rule path instead.
+      ACCEPTED_RISK_REQUEST:
+        definition: >-
+          A request to proceed with a real finding that will not be fixed now.
+        results_in: ACCEPTED_RISK
+        rule: >-
+          Spelled to match the registered disposition rather than the reversed word order
+          disposition_type.rejected_synonyms already refused. Requires acceptance_ref, owner_role
+          and expires_at.
+      MITIGATED_REQUEST:
+        definition: >-
+          A request recording that a compensating control is in force, evidenced rather than
+          merely designed.
+        results_in: MITIGATED
+        rule: >-
+          Carries its own re-verification expiry, because a compensating control can lapse
+          silently. Re-verification keeps it standing; renewal does not.
+      GRANDFATHER_TRACK_ITEM:
+        definition: >-
+          The finding was already present in production and is scheduled rather than blocking.
+        results_in: ACCEPTED_RISK
+        rule: >-
+          The expiry is COMPUTED from the SLA, never chosen, and the record carries a track
+          reference. Requires a claimable first-seen or an explicit record that the age is
+          unestablished — assuming the age is how a finding introduced yesterday joins the
+          day-one cohort.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  ticket_lookup_outcome:
+    description: >-
+      WHAT A LOOKUP ESTABLISHED before anything was created. Proposed as CANDIDATE in
+      docs/architecture/TICKETING_CONTRACT.md section 9.2 and registered here on 2026-10-08
+      because scripts/reconcile_tickets.py now branches on it. IDENTITY_NOT_ESTABLISHED is added
+      beyond the proposal: the contract assumed a finding arrives with a durable identity, and
+      findings arrive without one.
+    consumers: [scripts/reconcile_tickets.py, tests/prove_ticket_idempotency.py, audit]
+    rule: >-
+      NEVER A BOOLEAN. "No ticket was found" is four different facts — the sweep saw the project
+      and nothing matched, the sweep never completed, a reference existed and did not resolve, or
+      the finding had no identity to look up — and only the FIRST of them may be followed by a
+      creation. Collapsing them produces a duplicate ticket for every finding on every run, which
+      is the defect this namespace exists to prevent.
+    invariant: >-
+      THE UNCLASSIFIED CASE DEFAULTS TO BINDING_UNESTABLISHED, NEVER TO BINDING_ABSENT. A lookup
+      that did not complete has established nothing, and treating its silence as absence is the
+      permissive collapse — the error would be in the direction of writing to someone else's
+      tracker. A ticketing outcome NEVER changes the finding's own routing under the rung: a
+      ticketing failure does not soften a finding.
+    values:
+      LEDGER_BOUND:
+        definition: >-
+          The ledger named a ticket and the backend sweep returned it. The zero-cost steady state.
+        rule: Creates nothing. Writes nothing unless something in the updatable set changed.
+      BACKEND_BOUND:
+        definition: >-
+          No ledger reference, and exactly one ticket carrying this cluster's stamp was found —
+          created by hand with the stamp applied, or by a run whose ledger write was lost.
+        rule: >-
+          Creates nothing AND owes a ledger repair. Self-healing an index is not a decision; the
+          repair is recorded with the run that made it.
+      BINDING_ABSENT:
+        definition: >-
+          The ledger held no reference, a COMPLETE sweep returned nothing under the stamp, and a
+          calibration probe established that this channel can see tickets this credential did not
+          create. Equivalent to observation_quality.VERIFIED_ABSENT for a tracker.
+        rule: >-
+          THE ONLY OUTCOME FROM WHICH CREATION IS AVAILABLE. All three conditions are required:
+          absence reported by a channel not shown able to see the thing it reports absent is not
+          absence, it is observation_quality.DISTINCTION_NOT_OBSERVABLE.
+      BINDING_AMBIGUOUS:
+        definition: More than one ticket carries this cluster's stamp.
+        rule: >-
+          Creates nothing AND UPDATES NOTHING. Ambiguity is resolved by cardinality, never by
+          guessing which one is canonical — picking the first would be a decision made by
+          pagination. Every candidate is named and routed routing_result.DECISION_REQUIRED for a
+          human to declare canonical.
+      BINDING_DANGLING:
+        definition: >-
+          A reference existed and did not resolve: not found, refused, or moved without a
+          redirect.
+        rule: >-
+          NOT AN ABSENCE. A reference that did not resolve is an unresolved reference. Creation
+          requires a probe first establishing observation_quality.DISTINCTION_OBSERVABLE, because
+          a not-found from a channel that cannot see foreign tickets is indistinguishable from a
+          deletion.
+      BINDING_UNESTABLISHED:
+        definition: >-
+          The lookup did not complete — rate limited, an outage, an expired credential, or a
+          sweep that paged out.
+        rule: >-
+          THE UNCLASSIFIED CASE DEFAULTS HERE, never to BINDING_ABSENT. Projects to
+          publication_state.PUBLICATION_DEGRADED and routes routing_result.EVIDENCE_UNTRUSTED —
+          never DECISION_REQUIRED and never clean. MUST NOT fail the scan, and MUST NOT soften the
+          finding's routing. Any count taken from a partial sweep is a FLOOR, never a total.
+      IDENTITY_NOT_ESTABLISHED:
+        definition: >-
+          The finding carries no durable identity, so there was nothing to look a ticket up BY and
+          no lookup was attempted. The ticket is withheld.
+        rule: >-
+          NOT A FAILURE OF THE LOOKUP, AND NOT AN ABSENCE — the lookup never ran. A ticket keyed on
+          an empty identity cannot be found again, so the next run would create it a second time
+          and the run after that a third: creating one is strictly worse than withholding it. MUST
+          be reported as its own state and never counted as a clean result or folded into a zero.
+          The remedy is upstream, in finding_identity.py — an identity, not a ticket.
+        note: >-
+          Added beyond TICKETING_CONTRACT.md section 9.2's proposal. The contract assumed findings
+          arrive fingerprinted; on 2026-10-08 identity extraction was returning UNFINGERPRINTABLE
+          for findings that should fingerprint, and a reconciler without this state would have
+          created a fresh duplicate set on every run.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  ticket_state:
+    description: >-
+      The lifecycle of a PARENT ticket — the object coordinating one cluster's remediation.
+      Carried from a prior engagement's ticket engine, whose parent/child work-item model solved
+      something this kit had not: a cluster of six findings was six obligations sharing one status,
+      so "partially fixed" was not representable.
+    consumers: [scripts/ticket_model.py, scripts/reconcile_tickets.py, audit]
+    rule: >-
+      RESOLVED AND CLOSED ARE NOT THE SAME CLAIM. RESOLVED is the execution path saying the work
+      is done; CLOSED is somebody having established that it is. Collapsing them means the only
+      way to record completed work is to discharge the obligation, and the two facts become one
+      field.
+    invariant: >-
+      A PARENT MAY NOT CLOSE WHILE ANY CHILD IS OPEN, DEFERRED OR DISPUTED. The parent does not
+      certify its own closure — closure is evaluated from the children, and the evaluation returns
+      which children are holding it open rather than a bare boolean.
+    transitions:
+      - "DRAFT -> OPEN                  (a human triages it; a created ticket is a PROPOSAL)"
+      - "OPEN -> IN_PROGRESS | BLOCKED"
+      - "IN_PROGRESS -> BLOCKED | RESOLVED | CLOSED  (CLOSED only under AUTHORITY_OVERRIDE)"
+      - "BLOCKED -> IN_PROGRESS"
+      - "RESOLVED -> CLOSED"
+    forbidden_transition: >-
+      OPEN -> CLOSED (closing an obligation nobody said was finished); and IN_PROGRESS -> CLOSED
+      without the AUTHORITY_OVERRIDE rule and a recorded rationale.
+    values:
+      DRAFT:
+        definition: >-
+          Created by automation and not yet triaged by a person. The state every ticket this kit
+          opens starts in.
+        rule: >-
+          A DRAFT IS A PROPOSAL, NOT AN OBLIGATION. It is the human-in-loop requirement expressed
+          as an initial state rather than as a comment somebody can overlook.
+      OPEN:
+        definition: A person has triaged it and its children exist.
+      IN_PROGRESS:
+        definition: At least one child is being worked.
+      BLOCKED:
+        definition: Waiting on an external dependency or an approval.
+        rule: >-
+          NOT A FAILURE AND NOT A DEFERRAL. Blocked work is still owed and still counted; a
+          deferral is a decision to stop looking at it for a stated period.
+      RESOLVED:
+        definition: The closure rule is satisfied and the execution path claims completion.
+        rule: >-
+          Claims completion. Does NOT establish it, and does not discharge the finding — a
+          finding stops blocking only through a merged disposition.
+      CLOSED:
+        definition: Terminal. A person established that the obligation is discharged.
+        rule: CLOSING A TICKET DOES NOT CLEAR A FINDING. The scanner decides that, by not reproducing it.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  task_state:
+    description: >-
+      The lifecycle of a CHILD task — one finding inside a cluster ticket, carrying its own state.
+      This is what makes a partially-remediated cluster representable.
+    consumers: [scripts/ticket_model.py, scripts/reconcile_tickets.py, audit]
+    rule: >-
+      FIXED IS A CLAIM; VALIDATED IS AN ESTABLISHMENT. The edge from FIXED to DISPUTED is what
+      makes the first one falsifiable, and a task that went straight from FIXED to CLOSED would be
+      the implementer validating their own work.
+    invariant: >-
+      DISPUTED NEVER COUNTS AS RESOLVED. Conflicting evidence is not a resolution, and a cluster
+      closing over the findings its own scanners disagreed about is the merged-away finding that
+      leaves no trace.
+    transitions:
+      - "OPEN -> IN_PROGRESS | DEFERRED"
+      - "IN_PROGRESS -> FIXED | DISPUTED | DEFERRED"
+      - "FIXED -> VALIDATED | DISPUTED"
+      - "VALIDATED -> CLOSED"
+      - "DISPUTED -> IN_PROGRESS"
+      - "DEFERRED -> OPEN            (ONLY via the explicit reopen path; never silently)"
+    forbidden_transition: >-
+      OPEN -> VALIDATED (validating work nobody did); FIXED -> CLOSED (self-validation); and any
+      reopen of a DEFERRED task through the ordinary transition path.
+    values:
+      OPEN:        {definition: Awaiting work.}
+      IN_PROGRESS: {definition: Being worked.}
+      FIXED:
+        definition: A fix has been applied and is not yet confirmed by anybody else.
+        rule: A CLAIM BY WHOEVER DID THE WORK. Not evidence that the condition is gone.
+      VALIDATED:
+        definition: The fix was confirmed by something other than the party that applied it.
+      DISPUTED:
+        definition: The evidence conflicts — detectors disagree, or the fix did not hold.
+        rule: >-
+          NOT A RESOLUTION AND NOT A FALSE POSITIVE. It is an unresolved disagreement, and it
+          blocks its parent's closure by design.
+      DEFERRED:
+        definition: >-
+          Explicitly set aside, with a stated reason and a stated end date. Both are REQUIRED.
+        rule: >-
+          A DEFERRAL WITH NO REASON OR NO END DATE IS REFUSED. An absent end date reads as
+          open-ended rather than as unspecified, which is how a deferred finding becomes a
+          permanent silent exception that nothing ever revisits — the same failure as a
+          disposition with no expiry, which this kit shipped once.
+        reopen_rule: >-
+          REOPENING IS EXPLICIT. The end date passing is a PRECONDITION that makes a reopen
+          AVAILABLE; it is never a trigger that performs one. A reopen requires the date to have
+          passed AND a named trigger AND a human approval. The reference engine this is carried
+          from declared silent reopening forbidden and then reopened past-due items inside its own
+          split routine with the actor recorded as the system; that path is deliberately NOT
+          carried.
+      CLOSED:
+        definition: Terminal.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  ticket_closure_rule:
+    description: >-
+      How a parent ticket's closure is evaluated. Evaluation only — a satisfied rule means a person
+      MAY close the ticket, never that it is closed.
+    consumers: [scripts/ticket_model.py, audit]
+    rule: >-
+      AN UNRECOGNISED CLOSURE RULE FAILS CLOSED. Membership of the allowed set, never inequality
+      with one bad value — so a rule added later and not handled refuses instead of falling
+      through to permitted.
+    values:
+      ALL_CHILDREN_RESOLVED:
+        definition: >-
+          Every child task is VALIDATED or CLOSED, and there is at least one child. A parent with
+          no children has established nothing.
+      AUTHORITY_OVERRIDE:
+        definition: >-
+          A named authority discharges the obligation by decision rather than by work.
+        rule: >-
+          REQUIRES A RECORDED RATIONALE. An override with no stated reason is indistinguishable
+          from a mistake six months later.
+    rejected_rule: >-
+      A `quorum` rule closing a parent when a configurable fraction of children are resolved —
+      defaulting to 0.8 — was present in the engine this model was carried from and is
+      deliberately NOT registered. A threshold nobody derived, applied to obligations of unequal
+      severity, closes a parent over the fraction that might be the only one that mattered. If a
+      consumer wants it, it is a governance decision with a named authority and a defended number.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  human_approval:
+    description: >-
+      Whether a person has explicitly permitted ONE mutation. Carried from a prior engagement's
+      ticket engine, which held it as a numbered invariant covering every creation, closure,
+      transition, split, reopen, suppression and validation — and that scope is NOT carried. See
+      `mutation_class`, whose `rejected_rule` records why: applied to a deterministic reconciler
+      a blanket gate is an off switch, not a control.
+    consumers: [scripts/ticket_model.py, scripts/reconcile_tickets.py, audit]
+    rule: >-
+      AN APPROVAL IS NOT THE SAME FACT AS AN APPLY MODE. `--apply` is the operator — or the
+      policy that scheduled the run — intending writes this run; an approval is a person
+      permitting a specific judgement. A schedule can set the first, and a schedule is never an
+      approver. WHICH MUTATIONS NEED THE SECOND IS DECIDED BY `mutation_class` AND NOWHERE ELSE:
+      `ROUTINE_RECONCILIATION` needs only the first, `GOVERNANCE_DISPOSITION` needs both, and a
+      mutation whose class is unstated is refused.
+    invariant: >-
+      An approval must carry a ROLE and a readable reason. An unattributed approval is a decision
+      nobody has made — `control_weakening.WEAKENING_UNATTRIBUTED` one namespace over — and an
+      approval whose rationale cannot be read later is unreviewable, which is the same defect as
+      an exception with no justification.
+    values:
+      APPROVAL_GRANTED:
+        definition: A named role permitted this mutation, with a stated reason.
+      APPROVAL_NOT_GRANTED:
+        definition: >-
+          No approval, an ungranted one, one with no actor, or one whose reason is too thin to
+          review.
+        rule: >-
+          MUST be reported as its own outcome and never folded into the dry-run path. "Nobody
+          approved this" and "the operator asked for a plan" are different facts about the same
+          non-write, and a reader who cannot tell them apart will assume the second.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  mutation_class:
+    description: >-
+      WHETHER A MUTATION NEEDS A PERSON. Every mutation the ticketing path performs is mapped to
+      one of these EXPLICITLY, in `ticket_model.MUTATION_CLASS`, with the reasoning for each row
+      recorded beside it. `scripts/ticket_model.py --explain-mutations` prints the table.
+    consumers: [scripts/ticket_model.py, scripts/reconcile_tickets.py, audit, governance]
+    rule: >-
+      THE CLASS IS LOOKED UP, NEVER INFERRED. No prefix rule, no name heuristic, no position in a
+      tuple. A classifier with a rule in it is a classifier that can be argued with, and the
+      argument happens at the moment somebody wants a disposition to go through.
+    invariant: >-
+      A MUTATION WHOSE CLASS IS NOT STATED REFUSES. Neither default is safe: defaulting to
+      automatic hands a disposition the unattended path, and defaulting to approval reproduces
+      the blanket gate that made the reconciler unrunnable. So there is no default.
+    rejected_rule: >-
+      "EVERY MUTATION REQUIRES EXPLICIT HUMAN APPROVAL" IS NOT CARRIED, and the rejection is the
+      reason this namespace exists. A prior engagement's ticket engine held it as a numbered
+      invariant covering every creation, closure, transition, split, reopen, suppression and
+      validation, and the first draft of this kit's ticketing path imported it whole. Applied to
+      a reconciler whose entire value is that it is deterministic, idempotent and evidence-backed,
+      a blanket gate is not a control — it is an off switch, and a reconciler nobody runs
+      reconciles nothing. The operator's correction, verbatim: a human is consulted "for something
+      like an exception, exclusion, risk acceptance, mitigation, false positive, something that
+      requires budget judgement or would impact the security and governance of the environment and
+      system."
+    values:
+      ROUTINE_RECONCILIATION:
+        definition: >-
+          Deterministic, evidence-backed bookkeeping that changes nothing about what the
+          organisation accepts. Creating a work item for a fingerprinted anchored cluster,
+          re-syncing the machine-owned block, linking a child task, binding the ledger, recording
+          progress a scanner can confirm, and closure reached BECAUSE every child is evidenced
+          complete.
+        rule: >-
+          RUNS UNATTENDED. No approval is consulted and none is required. `--apply` remains a
+          separate gate — it is the operator or the policy that scheduled the run intending writes
+          rather than a plan — but it is not an approval and does not stand in for one.
+        invariant: >-
+          WHERE THE ROUTINE PATH IS UNATTENDED BECAUSE IT IS EVIDENCED, THE EVIDENCE IS REQUIRED.
+          `ticket.close.ALL_CHILDREN_RESOLVED` refuses when the children are not supplied:
+          closing on an absence is not closing on evidence. The audit history records
+          `ticket_model.ROUTINE_ACTOR` rather than a person or "the system", so a reader can see
+          at a glance that nobody signed for it because nobody had to.
+      GOVERNANCE_DISPOSITION:
+        definition: >-
+          A judgement that changes what the organisation accepts: an exception, an exclusion, a
+          false-positive call, a risk acceptance, a deferral (a time-boxed risk acceptance), the
+          renewal or ending of one, accepting a compensating control instead of a fix, closure
+          reached by judgement rather than by evidence, anything committing budget, and anything
+          moving the security or governance posture of the environment or system.
+        rule: >-
+          REQUIRES AN APPROVAL CARRYING A ROLE AND A READABLE REASON — `human_approval` one
+          namespace over. The refusal is reported as ITS OWN OUTCOME and never folded into the
+          dry-run path.
+        note: >-
+          A disposition REQUEST reaching a ticket is still not a disposition. A finding stops
+          blocking only when an exact, unexpired, approved disposition is merged to the protected
+          default branch under CODEOWNERS. `scripts/reconcile_tickets.py` never writes one.
+      MUTATION_CLASS_NOT_STATED:
+        definition: >-
+          The mutation is not in the table, so whether it is routine or a disposition has not
+          been established.
+        rule: >-
+          REFUSED, and reported by name so a reader can tell it from a missing approval. A
+          mutation added to the model and not added to the table stops working rather than
+          quietly picking a side — which is also how an unrecognised disposition REQUEST is
+          handled: `risk-accepted` is not `risk_acceptance`, and silently treating it as one
+          would turn "we are asking you to accept this risk" into "somebody please fix this".
+
+  # ─────────────────────────────────────────────────────────────────────────
+  deferral_obligation:
+    description: >-
+      WHETHER A RECORDED DEFERRAL IS STILL IN FORCE. Computed from the deferral's end date and a
+      reference date, and nothing else. Reported in every ordinary reconciliation run.
+    consumers: [scripts/ticket_model.py, scripts/reconcile_tickets.py, triage, governance]
+    rule: >-
+      AN ELAPSED DEFERRAL CREATES A REVIEW OBLIGATION ON A PERSON, NOT AN ACTION BY THE MACHINE.
+      Three values and never a boolean: "this deferral is fine" and "this deferral has no term to
+      check" are different facts, and a caller that cannot tell them apart renders the second as
+      the first.
+    invariant: >-
+      NOTHING REOPENS AND NOTHING GOES ON QUIETLY SUPPRESSING. The task stays DEFERRED — a
+      deferral that reopens because a date passed is an obligation changing state with nobody
+      having decided anything — and the acceptance is reported as lapsed in every run until an
+      authorised person ends it or renews it to a future date. Both of those are
+      `mutation_class.GOVERNANCE_DISPOSITION`. There is deliberately no "clear" or "dismiss": an
+      obligation marked handled without the acceptance being ended or renewed is a suppression
+      with a tidier name.
+    rejected_rule: >-
+      The engine this discipline was carried from declared that silent or automatic reopening was
+      forbidden and then reopened past-due tasks inside its split routine with the actor recorded
+      as the system. The first correction here forbade that and stopped — which left a past-due
+      deferral either suppressing for ever or waiting for a trigger nobody fires. Both are
+      silence, and silence is what the rule exists to forbid.
+    values:
+      DEFERRAL_WITHIN_TERM:
+        definition: >-
+          An end date is recorded, a reference date was supplied, and the end date has not passed.
+        rule: >-
+          NOT REPORTED in the past-due section. A review signal that fires on deferrals in good
+          standing is noise, and noise gets ignored.
+      DEFERRAL_PAST_DUE:
+        definition: >-
+          The recorded end date is earlier than the reference date. The acceptance has lapsed and
+          the suppression is no longer authorised.
+        rule: >-
+          VISIBLE IN THE ORDINARY OUTPUT WITH NO FLAG ENABLING IT, and it makes the run exit 1. A
+          past-due acceptance that only appears under a switch is one nobody sees; one that exits
+          0 is one nobody chases.
+      DEFERRAL_TERM_UNKNOWN:
+        definition: >-
+          No end date is recorded, the recorded one is not an ISO YYYY-MM-DD date, the deferral
+          record could not be read at all, or no reference date was supplied.
+        rule: >-
+          REPORTED ALONGSIDE DEFERRAL_PAST_DUE, never filtered out. An absent expiry is NOT an
+          open-ended one — it is unspecified, and it is the defect this kit already shipped once
+          in its suppression path, so it must not be the one case that stays quiet. A date is
+          never parsed hopefully: one this model guessed at would decide whether an acceptance is
+          still in force.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  compliance_review_type:
+    description: >-
+      THE SECOND OBLIGATION A FINDING CLASS CAN IMPLY. Carried from a prior engagement's ticket
+      engine, which mapped a vulnerability class to the appropriate ticket AND to the
+      corresponding compliance request through a table, with no model and no agent in the path.
+      A reconciler whose output depends on a model cannot be defended to an auditor.
+    consumers: [scripts/ticket_model.py, scripts/reconcile_tickets.py, compliance, audit]
+    rule: >-
+      A COMPLIANCE REVIEW IS A SECOND OBLIGATION, NOT A RESTATEMENT OF THE FIRST. Remediating the
+      finding does not discharge the review, and the review does not remediate the finding.
+      Collapsing them means one of the two silently stops happening.
+    invariant: >-
+      THE PAIRING IS A TABLE LOOKUP, DETERMINISTIC, KEYED ON THE REGISTERED `finding_subject`.
+      No inference, no model, no guess. Where the table has no row, or the subject was never
+      established, or the subject is unrecognised, the answer is PAIRING_NOT_ESTABLISHED — which
+      is a state and never a silent "none required".
+    note: >-
+      The TABLE'S CONTENT is a governance proposal awaiting an owner; the MECHANISM is what was
+      carried. Which subject warrants which review depends on the framework a consumer is held to,
+      and this kit does not know it. `scripts/ticket_model.py --explain-pairing` prints the
+      current table with the reasoning for every row.
+    values:
+      COMPLIANCE_VALIDATION:
+        definition: >-
+          Establish whether a declared control is actually in force. The assurance question rather
+          than the design question.
+        paired_from: RESOURCE, RUNTIME_OBSERVATION
+      FRAMEWORK_GAP_REVIEW:
+        definition: >-
+          A control the framework requires is absent from the declared estate — a gap in the
+          mapping rather than only a defect to fix.
+        paired_from: IAC_PLAN, POLICY
+      REGULATORY_OVERLAY_REVIEW:
+        definition: >-
+          A regulatory overlay applies independently of exploitability, most often where access
+          and entitlement are concerned.
+        paired_from: IDENTITY_ASSIGNMENT
+      PAIRING_NOT_ESTABLISHED:
+        definition: >-
+          The lookup was performed and yielded no review: the subject is deliberately unmapped,
+          was never established, or is not in the table.
+        rule: >-
+          DOES NOT ESTABLISH THAT NO REVIEW IS REQUIRED. It establishes that this kit does not
+          know of one. A secret finding also lands here deliberately — its remedy is rotation, and
+          a review in front of a rotation is delay wearing governance clothing.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  finding_confidence:
+    description: >-
+      How strongly the evidence supports that a cluster is ONE REAL OBLIGATION. Derived
+      deterministically from three observable things: how many scanners anchored on the cluster,
+      whether a durable identity was established, and whether the evidence channel was degraded.
+    consumers: [scripts/ticket_model.py, scripts/reconcile_tickets.py, triage]
+    rule: >-
+      A LABEL, WITH ITS DERIVATION CARRIED ALONGSIDE IT, AND NEVER A NUMBER.
+      `epistemic_property.CONFIDENCE` already requires a confidence claim to be answerable —
+      "confidence in WHAT claim, based on WHICH evidence, diminished by WHICH missing
+      observations, computed under WHICH model, at WHAT time" — and calls one without provenance
+      "numerology with an API". The engine this was carried from held `confidence` as a float
+      defaulting to 0.5; that default answers none of those questions and is indistinguishable
+      downstream from a measured 0.5, so it is deliberately NOT carried.
+    invariant: >-
+      SCOPE: this is confidence that the finding exists and that the cluster's members belong
+      together. It is NOT a claim about exploitability, business risk or fix priority. One label
+      covering all of those would be a composite verdict stronger than its weakest axis, which
+      this registry's governing rule forbids.
+    values:
+      CORROBORATED_ANCHORED:
+        definition: >-
+          Two or more independent scanners anchored on the same durable identity, through a
+          channel that was not degraded.
+        rule: >-
+          Corroboration across independent detectors, not one tool agreeing with itself. The
+          derivation names every contributing scanner so the claim can be checked.
+      SINGLE_SOURCE_ANCHORED:
+        definition: One scanner, with an established durable identity.
+        rule: >-
+          NOT DOUBT ABOUT THE FINDING — only the absence of a second observation. Reading it as
+          weak evidence is how a real finding gets deprioritised for being seen once.
+      CONFIDENCE_NOT_ESTABLISHED:
+        definition: >-
+          No durable identity was established, or the evidence channel was degraded so the
+          contributor set is a FLOOR rather than a count.
+        rule: >-
+          NOT LOW CONFIDENCE. NO confidence — a different state. Scanners that would have
+          corroborated may simply not have been read, and a count from a PARTIAL collection is a
+          floor and never a total.
+
+  # ─────────────────────────────────────────────────────────────────────────
   rollback_state:
     description: >-
       What may be done about a change that failed. Found MISSING from this registry by the
@@ -687,6 +2346,132 @@ namespaces:
         definition: >-
           Restored service has been PROVEN. Asserted only after verification, never after a rollback
           command merely exits 0 -- same rung problem as a green job that ran no scanner.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Registered 2026-10-14 when the mechanism landed (DCR section 3.2, proposed in section 4).
+  # Checked first: rollback_state says what MAY be done about a failed change; change_artefact
+  # names the records of what a run did. Neither can say what the target held BEFORE the run,
+  # and that answer is the input every reversal decision starts from.
+  previous_state:
+    description: >-
+      What the deploy's capture step established about the target before the first mutation.
+      Exactly one value per run, and never inferred from an empty string.
+    consumers: [reusable-deploy-appservice, reusable-deploy-containerapp, scripts/deploy_contract.py,
+                tests/prove_deploy_outcome.py]
+    rule: >-
+      A READ FAILURE IS NOT AN ABSENCE. The Container Apps capture ended `2>/dev/null || true`, so
+      a throttled or permission-denied read and a first deployment both produced "", and "" skipped
+      the rollback. UNKNOWN fails the capture loudly, before anything is changed.
+    values:
+      EXISTING_DEPLOYMENT:
+        definition: >-
+          The target was read and a prior deployment observed, with the declared mutation surface
+          captured into the pre-change snapshot.
+      EMPTY:
+        definition: >-
+          Both reads succeeded and nothing was deployed: the absence was MEASURED, not assumed.
+        rule: >-
+          A rollback point, not "nothing to do": reversal returns the target to this measured
+          absence (ROLLBACK_TO_EMPTY), and every object it would remove still runs the per-object
+          preconditions of DCR section 8, because empty-then says nothing about the target now.
+      UNKNOWN:
+        definition: >-
+          The capture could not establish either of the above -- a read failed, timed out or was
+          never made.
+        rule: Resolves toward reconcile-and-report, never toward a destructive branch or a mutation.
+
+  # Registered 2026-10-14 with the mechanism (DCR section 3.5, proposed in section 4).
+  rollback_capability:
+    description: >-
+      Whether this change can be reversed, established BEFORE the first irreversible mutation
+      from the captured previous state and the adapter's mechanism for the observed configuration.
+      The environment tier consumes it to decide whether the mutation may proceed.
+    consumers: [reusable-deploy-appservice, reusable-deploy-containerapp, scripts/deploy_contract.py]
+    rule: >-
+      GOVERNANCE BELONGS BEFORE THE POINT OF NO RETURN. At uat and prod UNAVAILABLE refuses the
+      deploy before it mutates; at lower tiers it proceeds as a recorded accepted risk.
+    values:
+      AVAILABLE:
+        definition: >-
+          A prior state was captured and a reversal mechanism valid for the target's observed
+          configuration exists (multiple-revision traffic weights; slot swap-back / image restore).
+      UNAVAILABLE:
+        definition: >-
+          No usable prior state, no valid mechanism for this configuration (single-revision mode),
+          or reversal authority withheld by the caller.
+      NO_PRIOR_STATE:
+        definition: >-
+          The target is measured EMPTY. Reversal means removing what this run creates -- a
+          capability, not the absence of one.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # DCR section 4 proposed this sibling of rollback_state: rollback_state says what MAY be done
+  # about a failed change; this says what a run actually DID, established from reconciled live
+  # state. Values are registered as the deploy reusables start emitting them, never ahead.
+  deployment_outcome:
+    description: >-
+      What a deploy run actually did, from reconciled live state rather than step exit codes.
+      A run ends in exactly one terminal outcome; the reversal paths below are the route a
+      reversal took, and are always qualified by whether it was verified.
+    consumers: [reusable-deploy-appservice, reusable-deploy-containerapp, scripts/deploy_contract.py,
+                promotion gate, incident response]
+    rule: >-
+      Every identifier reported beside an outcome is labelled ATTEMPTED or NOW SERVING, and NOW
+      SERVING is read back from live state. Echoing an input there is the defect this exists for.
+    values:
+      DEPLOY_REFUSED:
+        definition: >-
+          The run stopped BEFORE its first mutation -- a gate verdict that does not permit, an
+          unregistered tier, a mutable tag, an UNKNOWN previous state, an unavailable rollback
+          capability at a production tier. Nothing in live state was changed by this run.
+        rule: >-
+          Not in DCR section 4's proposal, which had no value for "never mutated"; added because
+          reporting a refusal as a failed deploy reads as "something changed and broke".
+      DEPLOY_HEALTHY:
+        definition: >-
+          The mutation took effect AND the intended artefact was read back loaded, healthy and
+          serving the consumer path. Not a promotion claim.
+      PARTIAL_APPLY:
+        definition: >-
+          The mutation was issued and never confirmed: objects may exist that no state record
+          knows about.
+        produced_by: >-
+          Termination or an adapter error between the first mutating call and its confirmation.
+        note: Recovery is out-of-band and manual by construction; the record that would scope it is incomplete.
+      MANUAL_RECOVERY_REQUIRED:
+        definition: >-
+          Verification failed and no automated path reached a known-good state -- reversal
+          disabled, or the run stopped before it. The failed change is still in place.
+        rule: Carries an escalation contract (owner, artefacts, what an automated actor may and may not do).
+      ROLLBACK_TO_PRIOR:
+        definition: >-
+          Reversal performed against a captured prior deployment. Not yet proven; a reversal path
+          is never terminal on its own.
+      ROLLBACK_TO_EMPTY:
+        definition: >-
+          Reversal performed against a MEASURED empty prior state: what this run created was
+          removed and what it changed was restored, each object only where its live-state
+          preconditions held, leaving unrelated resources alone.
+        rule: >-
+          A FIRST-CLASS RECOVERY PATH, NOT AN ERROR, and NOT teardown of the environment. A
+          workflow that skips reversal when no prior deployment exists skips recovery on exactly
+          the population that orphans the most.
+      ROLLBACK_PARTIAL:
+        definition: >-
+          Some of the change manifest was reversed and some was not, established by reading live
+          state back against the pre-change snapshot; each item's reason and the residue are
+          recorded. Deliberate retention is legitimate WHEN STATED.
+        rule: >-
+          NEVER ROUNDS UP TO ROLLBACK_VERIFIED (registered under rollback_state and reused here
+          unchanged, so the two namespaces agree). A consumer that treats partial as verified has
+          broken the taxonomy even though every word it used was valid.
+      STATUS_UNTRUSTED:
+        definition: >-
+          Infrastructure was mutated and the run then lost the ability to describe it: a read-back
+          failed, or every reversal entry was withheld as untrusted, so nothing was reconciled.
+        rule: >-
+          NOT "failed" -- failure implies nothing changed. The honest report is mutated,
+          unreconciled, untrusted; it is never resolved by assuming the attempt took or did not.
 
   # ─────────────────────────────────────────────────────────────────────────
   evidence_confidence:
@@ -725,6 +2510,16 @@ namespaces:
         rule: >-
           MUST NOT fail the scan. An unreachable dashboard cancelled an entire deep scan once.
           An empty Security tab is indistinguishable from a clean codebase — say which it is.
+      NO_FINDINGS_COUNT:
+        definition: >-
+          The report job succeeded and published no blocking_findings count. The scanners' jobs
+          ended; whether the code is clean was never established, because the evidence that would
+          say so is absent.
+        rule: >-
+          NO COUNT IS NOT A COUNT OF ZERO. The gate records it as report(NO_FINDINGS_COUNT) among
+          the unestablished capabilities, assurance_state is PARTIAL at best and PASS is
+          unavailable -- a green report job is not a clean result (tests/prove_gate_reads_findings.py,
+          scenario findings_unknown).
 
   # ─────────────────────────────────────────────────────────────────────────
   validation_debt_state:
@@ -734,6 +2529,13 @@ namespaces:
       A permanently red check is not a control, it is training: people learn red means "known
       backlog", stop reading it, and a real regression arrives wearing the same colour.
     values:
+      IMPLEMENTATION_HELD:
+        definition: A component exists whose blocker is an UNBUILT CAPABILITY, not an unwritten probe.
+        rule: >-
+          A probe cannot close it: testing an orphan proves the orphan works in a fixture and says
+          nothing about the pipeline. Carries an activation TRIGGER rather than only a date, because
+          it returns to scope when the thing it waits on starts. The date remains as a backstop so
+          it cannot be held indefinitely without anyone looking.
       BLOCKING:
         definition: Unregistered, undeferred, or an EXPIRED deferral. Fails the build.
       ACCEPTED_DEBT:
@@ -754,6 +2556,305 @@ namespaces:
         definition: High/critical findings block. Lint blocks only if policy says it matters.
     forbidden: >-
       There is no mode in which a secret finding passes without an exact approved disposition.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # A WEAKENING IS A GOVERNED EXCEPTION, NOT A BOOLEAN PREFERENCE.
+  #
+  # `soft_fail_sast` appeared in no summary, no report, no annotation and nowhere in this file.
+  # A caller could soften the gate and the run was reported identically to one that passed
+  # honestly -- the exact collapse this kit refuses everywhere else, sitting in its own front
+  # door. `policy_mode` above says a mode "changes ENFORCEMENT, never VISIBILITY"; that sentence
+  # was true of the vocabulary and false of the implementation, because nothing emitted it.
+  #
+  # WHICH NAMESPACES WERE CHECKED FIRST, and why none of them owned this:
+  #   disposition_type        an authorized decision about ONE FINDING, matched by fingerprint.
+  #                           A weakening is decided before any finding exists and applies to a
+  #                           CONTROL. Reusing it would let a config flag wear a finding's
+  #                           governance record without a finding's evidence.
+  #   suppression_reason      why an error-suppressing IDIOM exists in source. Per code site,
+  #                           consumed by the suppression linter. A caller input is not a site.
+  #   policy_mode             adoption | strict -- the two shapes the GATE can take. It has no
+  #                           room for per-input attribution, expiry or an exception reference,
+  #                           and adding those to it would make one term carry two models.
+  #   validation_debt_state   an unproven CAPABILITY of the kit. A weakening is a proven
+  #                           capability deliberately not applied.
+  #   scan_depth              DOES own DEPTH_REDUCED, which is reused below rather than
+  #                           respelled. Registering a synonym for it would be the drift this
+  #                           file exists to catch.
+  #   capability_maturity /
+  #   evidence_confidence /
+  #   publication_state       all about what the KIT can prove or has published. None of them
+  #                           can express "the consumer asked for less".
+  control_weakening:
+    description: >-
+      What a caller's configuration did to a control, recorded per input, before any result
+      exists. Three axes kept separate on purpose: the CLASS of surface the input governs, the
+      STATE that surface is currently in, and whether the weakening is ATTRIBUTED to a named
+      decision.
+    consumers:
+      [reusable-nvd-cve, reusable-build-docker, workflow-policy-check, tests/check_weakening_record.py,
+       security-gate, anyone reading a step summary before approving a promotion]
+    rule: >-
+      A WEAKENING THAT IS NOT IN THE RECORD DID NOT HAPPEN, AS FAR AS THE EVIDENCE IS CONCERNED --
+      and that is indistinguishable from a clean run, which is the defect. Every declared input of
+      a workflow carries exactly one class, the classification must be TOTAL, and an input whose
+      class says it can soften or disable a control must reach the record through `env:`.
+      Totality is the control: a check that enumerates weakenings from a hand-written list is a
+      list that goes stale, and a stale list reports clean on a narrower denominator.
+    attribution_rule: >-
+      WHO DECIDED AND ON WHAT BASIS IS PART OF THE RECORD, NOT METADATA ABOUT IT. An unattributed
+      weakening is not an approved one; it is a decision nobody has made yet, and it routes to
+      DECISION_REQUIRED rather than quietly to PROCEED. Expiry is the mechanism -- silence must
+      never renew a weakening, the same rule disposition_type and validation_debt_state already
+      hold for their own exceptions.
+    cannot_establish: >-
+      A workflow receives RESOLVED input values. It cannot see whether a caller passed a value
+      explicitly or inherited the declared default, so `WEAKENING_IN_FORCE` says the control is
+      weakened and says NOTHING about who chose it. Where the kit's own default is the weak side,
+      that is the KIT's weakening and the record must not imply a caller asked for it.
+    values:
+      # ── CLASS: what kind of surface the input governs ────────────────────────────────
+      GATE_SOFTENED:
+        definition: The control still runs and still reports; only the block is withheld.
+        rule: >-
+          NOT the same as CONTROL_DISABLED and must never be merged with it. Evidence still
+          exists here; what is missing is enforcement. Merging them would make a recorded finding
+          look like an absent one.
+      CONTROL_DISABLED:
+        definition: The control does not run. The kit ships it ON, so the off position is a weakening.
+        rule: >-
+          Produces a row in controls_skipped, NEVER a clean row. Nothing looked, so nothing was
+          established -- absence_is_not_a_negative_observation applies unchanged.
+      TARGET_NOT_SUPPLIED:
+        definition: >-
+          The control needs a caller-supplied target (an SBOM path, an image reference) and none
+          was given, so it had nothing to examine.
+        rule: >-
+          Reported in controls_skipped and deliberately NOT counted as a weakening: the kit ships
+          this off because it cannot invent a target. Distinct from CONTROL_DISABLED, where a
+          control that could have run was switched off.
+      SCOPE_NARROWED:
+        definition: What the control is pointed at was changed -- paths, selectors, ecosystems.
+        rule: >-
+          Narrowing scope must never silently reduce VISIBILITY of what was not examined, the
+          same rule discovery_state.EXCLUDED_BY_SELECTOR already carries for language selectors.
+      SEVERITY_RAISED:
+        definition: The threshold at which a finding counts was moved, so fewer findings act.
+        rule: >-
+          A finding below a raised threshold was OBSERVED and not ACTED ON. It must not be
+          reported as absent.
+      CONTROL_SURFACE_DEAD:
+        definition: >-
+          A declared input nothing reads. Setting it has no effect and the run must say so.
+        rule: >-
+          Worse than an absent input: an absent one fails loudly at the call site, while a dead
+          one reads as configuration and silently means nothing. `enable_iac` shipped in exactly
+          this state and a caller who set it got no IaC scanning at all.
+      EXCEPTION_ATTRIBUTION:
+        definition: >-
+          The input carries the governance fields themselves -- reason, authority, exception
+          reference, expiry. It governs no control.
+        rule: >-
+          Classified separately from NOT_A_CONTROL_SURFACE so that emptying the record cannot be
+          disguised as configuring nothing.
+      NOT_A_CONTROL_SURFACE:
+        definition: >-
+          The input changes no control's strength, scope, depth or enforcement -- a language
+          version, a display name, an artifact retention period.
+        rule: >-
+          THE ESCAPE HATCH, AND THEREFORE THE THING TO GUARD. A totality check is defeated the
+          moment everything can be labelled this, so tests/check_weakening_record.py refuses this
+          class for any input whose own description says it softens, skips, disables or reports
+          without failing. The input's documentation is evidence against its classification.
+      # ── STATE: where that surface currently sits ─────────────────────────────────────
+      WEAKENING_AT_BASELINE:
+        definition: The value equals this workflow's declared full-strength setting for that input.
+        rule: >-
+          Baseline means "as strong as this kit ships it", NOT "as strong as it could be". Where
+          the shipped default is itself the weak side, the baseline is declared at the strong
+          value and the default run therefore records WEAKENING_IN_FORCE. That is the honest
+          reading and it is the whole reason this namespace exists.
+      WEAKENING_IN_FORCE:
+        definition: >-
+          The value is weaker than baseline and the DIRECTION IS ESTABLISHED -- a two-position
+          surface whose strong side is known.
+      CONTROL_RECONFIGURED:
+        definition: >-
+          The value differs from baseline on a surface where this record CANNOT establish the
+          direction: a severity list, a path, a query suite. Different is not provably weaker.
+        rule: >-
+          Recorded as owing a decision rather than asserted as a weakening. Claiming a narrowing
+          we cannot demonstrate would be the same overstatement, pointed the other way -- and
+          calling it equivalent to baseline would be the silence this namespace exists to end.
+      # ── ATTRIBUTION: whether a person stands behind it ───────────────────────────────
+      WEAKENING_ATTRIBUTED:
+        definition: A reason AND a named authority are recorded, and any stated expiry is in the future.
+        rule: An exception reference is reported when present and its absence is reported too.
+      WEAKENING_UNATTRIBUTED:
+        definition: A weakening is in force and no reason, or no authority, was recorded.
+        rule: >-
+          NOT an approved exception. It is a decision nobody has made, and it routes to
+          DECISION_REQUIRED. A proposal never buys passage -- the same rule disposition_type
+          states for findings, applied to controls.
+      WEAKENING_EXCEPTION_EXPIRED:
+        definition: A reason and authority exist and the stated expiry has passed.
+        rule: >-
+          Reverts to owing a decision. Silence NEVER renews a weakening; that is the mechanism,
+          exactly as it is for an expired disposition and an expired validation deferral.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  routing_result:
+    description: >-
+      WHAT SHOULD HAPPEN NEXT -- five outcomes, because pass/fail is the collapse this kit
+      refuses everywhere else and then performed at its own boundary. Separate from
+      assurance_state (what the run ESTABLISHED) and enforcement_state (what the gate DID):
+      routing is the third question, addressed to whoever or whatever consumes the run.
+    consumers: [calling workflows, promotion gates, release routing, reviewers]
+    rule: >-
+      EVIDENCE_UNTRUSTED IS THE ONE THAT MATTERS AND THE ONE MOST OFTEN LOST. A scanner that could
+      not be acquired is not a decision someone owes and is emphatically not clean. A container tag
+      that never existed made every `docker run` fail, `|| true` swallowed it, and "could not be
+      acquired" was reported as "found nothing" for two weeks with a seeded fixture sitting
+      unscanned. This value exists so that shape has somewhere to land.
+    precedence: >-
+      BLOCKED > EVIDENCE_UNTRUSTED > DECISION_REQUIRED > PROCEED_WITH_ADVISORY > PROCEED --
+      and BLOCKED requires an OBSERVED refusal, never an inferred one. A refusal is an observation
+      that fired, which is why it outranks the absence of one; but a job that merely failed while a
+      control was unavailable has not demonstrated that anything refused it, so an emitter that
+      cannot separate "a control said no" from "a tool could not be acquired" must fall to
+      EVIDENCE_UNTRUSTED rather than claim the stronger reading. Both stop the run, so the ordering
+      is low-stakes in practice -- and every unavailable control is still named in
+      controls_unavailable regardless of which value won, so precedence never erases a fact.
+    values:
+      PROCEED:
+        definition: Clean, and no weakening was in force.
+        rule: >-
+          Unavailable only when every required control executed at baseline strength. A run with a
+          weakening in force is never PROCEED, however green its scanners were.
+      PROCEED_WITH_ADVISORY:
+        definition: >-
+          Findings were recorded and not blocked, or a weakening is in force -- AND the record says
+          so, with a reason and a named authority.
+        rule: >-
+          The record is what separates this from PROCEED. Without the record it is PROCEED wearing
+          a different name, which is the defect.
+      DECISION_REQUIRED:
+        definition: >-
+          A human or governance decision is owed: a weakening in force with no reason or no
+          authority, or an exception whose expiry has passed.
+        rule: >-
+          NOT a failure and NOT a pass. It is the state a kit should be in when someone has
+          weakened a control and nobody has said why.
+      BLOCKED:
+        definition: A control refused it.
+        reuses: api_boundary.BLOCKED
+        rule: >-
+          The same spelling and the same claim as the enforcement_state value, deliberately
+          reused rather than respelled. A second word for one concept is the drift this registry
+          exists to catch.
+      EVIDENCE_UNTRUSTED:
+        definition: >-
+          The result cannot be relied on. A control was UNAVAILABLE or COLLECTION_FAILED, discovery
+          could not establish applicability, or the evidence was never assembled.
+        rule: >-
+          NEVER DECISION_REQUIRED and never clean. There is nothing here to decide about yet --
+          the input to a decision is missing. Re-acquire the tool and run again; a consumer must
+          not convert this into any successful state without new collection
+          (authority_never_grows_from_loss).
+
+  # ─────────────────────────────────────────────────────────────────────────
+  advisory_cause:
+    description: >-
+      WHY a run routed PROCEED_WITH_ADVISORY. The security gate emits them as `advisory_causes`
+      (comma-separated; empty for every other route) and a caller passes them to the deploy
+      reusables beside routing_result. KDEC-014.
+    consumers: [security-gate, reusable-deploy-appservice, reusable-deploy-containerapp,
+                tests/prove_version_gap_production.py]
+    rule: >-
+      ONE VERDICT, SEVERAL CAUSES, AND THE CONSEQUENCE DIFFERS BY CAUSE. At uat and prod a
+      VERSION_GAP -- wholly or partly -- is refused unless a named person accepts it; the other
+      causes are not. A PROCEED_WITH_ADVISORY with no cause, or an unregistered one, cannot be
+      shown not to be a version gap, so a production-tier deploy refuses it
+      (version_gap_ruling.ADVISORY_CAUSE_UNKNOWN).
+    values:
+      VERSION_GAP:
+        definition: >-
+          A claim is unestablished because no carried scanner can read the target version: the
+          job pointed at it was capped at PARTIAL by the capability selection (KDEC-010), and
+          every claimed candidate's range is `verified: READ`, so the gap is ESTABLISHED (resolve
+          `proven_gap_jobs`).
+        reuses: version_applicability.VERSION_GAP
+        rule: Enforced at uat/prod -- refused without an attributed exception.
+      VERSION_GAP_UNVERIFIED:
+        definition: >-
+          The same cap, where at least one claimed candidate's range is UNVERIFIED: nothing
+          measured whether that scanner could read the target, so the gap is unverified by
+          construction.
+        rule: >-
+          Recorded prominently at uat/prod and NOT enforced, until a seeded corpus makes the range
+          READ -- which turns it into VERSION_GAP with no other change (KDEC-014 rollout).
+      COVERAGE_PARTIAL:
+        definition: >-
+          A claim is unestablished at PARTIAL for a reason the gate did not record as a version
+          gap. Unreachable from a hosted job result today; named so it can never be read as one.
+      WEAKENING_ATTRIBUTED:
+        definition: A weakening is in force, with a reason and a named authority, unexpired.
+        reuses: control_weakening.WEAKENING_ATTRIBUTED
+      FINDINGS_NOT_BLOCKED:
+        definition: >-
+          Findings were established and the gate did not block them (enforcement ADVISORY, or a
+          job that succeeded with findings on record).
+
+  # ─────────────────────────────────────────────────────────────────────────
+  version_gap_ruling:
+    description: >-
+      What a deploy's verdict step decided about a version-gap advisory (KDEC-014, owner
+      2026-10-16: "Version-gap-only PROCEED_WITH_ADVISORY is DEV/TEST ONLY. UAT and prod refuse
+      it until the scanner gap is closed or a named person accepts it as an attributed
+      exception."). Emitted before login as the verdict step output `version_gap_ruling`, shown
+      in the posture record and recorded in deploy-evidence/outcome.json. Written exactly once on
+      every path that reaches the verdict step, VERSION_GAP_NOT_ENGAGED included; EMPTY is never a
+      value: it is an absent answer (see VERSION_GAP_NOT_ENGAGED.rule).
+    consumers: [reusable-deploy-appservice, reusable-deploy-containerapp,
+                tests/prove_version_gap_production.py]
+    rule: >-
+      The exception is the deploy's existing weakening record: a named accepter
+      (weakening_authority) AND a reason (weakening_reason) AND a YYYY-MM-DD weakening_expires
+      that has not passed -- plus the GitHub environment's required reviewers, a platform
+      setting the kit records but cannot read. Any field missing, an unreadable date, or a past
+      date is no exception. Silence never renews it -- the same rule as
+      WEAKENING_EXCEPTION_EXPIRED.
+    values:
+      VERSION_GAP_RECORDED:
+        definition: Below uat (sandbox, dev, test); the deploy proceeds and the gap is recorded.
+      VERSION_GAP_UNVERIFIED_RECORDED:
+        definition: >-
+          At uat or prod, the only gap is a VERSION_GAP_UNVERIFIED: the deploy proceeds with the
+          gap recorded prominently (warning, summary, posture record, outcome.json), never
+          silently, until a seeded corpus proves the range.
+      VERSION_GAP_EXCEPTION_ACCEPTED:
+        definition: >-
+          At uat or prod; a valid attributed exception was supplied, so the deploy proceeds and
+          the accepter, reason and expiry are recorded.
+      VERSION_GAP_REFUSED:
+        definition: At uat or prod with no valid exception; refused before login.
+        rule: Routes DECISION_REQUIRED -- a named person's decision is owed, not new evidence.
+      ADVISORY_CAUSE_UNKNOWN:
+        definition: >-
+          At uat or prod the advisory's cause is absent or unregistered; refused before login.
+        rule: Routes EVIDENCE_UNTRUSTED -- pass the gate's advisory_causes and run again.
+      VERSION_GAP_NOT_ENGAGED:
+        definition: >-
+          The verdict step ran and no version-gap rule applied: the verdict was PROCEED or a
+          refusal on another verdict (BLOCKED, DECISION_REQUIRED, EVIDENCE_UNTRUSTED, none, or an
+          unregistered value), or it was PROCEED_WITH_ADVISORY with no VERSION_GAP or
+          VERSION_GAP_UNVERIFIED cause to rule on at that tier.
+        rule: >-
+          Written explicitly, so the verdict step answers exactly once on every path that reaches
+          it; routes nothing by itself. An EMPTY ruling is NOT this value -- it means the verdict
+          step never ran or never finished, an absent answer: the posture step routes it
+          EVIDENCE_UNTRUSTED (never weaker than a BLOCKED it already reached) and shows it as "not
+          reported". tests/prove_version_gap_production.py.
 
   # ─────────────────────────────────────────────────────────────────────────
   iac_mode:
@@ -783,13 +2884,13 @@ namespaces:
         {definition: "Intended and annotated in the neutral kit, wiring incomplete. A defect, not an import."}
       GENERIC_TEAM_PATTERN:
         {definition: "A pattern any team shape needs. One engagement forcing you to notice a gap does not transfer the capability -- though specific VALUES may be employer policy."}
-      AM_REQUESTED_CAPABILITY:
+      OVERLAY_REQUESTED_CAPABILITY:
         {definition: "Entered from the employer's declared ecosystem. Overlay custody."}
-      AM_SPECIFIC_INTEGRATION:
+      OVERLAY_SPECIFIC_INTEGRATION:
         {definition: "A concrete integration with the employer's own systems. Overlay custody."}
-      AM_SPECIFIC_POLICY:
+      OVERLAY_SPECIFIC_POLICY:
         {definition: "Their values, not the capability. A 3-4 digit ticket rule is policy; the ability to enforce a configurable range is not."}
-      AM_ECOSYSTEM_DECLARED:
+      OVERLAY_ECOSYSTEM_DECLARED:
         {definition: "Declared in their stack and NOT implemented here. Listed so the capability map is honest about what is expected and absent."}
 
   environment_tier:
@@ -823,6 +2924,217 @@ namespaces:
       pair_devs:  {definition: "2. Mutual review possible; no separation of duties on an exception."}
       small_team: {definition: "3-4. Real review, CODEOWNERS routing, rotation."}
       full_team:  {definition: "5+. Approval separation; security reviewer distinct from author and approver."}
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # THE THREE NAMESPACES BELOW ARE STAGE 1'S OWN WORDS (policy resolution, L32 / L33).
+  #
+  # ENFORCEMENT_TIERS_AND_FINDING_BASELINE.md section 13 held the rung vocabulary back until "the
+  # derivation table itself" existed. It exists now (scripts/rung_ladder.py, documented in
+  # docs/architecture/RUNG_DERIVATION_TABLE.md), and scripts/policy_registration.py branches on
+  # every value here. Checked first, per TAXONOMY_DRIFT remedy 2: policy_mode has two values and
+  # is DERIVED from the rung, so it cannot also be the rung; control_weakening is reused unchanged
+  # for a demotion and a supplied-rung divergence rather than respelled; validation_debt_state is
+  # about an unproven capability of the kit, not a repository's declared posture; team_pattern's
+  # rule already says what solo_dev cannot prove, and human_control_availability is the VALUE that
+  # rule was always implying and never had.
+  enforcement_rung:
+    description: >-
+      The business's declared enforcement posture per (repository, environment) cell. The ROOT of
+      the enforcement tree: policy_mode is derived from it, team_pattern says how its floor is
+      satisfied, environment_tier may only raise its floor, cherry-picks may only strengthen it.
+    consumers: [scripts/rung_ladder.py, scripts/policy_registration.py, security-gate (wiring owed),
+                promotion review]
+    rule: >-
+      A RUNG IS A FLOOR, NOT A SETTING, AND IT IS NOT A WORKFLOW INPUT. It sets, per control, the
+      weakest routing result that control may contribute. It is registered on the protected
+      default branch under CODEOWNERS and read from there; a rung a caller can pass is a
+      governance position expressed as a config flag. Declaring downward is a weakening event.
+    forbidden: >-
+      THE DECLARED RUNG MUST NEVER BE REPORTED AS THE EFFECTIVE ONE. "Comfortable with" and
+      "prepared for" are different claims; the evidence of section 4.3 sets the effective rung,
+      the record carries both, and the gate obeys the effective one.
+    values:
+      crawl: {definition: "Only secrets block. Everything else is reported."}
+      walk:  {definition: "Secrets block, plus the cherry-picked set. Everything else is reported with a disposition required."}
+      run:   {definition: "All new critical and high block. Pre-existing findings on an unexpired remediation track proceed with advisory; a lapsed track blocks. A schedule, never amnesty."}
+
+  policy_resolution:
+    description: >-
+      What stage 1 established about this run's enforcement policy before any scanner ran. One
+      resolved outcome and six refusals, each by name, because "could not read the policy" and
+      "the policy is defective" are different facts with different remedies.
+    consumers: [scripts/policy_registration.py, tests/prove_policy_registration.py,
+                security-gate (wiring owed), the posture record]
+    rule: >-
+      NOTHING RESOLVES TO crawl BECAUSE IT COULD NOT READ THE FILE. An unregistered repository is
+      not a repository at the bottom rung; it is a run whose input to enforcement is missing, and
+      it routes EVIDENCE_UNTRUSTED. A policy DEFECT observed by this check -- a supplied
+      policy_mode, a cherry-pick below the floor, non-monotone cells -- is an observed refusal and
+      routes BLOCKED. Both stop a gate; the difference tells a person which problem they have.
+    values:
+      POLICY_RESOLVED:
+        definition: >-
+          The rung, tier, team pattern and cherry-picks were read from the registration on the
+          protected branch; the effective minimum per control was computed; policy_mode was derived.
+      POLICY_MODE_SUPPLIED:
+        definition: The run received policy_mode as an input, in any spelling, with any value.
+        rule: >-
+          REFUSED EVEN WHEN THE VALUE IS THE ONE THE DERIVATION WOULD PRODUCE. A derived value a
+          caller can still override is not derived.
+      CHERRY_PICK_BELOW_FLOOR:
+        definition: A registered cherry-pick asks for a weaker result than the rung's floor for that control.
+        rule: >-
+          A POLICY DEFECT, named. Not applied-then-overridden and not silently dropped: a
+          silently-dropped override reads as applied to everyone who wrote it. The effective set
+          never contains the defective value.
+      CELLS_NOT_MONOTONE:
+        definition: >-
+          rung(sandbox) <= rung(dev) <= rung(test) <= rung(uat) = rung(prod) is violated, or two
+          cells at one tier disagree.
+        rule: >-
+          A policy defect. Without the ordering everything merges at the lower rung and is
+          discovered at the promotion gate, weeks later, belonging to someone who moved on.
+      CELL_NOT_REGISTERED:
+        definition: >-
+          The registration is readable and holds no cell for the targeted environment, or a pull
+          request has no environment reachable from a merge without a human gate.
+        rule: Routes EVIDENCE_UNTRUSTED. An unregistered cell has no floor to apply.
+      REGISTRATION_UNAVAILABLE:
+        definition: >-
+          The registration is absent at the protected ref, unparseable, malformed, or the ref
+          cannot be resolved.
+        rule: >-
+          Routes EVIDENCE_UNTRUSTED, with the reason. Unreadable is not crawl, and the working tree
+          is never consulted as a fallback -- a registration read from the PR under evaluation is
+          a self-signed demotion.
+      POLICY_NUMBER_NOT_CONFIGURED:
+        definition: >-
+          A number the mechanism needs -- a promotion run count, an SLA period, a grace period --
+          is not in the registration's numbers block.
+        rule: >-
+          REFUSED, NEVER DEFAULTED. Every number in the design is a placeholder awaiting an owner's
+          decision, and none of them is implemented as a constant. The code holds no value to fall
+          back to, by construction.
+      RUNG_EFFECTIVE_BELOW_DECLARED:
+        definition: >-
+          The declared rung exceeds what the promotion evidence of section 4.3 supports; the
+          effective rung is the evidenced one.
+        rule: >-
+          NOT A REFUSAL. The record carries both values and the gate obeys the effective one --
+          never the reverse, and never a single number that hides which it is. A dashboard
+          showing run over an estate running at crawl is the most expensive artefact in the design.
+
+  human_control_availability:
+    description: >-
+      Whether a human control a floor or a cherry-pick relies on can EXIST at this team_pattern.
+      Team size changes the mechanism, never the floor.
+    consumers: [scripts/enforcement_axes.py, scripts/policy_registration.py,
+                tests/prove_enforcement_axes.py, breach escalation, promotion review]
+    rule: >-
+      UNVALIDATED IS NOT PASSING AND NOT FAILING. A solo repository cannot prove the human half of
+      the operating model; a control it cannot demonstrate is reported as an unvalidated
+      human-workflow path and the decision routes to an authority outside the repository. Reading
+      team size as permission to lower a rung is how "we're small" becomes a standing exemption.
+    values:
+      HUMAN_CONTROL_AVAILABLE:
+        definition: The pattern has the headcount for this control, and it can be demonstrated.
+      HUMAN_CONTROL_UNVALIDATED:
+        definition: >-
+          The control cannot exist at this headcount -- a second reviewer, approval separation or
+          CODEOWNERS routing on a one-person repository. An UNVALIDATED HUMAN-WORKFLOW PATH.
+        rule: Never rendered as satisfied. The floor it would have served is untouched.
+      HUMAN_CONTROL_NO_SEPARATION:
+        definition: >-
+          The control exists in a weaker form -- two people can review each other -- with no
+          separation of duties on an exception. Recorded as such.
+        rule: >-
+          Distinct from HUMAN_CONTROL_UNVALIDATED -- the review happens; the separation does not.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # THE TWO NAMESPACES BELOW ARE THE REMEDIATION TRACK'S OWN WORDS (L47; ETFB sections 7-8).
+  #
+  # Proposed as CANDIDATES in ENFORCEMENT_TIERS_AND_FINDING_BASELINE.md sections 12.3 and 12.4 and
+  # registered now because scripts/remediation_sla.py branches on them. Section 12.6's advice --
+  # merge 12.4 into disposition fields -- was weighed and not taken: a track state is COMPUTED from
+  # a clock, a deadline and the decisions on record, and nobody writes it; a disposition field is
+  # written by an approver. Putting a computed value where an authorised one lives would let the
+  # clock look like a decision. Section 12.3's spelling flag is honoured: the not-established value
+  # follows the NOT_ESTABLISHED form the kit already uses.
+  fix_availability:
+    description: >-
+      Whether the thing this finding names can currently be fixed, ESTABLISHED rather than assumed.
+      A remediation track is a schedule, and a schedule over something nobody can fix is a promise
+      with a date attached that nobody can keep.
+    consumers: [scripts/remediation_sla.py, tests/prove_remediation_sla.py, remediation track
+                admission, SLA breach routing, promotion review]
+    rule: >-
+      ONLY AN ESTABLISHED VALUE ADMITS A FINDING TO A TRACK. Not-established is a gap, never a
+      benign default -- defaults_are_suspicious_at_assurance_boundaries applies unchanged.
+    values:
+      FIX_AVAILABLE:
+        definition: A patch, version or configuration change exists AND is applicable to this consumer.
+        rule: Upstream having shipped something is not the same as it being applicable here.
+      MITIGATION_AVAILABLE:
+        definition: No fix, and a compensating control exists that can be put in force here.
+        rule: >-
+          Takes a track whose deliverable is the control IN FORCE and EVIDENCED, closing to
+          disposition_type.MITIGATED with its own re-verification expiry -- never to REMEDIATED.
+          The finding remains open and observable.
+      NO_FIX_AVAILABLE:
+        definition: Upstream has none; the thing cannot currently be remediated.
+        rule: >-
+          Requires a DECISION, not a schedule: ACCEPTED_RISK with a named authority and an expiry,
+          or removal of the exposure. Carries a re-check cadence (a configured number), because
+          "no fix exists" is a claim with a shelf life and the single most attractive thing in the
+          model to assert and then forget. The clock still runs.
+      FIX_AVAILABILITY_NOT_ESTABLISHED:
+        definition: Nobody has established which of the above is true.
+        rule: >-
+          May not take a track and may not be grandfathered. Routes to DECISION_REQUIRED at the run
+          rung until established.
+
+  remediation_track_state:
+    description: >-
+      The progress of the obligation created when a pre-existing finding was authorised to
+      proceed. The disposition says it may proceed; this says whether anyone is doing anything
+      about it. COMPUTED from the deadline, the configured grace and the decisions on record.
+    consumers: [scripts/remediation_sla.py, tests/prove_remediation_sla.py, security-gate at the
+                run rung (wiring owed), promotion review, breach escalation]
+    rule: >-
+      A TRACK WITH NO VERIFIED CLOSURES IS AMNESTY WITH PAPERWORK, and it is indistinguishable
+      from a working track until the morning everything expires at once. Nothing here moves a
+      deadline: new deadline = min(existing, re-score date + period), and the module exposes no
+      function that extends one.
+    forbidden: >-
+      BREACHED_ACCEPTED MUST NEVER BE RENDERED AS COMPLIANT. It records an accepted, dated breach;
+      the clock was not reset. And CLOSING A TICKET NEVER PRODUCES CLOSED_VERIFIED -- only the
+      scanner not reproducing the finding over demonstrated coverage does.
+    values:
+      ON_TRACK:
+        definition: Admitted (fix or mitigation established), unexpired, owned.
+      BREACHED_ACCEPTED:
+        definition: >-
+          Past its SLA deadline, with a dated decision from a named authority that has not itself
+          expired -- a per-finding acceptance or the day-one cohort decision. The record says
+          BREACHED, never COMPLIANT.
+      BREACHED_UNDECIDED:
+        definition: >-
+          Past its deadline with no decision in force. Routes DECISION_REQUIRED within the
+          configured grace; after it, carries finding_classification.REOPENED_BY_LAPSE and routes
+          at the rung's lapsed-track floor (BLOCKED at run).
+        rule: A decision after a lapse is a new dated decision; it never restores the original deadline.
+      CLOSED_VERIFIED:
+        definition: The scanner no longer reproduces it, over a scope shown to cover where it lived.
+        rule: Absence without demonstrated coverage is POTENTIALLY_ABSENT, not this.
+      TRACK_STALLED:
+        definition: >-
+          Zero verified closures for this cell in the configured period, regardless of how many
+          entries are unexpired. A DECISION_REQUIRED at promotion review.
+      TRACK_NOT_ADMITTED:
+        definition: >-
+          Not on a track: fix availability not established, NO_FIX_AVAILABLE with no decision in
+          force, no severity, or no deadline.
+        rule: Routes DECISION_REQUIRED. A track without a date is amnesty.
 
   scan_depth:
     description: >-
@@ -877,6 +3189,69 @@ namespaces:
       FAILED:            {definition: Did not complete. Findings NOT ESTABLISHED.}
       COLLECTION_FAILED: {definition: "Ran and produced no usable report -- a pipeline defect, not a code defect."}
       NOT_RUN:           {definition: "Never started: skipped, cancelled, or gated off upstream."}
+      NOT_DECLARED:
+        definition: >-
+          The invoking job did not state this. The ABSENCE of a measurement, not a measurement.
+        rule: >-
+          THIS IS THE DEFAULT, AND THAT IS THE WHOLE POINT. The reporter previously defaulted to
+          COMPLETE, so a job that forgot to declare its execution state got the strongest claim in
+          this namespace for free -- an omission producing a stronger verdict than any statement
+          could. Silence must degrade a verdict, never strengthen it. Carries no finding count,
+          for the same reason NOT_RUN carries none: nobody said anything looked.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # WHETHER THE SCAN EXAMINED ANYTHING, which is not whether it completed.
+  #
+  # A SEPARATE NAMESPACE BECAUSE THE SOURCE OF TRUTH IS DIFFERENT. execution_state is DECLARED by
+  # the job that ran the scanner. This is DERIVED from the scanner's own SARIF, and it has to be,
+  # because the declaring job is the thing being checked: a scanner that crashed and exited 0
+  # produces a job that truthfully declares COMPLETE over a run that read nothing.
+  #
+  # Folding this into execution_state would mean asking the caller whether the caller was right.
+  scan_examination:
+    description: >-
+      WHETHER THE SCAN ACTUALLY READ ANYTHING, derived from the SARIF rather than declared by the
+      job. SARIF carries four witnesses and the reporter read none of them until 2026-10-08:
+      `runs[].invocations[].executionSuccessful`, `runs[].invocations[].toolExecutionNotifications`
+      at error or fatal, `runs[].tool.driver.rules`, and `runs[].artifacts`.
+    consumers: [scripts/scan_report.py, scripts/sarif_validity.py, tests/prove_hollow_scan.py]
+    rule: >-
+      ONLY EXAMINED MAY CARRY A FINDING COUNT. A scan that examined nothing is the third of the
+      four answers -- NOT_APPLICABLE means there was nothing to find, CLEAN means a scanner looked
+      and found nothing, and this means NOTHING LOOKED. Rendering it as CLEAN converts a hole into
+      a reassurance, and it is the strongest-looking output the reporter can emit, so the error is
+      in the permissive direction. Observed live 2026-10-08: five document shapes, including a
+      SARIF whose own `executionSuccessful` was false and one carrying no runs at all, every one
+      rendered as a scope with no findings in it.
+    values:
+      EXAMINED:
+        definition: >-
+          The run declared itself successful (or reported a result) and no witness below says
+          otherwise. An empty `rules` array is NOT a witness unless the tool's validity profile
+          says it is, and no profile does (KDEC-008 OD-2, 2026-10-14: "A clean bandit run is not
+          hollow" -- bandit lists only the rules that fired, so its clean run emits `rules: []`).
+          Retired here 2026-10-16; until then this registry, the reporter and
+          tests/prove_hollow_scan.py held the rule the decision overturned while the runner-side
+          check (scripts/sarif_validity.py) obeyed it.
+      EXAMINED_NOTHING:
+        definition: >-
+          The report parsed and establishes that nothing was examined -- the tool declared its own
+          run unsuccessful, or emitted an error/fatal notification in EITHER
+          `toolExecutionNotifications` or `toolConfigurationNotifications` (bandit files a file it
+          could not parse under the second), or read no artifacts (an `artifacts` array present
+          and empty), or loaded no rules where its profile makes that a witness.
+        rule: >-
+          NOT A ZERO. The scanner's exit code may well have been 0 and the job's declared
+          execution_state COMPLETE; this is the axis on which that is contradicted by the
+          scanner's own account of itself. Findings NOT ESTABLISHED.
+      NOT_DECLARED:
+        definition: >-
+          The document records nothing either way about what it examined, or there was no document
+          to read.
+        rule: >-
+          ABSENCE OF A WITNESS IS NOT A WITNESS OF PRESENCE. A SARIF that omits `invocations`,
+          `rules` and `artifacts` entirely has not said it examined anything, so it carries no
+          count -- the same reasoning as discovery_state.COVERAGE_GAP one namespace over.
 
   untrusted_input_transport:
     description: >-
@@ -996,3 +3371,172 @@ namespaces:
     warning: >-
       Path normalization is NOT provenance. It closed one defect class and proved one abstraction
       generalizes. Do not let "Trivy normalization passed" stand in for this.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  authorization_probe_outcome:
+    description: >-
+      What a DELIBERATE ACCESS ATTEMPT against an external authority established. Added because
+      verify-azure-oidc.yml previously proved authentication and inferred isolation from it:
+      three identities printing three different client IDs, which is not a boundary. A boundary
+      is only established by an attempt that is DENIED, and a denial is only established when
+      the call reached the authority and came back refused ON AUTHORIZATION.
+    consumers: [.github/workflows/verify-azure-oidc.yml, future deploy-scope preconditions]
+    rule: >-
+      A CLI EXITING NON-ZERO IS NOT A REFUSAL. It exits non-zero for a typo, the wrong
+      subscription, throttling, a malformed name, and a scope that does not exist. NOT_FOUND and
+      UNAVAILABLE MUST NOT be counted as REFUSED, and MUST NOT be reported as a pass with a
+      caveat: an assertion that lands on either has established nothing and must cost the run.
+      "The control could not be acquired" recorded as "the control found nothing" is the whole
+      failure family in one line.
+    values:
+      REACHED:
+        definition: The call succeeded. The identity holds the permission at that scope.
+        rule: >-
+          On a scope declared refused this is the loudest available failure -- the authority is
+          WIDER than declared -- and never a tolerable surprise.
+      REFUSED:
+        definition: >-
+          The call reached the authority and was denied on AUTHORIZATION: AuthorizationFailed,
+          LinkedAuthorizationFailed, or a 403 attributable to role assignment.
+        rule: >-
+          THE ONLY OUTCOME THAT IS EVIDENCE OF A BOUNDARY. Its strength is bounded by
+          observation_quality -- where the channel returns 403 for an absent scope too, a REFUSED
+          proves unreachability and NOT the existence of the thing refused.
+        forbidden: >-
+          MUST NOT be produced by a policy denial. Policy is a different control that arrives
+          with the same status code; it classifies UNAVAILABLE, so an RBAC claim is never made on
+          evidence a different mechanism produced.
+      NOT_FOUND:
+        definition: The scope does not exist. There was nothing present to be refused by.
+        rule: >-
+          PROVES NOTHING ABOUT AUTHORIZATION, in either direction. Distinct from
+          discovery_state.NOT_APPLICABLE, which is an evidence-backed absence after a search;
+          this is a NAMED TARGET that did not resolve, and its usual cause is a typo in the
+          declaration that would otherwise read as a successful refusal.
+      UNAVAILABLE:
+        definition: >-
+          The attempt never produced an authorization decision: throttled, network, policy
+          denial, CLI misuse, expired credential, or an error nobody classified.
+        rule: >-
+          THE UNCLASSIFIED CASE DEFAULTS HERE, never to REFUSED. A classifier that guesses in the
+          permissive direction manufactures the exact false assurance this namespace exists to
+          prevent.
+        note: >-
+          Same meaning as scanner_state.UNAVAILABLE and platform_applicability.UNAVAILABLE -- the
+          control could not be acquired. Registered here as well so the probe axis is complete,
+          rather than borrowing a term from a namespace that models something else.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  reusable_workflow_resolution:
+    description: >-
+      WHICH workflow logic produced a piece of evidence, and whether anybody asserted it. A
+      reusable workflow called from another repository presents the CALLER's repository claim
+      while job_workflow_ref names the file and ref that actually ran; that asymmetry is the only
+      in-band proof that private cross-repo resolution happened at all.
+    consumers: [.github/workflows/verify-azure-oidc.yml, future multi-repo collator]
+    rule: >-
+      RECORDED IS NOT ASSERTED. A job_workflow_ref printed into a log tells a reader which kit
+      ref ran. Only a declared expectation compared against it tells anyone that the kit they
+      believe they called is the kit that answered.
+    values:
+      SAME_REPO:
+        definition: job_workflow_ref names the same repository as the repository claim.
+        rule: >-
+          Establishes NOTHING about cross-repo consumption. A kit that only ever proves itself
+          from inside itself has not proven it is consumable.
+      CROSS_REPO:
+        definition: >-
+          job_workflow_ref names a DIFFERENT repository from the repository claim: the caller
+          resolved workflow logic held elsewhere and presented its own identity to do it.
+      MATCHED:
+        definition: job_workflow_ref matched the prefix the caller declared it expected.
+      MISMATCHED:
+        definition: >-
+          job_workflow_ref did not match the declared expectation. The evidence was produced by
+          logic other than the logic the caller named. A supply-chain fact, and it blocks.
+      UNASSERTED:
+        definition: No expectation was declared, so the claim is RECORDED ONLY.
+        rule: >-
+          MUST be reported as its own state and never rendered as a match. An unasserted boundary
+          is an unproven one, and silence here is how a consumer comes to believe a ref was
+          checked when nothing checked it.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  oidc_subject_form:
+    description: >-
+      WHICH of the two shapes GitHub issues for an OIDC `sub` claim the probe verified. GitHub
+      issues repo:<owner>/<name>:environment:<env> for some callers and the immutable-id form
+      repo:<owner>@<owner_id>/<name>@<repo_id>:environment:<env> for others, and a federated
+      credential matches whichever the token presents. Registered 2026-10-15, when hosted runs
+      38824385082 and 38824392100 showed the probe refusing a genuine caller that presented the
+      second form, before login, on a subject the login itself had accepted in September.
+    consumers: [.github/workflows/verify-azure-oidc.yml, tests/prove_oidc_subject_forms.py]
+    rule: >-
+      THE FORM IS RECORDED, NEVER COLLAPSED. A reader of the evidence must be able to tell which
+      comparison established the subject, because the two forms rest on different facts: the
+      plain form on names alone, the id form on names AND the token's own numeric
+      repository_owner_id and repository_id claims. Names and environment are compared exactly as
+      presented, case-sensitively, in both forms.
+    values:
+      PLAIN:
+        definition: The sub claim equalled repo:<owner>/<name>:environment:<env> for the declared expectation.
+      ID_QUALIFIED:
+        definition: >-
+          The sub claim equalled repo:<owner>@<owner_id>/<name>@<repo_id>:environment:<env> where
+          owner, name and environment equal the declared expectation and both ids equal the
+          token's own repository_owner_id and repository_id claims, present and numeric.
+        rule: >-
+          The ids are taken from the TOKEN, never from an input. A declared id would let a caller
+          assert the pair it wanted matched; a token-sourced id only confirms that the subject
+          GitHub composed agrees with the claims GitHub issued alongside it.
+      UNMATCHED:
+        definition: >-
+          The sub claim equalled neither accepted form: a wrong name, owner, environment or id, a
+          missing or non-numeric id claim, or another subject shape entirely (a ref-scoped job).
+        rule: >-
+          HARD FAILS the probe before anything is attempted against Azure. Never rendered as a
+          partial match, and never resolved by relaxing the comparison.
+  ticket_reference_outcome:
+    description: >-
+      WHAT the pull-request ticket-reference gate established about a pull-request description.
+      Registered 2026-10-16 when the gate moved from one consumer's overlay into the core
+      (KDEC-013, .github/workflows/reusable-ticket-reference.yml). The four states the core
+      library scripts/ticket_reference.py already kept apart are here as the gate's outputs, plus
+      the three the workflow adds: a range that is half-configured, an unconfigured site, and an
+      event that carries no description at all.
+    consumers: [.github/workflows/reusable-ticket-reference.yml, tests/prove_ticket_reference_gate.py]
+    rule: >-
+      NEVER A BOOLEAN, AND NOTHING HERE MEANS THE ISSUE EXISTS. Every value answers a question
+      about TEXT. REFERENCE_FOUND means a well-formed reference is present; it never means the
+      work item exists, is open, or describes the change -- that is a reviewer's judgement and,
+      for existence, a tracker call this gate does not make.
+    values:
+      REFERENCE_FOUND:
+        definition: A candidate reference in the description satisfied the configured policy.
+        rule: Format only. Never read as evidence the issue exists or authorises the change.
+      NO_CANDIDATE_PASSED:
+        definition: >-
+          One or more references were found and every one failed the consumer's issue-number
+          range. The rejected keys are named with their digit counts.
+        rule: >-
+          The DEVELOPER acts, unless the range has been outgrown -- then the governance owner
+          raises it. Never collapsed into NO_CANDIDATE: a reference was supplied.
+      NO_CANDIDATE:
+        definition: The description has text and no reference of the configured shape.
+        rule: The developer acts. Not NO_TEXT, which says the description was empty.
+      NO_TEXT:
+        definition: The pull-request description is empty; nothing was searched.
+        rule: The developer acts. Not NO_CANDIDATE.
+      POLICY_MISCONFIGURED:
+        definition: >-
+          An issue-number range was supplied half-configured, non-numeric, or with the lower bound
+          above the upper. The gate could not run.
+        rule: >-
+          A PLATFORM action, never the developer's, and never a pass. The gate does not choose the
+          missing bound: that would be the kit inventing a consumer's numbering.
+      NOT_A_PULL_REQUEST:
+        definition: >-
+          The calling event carries no pull-request description (a push, a schedule, a dispatch),
+          so nothing was assessed.
+        rule: >-
+          Exit 0 and NOT ASSESSED in the summary. Never rendered as a pass: nothing was checked.

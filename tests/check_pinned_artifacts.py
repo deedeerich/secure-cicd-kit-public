@@ -19,6 +19,26 @@ WHY THIS EXISTS
 
     Checked here so neither can recur silently.
 
+TWO THINGS THIS COULD NOT SEE UNTIL 2026-10-14 (gap ledger L23)
+
+      3  A TAG STARTING WITH `v`.      `zricethezav/gitleaks:v8.21.2` is pinned in two workflows and
+                                      the image regex required a leading digit, so the gitleaks pin
+                                      was exempt by regex -- the scanner whose acquisition path this
+                                      checker was written for, never checked.
+      4  ACTION REFERENCES.            `uses: owner/repo@ref` is a pin. `trivy-action@0.28.0` never
+                                      existed either (FUTURE_WORK §9). Resolved here against the
+                                      GitHub API: a tag through git/ref/tags, a 40-hex sha through
+                                      commits, anything else through git/ref/heads. `./` and `$/`
+                                      resolve to this repository at the running commit and are
+                                      pinned by construction; `docker://` is an image.
+
+    Action refs are NOT compared against documentation. The design documents quote third-party
+    workflows verbatim as evidence of a defect (`actions/download-artifact@v4` with no run-id), and
+    a quoted defect is not an instruction to this kit. Images stay compared, as before.
+
+    Set GITHUB_TOKEN (or GH_TOKEN) to lift the unauthenticated GitHub rate limit; the self-test
+    step does. Rate-limited is UNKNOWN, never PASS.
+
 EXIT
     0  every pin resolves and docs agree with code
     1  a pin does not resolve, or a doc contradicts the workflows
@@ -35,17 +55,33 @@ import urllib.error
 import urllib.request
 
 WORKFLOWS = '.github/workflows/*.yml'
+# Composites are code too. Decomposition Phase 2 moves scanner steps -- and the images they pin --
+# into `.github/actions/**`; a checker that reads only workflows would lose every one of them in the
+# move (plan §6.4, §7 step 9; tests/prove_pin_scope_covers_composites.py).
+COMPOSITES = '.github/actions/**/*.yml'
+CODE_PATTERNS = [WORKFLOWS, COMPOSITES]
 DOCS = ['docs/**/*.md', 'README.md']
 
 # `owner/name:tag` where the tag looks like a version. Deliberately narrow: matching every colon in
-# a workflow finds YAML keys, not images.
-IMAGE = re.compile(r'\b([a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*):(\d+\.\d+[\w.-]*)\b')
+# a workflow finds YAML keys, not images. The optional `v` is the 2026-10-14 fix: without it the
+# gitleaks pin (`:v8.21.2`) was never a match.
+IMAGE = re.compile(r'\b([a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*):(v?\d+\.\d+[\w.-]*)\b')
+
+# `uses: owner/repo[/path]@ref`. The repository is the first two segments; a path inside it does not
+# change which ref has to exist. `./`, `$/` and `docker://` start differently and never match.
+ACTION = re.compile(r'uses:\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:/[A-Za-z0-9_./-]+)?@([A-Za-z0-9_./-]+)')
+SHA40 = re.compile(r'^[0-9a-f]{40}$')
 
 # A self-test tag that must NOT resolve. Without this the checker cannot distinguish "everything
 # resolves" from "the resolver is broken and returns True for everything" -- which is precisely the
 # class of defect it exists to catch.
 SELF_TEST_BAD = ('securego/gosec', '2.28.0')
 SELF_TEST_GOOD = ('securego/gosec', '2.24.6')
+# The same pair for action refs. The bad one is a tag nobody will ever cut.
+SELF_TEST_ACTION_BAD = ('actions/checkout', 'v0.0.0-this-tag-must-not-exist')
+SELF_TEST_ACTION_GOOD = ('actions/checkout', 'v4')
+
+GITHUB_API = 'https://api.github.com'
 
 
 def uncommented(path):
@@ -65,6 +101,64 @@ def find_images(patterns):
                 for repo, tag in IMAGE.findall(line):
                     out.setdefault((repo, tag), []).append('%s:%d' % (f, lineno))
     return out
+
+
+def find_actions(patterns):
+    """-> {(owner/repo, ref): [locations]} for every third-party `uses:` in code."""
+    out = {}
+    for pat in patterns:
+        for f in glob.glob(pat, recursive=True):
+            if not os.path.isfile(f):
+                continue
+            for lineno, line in uncommented(f):
+                for repo, ref in ACTION.findall(line):
+                    out.setdefault((repo, ref), []).append('%s:%d' % (f, lineno))
+    return out
+
+
+def ref_kind(ref):
+    """'sha' for a full commit id, else 'tag'. A tag that is really a branch is tried as a branch
+    only after the tag lookup says no, so a floating ref still counts as resolving -- whether it
+    SHOULD float is the pinning policy's question (scripts/pin-actions.sh), not this one's."""
+    return 'sha' if SHA40.match(ref) else 'tag'
+
+
+def _github(path, timeout=15):
+    """-> (status, json-or-None). Network/auth trouble is a status of None, never a verdict."""
+    headers = {'User-Agent': 'secure-cicd-kit-pin-check', 'Accept': 'application/vnd.github+json'}
+    token = os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN')
+    if token:
+        headers['Authorization'] = 'Bearer ' + token
+    try:
+        req = urllib.request.Request(GITHUB_API + path, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.getcode(), json.load(r)
+    except urllib.error.HTTPError as e:
+        return e.code, None
+    except Exception:
+        return None, None
+
+
+def action_resolves(repo, ref, timeout=15):
+    """True / False / None(unknown). An exact match on the returned ref, never a prefix."""
+    if repo.count('/') != 1:
+        return None
+    if ref_kind(ref) == 'sha':
+        status, _ = _github('/repos/%s/commits/%s' % (repo, ref), timeout)
+        if status == 200:
+            return True
+        # 404: no such commit. 422: not a commit id at all. Both mean the pin cannot resolve.
+        if status in (404, 422):
+            return False
+        return None
+    for kind in ('tags', 'heads'):
+        status, body = _github('/repos/%s/git/ref/%s/%s' % (repo, kind, ref), timeout)
+        if status == 200 and isinstance(body, dict) and body.get('ref') == 'refs/%s/%s' % (kind, ref):
+            return True
+        if status != 404:
+            # 403 is the rate limit or a private repository; 401 a bad token. Not an observation.
+            return None
+    return False
 
 
 def resolves(repo, tag, timeout=15):
@@ -96,6 +190,20 @@ def self_test():
         return 1
     print('self-test ok: %s:%s resolves, %s:%s does not' %
           (SELF_TEST_GOOD[0], SELF_TEST_GOOD[1], SELF_TEST_BAD[0], SELF_TEST_BAD[1]))
+    abad = action_resolves(*SELF_TEST_ACTION_BAD)
+    agood = action_resolves(*SELF_TEST_ACTION_GOOD)
+    if abad is None or agood is None:
+        print('SELF-TEST UNKNOWN: GitHub API unreachable or rate-limited. Reporting UNKNOWN, not PASS.')
+        print('(set GITHUB_TOKEN to lift the unauthenticated limit)')
+        return 2
+    if abad is not False or agood is not True:
+        print('SELF-TEST FAILED: action resolver said bad=%r good=%r (expected False / True).'
+              % (abad, agood))
+        print('A resolver that cannot tell a real ref from a nonexistent one proves nothing.')
+        return 1
+    print('self-test ok: %s@%s resolves, %s@%s does not' %
+          (SELF_TEST_ACTION_GOOD[0], SELF_TEST_ACTION_GOOD[1],
+           SELF_TEST_ACTION_BAD[0], SELF_TEST_ACTION_BAD[1]))
     return 0
 
 
@@ -104,10 +212,11 @@ def main():
     if st:
         return st
 
-    code = find_images([WORKFLOWS])
+    code = find_images(CODE_PATTERNS)
     docs = find_images(DOCS)
+    actions = find_actions(CODE_PATTERNS)
 
-    print('\n=== pinned images in workflows ===')
+    print('\n=== pinned images in workflows and composites ===')
     failed, unknown = [], []
     for (repo, tag), where in sorted(code.items()):
         r = resolves(repo, tag)
@@ -117,6 +226,17 @@ def main():
             failed.append((repo, tag, where))
         elif r is None:
             unknown.append((repo, tag, where))
+
+    print('\n=== action references in workflows and composites ===')
+    for (repo, ref), where in sorted(actions.items()):
+        r = action_resolves(repo, ref)
+        mark = {True: 'ok  ', False: 'FAIL', None: '????'}[r]
+        print('  %s %s@%-42s %s (%d site%s)' % (mark, repo, ref, where[0], len(where),
+                                                 '' if len(where) == 1 else 's'))
+        if r is False:
+            failed.append((repo, '@' + ref, where))
+        elif r is None:
+            unknown.append((repo, '@' + ref, where))
 
     print('\n=== version claims in documentation vs workflows ===')
     drift = []
@@ -135,7 +255,8 @@ def main():
     print('\n' + '=' * 72)
     if failed:
         for repo, tag, where in failed:
-            print('FAIL: %s:%s DOES NOT RESOLVE  -> %s' % (repo, tag, ', '.join(where)))
+            sep = '' if tag.startswith('@') else ':'
+            print('FAIL: %s%s%s DOES NOT RESOLVE  -> %s' % (repo, sep, tag, ', '.join(where)))
         print('An unresolvable pin is worse than a stale one: a stale scanner still runs.')
         return 1
     if drift:
@@ -144,10 +265,13 @@ def main():
         return 1
     if unknown:
         for repo, tag, _ in unknown:
-            print('UNKNOWN: %s:%s could not be checked (non-Docker-Hub registry or network).' % (repo, tag))
+            sep = '' if tag.startswith('@') else ':'
+            print('UNKNOWN: %s%s%s could not be checked (other registry, rate limit or network).'
+                  % (repo, sep, tag))
         print('Reported as UNKNOWN. Failure to observe is not an observation.')
         return 2
-    print('PASS: every pinned image resolves; documentation agrees with the workflows.')
+    print('PASS: every pinned image and every action ref resolves; documentation agrees with the '
+          'workflows on image versions.')
     return 0
 
 

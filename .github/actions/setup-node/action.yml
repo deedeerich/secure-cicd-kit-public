@@ -9,6 +9,28 @@ inputs:
     description: "Run npm ci"
     required: false
     default: "true"
+  cache-dependency-path:
+    description: >-
+      Path to the lock file the npm cache keys on. Empty keeps the upstream default, which looks
+      for a lock file in the REPOSITORY ROOT ONLY and is not recursive -- so a monorepo, or any
+      repo whose package-lock.json lives in a subdirectory, must pass this or the composite fails
+      before it installs anything. Found by the first probe that ever ran this composite.
+    required: false
+    default: ""
+# WHAT THE INSTALL BRANCH DID, SAID OUT LOUD. The composite used to run `npm ci` and report
+# nothing, so a green step that installed everything and a green step that installed nothing read
+# the same -- the silence of a scanner that runs and reports nothing (D7), one layer down. Found by
+# the first proof to run the install branch (tests/prove_setup_node_installs.py).
+outputs:
+  install_state:
+    description: "INSTALLED | SKIPPED. Which branch ran; never infer it from a green step."
+    value: ${{ steps.install.outputs.install_state }}
+  installed:
+    description: >-
+      Space-separated name@version of every direct dependency the lockfile declares, as found ON
+      DISK after `npm ci` (each package's own package.json, not the lockfile's claim). Empty when
+      SKIPPED. A declared dependency absent from disk fails the step rather than being listed.
+    value: ${{ steps.install.outputs.installed }}
 runs:
   using: composite
   steps:
@@ -16,7 +38,47 @@ runs:
       with:
         node-version: ${{ inputs.node-version }}
         cache: npm
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}
     - name: npm ci
-      if: inputs.install == 'true'
+      id: install
       shell: bash
-      run: npm ci --no-fund
+      env:
+        # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py). The branch
+        # is taken in the script rather than in `if:` so the SKIPPED state is written too: a step
+        # that never ran has no outputs, and no output reads as nothing to say.
+        INSTALL: ${{ inputs.install }}
+      run: |
+        if [ "$INSTALL" != "true" ]; then
+          echo "install=$INSTALL — skipping npm ci."
+          echo "install_state=SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "installed=" >> "$GITHUB_OUTPUT"
+          {
+            echo "### setup-node: npm ci SKIPPED (install=$INSTALL)"
+            echo ""
+            echo "Nothing installed."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+        # `npm ci` refuses without a lockfile and refuses a lockfile out of sync with package.json;
+        # under the composite's `-e` either refusal ends the step here, before any state is written.
+        npm ci --no-fund
+        # What is on disk, for each direct dependency the lockfile declares -- read from the
+        # installed package's own metadata, so the report is of the install, not of the intent.
+        installed="$(node -e 'const fs = require("fs"); const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8")); const root = (lock.packages || {})[""] || {}; const names = Object.keys(Object.assign({}, root.dependencies, root.devDependencies, root.optionalDependencies)); console.log(names.map(n => { try { return n + "@" + JSON.parse(fs.readFileSync("node_modules/" + n + "/package.json", "utf8")).version; } catch (e) { return n + "@MISSING"; } }).join(" "));')"
+        case " $installed " in
+          *@MISSING*)
+            echo "::error title=npm ci reported success and a declared dependency is not on disk::$installed. The install cannot be reported as what the lockfile declares."
+            exit 1 ;;
+        esac
+        echo "install_state=INSTALLED" >> "$GITHUB_OUTPUT"
+        echo "installed=$installed" >> "$GITHUB_OUTPUT"
+        {
+          echo "### setup-node: installed from package-lock.json"
+          echo ""
+          if [ -n "$installed" ]; then
+            for d in $installed; do echo "- \`$d\`"; done
+          else
+            echo "The lockfile declares no direct dependencies; nothing to install."
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+        echo "Installed from package-lock.json: ${installed:-(no direct dependencies declared)}"

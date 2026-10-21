@@ -1,0 +1,25 @@
+# Fixture: the shape .github/actions/docker-build-push shipped in. A composite is a build path
+# too, and this must FAIL exactly as the workflow shape does.
+name: fixture composite double build
+description: fixture
+outputs:
+  image-digest:
+    value: ${{ steps.push.outputs.digest }}
+runs:
+  using: composite
+  steps:
+    - name: Build (load locally for scan)
+      uses: docker/build-push-action@v7
+      with:
+        load: true
+        tags: reg.example/app:t
+    - name: Trivy image scan
+      uses: aquasecurity/trivy-action@v0.36.0
+      with:
+        image-ref: reg.example/app:t
+    - name: Push
+      id: push
+      uses: docker/build-push-action@v7
+      with:
+        push: true
+        tags: reg.example/app:t

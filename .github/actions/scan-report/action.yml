@@ -1,0 +1,178 @@
+name: Render the security scan report
+description: >-
+  Renders the consolidated report from per-scanner state files, using the kit's canonical
+  scripts/scan_report.py in place. Reached through `$/`, which delivers the whole kit repository at
+  the commit the caller pinned (decomposition plan header, run 38468728084). So the reporter runs
+  beside the identity modules it imports: one copy, no generated heredoc, no digest pin (C1,
+  KDEC-002). Dispositions are read from the protected default branch, never from the checkout.
+
+inputs:
+  states-dir:
+    description: Directory of state-*.json files and the SARIF they name.
+    required: true
+  expect:
+    description: Comma-separated scanner names that must each have a row.
+    required: true
+  default-branch:
+    description: The repository's default branch, where the disposition register is read.
+    required: false
+    default: main
+  max-detail:
+    description: Most findings rendered in detail per scanner.
+    required: false
+    default: '20'
+  run-url:
+    description: Link to this run, for the report header.
+    required: false
+    default: ''
+  environment:
+    description: >-
+      The (repository, environment) cell the baseline ledger is keyed by. Empty names no
+      environment: the identity claim is then EVIDENCE_UNTRUSTED and nothing is grandfathered.
+    required: false
+    default: ''
+  # ── KDEC-010: the capability selection, as the resolve job publishes it ──────────────────
+  capped-jobs:
+    description: >-
+      needs.resolve.outputs.capped_jobs -- space-separated scanner jobs pointed at a VERSION_GAP
+      no carried scanner can read. Their PASS row renders PARTIAL, never PASS.
+    required: false
+    default: ''
+  not-selected-jobs:
+    description: >-
+      needs.resolve.outputs.not_selected_jobs -- jobs not selected for a target another scanner
+      serves. Their PASS row renders PARTIAL, labelled as a substitution, never equivalence.
+    required: false
+    default: ''
+  fitness-notes:
+    description: needs.resolve.outputs.fitness_notes -- the resolver's note per capped or not-selected job.
+    required: false
+    default: ''
+
+outputs:
+  # The findings evidence the gate reads (C3): blocking findings over ESTABLISHED rows only, after
+  # dispositions, and which jobs established any. Written by scan_report.py before any fault exit.
+  blocking_findings:
+    description: Blocking findings across established rows. Absent means never assembled, not zero.
+    value: ${{ steps.r.outputs.blocking_findings }}
+  jobs_with_findings:
+    description: Space-separated jobs that established at least one blocking finding.
+    value: ${{ steps.r.outputs.jobs_with_findings }}
+  findings:
+    description: >-
+      Path of the machine-readable findings file (L52): one identify() record per finding, with
+      the three identity components, scanner, identity_scope, what_aliases, cwe and
+      canonical_path. Written inside states-dir, so the evidence artifact carries it. Absent means
+      the reporter never got that far, never "no findings".
+    value: ${{ steps.r.outputs.findings }}
+  identity_routing:
+    description: >-
+      PROCEED | EVIDENCE_UNTRUSTED for the IDENTITY CLAIM only (L44/L45): untrusted when the
+      ledger could not be used or an identity could not be computed. Never changes what blocks.
+    value: ${{ steps.r.outputs.identity_routing }}
+  baseline_state:
+    description: The ledger state the cascade ran against (LEDGER_INTACT, LEDGER_EMPTY, ...) or BASELINE_UNAVAILABLE.
+    value: ${{ steps.r.outputs.baseline_state }}
+
+runs:
+  using: composite
+  steps:
+    - name: Render the report
+      id: r
+      shell: bash
+      env:
+        # Every input arrives as data, never as script text (the rule, not a case-by-case call).
+        STATES_DIR: ${{ inputs.states-dir }}
+        EXPECT: ${{ inputs.expect }}
+        DEFAULT_BRANCH: ${{ inputs.default-branch }}
+        MAX_DETAIL: ${{ inputs.max-detail }}
+        RUN_URL: ${{ inputs.run-url }}
+        ENVIRONMENT: ${{ inputs.environment }}
+        CAPPED_JOBS: ${{ inputs.capped-jobs }}
+        NOT_SELECTED_JOBS: ${{ inputs.not-selected-jobs }}
+        FITNESS_NOTES: ${{ inputs.fitness-notes }}
+      run: |
+        set -uo pipefail
+        kit_root="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)"
+        reporter="${kit_root}/scripts/scan_report.py"
+
+        # A MISSING REPORTER IS NOT AN EMPTY REPORT. Without it there is no correlation, no
+        # severity and no disposition, and the gate must hear about it rather than publish an
+        # evidence artifact that documents nothing.
+        if [ ! -s "$reporter" ]; then
+          echo "::error title=Reporter absent::${reporter} is not in the kit delivered by \$/."
+          echo "The run cannot be documented, and an undocumented run must not be read as one that was."
+          exit 1
+        fi
+
+        # DISPOSITIONS COME FROM THE PROTECTED DEFAULT BRANCH, NEVER FROM THIS CHECKOUT.
+        #
+        # On a pull_request run the workspace IS the PR's tree. Reading the register from there lets
+        # a pull request approve its own exceptions -- add a secret and, in the same PR, an
+        # ACCEPTED_RISK entry for its fingerprint. So the register is fetched from the default
+        # branch by ref, and a failed fetch means ABSENT, never a local-file fallback.
+        disp=""
+        ledger=""
+        aliases=""
+        def_branch="${DEFAULT_BRANCH:-main}"
+        if git rev-parse --git-dir >/dev/null 2>&1; then
+          # NO DEPTH LIMIT ON THIS FETCH. It used to be `--depth=1`, which makes even a full
+          # checkout shallow at the fetched branch -- and the ledger read below needs the merge
+          # base of this commit and that branch, which a shallow boundary hides.
+          # suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE -- no register, no default-branch ref
+          # or a clone that cannot reach it are legitimate states. Each leaves $disp empty,
+          # which the reporter renders as "no disposition register configured" -- louder than a
+          # failed job and incapable of honouring an unapproved exemption.
+          git fetch --no-tags origin "$def_branch" >/dev/null 2>&1 || true
+          for c in .security/dispositions.json .github/security/dispositions.json; do
+            if git show "FETCH_HEAD:$c" > "${RUNNER_TEMP}/dispositions.json" 2>/dev/null; then
+              disp="${RUNNER_TEMP}/dispositions.json"
+              echo "disposition register read from origin/$def_branch:$c"
+              break
+            fi
+          done
+
+          # THE BASELINE LEDGER (L45), read the PR-safe way: grandfathering from the merge base
+          # of this commit and the default branch, removals from the default tip. Nothing is read
+          # from this checkout's working tree -- a PR must not grandfather what it introduces.
+          # Every value on the command line is a variable; the caller's data never becomes code.
+          ledger="${RUNNER_TEMP}/ledger.json"
+          default_ref="origin/${def_branch}"
+          # suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE -- exit 1 means the ledger is not
+          # usable (absent, unparseable, no merge base) and the STATE saying which is inside the
+          # file it wrote. The reporter publishes it as BASELINE_UNAVAILABLE for the identity
+          # claim; failing this step would replace that sentence with silence, and the block
+          # does not depend on it either way.
+          python3 "${kit_root}/scripts/baseline_ledger.py" --repo . --default-ref "$default_ref" \
+            --head-ref HEAD --out "$ledger" || true
+
+          # THE RULE-FAMILY ALIAS TABLE (L46), from the same protected branch. Absent is absent:
+          # the reporter then uses the namespaced-prefix tier and records that it did.
+          if git show "FETCH_HEAD:.security/rule-family-aliases.json" \
+               > "${RUNNER_TEMP}/rule-family-aliases.json" 2>/dev/null; then
+            aliases="${RUNNER_TEMP}/rule-family-aliases.json"
+            echo "rule-family alias table read from origin/$def_branch"
+          fi
+        fi
+        if [ -z "$disp" ]; then
+          echo "::notice title=No disposition register::None found on origin/${def_branch}."
+          echo "Every finding below is untriaged by definition. A local file in this checkout"
+          echo "is deliberately NOT used -- a PR must not be able to approve its own exceptions."
+        fi
+        if [ -z "$ENVIRONMENT" ]; then
+          echo "::notice title=No environment named::The baseline ledger is keyed by environment"
+          echo "and the caller named none, so nothing is grandfathered and the identity claim is"
+          echo "EVIDENCE_UNTRUSTED. Blocking is unaffected. Pass \`environment:\` to the workflow."
+        fi
+
+        python3 "$reporter" --batch "$STATES_DIR" \
+          ${disp:+--dispositions "$disp"} \
+          ${ledger:+--ledger "$ledger"} \
+          --environment "$ENVIRONMENT" \
+          ${aliases:+--rule-families "$aliases"} \
+          --expect "$EXPECT" \
+          --max-detail "$MAX_DETAIL" \
+          --run-url "$RUN_URL" \
+          --capped-jobs "$CAPPED_JOBS" \
+          --not-selected-jobs "$NOT_SELECTED_JOBS" \
+          --fitness-notes "$FITNESS_NOTES"

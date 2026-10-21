@@ -1,5 +1,12 @@
 name: "Docker Build, Scan & Push"
-description: "Buildx build, Trivy image scan, Syft SPDX SBOM, push to ACR, capture digest + SBOM hash. Assumes Azure login already performed."
+description: >-
+  Build ONCE, Trivy-gate the loaded image, Syft SBOM of the same bytes, push those bytes, then ask
+  the registry what it holds. Emits the digest WITH its identity class. Assumes Azure login done.
+# THE SAME CHAIN AS reusable-build-docker.yml, for repos that build inside their own workflow.
+# This composite used to build twice: a `load: true` build that was scanned and SBOM'd, and a
+# second `push: true` build that reached the registry. Two invocations are two images unless the
+# Dockerfile is bit-reproducible, so the gate cleared one artifact and the registry received
+# another (ledger L85, review G3-5). tests/check_artifact_identity.py now reads composites too.
 inputs:
   acr-login-server:
     description: "ACR login server FQDN (e.g. myacr.azurecr.io)"
@@ -29,8 +36,18 @@ inputs:
     default: "true"
 outputs:
   image-digest:
-    description: "SHA256 digest of the pushed image"
+    description: >-
+      Registry manifest digest of the pushed image. Only safe to treat as provenance when
+      artifact-identity is REGISTRY_IDENTITY_PROVEN.
     value: ${{ steps.push.outputs.digest }}
+  config-digest:
+    description: "Config digest of the image the gate and the SBOM inspected (the SCANNED artifact)."
+    value: ${{ steps.built.outputs.config_digest }}
+  artifact-identity:
+    description: >-
+      REGISTRY_IDENTITY_PROVEN | LOCAL_BUILD_ONLY | IDENTITY_UNVERIFIED | NOT_ESTABLISHED. Never
+      collapse into a boolean.
+    value: ${{ steps.classify.outputs.class }}
   sbom-sha256:
     description: "SHA256 of the SPDX SBOM"
     value: ${{ steps.sbom.outputs.sha256 }}
@@ -40,16 +57,38 @@ runs:
     - uses: docker/setup-buildx-action@v4
     - name: ACR login
       shell: bash
-      run: az acr login --name "$(echo '${{ inputs.acr-login-server }}' | cut -d. -f1)"
-    - name: Build (load locally for scan)
+      env:
+        ACR_LOGIN_SERVER: ${{ inputs.acr-login-server }}
+      run: az acr login --name "${ACR_LOGIN_SERVER%%.*}"
+    - name: Build (once — this is the only image that will exist)
+      id: build
       uses: docker/build-push-action@v7
       with:
         context: ${{ inputs.context }}
         file: ${{ inputs.dockerfile }}
         load: true
         tags: ${{ inputs.acr-login-server }}/${{ inputs.image-repository }}:${{ inputs.image-tag }}
+    - name: Establish the built image identity
+      id: built
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.acr-login-server }}/${{ inputs.image-repository }}:${{ inputs.image-tag }}
+        ACTION_ID: ${{ steps.build.outputs.imageid }}
+      run: |
+        CONFIG_DIGEST="$(docker image inspect --format '{{.Id}}' "$IMAGE")"
+        if [ -z "$CONFIG_DIGEST" ]; then
+          echo "::error title=Built image identity not established::no Id for $IMAGE."
+          exit 1
+        fi
+        if [ -n "$ACTION_ID" ] && [ "$ACTION_ID" != "$CONFIG_DIGEST" ]; then
+          echo "::error title=Image identity disagreement::build-push-action reported $ACTION_ID; the daemon reports $CONFIG_DIGEST. The tag moved. Refusing to scan."
+          exit 1
+        fi
+        echo "config_digest=$CONFIG_DIGEST" >> "$GITHUB_OUTPUT"
     - name: Trivy image scan (gate before push)
       uses: aquasecurity/trivy-action@v0.36.0
+      env:
+        TRIVY_IMAGE_SRC: docker   # the daemon's image, never a same-tagged registry image
       with:
         image-ref: ${{ inputs.acr-login-server }}/${{ inputs.image-repository }}:${{ inputs.image-tag }}
         severity: ${{ inputs.trivy-severity }}
@@ -58,23 +97,76 @@ runs:
     - name: SBOM (Syft, SPDX JSON)
       id: sbom
       shell: bash
+      env:
+        IMAGE: ${{ inputs.acr-login-server }}/${{ inputs.image-repository }}:${{ inputs.image-tag }}
       run: |
-        curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
-        syft "${{ inputs.acr-login-server }}/${{ inputs.image-repository }}:${{ inputs.image-tag }}" -o spdx-json=sbom.spdx.json
+        # Pinned (ledger L84): syft v1.54.1, verified against a recorded digest.
+        s=syft_1.54.1_linux_amd64.tar.gz
+        curl -sSfLO "https://github.com/anchore/syft/releases/download/v1.54.1/$s"
+        echo "c069905b391cc4c20a5ba65ad5c10be2a7ba074f8ea6ad203e24d14e303dad47  $s" | sha256sum -c -
+        tar -xzf "$s" syft && sudo mv syft /usr/local/bin/ && rm -f "$s"
+        syft "docker:$IMAGE" -o spdx-json=sbom.spdx.json
         echo "sha256=$(sha256sum sbom.spdx.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-    - name: Push (digest-pinned)
+    # `docker push` ships the bytes already in the daemon -- the scanned bytes. Not a rebuild.
+    - name: Push (the scanned bytes — not a rebuild)
       id: push
       if: inputs.push == 'true'
-      uses: docker/build-push-action@v7
-      with:
-        context: ${{ inputs.context }}
-        file: ${{ inputs.dockerfile }}
-        push: true
-        tags: ${{ inputs.acr-login-server }}/${{ inputs.image-repository }}:${{ inputs.image-tag }}
-    - name: Upload SBOM artifact
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.acr-login-server }}/${{ inputs.image-repository }}:${{ inputs.image-tag }}
+        REPO: ${{ inputs.acr-login-server }}/${{ inputs.image-repository }}
+      run: |
+        docker push "$IMAGE"
+        DIGEST=""
+        while IFS= read -r rd; do
+          case "$rd" in "$REPO"@sha256:*) DIGEST="${rd#*@}"; break ;; esac
+        done < <(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE")
+        if [ -z "$DIGEST" ]; then
+          echo "::error title=Push digest not established::no RepoDigest for $REPO after push."
+          exit 1
+        fi
+        echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+    # The round trip. Everything above is one machine agreeing with itself.
+    - name: Assert artifact identity — the registry is holding the image that was scanned
+      id: assert_identity
+      if: inputs.push == 'true'
+      shell: bash
+      env:
+        REPO: ${{ inputs.acr-login-server }}/${{ inputs.image-repository }}
+        SCANNED: ${{ steps.built.outputs.config_digest }}
+        DIGEST: ${{ steps.push.outputs.digest }}
+      run: |
+        RAW="$(docker buildx imagetools inspect --raw "$REPO@$DIGEST")"
+        REGISTRY_CONFIG="$(printf '%s' "$RAW" | jq -r '.config.digest // empty')"
+        if [ -z "$REGISTRY_CONFIG" ]; then
+          echo "::error title=Artifact identity UNESTABLISHED::$REPO@$DIGEST has no .config.digest (an index or attestation manifest)."
+          exit 1
+        fi
+        if [ "$REGISTRY_CONFIG" != "$SCANNED" ]; then
+          echo "::error title=ARTIFACT IDENTITY MISMATCH::scanned $SCANNED; the registry says $REPO@$DIGEST has config $REGISTRY_CONFIG."
+          exit 1
+        fi
+        echo "Artifact identity PROVEN: $DIGEST -> config $SCANNED"
+    - name: Classify what the SBOM is evidence of
+      id: classify
       if: always()
+      shell: bash
+      env:
+        PUSH: ${{ inputs.push }}
+        ASSERTED: ${{ steps.assert_identity.outcome }}
+      run: |
+        if [ ! -f sbom.spdx.json ]; then CLASS=NOT_ESTABLISHED
+        elif [ "$PUSH" != "true" ]; then CLASS=LOCAL_BUILD_ONLY
+        elif [ "$ASSERTED" = "success" ]; then CLASS=REGISTRY_IDENTITY_PROVEN
+        else CLASS=IDENTITY_UNVERIFIED
+        fi
+        echo "class=$CLASS" >> "$GITHUB_OUTPUT"
+        echo "artifact identity: $CLASS"
+    - name: Upload SBOM artifact
+      if: always() && steps.classify.outputs.class != 'NOT_ESTABLISHED'
       uses: actions/upload-artifact@v7
       with:
-        name: sbom-${{ inputs.image-tag }}
+        # Named by evidence class, so an unverified SBOM cannot be cited as a proven one.
+        name: sbom-${{ steps.classify.outputs.class }}-${{ inputs.image-tag }}
         path: sbom.spdx.json
-        if-no-files-found: warn
+        if-no-files-found: error

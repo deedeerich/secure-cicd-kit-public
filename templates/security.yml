@@ -1,5 +1,6 @@
 # Starter: drop this into a calling repo at .github/workflows/security.yml
-# Replace YOUR_ORG and pin @v1 to a released tag once the kit repo is tagged.
+# Replace YOUR_ORG and pin the kit by COMMIT SHA (a branch or moving tag means the verdict came from
+# code nobody chose). Wiring a deploy as well: use templates/build-deploy.yml.
 name: Security
 
 on:
@@ -9,18 +10,24 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Everything the kit's jobs request must be granted here, or GitHub refuses the whole run before any
+# job starts (startup_failure). tests/check_caller_permissions.py holds this template to that.
 permissions:
   contents: read
   security-events: write
+  actions: read          # the CodeQL job reads workflow metadata on private repositories
 
 jobs:
   security:
-    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-security.yml@v1
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-security.yml@0000000000000000000000000000000000000000   # pin a commit SHA
     with:
-      language: python        # python | node | multi
-      enable_iac: true        # set true if the repo contains Terraform / IaC
-      # semgrep_config: "p/default p/owasp-top-ten p/python"
-      # fail_on_severity: "CRITICAL,HIGH"
-      # soft_fail_sast: true  # SAST reports SARIF but doesn't block; flip to false to enforce
+      environment: prod       # the baseline-ledger environment this run is for
+      # The defaults ARE the baseline (soft_fail_sast: false, language: auto): change nothing to get
+      # PROCEED on a clean run. Softening any control is a weakening -- attribute it or it routes
+      # DECISION_REQUIRED:
+      # soft_fail_sast: true
+      # weakening_reason: "first adoption on an inherited backlog"
+      # weakening_authority: "security lead"
+      # weakening_expires: "2026-12-31"
     secrets:
       SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}   # optional; remove if unused

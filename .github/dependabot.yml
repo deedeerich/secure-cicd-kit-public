@@ -23,11 +23,19 @@
 #   reason discovery in reusable-security.yml turns everything on when it cannot establish
 #   applicability.
 
+# THE TEST FIXTURES ARE DELIBERATELY VULNERABLE -- never "fix" them.
+#   tests/consumer-fixture/ holds the scanners' acceptance signals: pinned vulnerable packages the
+#   kit's own tests must DETECT. A Dependabot PR that upgrades them makes those tests pass for the
+#   wrong reason (the public mirror received exactly such PRs; closed 2026-10-16). Every ecosystem
+#   below excludes that tree; its pins are maintained by hand, deliberately.
+
 version: 2
 
 updates:
   - package-ecosystem: github-actions
     directory: /
+    exclude-paths:
+      - "tests/consumer-fixture/**"
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
@@ -40,6 +48,8 @@ updates:
 
   - package-ecosystem: pip
     directory: /
+    exclude-paths:
+      - "tests/consumer-fixture/**"
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
@@ -52,6 +62,8 @@ updates:
 
   - package-ecosystem: npm
     directory: /
+    exclude-paths:
+      - "tests/consumer-fixture/**"
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
@@ -64,6 +76,8 @@ updates:
 
   - package-ecosystem: nuget
     directory: /
+    exclude-paths:
+      - "tests/consumer-fixture/**"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -73,6 +87,8 @@ updates:
 
   - package-ecosystem: gomod
     directory: /
+    exclude-paths:
+      - "tests/consumer-fixture/**"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -82,6 +98,8 @@ updates:
 
   - package-ecosystem: maven
     directory: /
+    exclude-paths:
+      - "tests/consumer-fixture/**"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -91,6 +109,8 @@ updates:
 
   - package-ecosystem: docker
     directory: /
+    exclude-paths:
+      - "tests/consumer-fixture/**"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -100,6 +120,8 @@ updates:
 
   - package-ecosystem: terraform
     directory: /
+    exclude-paths:
+      - "tests/consumer-fixture/**"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
