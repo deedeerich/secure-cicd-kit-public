@@ -51,6 +51,15 @@ jobs:
             comments: {min-spaces-from-content: 1}
             truthy: {allowed-values: ["true", "false", "on"]}
             document-start: disable
+            # A consumer who enables code scanning from the GitHub UI gets a generated
+            # codeql.yml written `branches: [ "main" ]` with sequences at the parent indent.
+            # yamllint's DEFAULT preset rejects both. Neither is a security or correctness
+            # rule -- they are whitespace preferences -- and GitHub regenerates that file
+            # identically every time, so a consumer cannot fix it once. A linter that fails
+            # the platform's own supported output is the linter that is wrong, and this kit
+            # is unadoptable through the one-click path every customer takes.
+            brackets: {max-spaces-inside: 1}
+            indentation: {spaces: consistent, indent-sequences: whatever}
           EOF
           yamllint -c .yamllint.kit.yml .github/ profiles/
 
@@ -67,8 +76,55 @@ jobs:
       - uses: actions/checkout@v7
       - name: Run actionlint
         run: |
-          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
-          ./actionlint -color -shellcheck=
+          set -uo pipefail
+          # ACQUISITION FAILURE IS NOT A LINT RESULT, and this step could not tell them apart.
+          #
+          # On 2026-09-21 the download returned 92 bytes instead of a 2.3MB tarball -- `gzip:
+          # stdin: not in gzip format` -- and the job failed with exit 2 and no indication that
+          # the linter had never run. The asset was fine; the fetch was transient.
+          #
+          # That conflation is this kit's founding lesson arriving at the kit. `securego/gosec`
+          # was pinned to a tag that has never existed, every `docker run` failed at manifest
+          # lookup, `|| true` swallowed it, and "the scanner could not be acquired" was recorded
+          # as "the scanner found nothing". Here it failed loudly rather than silently, which is
+          # the better direction -- but "the linter is unavailable" and "your workflows are
+          # invalid" are two different facts and an operator must not have to read the log to
+          # tell which one they have.
+          #
+          # So: retry, verify the binary actually exists and runs, and classify. Three attempts
+          # because the observed failure was transient; a persistent one still fails, and it
+          # fails saying WHY.
+          #
+          # PINNED, AND VERIFIED (L84). This fetched an installer script from the actionlint
+          # repository's `main` branch, which installed whatever that branch said that day; the
+          # first hosted milestone run (2026-10-15) could not acquire it at all. Now: one release,
+          # its published checksum, no script from a moving branch.
+          v=1.7.7; t=actionlint_${v}_linux_amd64.tar.gz
+          acquired=""
+          for attempt in 1 2 3; do
+            if curl -sfLO "https://github.com/rhysd/actionlint/releases/download/v${v}/${t}" \
+               && curl -sfL "https://github.com/rhysd/actionlint/releases/download/v${v}/actionlint_${v}_checksums.txt" \
+                    | grep " ${t}$" | sha256sum -c - \
+               && tar -xzf "$t" actionlint \
+               && [ -x ./actionlint ] && ./actionlint --version >/dev/null 2>&1; then
+              acquired=yes
+              break
+            fi
+            echo "::warning title=actionlint acquisition attempt $attempt failed::retrying"
+            rm -f ./actionlint
+            sleep $((attempt * 5))
+          done
+          if [ -z "$acquired" ]; then
+            echo "::error title=UNAVAILABLE — actionlint could not be acquired::The linter was"
+            echo "never obtained after 3 attempts, so NOTHING WAS LINTED. This is an acquisition"
+            echo "failure, not a lint failure: it says nothing about whether the workflows are"
+            echo "valid. Failure to observe is not an observation."
+            exit 1
+          fi
+          echo "actionlint $(./actionlint --version | head -1) acquired and verified runnable"
+          # The kit's own wrapper: every finding fails, except the two exact messages it documents
+          # (the `$/` composite form, proven on GitHub; the stale 10-input dispatch rule).
+          ACTIONLINT="$PWD/actionlint" python3 tests/check_actionlint.py
 
   contract-check:
     name: Contract shape
@@ -185,8 +241,11 @@ jobs:
   normalizer-drift:
     name: Normalizer drift
     runs-on: ubuntu-latest
-    # Bounded so a stalled dependency cannot bill six hours (LM-001).
-    timeout-minutes: 10
+    # Bounded so a stalled dependency cannot bill six hours (LM-001). RAISED 10 -> 15 on 2026-10-15:
+    # run 38811959160 took 7m29s, and the three install/registry proofs added that day (real pip
+    # venvs, npm, a local registry with a syft download) are estimated at 2-3 minutes more. Still a
+    # bound, not a budget: a job that needs the full fifteen has a stalled dependency.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - name: Inlined normalizer must match the canonical source
@@ -197,7 +256,480 @@ jobs:
           # silently never loaded. Inlining means COPIES, and copies drift: this kit has already
           # shipped a fix applied to a probe but not the workflow, and a tag bumped in one place and
           # not another. So the copies are GENERATED and this check fails if any has diverged.
+          # It also fails when a bundled script imports anything the bundle cannot satisfy (L61).
           python3 scripts/inline_normalizer.py --check
+          python3 tests/prove_bundle_import_closure.py
+
+      - name: The pinned script digest must be the digest the bootstrap job produces
+        run: |
+          set -euo pipefail
+          # ONE sha256 IS PINNED AT FOURTEEN DOWNLOAD SITES, and it is DERIVED: the generator
+          # right-strips every emitted line, YAML strips the block scalar's indent, and bash's
+          # heredoc writes what survives. A digest computed by re-implementing those three
+          # transformations is a second implementation of them -- wrong in both places at once,
+          # agreeing with itself perfectly, and first heard about as fourteen jobs refusing the
+          # bundle on a live dispatch.
+          #
+          # So this does not recompute. It extracts the bootstrap job's own two steps from the
+          # workflow AS SHIPPED, RUNS them, and compares. A parseable file is not a runnable
+          # file, and a derived constant is not a verified one.
+          python3 tests/prove_kit_script_digests.py
+
+      - name: The digest proof must leave the shared /tmp as it found it
+        run: |
+          set -euo pipefail
+          # The proof above runs the bootstrap step in the REAL /tmp and once ended by deleting
+          # that whole directory -- on a runner, every other step's files; under MSYS, the
+          # operator's Temp folder. This runs the proof against a sandboxed stand-in holding a file
+          # the proof never wrote, and fails if that file, or a displaced one, does not survive.
+          python3 tests/prove_digest_proof_spares_tmp.py
+
+      - name: The pinning tools must cover composite actions and accept $/
+        run: |
+          set -euo pipefail
+          # Decomposition Phase 2 moves scanner steps, and the images they pin, into composites.
+          # A pin checker that reads only workflows would lose every one of them in the move.
+          python3 tests/prove_pin_scope_covers_composites.py
+
+      - name: Every pinned image and action ref must resolve
+        env:
+          # Lifts the unauthenticated GitHub rate limit; the resolver reports a limit as UNKNOWN,
+          # never PASS, and an UNKNOWN step is a red step. Read-only lookups of public refs.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # A Go scanner image tag that never existed was pinned for two weeks behind a green job
+          # (FUTURE_WORK §11); an action ref that never existed shipped the same way (§9). This
+          # checker was written for the first and could not see `v`-prefixed tags or `uses:` refs
+          # until 2026-10-14 (L23). Now it resolves every image and every third-party action ref in
+          # workflows and composites, after a self-test proving it can still say NO to a tag that
+          # does not exist.
+          python3 tests/check_pinned_artifacts.py
+          # The pin checker's own scope proof: v-prefixed tags and third-party action refs are in
+          # it; ./, $/, docker:// and comments are not. Existed and ran nowhere (ledger G-03).
+          python3 tests/prove_pin_check_sees_v_tags_and_action_refs.py
+
+      - name: A bootstrap failure must not read as thirteen inapplicable scanners
+        run: |
+          set -euo pipefail
+          # Every scanner declares `needs: kit-scripts`. If that job fails, GitHub SKIPS all
+          # thirteen -- and the gate projects `skipped` into NOT_APPLICABLE. Thirteen
+          # NOT_APPLICABLE rows over code nobody scanned is the strongest-looking green this
+          # workflow can produce, and no static check in this repository can see it: they prove
+          # the gate DEPENDS on each job, not what it DECIDES when a dependency dies.
+          #
+          # This runs the gate's own script with its dependencies forced, under advisory_mode
+          # as well as without it -- advisory_mode being the switch a first-time adopter is
+          # most likely to have on, and the one that used to turn this exact case green.
+          python3 tests/prove_bootstrap_failure.py
+
+      - name: Every security job must be registered, and the gate must read every one it waits for
+        run: |
+          set -euo pipefail
+          # The denominator (scanner-registry.yaml). Waiting for a job is not enforcing on it:
+          # image-scan once sat in the gate's needs and was never read. Decomposition Phase 2
+          # moves jobs into composites one at a time, and this must stay green after each move.
+          python3 tests/check_scanner_registry.py
+
+      - name: The reporter must run where the report job runs it, with only what reaches that job
+        run: |
+          set -euo pipefail
+          # C1: the reporter imports two identity modules the bootstrap bundle never shipped, and
+          # every proof imported it from scripts/, where they sit beside it. This runs it the way
+          # the report job does -- from the bundle or through the composite -- and nowhere else.
+          python3 tests/prove_report_runs_as_shipped.py
+          # The reporter's own self-test (a scanner that did not run never reports 0; unparseable
+          # output is not clean; a hollow scan prints its witness). Ran nowhere (ledger G-03).
+          python3 scripts/scan_report.py --self-test
+          # A hollow scan must not read clean, and a clean bandit run (rules: [], KDEC-008 OD-2)
+          # must. Unwired until 2026-10-16, while it defended the rule OD-2 retired.
+          python3 tests/prove_hollow_scan.py
+          python3 tests/prove_hollow_scan.py --self-test
+
+      - name: A secret finding must fail the secret-scan job in every mode
+        run: |
+          set -euo pipefail
+          # The gate blocks secrets before advisory_mode -- but it can only block what the
+          # secret-scan job reports. This runs that job's Enforce step under both modes.
+          python3 tests/prove_secrets_always_block.py
+
+      - name: assurance_state must follow the findings evidence, not job conclusions
+        run: |
+          set -euo pipefail
+          # Softened enforcement (soft_fail_sast, advisory_mode) lets a job succeed WITH findings,
+          # and a job that failed BECAUSE it found something is FINDINGS, not UNAVAILABLE. The
+          # reporter publishes blocking findings per job; the gate reads them.
+          python3 tests/prove_report_counts_findings.py
+          python3 tests/prove_gate_reads_findings.py
+
+      - name: The report must publish identify() results as a file, not only as prose
+        run: |
+          set -euo pipefail
+          # L52. The cascade, correlation and the ledger's only write authority consume identify()
+          # records, and nothing published them -- the identity was computed on every finding and
+          # rendered as a hex string in a markdown bullet. This runs the reporter over three
+          # scanners and reads the file back through finding_match and finding_correlation.
+          python3 tests/prove_report_emits_findings.py
+
+      - name: The reporter must call the identity libraries, not sit beside them
+        run: |
+          set -euo pipefail
+          # L44/L45/L46/L48 wiring. Correlation on durable identity (anchored tier only, never the
+          # (uri, rule) key), the rule family through the alias table with refusal when it
+          # disagrees, the cascade against a per-environment ledger, and EVIDENCE_UNTRUSTED
+          # published for the identity claim with the blocking count untouched.
+          python3 tests/prove_report_wires_identity.py
+
+      - name: The report job must read the ledger from history, with every input as data
+        run: |
+          set -euo pipefail
+          # L45 wiring. fetch-depth 0 on the report checkout and no depth limit on the composite's
+          # fetch (a shallow boundary hides the merge base the reader needs); baseline_ledger.py
+          # invoked with every value a variable; `environment` declared with no default and
+          # handed through to the reporter; identity_routing and baseline_state published.
+          python3 tests/prove_report_job_reads_ledger.py
+
+      - name: The propose-ledger job can push one ref -- its proposal branch -- and nothing else
+        run: |
+          set -euo pipefail
+          # L45 / SINGLE_PIPELINE_TARGET.md section 9.3. The only write authority in the design,
+          # held structurally: runs after the gate on default-branch non-PR runs only, exactly
+          # contents+pull-requests write at job level, one allowed `git push` form behind a
+          # branch guard, the run's own token. Then the pushing step is run against a throwaway
+          # remote: the proposal branch arrives, main never moves, and main/release/1 as BRANCH
+          # are refused.
+          python3 tests/prove_propose_ledger_job_scope.py
+          # F-01: the shipped reusable's steps, run in order against a throwaway remote. No ledger
+          # and no approver role refuses with the reason as a workflow output; a role without
+          # CODEOWNERS over the ledger refuses; a role with it opens an ESTABLISH pull request and
+          # the default branch never moves; an existing ledger proposes normally.
+          python3 tests/prove_propose_ledger_establishment.py
+          # T-20: the ticket ledger proposal the ticket job uploads joins the same pull request
+          # (one write path): a changed one lands at .security/ticket-ledger.json, an unchanged one
+          # adds nothing, a malformed one refuses.
+          python3 tests/prove_propose_ledger_ticket_ledger.py
+
+      - name: A disposition suppresses only to the schema, and on the durable key
+        run: |
+          set -euo pipefail
+          # L49 / KDEC-008 OD-6. The claim is disposition_type and only state=approved buys
+          # passage; an absent expiry is invalid, not open-ended; the reporter and the linter read
+          # one schema. Dispositions key on the durable identity; the legacy fingerprint is
+          # honoured inside the 30-day window and refused after it, with the run naming the key.
+          python3 tests/prove_disposition_schema_and_key.py
+
+      - name: A malformed SARIF is one UNPARSEABLE row and takes no other scanner with it
+        run: |
+          set -euo pipefail
+          # L06. Valid JSON that is not SARIF-shaped raised out of the parser; in batch mode the
+          # report died and every scanner's evidence went with it. Three malformed shapes through
+          # parse_sarif, then the reporter over two broken scanners and one sound one.
+          python3 tests/prove_malformed_sarif_isolated.py
+
+      - name: No expression may use `cond && <falsy> || x`, which always yields x
+        run: |
+          set -euo pipefail
+          # `scan_git_history && 0 || 1` was always 1, so a requested full-history secret scan
+          # read one commit.
+          python3 tests/lint_falsy_ternary.py
+
+      - name: The gate's evidence pointer must name the artifact the report uploads
+        run: |
+          set -euo pipefail
+          python3 tests/prove_evidence_artifact_named.py
+
+      - name: Lint findings must fail the code-quality job when enforcement is on
+        run: |
+          set -euo pipefail
+          # Runs the job's own Ruff and ESLint steps against seeded and clean fixtures.
+          python3 tests/prove_code_quality_enforces.py
+
+      - name: The toolchain composites must install from a fixture and report what they installed
+        run: |
+          set -euo pipefail
+          # toolchain-python-install. The composite's own install step, as shipped, with real pip in
+          # a throwaway venv against a pinned fixture requirement; a requirement nothing can resolve
+          # must FAIL; an absent file must be reported SKIPPED. The hosted probe at the end of this
+          # job exercises the SKIP branch only, on purpose, and says so.
+          python3 tests/prove_setup_python_installs.py
+          # toolchain-node-install. The same for `npm ci`, with the real npm against a lockfile
+          # fixture pinned by version and integrity; an out-of-sync lockfile and a missing one must
+          # FAIL for those reasons; install=false must be reported SKIPPED.
+          python3 tests/prove_setup_node_installs.py
+
+      - name: The sast-java job must find, count and enforce a seeded Java flaw
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet semgrep
+          python3 tests/prove_sast_java_detects.py
+
+      - name: Image scan must fail on CVEs (advisory off) and on a credential in every mode
+        run: |
+          set -euo pipefail
+          # Pinned: the install script from the release tag, and the same release. Never `main`
+          # and never `latest` (ledger L84) -- a probe that installs whatever is current proves
+          # something about a tool nobody chose.
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/v0.71.2/contrib/install.sh \
+            | sudo sh -s -- -b /usr/local/bin v0.71.2
+          python3 tests/prove_image_scan_enforces.py
+          # L12: both image reports are redacted, kept, published, and degradation is stated.
+          python3 tests/prove_image_scan_retains.py
+          # docs/assurance/KNOWN_GAPS.md section 1 remainder: image secrets have a report row of their own. The
+          # report job's state builder as shipped, then the reporter over what it wrote.
+          python3 tests/prove_image_secret_row.py
+          # L17: Trivy reports every severity; fail_on_severity alone decides the block, in
+          # deps-scan and image-scan, run the way trivy-action runs it.
+          python3 tests/prove_trivy_threshold.py
+
+      - name: A known-malicious package must block in every mode, and no evidence must not read as clean
+        run: |
+          set -euo pipefail
+          # The same osv-scanner release the workflow pins, verified against a digest written in
+          # this file (copied from the release's osv-scanner_SHA256SUMS). Never `latest` (L84).
+          v=v2.6.0
+          curl -sSfL --retry 3 -o osv-scanner \
+            "https://github.com/google/osv-scanner/releases/download/${v}/osv-scanner_linux_amd64"
+          echo "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108  osv-scanner" | sha256sum -c -
+          sudo install -m 0755 osv-scanner /usr/local/bin/osv-scanner && rm -f osv-scanner
+          # Runs the job's install (statically), scan, count and enforce steps as shipped (L15).
+          python3 tests/prove_malicious_deps_enforces.py
+          # The OSV scan and the SBOM must be handed the caller's `paths`, as every other
+          # scanner is (consumer-path run 38779788549: both walked the whole checkout).
+          python3 tests/prove_scope_reaches_osv_and_syft.py
+
+      - name: Bandit, NuGet, gosec and cppcheck must count, enforce, and never read no evidence as zero
+        run: |
+          set -euo pipefail
+          # Ledger L08. Each proof runs the job's own steps as shipped with the real tool.
+          # bandit: the release the workflow pins.
+          python3 -m pip install --quiet "bandit[sarif]==1.9.4"
+          python3 tests/prove_bandit_enforces.py
+          # NuGet: the runner's preinstalled .NET SDK, restoring from nuget.org.
+          python3 tests/prove_nuget_audit.py
+          # gosec: the release the workflow's container pins, verified against its published
+          # checksums; the runner's preinstalled Go loads the modules.
+          v=2.24.6; t=gosec_${v}_linux_amd64.tar.gz
+          curl -sSfLO "https://github.com/securego/gosec/releases/download/v${v}/${t}"
+          curl -sSfL "https://github.com/securego/gosec/releases/download/v${v}/gosec_${v}_checksums.txt" \
+            | grep " ${t}\$" | sha256sum -c -
+          tar -xzf "$t" gosec && sudo install -m 0755 gosec /usr/local/bin/gosec && rm -f gosec "$t"
+          python3 tests/prove_gosec_modules.py
+          # cppcheck: the distribution package the job itself installs.
+          sudo apt-get -o DPkg::Lock::Timeout=60 install -y --no-install-recommends cppcheck
+          python3 tests/prove_cppcheck_collects.py
+
+      - name: Every published SARIF has a producer, and the SAST jobs that once ran nothing still run (W4C-001)
+        run: |
+          set -euo pipefail
+          # Static: a SARIF a job publishes must be written by an earlier step in that job.
+          python3 tests/check_published_sarif_has_producer.py
+          # A blocking verdict from one scanner must not skip the next scanner in its job, or
+          # the evidence step after it (hosted negative run 38779814703: C# Semgrep, flawfinder
+          # and the OSV artifact were all skipped by an enforce step failing as designed).
+          python3 tests/prove_scanners_survive_enforce.py
+          # The consumer path's expected-vs-observed verifier must report a seeded file that was
+          # never in the scanned tree as ABSENT -- not as a scanner miss, not as a clean
+          # negative control (run 38779788549 did both for the git-ignored secrets/ files).
+          python3 tests/prove_expected_signals_honest.py
+          # KDEC-011: the TEST-ONLY seed input that delivers those git-ignored files can only
+          # ADD to the scanned tree -- never overwrite, never a hidden file or scanner
+          # configuration, never a path outside it -- and a malformed artifact name is refused
+          # before anything is fetched. Each refusal is run against the shipped steps.
+          python3 tests/prove_test_only_seeds_add_only.py
+          # The Azure context-integrity step, run as shipped against a stub `az`: a caller-declared
+          # tenant, subscription or identity that differs from the session HARD FAILS it, the
+          # ambient comparison against the login's own secrets still runs, nothing resolves to a
+          # pass, and no value is printed. The hosted refusal is still owed (reconcile_validation).
+          python3 tests/prove_context_integrity_refuses.py
+          # The same workflow's claims step, run as shipped against a shim token endpoint: the
+          # plain subject and the immutable-id subject (ids equal to the token's own claims) both
+          # pass and record which form was verified; a wrong or swapped id, a missing or
+          # non-numeric id claim, a wrong name, owner, case or environment, and a ref-scoped
+          # subject each hard-fail on the subject assertion alone. Hosted runs 38824385082 and
+          # 38824392100 (2026-10-15) found the step refusing a genuine caller on the id form.
+          python3 tests/prove_oidc_subject_forms.py
+          # The same workflow's probe step, run as shipped against a shim `az`: every recorded
+          # assertion prints the redacted body it was classified from, so a dispatched run shows
+          # what Azure said, not only REFUSED. Hosted run 38832628162 showed none.
+          python3 tests/prove_boundary_evidence_visible.py
+          # The gate's six CodeQL rows read the file analyze actually writes for each leg
+          # (javascript.sarif for javascript-typescript; java.sarif, cpp.sarif), found by the first
+          # Level 2 dispatch of the job (run 38817782084 on the private consumer).
+          python3 tests/prove_codeql_rows_read_sarif.py
+          # An autobuild that did not succeed reads PARTIAL, never COMPLETE (PIPELINE_ORDERING 3.5).
+          python3 tests/prove_codeql_build_outcome.py
+          # Real tools: .NET static analysis finds a seeded C# flaw; every configured Semgrep
+          # ruleset loads and tests/ + fixtures/ are scanned; flawfinder runs and cppcheck's
+          # output reaches the uploads.
+          python3 -m pip install --quiet semgrep
+          python3 tests/prove_sast_dotnet_detects.py
+          python3 tests/prove_semgrep_rulesets.py
+          # An unparseable file is exit 3 under --strict, and COLLECTION_FAILED -- never a zero.
+          python3 tests/prove_semgrep_strict.py
+          # The weekly validation probes the SHIPPED Semgrep and gosec, and its negative
+          # control fails without a scanner or with a lying one (W4K-116).
+          python3 tests/prove_validate_scanners.py
+          # L76: the probe matrix can fail, the shipped semgrep container is probed, and the matrix
+          # step fails on an absent, unparseable or undetecting probe (a dated acceptance aside).
+          python3 tests/prove_validate_scanners_matrix.py
+          sudo apt-get -o DPkg::Lock::Timeout=60 install -y --no-install-recommends cppcheck flawfinder
+          python3 tests/prove_sast_cpp_runs.py
+
+      - name: A denied licence must reach the gate, counted once, matched by licence token
+        run: |
+          set -euo pipefail
+          # Ledger L16. syft pinned and verified against its release checksums.
+          v=1.52.0; t=syft_${v}_linux_amd64.tar.gz
+          curl -sSfLO "https://github.com/anchore/syft/releases/download/v${v}/${t}"
+          curl -sSfL "https://github.com/anchore/syft/releases/download/v${v}/syft_${v}_checksums.txt" \
+            | grep " ${t}\$" | sha256sum -c -
+          tar -xzf "$t" syft && sudo install -m 0755 syft /usr/local/bin/syft && rm -f syft "$t"
+          python3 scripts/sbom_licenses.py --self-test
+          python3 tests/prove_sbom_licence_verdict.py
+
+      - name: SARIF validity rows 1-6 must be checked at every count site before publication
+        run: |
+          set -euo pipefail
+          # Ledger L02 / L01 (OD-2 per-tool profile). The bundled validator, then its use.
+          python3 scripts/sarif_validity.py --self-test
+          python3 tests/prove_validity_before_upload.py
+
+      - name: The per-job summary must never print a zero for a hollow or crashed scan
+        run: |
+          set -euo pipefail
+          # Ledger L05. Sources scan_status.sh from the workflow's own kit-scripts bundle.
+          python3 tests/prove_scan_status_zero.py
+
+      - name: The gate's routing_result must route every case (deploy reads it, not a job result)
+        run: |
+          set -euo pipefail
+          python3 tests/prove_gate_routing.py
+
+      - name: A secret scan that read nothing must not report "no secrets"
+        run: |
+          set -euo pipefail
+          # The same gitleaks release the workflow pins, verified against the release checksums.
+          # Downloaded OUTSIDE the checkout: the archive left in the working tree was exported by
+          # prove_export_scope.py later in this job and failed it (hosted run 39618329392, E1).
+          v=8.21.2; t=gitleaks_${v}_linux_x64.tar.gz
+          dl="$RUNNER_TEMP/gitleaks-dl"; mkdir -p "$dl"
+          ( cd "$dl"
+            curl -sfLO "https://github.com/gitleaks/gitleaks/releases/download/v${v}/${t}"
+            curl -sfL "https://github.com/gitleaks/gitleaks/releases/download/v${v}/gitleaks_${v}_checksums.txt" \
+              | grep " ${t}\$" | sha256sum -c -
+            tar -xzf "$t" gitleaks && sudo mv gitleaks /usr/local/bin/ )
+          python3 -m pip install --quiet detect-secrets
+          python3 tests/prove_secret_denominator.py
+
+      - name: Semgrep and Checkov must count findings by their effective SARIF level
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet semgrep
+          python3 tests/prove_sarif_effective_level.py
+
+      - name: The build must record its base image digests, lockfile hashes and toolchain
+        run: |
+          set -euo pipefail
+          # L86 (PROVENANCE_AND_ATTESTATION.md section 9 step 1). Runs the build job's own record
+          # step and the stamp's render step, as shipped; an unresolvable FROM must read unresolved.
+          python3 tests/prove_build_inputs_recorded.py
+
+      - name: The caller template must branch on identity and verdict and pass the stamp
+        run: |
+          set -euo pipefail
+          # L87. Runs templates/build-deploy.yml's decide step with the security verdict STUBBED,
+          # and the render step with what the template maps into it.
+          python3 tests/prove_template_branches_on_verdict.py
+
+      - name: The stamp may not claim a proven identity it carries no evidence for
+        run: |
+          set -euo pipefail
+          # L92. PROVEN with an empty digest is refused; a ref name is data, never script text.
+          python3 tests/prove_stamp_consistency.py
+
+      - name: The docker-build-push composite must push the bytes it scanned
+        run: |
+          set -euo pipefail
+          # L85. Its push, registry-assertion and classify steps, run as shipped with docker shimmed.
+          python3 tests/prove_composite_build_once.py
+          # L85 second half: a Trivy refusal in the build routes BLOCKED, not EVIDENCE_UNTRUSTED.
+          python3 tests/prove_build_routing.py
+
+      - name: The build job must push the bytes it scanned to a real registry, and the stamp must carry that digest
+        run: |
+          set -euo pipefail
+          # image-build / image-push / version-metadata-wired. The build job's own steps as shipped,
+          # against a local registry:2 (the OCI distribution API an ACR speaks) started on a free
+          # loopback port, with the runner's docker and buildx; build-push-action's `with:` is
+          # translated flag for flag; the sbom step acquires its pinned syft itself. Then the stamp,
+          # through the job, workflow and template output maps. An ACR behind Azure identity, and a
+          # dispatch of the workflow, remain owed and are not claimed here.
+          python3 tests/prove_build_push_round_trip.py
+
+      - name: The push is the point of no return, and capability is established before it
+        run: |
+          set -euo pipefail
+          # DCR section 5 gap 10 (ledger L95). The build job's push_capability and push steps, as
+          # shipped, with docker shimmed: previous state captured, rollback_capability decided and
+          # the change manifest planned BEFORE the push; an unreadable registry refuses; a push
+          # with no planned manifest refuses; the push records what it wrote.
+          python3 tests/prove_push_capability.py
+
+      - name: Exactly one job may hold attestations write, and it signs only a proven digest
+        run: |
+          set -euo pipefail
+          # L88. Static permission topology + the attest job's subject guard, run as shipped.
+          # The signature itself is OWED to a hosted run: nothing local signs with GitHub's Sigstore.
+          python3 tests/prove_attest_job_isolated.py
+
+      - name: V1 verification must yield five outcomes, route per rung, and hold on the plan
+        run: |
+          set -euo pipefail
+          # L89. The verify-attestation step, run as shipped against recorded gh answers.
+          python3 tests/prove_attestation_verify.py
+
+      - name: Installed tools must be a chosen version with verified bytes
+        run: |
+          set -euo pipefail
+          # L84. Static: no branch install scripts, no `latest`, pip pinned, downloads checksummed --
+          # in the NVD workflow, the scanner probes, both build paths and the flagship's sbom,
+          # sast-dotnet and sast-java jobs (scope, and what is still outside it, stated in the file).
+          python3 tests/check_pinned_installs.py
+
+      - name: The NVD workflow's own steps must acquire, write, cache and report honestly
+        run: |
+          set -euo pipefail
+          # L90/L91. Sections are added here as each defect is fixed.
+          python3 tests/prove_nvd_workflow_honest.py acquisition outdir cache posture
+
+      - name: The NVD CVSS gate ships at 9.0 and a decimal threshold is a number (O-12)
+        run: |
+          set -euo pipefail
+          python3 tests/prove_nvd_cvss_default.py
+
+      - name: The NVD workflow's Trivy and Dockerfile steps must detect seeded flaws
+        run: |
+          set -euo pipefail
+          # nvd-trivy / nvd-dockerfile. Real Trivy (the pinned v0.71.2 installed for the image-scan
+          # probe above, in this same job) runs the steps' own configuration as shipped.
+          python3 tests/prove_nvd_trivy_detects.py
+          python3 tests/prove_nvd_dockerfile_detects.py
+
+      - name: No expression-bearing string may approach GitHub's 21,000-character template limit
+        run: |
+          set -euo pipefail
+          python3 tests/check_expression_length.py
+
+      - name: Every caller grants the permissions its called workflow requests (else startup_failure)
+        run: |
+          set -euo pipefail
+          python3 tests/check_caller_permissions.py
+
+      - name: Every test must leave the tracked tree exactly as it found it
+        run: |
+          set -euo pipefail
+          # Runs every test in a throwaway clone and fails on any tracked file it changed.
+          python3 tests/prove_tests_leave_tree_clean.py
 
       - name: Credential material must be redacted before it becomes an artifact
         run: |
@@ -221,6 +753,269 @@ jobs:
           # prefix all survive.
           python3 tests/prove_redaction_chain.py
 
+      - name: Finding identity must survive an upgrade and refuse an incomplete record
+        run: |
+          # The IDENTITY side of finding matching, which is not the correlation side. A
+          # correlation key answers "did these two TOOLS see the same thing, in this run" and
+          # `scanner` and `rule_id` belong in it. An identity answers "have I seen this finding
+          # before" and those same two fields are fatal to it: a rule rename at a minor version
+          # resets the entire baseline, and a second scanner reads corroboration as duplication.
+          #
+          # This matters now rather than later because `reusable-security.yml` keys every
+          # disposition -- every risk acceptance and false-positive approval, with its approver
+          # and expiry -- off a hash of (scanner, rule_id, uri, message). That is a correlation
+          # key doing an identity job. It is not wrong today; it goes silently wrong at the next
+          # `trivy` bump, when approvals stop matching without erroring.
+          #
+          # The assertions that carry the weight: all 20 excluded fields are mutated and the
+          # identity must not move, and an incomplete record must REFUSE with a named reason
+          # rather than hash whatever was present. A hash is opaque, so a partial identity is
+          # indistinguishable from a full one to everything downstream -- the same defect family
+          # as FILE_MTIME provenance, wrong in the direction that makes a weak claim look strong.
+          python3 scripts/finding_identity.py --self-test
+
+      - name: A durable identity survives a scanner swap, a version bump and a rule rename (G-03)
+        run: |
+          set -euo pipefail
+          # Existed and ran nowhere (ledger G-03 / L72). It is also the test the stage register's
+          # 11 -> 9 guardrail names (tests/check_stage_phase.py): correlation must not cluster on
+          # an identity that resets on upgrade.
+          python3 tests/prove_identity_durability.py
+
+      - name: Every scanner on the report's roster must map to a finding subject
+        run: |
+          set -euo pipefail
+          # L42. The report passes the ROSTER name (java-sast, trivy-iac, codeql-python...) as the
+          # scanner, and a roster name missing from the subject map makes every finding from that
+          # row UNFINGERPRINTABLE. This reads the roster from reusable-security.yml itself, so a
+          # scanner added to the workflow and not to the map fails here.
+          python3 scripts/finding_subject.py --self-test
+          python3 tests/prove_subject_covers_roster.py
+
+      - name: The baseline cascade must tell NEW from PRE-EXISTING, and refuse when it cannot
+        run: |
+          set -euo pipefail
+          # L44 / ETFB section 5.3 and section 4.3 item 5: relocated -> MOVED with first_seen carried,
+          # introduced -> NEW, removed -> POTENTIALLY_ABSENT, duplicated -> resolved by cardinality,
+          # and an unreadable ledger or uncomputable identity -> EVIDENCE_UNTRUSTED, never a side.
+          python3 scripts/finding_match.py --self-test
+          python3 tests/prove_baseline_cascade.py
+
+      - name: The baseline ledger is read from the protected branch, never from the PR
+        run: |
+          set -euo pipefail
+          # L45 / ETFB section 5.4. Against a throwaway git repository: the PR's own ledger edits are
+          # never read; grandfathering comes from the merge base, removals from the default tip;
+          # matched material, a hand-edited identity or an unapproved ledger make it unusable.
+          python3 scripts/baseline_ledger.py --self-test
+          python3 tests/prove_ledger_read_authority.py
+
+      - name: The only write authority over the ledger produces a pull request, and only from the protected branch
+        run: |
+          set -euo pipefail
+          # L45 / SINGLE_PIPELINE_TARGET.md section 6.1, section 9.3. PR events and other refs refuse;
+          # first_seen is never re-dated; unobserved entries are never removed; an unreadable
+          # ledger refuses rather than re-baselining; establishment needs an approver and
+          # asserts no age; the script writes nothing to the repository. L51: a move is ONE record,
+          # a lineage event carried in the same proposal (the reader refuses move_history in an
+          # entry), extended by the next move and never appended to a tampered chain. ETFB 8.8
+          # rule 4: presence in an environment is a declared, dated assumption in the header.
+          python3 scripts/propose_ledger.py --self-test
+          python3 tests/prove_propose_ledger.py
+
+      - name: A scanner upgrade is a declared event, absorbed by aliases, never a baseline reset
+        run: |
+          set -euo pipefail
+          # L46 / ETFB section 5.5. An aliased rule rename keeps the identity; an unaliased one
+          # refuses; a changed generation is not authoritative until one dated, approved
+          # reconciliation; disappeared -> POTENTIALLY_ABSENT, appeared -> never NEW.
+          python3 scripts/rule_family.py --self-test
+          python3 tests/prove_rule_family_upgrade.py
+          # ... and the write path runs it: a finding first reported by an unreconciled generation
+          # is held, one reconciliation report is opened, and only an accepted one admits them, as
+          # detection changes with no established age.
+          python3 tests/prove_propose_ledger_generation.py
+
+      - name: The lineage ledger must detect a truncated tail, and refuse to answer from a broken one
+        run: |
+          set -euo pipefail
+          # L51 / G1-7 (T6). The chain is anchored at its first event, so deleting the LAST
+          # events left a valid shorter chain that read LEDGER_INTACT. The head anchor closes it.
+          python3 scripts/finding_lineage.py --self-test
+          python3 tests/prove_lineage_durability.py
+          python3 tests/prove_lineage_integrity.py
+
+      - name: Correlation clusters on anchors only, names every scanner, and drops nothing
+        run: |
+          set -euo pipefail
+          # L48 / ETFB section 9.4. Shared identifier + matching coordinates is ONE anchored
+          # cluster; an alias chain, a cross-subject match or CWE-plus-path agreement is at most
+          # a proposal and changes no count; an unidentified observation acts alone.
+          python3 scripts/finding_correlation.py --self-test
+          python3 tests/prove_anchored_correlation.py
+
+      - name: Environment tier and team pattern change enforcement, never scanner truth
+        run: |
+          set -euo pipefail
+          # L33 / AXES_AND_PHASES.md enforcement tables; ETFB sections 3, 4.0, 8.6. Production tiers
+          # stop on EVIDENCE_UNTRUSTED and lower tiers warn, except where the floor is BLOCKED; a
+          # tier never lowers a floor; solo_dev makes approval separation an unvalidated
+          # human-workflow path, reported and never passing; neither axis knows a scanner.
+          python3 scripts/enforcement_axes.py --self-test
+          python3 tests/prove_enforcement_axes.py
+
+      - name: Policy is resolved from the registered rung on the protected branch, never supplied
+        run: |
+          set -euo pipefail
+          # L32 / ETFB sections 1-4, 10, 13; SINGLE_PIPELINE_TARGET.md stage 1, section 8.3. The
+          # derivation table is ETFB 1.1 cell for cell; a cherry-pick strengthens or is a named
+          # policy defect; a run that received policy_mode as an input is refused whatever the
+          # value; against a real git repository a PR's own demotion is never read; an
+          # unreadable registration is EVIDENCE_UNTRUSTED, never crawl; every number is read
+          # from the registration and a missing one refuses.
+          python3 scripts/rung_ladder.py --self-test
+          python3 scripts/policy_registration.py --self-test
+          python3 tests/prove_rung_ladder.py
+          python3 tests/prove_policy_registration.py
+
+      - name: A pre-existing finding gets a schedule, not amnesty, and nothing extends a deadline
+        run: |
+          set -euo pipefail
+          # L47 / ETFB sections 6-8. Severity is derived under a versioned formula with every
+          # scanner's number preserved and disagreement recorded; only an established fix or
+          # mitigation admits a track; the clock starts at a claimable first_seen or at
+          # establishment with the age recorded as unestablished, and an mtime-dated age gets no
+          # deadline; a two-year-old CRITICAL is breached on day one; breach stages to
+          # DECISION_REQUIRED, through the configured grace, to REOPENED_BY_LAPSE at the rung's
+          # lapsed floor; new deadline = min(existing, re-score + period) and no function
+          # extends one; the day-one cohort is closed at establishment and records breached,
+          # never compliant; every number is read from configuration and a missing one refuses.
+          python3 scripts/remediation_sla.py --self-test
+          python3 tests/prove_remediation_sla.py
+
+      - name: A ticket may not be created before a lookup establishes nothing is there
+        run: |
+          # Stage 13 was a document with no code. The kit was being delivered on the promise that
+          # a team could respond to tickets and request exceptions, and a grep for any ticket
+          # system call -- a REST path, JQL, `gh issue create`, a curl to an issue API -- returned
+          # nothing at all.
+          #
+          # The defect a reconciler ships without these guards is specific and fast: duplicate
+          # tickets on every run. ENFORCEMENT_TIERS_AND_FINDING_BASELINE.md section 9.5 states
+          # the rule it must follow -- "the pipeline looks up by cluster key before creating
+          # anything" -- and the reason it matters, which is that a team learns within a
+          # fortnight that the pipeline is noise.
+          #
+          # The sharper hazard is the one the contract did not anticipate, because it assumed
+          # identity worked. Identity extraction currently returns UNFINGERPRINTABLE for findings
+          # that should fingerprint. A reconciler that ticketed those anyway would key them on
+          # nothing, find nothing next run, and create the whole set again -- every run, forever.
+          # So an empty identity withholds the ticket and reports IDENTITY_NOT_ESTABLISHED, which
+          # is a state and not a zero.
+          #
+          # The mutation suite is the part that makes this green worth reading. Ten guards are
+          # broken one at a time and the self-test must go red for each; a surviving mutant means
+          # that assertion was decorative. It caught one while this was being written -- nothing
+          # asserted that clustering refuses to merge across subject classes, so a DEPENDENCY and
+          # a RESOURCE finding sharing a CVE would have become one ticket and hidden one of two
+          # obligations. It also proves the anti-vacuity abort fires: most assertions here have
+          # the form "X creates nothing" and all of them pass trivially against a program that
+          # creates nothing at all.
+          #
+          # NO NETWORK. The backend is in-memory and the child environment is scrubbed of every
+          # tracker credential. That neither real backend has ever been exercised against a live
+          # tracker is recorded, not implied.
+          python3 scripts/reconcile_tickets.py --self-test
+          python3 scripts/ticket_reference.py --self-test
+          python3 tests/prove_ticket_idempotency.py
+
+      - name: The environment check asks for the configured backend, and only that one
+        run: |
+          set -euo pipefail
+          # Exactly one ticket backend is authoritative per cell (TICKETING_CONTRACT.md 4.6). The
+          # checker used to demand Jira AND Azure DevOps credentials together. Placeholder values
+          # only, in a throwaway tree; the checker makes no request.
+          python3 tests/prove_check_env.py
+
+      - name: Each ticket backend against the documented request and response shapes
+        run: |
+          set -euo pipefail
+          # The cascade is proven against an in-memory backend; this proves what the Jira, Azure
+          # DevOps and GitHub classes SEND and how they READ what comes back -- the calibration
+          # probe, throttling, partial sweeps, reopen and its refusal. urlopen is replaced by a
+          # replayer for the whole run, so no request can leave the runner. Live behaviour is
+          # TICKETING_BACKENDS.md R-1/R-2, run by a person with a transcript.
+          python3 tests/prove_ticket_backends.py
+
+      - name: The live R-1/R-2 runner is safe before anyone runs it live
+        run: |
+          set -euo pipefail
+          # tests/live_ticketing_run.py is run BY A PERSON against a PERSONAL tracker, never here.
+          # This drives its real main() offline: it refuses without a required value or
+          # --confirm-live (no request made), blocks every write in R-1, and no transcript holds a
+          # credential.
+          python3 tests/prove_live_runner_offline.py
+
+      - name: The ticket reconcile workflow arms only after the merge or on a schedule
+        run: |
+          set -euo pipefail
+          # W-1. Structure (called only; one job holds the environment, contents: read and a
+          # timeout; no expression in any run: block) AND behaviour: the guard step and the
+          # reconcile step are EXTRACTED and RUN under bash against pull_request, workflow_run,
+          # feature-branch, default-branch push and schedule contexts.
+          python3 -m pip install --quiet PyYAML
+          python3 tests/prove_ticket_reconcile_workflow.py
+
+      - name: The pull-request Jira reference gate, run as shipped, has no default range
+        run: |
+          set -euo pipefail
+          # KDEC-013. The gate's own step is EXTRACTED from reusable-ticket-reference.yml and run
+          # under bash: no default issue-number range, a consumer range applied to the whole
+          # number, a half range refused as a platform problem, the PR body inert, and a non-PR
+          # event NOT ASSESSED rather than passed.
+          python3 -m pip install --quiet PyYAML
+          python3 tests/prove_ticket_reference_gate.py
+
+      - name: A cluster is one obligation to coordinate and several to discharge
+        run: |
+          # The parent/child work-item model, carried from a prior engagement's ticket engine
+          # whose ticket creation was DETERMINISTIC -- a vulnerability class mapped to a ticket
+          # and to the corresponding compliance request through a table, with no model and no
+          # agent in the path. A reconciler whose output depends on a model cannot be defended to
+          # an auditor, and that property is the reason to carry the pattern in.
+          #
+          # What it fixes here: this kit produced ONE ticket per cluster and no child objects, so
+          # a cluster of six findings was six obligations sharing one status and "partially
+          # fixed" was not representable. Each finding now has a child task with its own
+          # lifecycle, and a parent cannot close while any child is open, deferred or disputed.
+          #
+          # DEFERRAL DISCIPLINE closes the hole this kit already had. A deferral needs a reason
+          # AND an end date, and reopening needs the date to have passed AND a named trigger AND
+          # a human approval. This is where the carried pattern is DEPARTED from: the reference
+          # engine declared silent reopening forbidden and then reopened past-due items inside
+          # its own split routine with the actor recorded as the system. The date passing is a
+          # precondition that makes a reopen available; it is never a trigger that performs one.
+          #
+          # CONFIDENCE IS A LABEL CARRYING ITS DERIVATION, never a number. The reference carried
+          # a float defaulting to 0.5, and `epistemic_property.CONFIDENCE` already explains why
+          # that is refused -- a figure without provenance is "numerology with an API", and a
+          # defaulted one is indistinguishable downstream from a measured one.
+          python3 scripts/ticket_model.py --self-test
+
+      - name: An exception with no owner and no end date never expires
+        run: |
+          # scan_report.py enforces a disposition's expiry when it HAS one, and its own comment
+          # gives the reason: "showing an expiry date while still honouring a lapsed acceptance is
+          # how a 90-day risk acceptance becomes permanent". That is right, and it leaves one
+          # hole -- when `expires` is ABSENT the function returns '' and the finding is suppressed
+          # on every run, forever, with nothing ever going red to prompt a review.
+          #
+          # A deny with no expiry and no owner is how a finding disappears permanently. This is
+          # the same control lint_suppressions.py already applied to error suppression -- state
+          # why it is safe -- applied to the governance layer, where the stakes are a real
+          # vulnerability no longer blocking.
+          python3 scripts/lint_suppressions.py --self-test
+
       - name: Capability custody must match the workflows
         run: |
           # A custody claim written down and never verified is the same shape as an invariant
@@ -232,6 +1027,92 @@ jobs:
           # overlay has become the product and the custody line stops being true regardless of
           # what the manifest says.
           python3 tests/check_custody.py
+          # L107 / KDEC-008 OD-10: no overlay passes, every overlay and ledger is checked, and an
+          # overlay calls the kit owner/repo/...@<sha>, never ./ -- against constructed trees.
+          python3 tests/prove_custody_overlays.py
+
+      - name: Generated registers are current, and the capability census can tell a name from a call
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet PyYAML
+          # Both existed and ran nowhere (ledger G-03 / L72). The overlay table is GENERATED from the
+          # registers; --check fails when a register moved and the table did not.
+          python3 tests/build_pipeline_overlays.py --check
+          # The census aborts if its self-test cannot tell a mention from an invocation. It writes
+          # a CSV, so it writes it outside the tree.
+          python3 tests/capability_inventory.py --out "$RUNNER_TEMP/capability-inventory.csv"
+
+      - name: Branch-protection profiles require only check names the kit emits (L104)
+        run: |
+          set -euo pipefail
+          # The profiles required `lint`, `test`, `sast`... -- names no job emits, so a profile
+          # applied as shipped blocked every pull request forever. The names are derived from the
+          # starter templates and the reusables they call.
+          python3 tests/check_branch_protection_profiles.py
+
+      - name: No fragile shell line-joining in any workflow or script
+        run: |
+          set -euo pipefail
+          # A continuation followed by a comment or blank line, a trailing-whitespace backslash, and
+          # a literal two-character backslash-n each silently split one command into two. The checker
+          # self-tests each form before it scans. Ran nowhere until ledger G-03.
+          python3 tests/check_shell_continuations.py
+
+      - name: Say what this self-test actually reaches
+        run: |
+          # The self-test was green for six days over a workflow that started zero times. That was
+          # not a missing check, it was the DENOMINATOR: 0 steps here INVOKE a kit workflow and 26
+          # only read one. A green covering PARSING, read as a green covering RUNNING.
+          #
+          # Same shape as the CISO packet's RESULT: READY, which meant "the machinery works" and
+          # read as "ready to produce findings". Both are a composite verdict stronger than their
+          # weakest axis, which this repository's governing rule forbids.
+          #
+          # This does not add a thirteenth inspection. It makes the suite STATE ITS OWN COVERAGE,
+          # and separates EXERCISED_ON_PUSH from EXERCISED_ON_SCHEDULE -- because a weekly job does
+          # not catch a break introduced by the commit that caused it, and conflating them hides
+          # precisely the gap that cost six days.
+          python3 tests/check_selftest_coverage.py
+          # G-03: the census also counts PROOFS. An unrun proof, one only mentioned in a comment, an
+          # unrun --self-test, and a stale or expired UNWIRED entry are each seeded and refused.
+          python3 tests/prove_proof_census.py
+
+      - name: A workflow over the size limit does not fail, it never starts
+        run: |
+          # RUN THIS EARLY. reusable-security.yml crossed 500 KB on 2026-09-16 and GitHub stopped
+          # starting it -- zero jobs, a startup failure on every push, for six days, while every
+          # check in this repository reported green.
+          #
+          # Nothing caught it because every check READS the file and none RUNS it: the self-test
+          # parses and lints it (608 KB parses perfectly), actionlint passes, validate-scanners
+          # proves the TOOLS rather than the workflow, and consumer-path-test -- the one job that
+          # invokes it -- is dispatch-only and weekly. The single job that would have exposed it
+          # is the one that does not run automatically.
+          #
+          # EXISTS != CALLED != IN THE PIPELINE, with the kit's own centrepiece on the wrong side.
+          # A PARSEABLE FILE IS NOT A RUNNABLE FILE.
+          python3 tests/check_workflow_size.py
+          # L66: composites and overlay workflows are in scope, measured in the LF bytes GitHub
+          # reads. A seeded oversized composite and overlay fail; a CRLF-only overage does not.
+          python3 tests/prove_workflow_size_scope.py
+
+      - name: No control bytes in source
+        run: |
+          # RUN THIS FIRST, BEFORE ANYTHING THAT READS A PATTERN FILE.
+          #
+          # A shell heredoc turns `\b` in a source string into a literal 0x08 BACKSPACE. The file
+          # still compiles and the regex still "works" -- it just matches a backspace character,
+          # which nothing contains. It renders as `\b` in an editor, a diff and a terminal, so no
+          # amount of reading finds it.
+          #
+          # This is not hypothetical. On 2026-09-15 five of six patterns added to
+          # scripts/export-deny.txt were poisoned this way, and check_export_safety.py reported
+          # CLEAN for two days over a neutral core that contained five real violations. A control
+          # with dead patterns and a clean repository produce the identical output.
+          #
+          # Hence the ordering: a disarmed control must fail AS A CONTROL PROBLEM here, rather
+          # than pass as a clean result three steps later.
+          python3 tests/check_source_hygiene.py
 
       - name: The neutral core must not name anyone
         run: |
@@ -249,6 +1130,106 @@ jobs:
           # engineering knowledge; whose estate it was found in is not. overlays/ is excluded --
           # an overlay is allowed to know its own name, which is what makes it an overlay.
           python3 tests/check_export_safety.py
+          # And the export's SCOPE, run as shipped: no continuity record, overlay, profile or deny
+          # list leaves in a neutral copy (found preparing the public mirror, 2026-10-16).
+          python3 tests/prove_export_scope.py
+          # And every deny pattern against its own samples: a pattern that cannot match its
+          # positive control blocks nothing while the gate above reports CLEAN (a word boundary
+          # once became a backspace byte, 2026-10-16).
+          python3 tests/prove_deny_samples.py
+          # The consumer census names private paths; it is never written inside the kit.
+          python3 tests/prove_census_outside_kit.py
+
+      - name: The scanned artifact must be the published artifact
+        run: |
+          # reusable-build-docker.yml ran TWO builds. The Trivy gate and the Syft SBOM read the
+          # first; `image_digest` -- the value every consumer treats as the deployed artifact --
+          # came from the second. Nothing compared them. They are the same image only if the
+          # Dockerfile is bit-reproducible, and an unpinned base tag is enough for it not to be.
+          #
+          # The SBOM was then uploaded under `if: always()`, so a run that failed its own gate
+          # still published an SBOM describing an image that was never pushed, named as though it
+          # were provenance. Same family as the redaction step that failed red and uploaded the
+          # unredacted SARIF anyway.
+          #
+          # This checks SHAPE, not behaviour: one build per job, no image scan ahead of a building
+          # push, a registry round trip before a digest is published, and an artifact_identity
+          # output alongside image_digest. Proving the comparison is CORRECT needs a real run.
+          python3 tests/check_artifact_identity.py
+
+      - name: A reversal may not delete what it has not established it owns
+        run: |
+          # ROLLBACK_CONTRACT.md scopes reversal to a change manifest: remove what this run
+          # created, restore what it changed, leave the rest alone. Right, and not sufficient --
+          # a manifest records the PAST and a reversal acts on the PRESENT.
+          #
+          # Release R1 creates resource X. Something else later modifies X or takes a dependency
+          # on it. R1's manifest still says "I created X", which is still TRUE and is no longer
+          # authority to delete X. The owner's words: you cannot assume the subscription stays
+          # empty and let a teardown run without possibly destroying the new state for something
+          # that got onboarded in between.
+          #
+          # So this refuses the SHAPE that permits it: a step that removes a deployed object with
+          # no live ownership read before it, no read of the object's current version, a guard
+          # that is `always()` rather than a disposition, or a precondition read that swallows
+          # its own failure -- the last one being how an unreadable stamp becomes an empty string
+          # and an empty string becomes "nobody owns it".
+          #
+          # SHAPE, NOT BEHAVIOUR. That an ownership comparison is CORRECT needs a live target and
+          # a second actor changing state between deploy and reversal. The bad fixtures are
+          # single-substring mutations of the PASSING fixture, so a mutant cannot trip for an
+          # unrelated reason -- this repository has already shipped a fixture that "proved" a
+          # guard whose regex was dead.
+          python3 tests/check_reversal_preconditions.py
+
+      - name: Exactly one disposition removes anything, and no unknown reaches it
+        run: |
+          set -euo pipefail
+          # L98. The check above proves the SHAPE of a reversal that derives a disposition before
+          # it deletes; its reference fixture called scripts/derive_reversal_disposition.py, which
+          # did not exist. This runs the derivation: every DCR section 8.2 row, a second actor
+          # modifying or depending on what this run created, and an exhaustive sweep in which
+          # REVERSAL_REMOVE appears only where all six preconditions are positively established.
+          python3 scripts/derive_reversal_disposition.py --self-test
+          python3 tests/prove_reversal_disposition.py
+
+      - name: Prose may not contradict the validation registry
+        run: |
+          # reconcile_validation.py is gated. TEST_COVERAGE_AUDIT.md was hand-kept and compared
+          # against nothing, so it called five capabilities untested on the same day the registry
+          # recorded the run ids that proved otherwise -- and the prose is the half a person
+          # reads. The registry replaced a hand-maintained table for the machine-readable half
+          # and left the prose half exactly where it was.
+          #
+          # ONE DIRECTION: prose may not call an OBSERVED capability untested. The other
+          # direction would be worse and is not checked here; the limit is in the file's header
+          # rather than implied by a green result.
+          #
+          # THE CONSUMER DOCUMENTS TOO (ledger L81/B-11): README, START-HERE, adoption, explainer,
+          # templates and the contracts may not set a dead input in an example, say advisory mode
+          # covers secrets, or call an observed capability untested. The self-test seeds a failing
+          # and a passing line for each claim first, so a matcher that stopped matching is caught.
+          python3 tests/check_doc_currency.py --self-test
+          python3 tests/check_doc_currency.py
+          # B-11: the architecture and assurance documents, the roadmap and the continuity record are
+          # in scope; claims are code predicates; a known-stale entry holds only until its date.
+          python3 tests/prove_doc_currency_scope.py
+
+      - name: A documented credential-free path must not authenticate
+        run: |
+          # reusable-build-docker.yml advertised "Leave empty for build-only runs (no registry,
+          # no Azure auth)". The implementation contradicted every word: acr_login_server and all
+          # three AZURE_* secrets were required:true, Azure login and ACR login ran
+          # unconditionally, and the image reference was registry-shaped -- so an empty registry
+          # produced `/repo:sha`, an invalid reference, discovered AFTER the whole build.
+          #
+          # NOT UNTESTED, UNIMPLEMENTABLE. Static inspection was enough; nothing had looked. A
+          # contract nobody exercises drifts from its implementation silently, and the
+          # DOCUMENTATION is what a consumer plans against.
+          #
+          # SHAPE only. That a build-only run actually succeeds is the credential-free job in
+          # consumer-path-test.yml.
+          python3 tests/check_buildonly_contract.py
 
       - name: No untrusted input may reach a script body
         run: |
@@ -261,6 +1242,140 @@ jobs:
           # and not looking for its siblings is how one instance gets fixed and five survive, so
           # the sweep is now a gate rather than an afternoon someone remembers to spend.
           python3 tests/lint_injection.py
+
+      - name: Every rule of the shipped workflow policy gate refuses its seeded violation (L83)
+        run: |
+          set -euo pipefail
+          # The consumer-facing policy gate had no fixture per rule -- only this repository's own
+          # soft-failed dogfood run. R1-R9 and the rules added for reusable-workflow calls, container,
+          # service and docker:// images, inputs.* in run, and a path matching zero files.
+          python3 -m pip install --quiet PyYAML
+          python3 tests/prove_workflow_policy_rules.py
+
+      - name: A deploy step may not read any value as script text
+        run: |
+          set -euo pipefail
+          # L100/L38. lint_injection.py above refuses a caller input in a run: body of any
+          # shipped reusable, but lets trusted contexts through. The deploy surface mutates a live
+          # target, so it is held to the stricter rule and FAILS: no `$`-double-brace expression of any kind in a
+          # deploy `run:` body. The digest guard used to interpolate the digest it was guarding.
+          python3 tests/prove_deploy_inputs_via_env.py
+
+      - name: A deploy reads the gate verdict and refuses before login unless it permits
+        run: |
+          set -euo pipefail
+          # L93. SINGLE_PIPELINE_TARGET.md 5.2: the deploy stage reads the VERDICT, not
+          # needs.gate.result. Runs the shipped gate step of both deploy reusables with stub
+          # routing_result values: PROCEED and PROCEED_WITH_ADVISORY proceed; BLOCKED,
+          # DECISION_REQUIRED, EVIDENCE_UNTRUSTED, empty and near-miss spellings refuse, each for
+          # its named reason, before any step that touches Azure.
+          python3 tests/prove_deploy_gate.py
+          # Lane L-D. The template hands the deploy the combined verdict, never hard-codes prod,
+          # pins the kit by SHA (P-01); the deploy binds tier and target to the environment's
+          # KIT_* values and refuses a mismatch before login (B-13); V1 runs inside the deploy
+          # before login (P-02); NOW SERVING is read from production's start record (DCR-2/L101);
+          # a swap stamps production and restores the previous stamp on reversal (DCR-OWN); the
+          # live acceptance passes version metadata and the rollback setting (DCR-3/9 enablers).
+          python3 tests/prove_deploy_template.py
+          python3 tests/prove_deploy_environment_binding.py
+          python3 tests/prove_deploy_attestation.py
+          python3 tests/prove_deploy_now_serving.py
+          python3 tests/prove_deploy_ownership_stamp.py
+          python3 tests/prove_deploy_live_acceptance.py
+
+      - name: Two deploys of one app must queue, never cancel
+        run: |
+          set -euo pipefail
+          # L99. The App Service group keyed on the slot, so two runs staging into two slots of
+          # one app -- both ending in a swap into production -- did not queue behind each other.
+          python3 tests/prove_deploy_concurrency.py
+
+      - name: App Service slot '' may not touch a production tier, and says so when unhealthy
+        run: |
+          set -euo pipefail
+          # DCR gap 1. Runs the whole App Service job, step by step as shipped, against a
+          # stubbed cloud (tests/_fake_az.py): the direct path refuses at uat/prod before login,
+          # and the unhealthy report fires on BOTH paths -- it used to fire only on the path
+          # where production was untouched, which was the only thing it ever said.
+          python3 tests/prove_deploy_direct_to_production.py
+
+      - name: The deploy outcome is reconciled reality, not the run's intent
+        run: |
+          set -euo pipefail
+          # The deploy reusables carry scripts/deploy_contract.py as generated heredocs (a
+          # cross-repo caller has no scripts/ to run); a copy that drifted from the source would
+          # be the second implementation nobody tests.
+          python3 scripts/inline_deploy_scripts.py --check
+          # DCR section 5, one section per gap, each running the whole job as shipped against a
+          # stubbed cloud and checking the report against the stub's final state. STUBBED: the
+          # live acceptance matrix (DCR 7.8) is a hosted run and is owed.
+          python3 tests/prove_deploy_outcome.py
+
+      - name: Harness teardown only behind PRE and POST zero-count assertions
+        run: |
+          set -euo pipefail
+          # L102. ROLLBACK_CONTRACT.md: full teardown is a TEST-HARNESS behaviour, defensible only
+          # where absence was proven first, and never in the reusable deploy path.
+          python3 tests/prove_harness_teardown.py
+
+      - name: A weakening input may not exist without appearing in the emitted record
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet PyYAML
+          # `soft_fail_sast` appeared in no summary, no report, no annotation, and nowhere in
+          # assurance-taxonomy.yaml. A caller could soften the security gate and the run was
+          # reported IDENTICALLY to one that passed honestly -- this kit's own thesis failing at
+          # its front door, because everywhere else it insists configured is not effective.
+          #
+          # THE CHECK NEVER ASKS "IS THIS INPUT DANGEROUS". It asks "is this input CLASSIFIED",
+          # and refuses the run when one is not. A checker that hunts for a hand-written list of
+          # weakening names is a list that goes stale the first time somebody adds an input, and
+          # a stale list reports clean on a narrower denominator -- which is the same defect one
+          # level up.
+          #
+          # Unwired surfaces are ACCOUNTED FOR, not skipped: each carries a dated exemption that
+          # names every unrecorded input, and an expired exemption fails. Silence never renews.
+          python3 tests/check_weakening_record.py
+
+      - name: The deploy reusables' posture record routes what the deploy did
+        run: |
+          set -euo pipefail
+          # Both deploy reusables carry the nine-row record now (their exemptions above are
+          # deleted). Shape is W1-W7; this proves the VALUES: a refusal before the point of no
+          # return -- where a deploy that cannot be reversed at uat/prod stops -- routes BLOCKED
+          # over any weakening the caller recorded; a weakening at a lower tier owes a decision
+          # until attributed; an outcome the run could not reconcile is EVIDENCE_UNTRUSTED.
+          python3 tests/prove_deploy_posture.py
+
+      - name: A version-gap advisory is refused at uat/prod without an attributed exception (KDEC-014)
+        run: |
+          set -euo pipefail
+          # The gate names WHY a verdict is advisory; both deploy reusables refuse a VERSION_GAP
+          # at uat/prod before login unless a named accepter, a reason and an unexpired expiry
+          # are supplied, proceed with it recorded below uat, and leave other causes unchanged.
+          python3 tests/prove_version_gap_production.py
+
+      - name: NEGATIVE CONTROL — the weakening-record gate must actually be able to fail
+        run: |
+          # A gate that has never failed is decoration. Two independent forcing functions,
+          # because they fail through DIFFERENT paths and one passing does not prove the other.
+          #
+          #   --today 2099   every exemption is expired  -> the EXPIRY path must block
+          #   --check        every exemption is a failure -> the RATCHET path must block
+          #
+          # The rule checks themselves (W0-W7) are proven by single-substring mutants of a
+          # PASSING fixture inside the file's own self-test, which runs before either of these.
+          set -uo pipefail
+          for arg in "--today 2099-01-01" "--check"; do
+            # shellcheck disable=SC2086
+            if python3 tests/check_weakening_record.py $arg >/tmp/wk.txt 2>&1; then
+              echo "::error title=Gate cannot fail::check_weakening_record.py returned success"
+              echo "with $arg, so the exemption path has swallowed the blocking path and the"
+              echo "coverage it reports is unfalsifiable."
+              exit 1
+            fi
+            echo "negative control ok: $arg blocks"
+          done
 
       - name: Both layers must parse, and the core must stand alone
         run: |
@@ -284,7 +1399,17 @@ jobs:
                   bad.append('%s: %s' % (p, e)); continue
               jobs = set((d.get('jobs') or {}))
               for j, v in (d.get('jobs') or {}).items():
-                  for n in (v.get('needs') or []):
+                  # `needs:` IS A STRING WHEN A JOB HAS EXACTLY ONE DEPENDENCY.
+                  #
+                  # Iterating it walked the characters: `needs: fixture` in
+                  # validate-scanners.yml produced seven errors claiming jobs named f, i, x,
+                  # t, u, r and e did not exist, and never once checked `fixture` itself. A
+                  # checker that manufactures noise from valid syntax is also blind to a real
+                  # dangling reference written in that same syntax.
+                  nd = v.get('needs') or []
+                  if isinstance(nd, str):
+                      nd = [nd]
+                  for n in nd:
                       if n not in jobs:
                           bad.append('%s: job %s needs %s, which does not exist in this file'
                                      % (p, j, n))
@@ -322,6 +1447,11 @@ jobs:
           # defined in none, while two disposition classes existed only in conversation.
           # An undefined enforcement word is how PARTIAL quietly becomes PASS three layers
           # downstream -- valid words, broken taxonomy.
+          # A consumer whose pipeline just went red on this needs to know what to DO, not only
+          # what is wrong. The step prints the three options and a paste-ready block; the long
+          # version with worked examples is docs/operations/TAXONOMY_DRIFT.md. A gate people
+          # cannot clear is a gate people route around, and a routed-around control protects
+          # nothing.
           python3 scripts/reconcile_taxonomy.py
 
       - name: Discovery contract
@@ -329,10 +1459,46 @@ jobs:
           set -euo pipefail
           python3 -m pip install --quiet PyYAML
           # Discovery decides WHICH SCANNERS RUN AT ALL, which makes it the highest-leverage place
-          # in the kit for a lie. This extracts the real shell from the workflow and exercises it
-          # against synthetic trees -- including a survey that FAILS, which must force everything on
-          # rather than producing a tidy row of NOT_APPLICABLE over code nobody scanned.
+          # in the kit for a lie. This runs the real shell AS SHIPPED from .github/actions/discover,
+          # the composite the job uses through `$/` (the step bodies left the flagship when they
+          # held it over the 475 KB fail line), against synthetic trees -- including a survey that
+          # FAILS, which must force everything on rather than producing a tidy row of
+          # NOT_APPLICABLE over code nobody scanned. It also pins the job's outputs contract.
           python3 tests/test_discovery.py
+          # A language beyond the 8-level search bound is UNDETERMINED and declared, never
+          # NOT_APPLICABLE; root enumeration searches the same depth (W4K-120).
+          python3 tests/prove_discovery_depth.py
+
+      - name: Resolve contract
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet PyYAML
+          # The position between discover and the scanners: versions per class and root,
+          # capability against each scanner's DECLARED range, class-and-count coverage, and the
+          # advisory plan -- run AS SHIPPED from .github/actions/resolve, the composite the job
+          # uses through `$/` (the step bodies left the flagship when they took it to 518 KB).
+          # Fixture trees hold real version files. A resolver that cannot run must fail SAFE:
+          # DISCOVERY_UNAVAILABLE, exit 0, never a tidy COMPLETE -- and nothing here may ever
+          # print a percentage.
+          # KDEC-010 rides in the same proof: the capability selects the scanner (a substitute
+          # is labelled a substitution, never equivalence; no capable scanner is a VERSION_GAP,
+          # PARTIAL never PASS), and an UNVERIFIED range is never capable.
+          python3 tests/test_resolve.py
+          # The IaC corpus probe (KDEC-014): every outcome and refusal of the probe that writes the
+          # READ ranges, against a stub scanner; seeds stay Python data, never committed IaC.
+          python3 tests/prove_iac_corpus.py
+          # Real checkov and trivy SARIF: a real finding counts, a real clean run is never hollow.
+          python3 tests/prove_real_sarif_corpus.py
+
+      - name: The report never renders PASS for a scanner the capability selection capped
+        run: |
+          set -euo pipefail
+          # KDEC-010, the report half. The gate half runs in prove_bootstrap_failure.py and
+          # prove_gate_routing.py below. scanner_state.PARTIAL "MUST NOT be projected, summarised
+          # or rounded into PASS by any downstream consumer"; the report row and its index are
+          # the other place a PASS is rendered. This runs the real reporter over sandboxed state
+          # files with the resolver's lists handed to it the way the scan-report composite does.
+          python3 tests/prove_capability_selection.py
 
       - name: Assurance dataflow — producer to consumer
         run: |
@@ -343,6 +1509,9 @@ jobs:
           # that very class. Traces every assurance-bearing handoff and fails on an unguarded
           # default, because there is no implicit default from unknown to known.
           python3 scripts/trace_assurance_flow.py
+          # ...wherever the hand-off is written. The injection rule moves outputs into env:
+          # mappings; a tracer that read only run: text stopped seeing most of them.
+          python3 tests/prove_trace_reads_env.py
 
       - name: Suppressions must state why they are safe
         run: |
@@ -352,6 +1521,122 @@ jobs:
           # gate into BLOCKING and ACCEPTED DEBT. Switch to --check once the count reaches zero,
           # and record that switch as a ratchet so it cannot silently slide back.
           python3 scripts/lint_suppressions.py
+
+      # ── TOOLCHAIN COMPOSITE PROBES ───────────────────────────────────────────────────────
+      # `setup-node` and `setup-python` have been in this tree since it was written and had
+      # NEVER EXECUTED. Their deferrals expired 2026-09-15. CREATED is not CALLED, and a
+      # composite nobody has run is a plausible-looking file, not a capability.
+      #
+      # Appended to the END of an existing job on purpose. A separate job is a separate runner
+      # and GitHub bills per job rounded UP to the minute, so four probes in four jobs cost four
+      # minutes and the same four probes here cost seconds. That accounting is the reason this
+      # repository once projected 2,752 minutes a month.
+      #
+      # The probes also change the ACTIVE python and node for the remainder of the job, which is
+      # precisely why they run last.
+      - name: Toolchain probe — choose versions the runner is NOT already on
+        id: want
+        run: |
+          set -euo pipefail
+          # A composite that does nothing at all still "passes" a probe that asserts the runner has
+          # SOME python. So ask for a version the runner is demonstrably not on: then the only way
+          # to pass is to have actually changed the toolchain.
+          PY_NOW="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+          NODE_NOW="$(node -v 2>/dev/null | sed 's/^v//' | cut -d. -f1 || true)"
+          [ -n "$NODE_NOW" ] || NODE_NOW="none"
+          if [ "$PY_NOW" = "3.11" ]; then PY_WANT=3.12; else PY_WANT=3.11; fi
+          if [ "$NODE_NOW" = "22" ]; then NODE_WANT=20; else NODE_WANT=22; fi
+          echo "python_now=$PY_NOW"   >> "$GITHUB_OUTPUT"
+          echo "node_now=$NODE_NOW"   >> "$GITHUB_OUTPUT"
+          echo "python_want=$PY_WANT" >> "$GITHUB_OUTPUT"
+          echo "node_want=$NODE_WANT" >> "$GITHUB_OUTPUT"
+          echo "runner has python $PY_NOW / node $NODE_NOW; will request $PY_WANT / $NODE_WANT"
+
+      - name: Toolchain probe — setup-python composite
+        uses: ./.github/actions/setup-python
+        with:
+          python-version: ${{ steps.want.outputs.python_want }}
+          # A path that does not exist, deliberately: this exercises the SKIP branch, which is the
+          # branch a consumer without a requirements file takes.
+          requirements-file: .github/probe-no-such-requirements.txt
+          cache-dependency-path: tests/consumer-fixture/clean/requirements.txt
+
+      - name: Toolchain probe — setup-node composite
+        uses: ./.github/actions/setup-node
+        with:
+          node-version: ${{ steps.want.outputs.node_want }}
+          install: "false"
+          # Without this the composite FAILS here: upstream looks for a lock file in the repository
+          # root only, and this repository has none. That is what the first execution of a composite
+          # tells you and no amount of reading it does.
+          cache-dependency-path: tests/consumer-fixture/full/node/package-lock.json
+
+      - name: Toolchain probe — assert the requested versions are the ACTIVE ones
+        run: |
+          set -euo pipefail
+          PY_WANT='${{ steps.want.outputs.python_want }}'
+          NODE_WANT='${{ steps.want.outputs.node_want }}'
+          PY_GOT="$(python --version 2>&1 | awk '{print $2}')"
+          NODE_GOT="$(node -v | sed 's/^v//')"
+          fail=0
+          case "$PY_GOT" in
+            "$PY_WANT".*) echo "python: requested $PY_WANT, active $PY_GOT  ok" ;;
+            *) echo "::error title=setup-python did not take effect::requested $PY_WANT, active $PY_GOT. The composite ran and the toolchain did not change, which is indistinguishable from success in any check that only asserts a python exists."; fail=1 ;;
+          esac
+          case "$NODE_GOT" in
+            "$NODE_WANT".*) echo "node: requested $NODE_WANT, active $NODE_GOT  ok" ;;
+            *) echo "::error title=setup-node did not take effect::requested $NODE_WANT, active $NODE_GOT."; fail=1 ;;
+          esac
+          # The other half of the composites' job, and the reason D7 exists: report what was
+          # ACTUALLY installed. A composite that pins a version and never says what it got is the
+          # same class of silence as a scanner that runs and reports nothing.
+          {
+            echo "### Toolchain composites — what actually got installed"
+            echo ""
+            echo "| tool | runner default | requested | active |"
+            echo "|---|---|---|---|"
+            echo "| python | ${{ steps.want.outputs.python_now }} | $PY_WANT | $PY_GOT |"
+            echo "| node | ${{ steps.want.outputs.node_now }} | $NODE_WANT | $NODE_GOT |"
+            echo ""
+            echo "DEPTH: this proves VERSION SELECTION. It does not exercise \`npm ci\` or"
+            echo "\`pip install -r\`, the composites' install branches. Those are proven earlier"
+            echo "in this job, with the real tools against pinned fixtures:"
+            echo "tests/prove_setup_python_installs.py and tests/prove_setup_node_installs.py."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$fail"
+
+      - name: Provenance probe — render-version-metadata composite
+        id: provenance_probe
+        uses: ./.github/actions/render-version-metadata
+        with:
+          # QUOTED, all three. The first run of this probe passed the sbom hash unquoted, YAML
+          # typed 64 digits as a NUMBER, and the stamp recorded "1.11111111111111E+63". The
+          # composite now refuses a malformed hash; this is the other half of that fix.
+          image-digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+          sbom-sha256: "1111111111111111111111111111111111111111111111111111111111111111"
+          config-digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          artifact-identity: LOCAL_BUILD_ONLY
+
+      - name: Provenance probe — the stamp must carry the identity chain, not just a digest
+        run: |
+          set -euo pipefail
+          META='${{ steps.provenance_probe.outputs.metadata }}'
+          echo "$META" | jq .
+          for field in image_digest scanned_config_digest artifact_identity sbom_sha256 git_sha run_id technical_provenance; do
+            v="$(echo "$META" | jq -r --arg f "$field" '.[$f] // empty')"
+            if [ -z "$v" ]; then
+              echo "::error title=Provenance field missing::$field is absent from the rendered stamp. A provenance record with a hole in it is read as a provenance record."
+              exit 1
+            fi
+          done
+          # The stamp must NOT claim more than it can see. Artefact identity is one of eight
+          # conditions; this composite can evaluate none of the other seven.
+          tp="$(echo "$META" | jq -r '.technical_provenance')"
+          if [ "$tp" != "NOT_ESTABLISHED" ]; then
+            echo "::error title=Overclaimed provenance::technical_provenance=$tp from a composite that cannot observe traffic, tests, reviews or reconciliation."
+            exit 1
+          fi
+          echo "provenance stamp carries the identity chain and claims nothing it cannot see"
 
   validation-coverage:
     name: Validation coverage
@@ -395,11 +1680,104 @@ jobs:
             echo "::error::Gate failed, but not via the BLOCKING path. Wrong failure mode."; exit 1; }
           echo "Negative control passed: expired deferrals produce BLOCKING and a non-zero exit."
 
+      - name: No stage may claim a maturity its evidence does not carry (G-07)
+        run: |
+          # The stage register was stale both ways and nothing ran it. A run claim must cite a run
+          # id, ENFORCED its refusal run, BUILT code must be reached, a stage the registry observed
+          # at workflow level may not be understated, and every guardrail names a test a workflow
+          # runs (or says UNTESTED and why).
+          python tests/check_stage_phase.py --self-test
+          python tests/check_stage_phase.py
+
+      - name: The debt registers refuse what nothing consults (G-01, G-02, L70)
+        run: |
+          # An orphaned or stale deferral, "needs infrastructure" without a dated deferral, and an
+          # exemption whose closing condition has been met are each seeded and must be refused.
+          python tests/prove_registry_hygiene.py
+
+  ticket-reconcile-refuses-pr:
+    name: Ticket reconcile refuses a pull request (hosted negative control)
+    # PULL REQUESTS ONLY. The guard must answer NOT ARMED here, so the credentialed job is skipped
+    # and no environment is requested. If the guard ever armed on a pull request, the reconcile
+    # job would run with no tracker credential and exit 3 -- this job going red IS the control.
+    # Skipped on pushes, where the guard would correctly arm.
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/reusable-ticket-reconcile.yml
+    with:
+      backend: jira
+      environment: ticketing-never-armed-on-a-pull-request
+      default_branch: main
+      mode: sweep
+      kit_repository: ${{ github.repository }}
+      kit_ref: ${{ github.sha }}
+
+  ticket-reference-not-assessed-off-pr:
+    name: Ticket reference gate answers NOT ASSESSED off a pull request (hosted control)
+    # NOT ON PULL REQUESTS. The kit's own PR descriptions carry no Jira reference, so a PR run here
+    # would fail by design. On push and dispatch the gate must START (the size and syntax lesson)
+    # and answer NOT_A_PULL_REQUEST with exit 0; anything else turns this job red, which IS the
+    # control. The PR path is proven by tests/prove_ticket_reference_gate.py on the shipped step.
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/reusable-ticket-reference.yml
+    with:
+      tracker_host: jira.example.net
+      project_key: WORK
+
+  ticket-reference-outcome-asserted:
+    name: Ticket reference gate's outcome off a pull request is NOT_A_PULL_REQUEST
+    needs: ticket-reference-not-assessed-off-pr
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Assert the outcome, not only the colour
+        env:
+          OUTCOME: ${{ needs.ticket-reference-not-assessed-off-pr.outputs.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$OUTCOME" != "NOT_A_PULL_REQUEST" ]; then
+            echo "::error title=Ticket reference gate misread its event::outcome '$OUTCOME' off a pull request"
+            exit 1
+          fi
+          echo "outcome NOT_A_PULL_REQUEST: nothing assessed, and said so"
+
+  ledger-proposal-refuses-pr:
+    name: Ledger proposal refuses a pull request (hosted negative control)
+    # PULL REQUESTS ONLY. The proposal job's own `if:` must skip on a pull request: a ledger written
+    # from a PR is a PR grandfathering what it introduces. If it ever ran here it would try to push a
+    # proposal branch from a PR run -- this job doing anything but skip IS the control.
+    # The grant is the ceiling GitHub requires for the call to start (tests/check_caller_permissions.py);
+    # on a pull request the run's token is read-only for forks regardless, and the job never runs.
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/reusable-propose-ledger.yml
+    with:
+      environment: ledger-never-proposed-from-a-pull-request
+
   dogfood-policy:
     name: Policy gate (dogfood)
     # The kit runs its own governance gate against itself. Pinning is reported rather
     # than enforced here until the third-party actions carry real SHA pins — see docs/assurance/PINNING.md.
+    #
+    # AND THE WEAKENING IS NOW ATTRIBUTED, because the kit does not get to exempt itself from
+    # the rule it just shipped. Two controls are weakened here: action-pinning is disabled and
+    # workflow-policy is softened to reporting. Before this, both were silent and this job was
+    # reported exactly like one that passed the full gate. With the attribution recorded the
+    # run routes PROCEED_WITH_ADVISORY instead of DECISION_REQUIRED — and when the expiry
+    # passes it routes back to DECISION_REQUIRED, because silence must never renew a weakening.
     uses: ./.github/workflows/workflow-policy-check.yml
     with:
       require_sha_pinning: false
       soft_fail: true
+      weakening_reason: >-
+        The kit's own third-party actions carry tag refs rather than full SHA pins, so enforcing
+        the pinning rule against itself would block every run before the pins exist. Reported
+        rather than enforced while that migration is outstanding.
+      weakening_authority: kit-maintainer
+      weakening_exception_ref: docs/assurance/PINNING.md
+      weakening_expires: "2026-10-31"

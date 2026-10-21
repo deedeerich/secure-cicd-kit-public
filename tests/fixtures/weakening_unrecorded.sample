@@ -1,0 +1,18 @@
+# Fixture: the state this kit shipped in. Inputs that soften the gate, and nothing anywhere
+# records that they did. It must FAIL on W0.
+name: fixture unrecorded weakenings
+on:
+  workflow_call:
+    inputs:
+      soft_fail_sast:
+        description: If true, SAST findings report (SARIF) but do not fail the build.
+        type: boolean
+        default: true
+permissions:
+  contents: read
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scan
+        run: echo "scanning"

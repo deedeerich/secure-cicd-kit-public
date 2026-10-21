@@ -1,23 +1,233 @@
-name: Verify Azure OIDC
+name: Verify Azure OIDC authorization boundary
 
-# Auth-only. Creates NO resources, costs nothing, deletes nothing.
+# WHAT CHANGED, AND WHY
 #
-# Proves the single highest-risk untested capability — azure-oidc-auth — which both deploy
-# workflows sit on top of. If OIDC is misconfigured, everything downstream fails in more
-# confusing ways, so this runs first and alone.
+# The previous version authenticated, PRINTED THE SUBJECT IT EXPECTED TO PRESENT, counted
+# resources and asserted that nothing had been created. Three green runs established that
+# two identities could log in and that one branch policy refused a non-main ref.
 #
-# Manual dispatch only. Never scheduled, never on push.
+# PRINTING THREE DIFFERENT CLIENT IDs IS NOT PROOF OF ISOLATION. Three identities that all
+# hold Contributor on the same subscription print three different client IDs and are not
+# isolated at all. Isolation is a property of the EFFECTIVE AUTHORIZATION BOUNDARY, and a
+# boundary is only established by an attempt that is DENIED.
+#
+# So this asserts behaviour on BOTH sides of the line: declared-reachable scopes must be
+# REACHED, declared-refused scopes must be REFUSED, and every other outcome fails the job.
+#
+# A REFUSAL MUST BE PROVEN, NOT ASSUMED
+#   The CLI exiting non-zero is not proof of refusal. It exits non-zero for a typo, the wrong
+#   subscription, throttling, a malformed name, a CLI argument error, and for a resource
+#   group that simply does not exist. Four outcomes are distinguished and only one of them
+#   is evidence of a boundary:
+#
+#     REACHED      the call succeeded
+#     REFUSED      the call reached Azure and was denied ON AUTHORIZATION (AuthorizationFailed / 403)
+#     NOT_FOUND    the scope does not exist. Proves NOTHING about authorization.
+#     UNAVAILABLE  throttled, network, policy denial, CLI error, unclassified. Proves NOTHING.
+#
+#   An assertion whose outcome is NOT_FOUND or UNAVAILABLE FAILS THE JOB. It is not recorded
+#   as a pass with a caveat and it is not silently counted as a refusal. "the control could
+#   not be acquired" recorded as "the control found nothing" is the exact defect this kit
+#   exists to name, and a test that collapses all four states into "refused" commits it.
+#
+# DISCRIMINATION CONTROL
+#   ARM evaluates RBAC before existence. An identity with no subscription-level read receives
+#   403 for a resource group that does not exist just as it does for a sibling's real one. So
+#   before any REFUSED is trusted, this probes a deliberately nonexistent scope and records
+#   whether the 403/404 channel DISCRIMINATES for this identity at all. If it does not, the
+#   refusal assertions still prove the name is unreadable — but they do NOT prove the name
+#   denotes a real sibling, and the run says so rather than quietly implying otherwise.
+#
+# NOTHING IS MUTATED
+#   Every Azure call here is a read, except the subscription-scope probe, which is
+#   "deployment sub validate" against a template declaring ZERO resources — a write-CLASS
+#   authorization check that deploys nothing even when it is authorized. The claim that no
+#   resource was created, modified or deleted is then ASSERTED by comparing a canonical
+#   before/after digest of every readable declared scope, not merely stated in prose.
+#
+# CALLABLE CROSS-REPO
+#   workflow_call as well as workflow_dispatch. A consuming repository calls this and the
+#   token it presents carries the CALLER's repository claim while job_workflow_ref names THIS
+#   file and ref — the asymmetry that demonstrates private cross-repo resolution. All logic is
+#   INLINED (never "uses: ./") so it resolves when called from another repository.
 
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: >-
-          GitHub Environment holding the Azure secrets. Leave blank if the secrets are
-          repo-scoped — the federated credential subject differs between the two cases.
+        description: "GitHub Environment holding the Azure secrets. REQUIRED — the subject claim is environment-scoped."
+        type: string
+        required: true
+      workload_resource_group:
+        description: "This identity's OWN workload resource group. MUST be reachable."
+        type: string
+        required: true
+      shared_resource_group:
+        description: "The shared resource group this tier is entitled to (non-prod or prod). MUST be reachable."
+        type: string
+        required: true
+      sibling_workload_resource_group:
+        description: "A SIBLING product's workload resource group. MUST be refused."
+        type: string
+        required: true
+      opposite_tier_shared_resource_group:
+        description: "The shared resource group of the OPPOSITE tier. MUST be refused."
+        type: string
+        required: true
+      additional_reachable_resource_groups:
+        description: "Optional extra scopes that must be reachable. Comma or newline separated."
         type: string
         required: false
         default: ""
+      additional_refused_resource_groups:
+        description: "Optional extra scopes that must be refused. Comma or newline separated."
+        type: string
+        required: false
+        default: ""
+      expect_repository:
+        description: "Expected repository claim, as owner/name. Blank derives it from the run context and records it as DERIVED, not DECLARED."
+        type: string
+        required: false
+        default: ""
+      expect_job_workflow_ref_prefix:
+        description: "Expected prefix of the job_workflow_ref claim. Blank records that claim UNASSERTED."
+        type: string
+        required: false
+        default: ""
+      subscription_probe_location:
+        description: "Azure region named by the subscription-scope validate probe. Nothing is deployed there."
+        type: string
+        required: false
+        default: "westeurope"
+      token_audience:
+        description: "Audience requested when minting the inspection token."
+        type: string
+        required: false
+        default: "api://AzureADTokenExchange"
+      expect_tenant_id:
+        description: "Expected tenant ID of the session observed AFTER login. Blank compares the session against the AZURE_TENANT_ID secret the login used (recorded FROM_SECRETS). A value is compared verbatim IN ADDITION (recorded DECLARED), so a declaration can only make the check stricter. A deliberately wrong value is how the refusal path is proven without touching a secret, a variable or Azure. It appears in the run's inputs, so declare a real value only where that is acceptable."
+        type: string
+        required: false
+        default: ""
+      expect_subscription_id:
+        description: "Expected subscription ID of the session observed after login. Same rules as expect_tenant_id."
+        type: string
+        required: false
+        default: ""
+      expect_client_id:
+        description: "Expected workload identity (client ID) of the session observed after login. Same rules as expect_tenant_id."
+        type: string
+        required: false
+        default: ""
+
+  workflow_call:
+    inputs:
+      environment:
+        description: "GitHub Environment holding the Azure secrets. REQUIRED — the subject claim is environment-scoped."
+        type: string
+        required: true
+      workload_resource_group:
+        description: "This identity's OWN workload resource group. MUST be reachable."
+        type: string
+        required: true
+      shared_resource_group:
+        description: "The shared resource group this tier is entitled to (non-prod or prod). MUST be reachable."
+        type: string
+        required: true
+      sibling_workload_resource_group:
+        description: "A SIBLING product's workload resource group. MUST be refused."
+        type: string
+        required: true
+      opposite_tier_shared_resource_group:
+        description: "The shared resource group of the OPPOSITE tier. MUST be refused."
+        type: string
+        required: true
+      additional_reachable_resource_groups:
+        description: "Optional extra scopes that must be reachable. Comma or newline separated."
+        type: string
+        required: false
+        default: ""
+      additional_refused_resource_groups:
+        description: "Optional extra scopes that must be refused. Comma or newline separated."
+        type: string
+        required: false
+        default: ""
+      expect_repository:
+        description: "Expected repository claim, as owner/name. Blank derives it from the run context and records it as DERIVED, not DECLARED."
+        type: string
+        required: false
+        default: ""
+      expect_job_workflow_ref_prefix:
+        description: "Expected prefix of the job_workflow_ref claim. Blank records that claim UNASSERTED."
+        type: string
+        required: false
+        default: ""
+      subscription_probe_location:
+        description: "Azure region named by the subscription-scope validate probe. Nothing is deployed there."
+        type: string
+        required: false
+        default: "westeurope"
+      token_audience:
+        description: "Audience requested when minting the inspection token."
+        type: string
+        required: false
+        default: "api://AzureADTokenExchange"
+      expect_tenant_id:
+        description: "Expected tenant ID of the session observed AFTER login. Blank compares the session against the AZURE_TENANT_ID secret the login used (recorded FROM_SECRETS). A value is compared verbatim IN ADDITION (recorded DECLARED), so a declaration can only make the check stricter. A deliberately wrong value is how the refusal path is proven without touching a secret, a variable or Azure. It appears in the run's inputs, so declare a real value only where that is acceptable."
+        type: string
+        required: false
+        default: ""
+      expect_subscription_id:
+        description: "Expected subscription ID of the session observed after login. Same rules as expect_tenant_id."
+        type: string
+        required: false
+        default: ""
+      expect_client_id:
+        description: "Expected workload identity (client ID) of the session observed after login. Same rules as expect_tenant_id."
+        type: string
+        required: false
+        default: ""
+    secrets:
+      AZURE_TENANT_ID:
+        description: "Entra tenant ID. Not a secret value in the cryptographic sense, but org-identifying — keep it in secrets."
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        description: "Target subscription ID."
+        required: true
+      AZURE_CLIENT_ID:
+        description: "Client ID of the federated identity for this repository and environment. No client secret is used."
+        required: true
+    outputs:
+      verdict:
+        description: "PASS only when every declared assertion was established. Any NOT_FOUND or UNAVAILABLE yields FAIL."
+        value: ${{ jobs.verify.outputs.verdict }}
+      subject:
+        description: "The sub claim actually presented, read from the token."
+        value: ${{ jobs.verify.outputs.subject }}
+      subject_form:
+        description: "Which accepted shape the sub claim matched: PLAIN (repo:owner/name:environment:env) or ID_QUALIFIED (repo:owner@owner_id/name@repo_id:environment:env, ids equal to the token's own claims). UNMATCHED fails the run."
+        value: ${{ jobs.verify.outputs.subject_form }}
+      claim_repository:
+        description: "The repository claim actually presented."
+        value: ${{ jobs.verify.outputs.claim_repository }}
+      claim_environment:
+        description: "The environment claim actually presented."
+        value: ${{ jobs.verify.outputs.claim_environment }}
+      job_workflow_ref:
+        description: "The reusable workflow identity and ref that produced this evidence."
+        value: ${{ jobs.verify.outputs.job_workflow_ref }}
+      resolution:
+        description: "SAME_REPO or CROSS_REPO — whether job_workflow_ref named a repository other than the caller's."
+        value: ${{ jobs.verify.outputs.resolution }}
+      discrimination:
+        description: "Whether this identity can distinguish a 403 from a 404 at all, which sets how much a REFUSED is worth."
+        value: ${{ jobs.verify.outputs.discrimination }}
+      mutation_state:
+        description: "UNCHANGED, CHANGED, NOT_ESTABLISHED or NOT_ATTEMPTED. Only UNCHANGED is a pass."
+        value: ${{ jobs.verify.outputs.mutation_state }}
+      assertions:
+        description: "JSON evidence: one object per assertion with expected, observed, reason and verdict. Correlating refused scopes across callers is what closes the existence gap a single run cannot."
+        value: ${{ jobs.verify.outputs.assertions }}
 
 permissions:
   contents: read
@@ -25,48 +235,300 @@ permissions:
 jobs:
 
   verify:
-    name: OIDC login (no resources created)
+    name: Authorization boundary (reads and refusals only)
     runs-on: ubuntu-latest
     # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
     # converts a dependency failure into uncontrolled cost).
     # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
     # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
     # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
-    timeout-minutes: 15
+    timeout-minutes: 20
     environment: ${{ inputs.environment }}
     permissions:
       id-token: write        # REQUIRED to mint the OIDC token. Without it, login fails.
       contents: read
+    outputs:
+      verdict: ${{ steps.adjudicate.outputs.verdict }}
+      subject: ${{ steps.claims.outputs.subject }}
+      subject_form: ${{ steps.claims.outputs.subject_form }}
+      claim_repository: ${{ steps.claims.outputs.claim_repository }}
+      claim_environment: ${{ steps.claims.outputs.claim_environment }}
+      job_workflow_ref: ${{ steps.claims.outputs.job_workflow_ref }}
+      resolution: ${{ steps.claims.outputs.resolution }}
+      discrimination: ${{ steps.probe.outputs.discrimination }}
+      mutation_state: ${{ steps.after.outputs.mutation_state }}
+      assertions: ${{ steps.adjudicate.outputs.assertions }}
     steps:
-      - name: Show the subject this run will present
-        run: |
-          if [ -n "${{ inputs.environment }}" ]; then
-            echo "Environment-scoped run. The federated credential subject MUST be exactly:"
-            echo "  repo:${{ github.repository }}:environment:${{ inputs.environment }}"
-          else
-            echo "Repo-scoped run. The federated credential subject MUST be exactly:"
-            echo "  repo:${{ github.repository }}:ref:${{ github.ref }}"
-          fi
-          echo ""
-          echo "A job declaring 'environment:' sends the ENVIRONMENT subject even though the run"
-          echo "happens on a branch. Using the branch form for an environment-scoped job is the"
-          echo "most common cause of AADSTS700213, and the error text does not say so."
 
+      # ------------------------------------------------------------- 0. declarations
+      - name: Preflight — a caller that declares nothing must not pass
+        id: preflight
+        env:
+          # EVERY caller-controlled value crosses into the script through env:, never through
+          # an expression inside the body. In env: it is DATA. Interpolated, it is CODE — and
+          # a trusted input can still be a MALFORMED one that truncates on a quote.
+          IN_ENVIRONMENT: ${{ inputs.environment }}
+          IN_WORKLOAD_RG: ${{ inputs.workload_resource_group }}
+          IN_SHARED_RG: ${{ inputs.shared_resource_group }}
+          IN_SIBLING_RG: ${{ inputs.sibling_workload_resource_group }}
+          IN_OPPOSITE_RG: ${{ inputs.opposite_tier_shared_resource_group }}
+          IN_EXTRA_REACHABLE: ${{ inputs.additional_reachable_resource_groups }}
+          IN_EXTRA_REFUSED: ${{ inputs.additional_refused_resource_groups }}
+          IN_EXPECT_REPO: ${{ inputs.expect_repository }}
+          IN_EXPECT_JWR: ${{ inputs.expect_job_workflow_ref_prefix }}
+          IN_LOCATION: ${{ inputs.subscription_probe_location }}
+          CTX_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          set +e
+          fail=0
+          bad() { echo "::error title=Declaration rejected::$1"; fail=1; }
+
+          # An unasserted boundary is an unproven one. Blank is not "default to lenient";
+          # blank is a caller that declared nothing, and it stops here rather than earning a
+          # green tick for having asserted nothing at all.
+          for v in IN_ENVIRONMENT IN_WORKLOAD_RG IN_SHARED_RG IN_SIBLING_RG IN_OPPOSITE_RG; do
+            if [ -z "${!v}" ]; then
+              bad "$v is empty. Every boundary this run claims to prove must be declared."
+            fi
+          done
+
+          # A malformed name produces an Azure error that LOOKS like a refusal. The typo is
+          # rejected here, where it is cheap and unambiguous, rather than being handed to the
+          # classifier as a 400 it would have to guess about.
+          NAME_RE='^[A-Za-z0-9._()-]{1,90}$'
+          check_name() {
+            if [ -z "$2" ]; then return 0; fi
+            if ! printf '%s' "$2" | grep -Eq "$NAME_RE"; then
+              bad "$1 is not a legal resource group name: '$2'"
+            elif printf '%s' "$2" | grep -Eq '[.]$'; then
+              bad "$1 ends in a period, which Azure rejects: '$2'"
+            fi
+          }
+
+          split_list() { printf '%s' "$1" | tr ',' '\n' | tr -d ' ' | grep -v '^$'; }
+
+          REACHABLE_FILE="$RUNNER_TEMP/scopes-reachable.txt"
+          REFUSED_FILE="$RUNNER_TEMP/scopes-refused.txt"
+          : > "$REACHABLE_FILE"
+          : > "$REFUSED_FILE"
+
+          echo "own-workload|$IN_WORKLOAD_RG" >> "$REACHABLE_FILE"
+          echo "entitled-shared|$IN_SHARED_RG" >> "$REACHABLE_FILE"
+          echo "sibling-workload|$IN_SIBLING_RG" >> "$REFUSED_FILE"
+          echo "opposite-tier-shared|$IN_OPPOSITE_RG" >> "$REFUSED_FILE"
+          for n in $(split_list "$IN_EXTRA_REACHABLE"); do echo "additional-reachable|$n" >> "$REACHABLE_FILE"; done
+          for n in $(split_list "$IN_EXTRA_REFUSED"); do echo "additional-refused|$n" >> "$REFUSED_FILE"; done
+
+          check_name subscription_probe_location "$IN_LOCATION"
+          while IFS='|' read -r label name; do check_name "reachable/$label" "$name"; done < "$REACHABLE_FILE"
+          while IFS='|' read -r label name; do check_name "refused/$label" "$name"; done < "$REFUSED_FILE"
+
+          # A scope declared both reachable and refused is a contradiction, and whichever way
+          # it resolved the run would report a pass for one of the two claims.
+          cut -d'|' -f2 "$REACHABLE_FILE" | sort -u > "$RUNNER_TEMP/r.txt"
+          cut -d'|' -f2 "$REFUSED_FILE" | sort -u > "$RUNNER_TEMP/f.txt"
+          OVERLAP=$(comm -12 "$RUNNER_TEMP/r.txt" "$RUNNER_TEMP/f.txt")
+          if [ -n "$OVERLAP" ]; then
+            bad "declared both reachable AND refused: $(printf '%s' "$OVERLAP" | tr '\n' ' ')"
+          fi
+          if [ "$(wc -l < "$RUNNER_TEMP/f.txt")" -lt 2 ]; then
+            bad "fewer than two DISTINCT refused scopes. A sibling workload group and the opposite-tier shared group are different boundaries and must be named separately."
+          fi
+
+          EXPECT_REPO="$IN_EXPECT_REPO"
+          REPO_SOURCE="DECLARED"
+          if [ -z "$EXPECT_REPO" ]; then
+            EXPECT_REPO="$CTX_REPOSITORY"
+            REPO_SOURCE="DERIVED"
+            echo "::warning title=Repository expectation derived::expect_repository was blank, so the expectation was taken from the run context. It is recorded as DERIVED, not DECLARED."
+          fi
+          if [ -z "$IN_EXPECT_JWR" ]; then
+            echo "::warning title=Reusable-workflow identity UNASSERTED::expect_job_workflow_ref_prefix was blank. The job_workflow_ref claim is RECORDED but not ASSERTED, so this run does not establish which kit ref produced the evidence."
+          fi
+
+          {
+            echo "expect_repository=$EXPECT_REPO"
+            echo "repository_source=$REPO_SOURCE"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "  environment       : $IN_ENVIRONMENT"
+          echo "  expect repository : $EXPECT_REPO ($REPO_SOURCE)"
+          echo "  reachable scopes  : $(tr '\n' ' ' < "$RUNNER_TEMP/r.txt")"
+          echo "  refused scopes    : $(tr '\n' ' ' < "$RUNNER_TEMP/f.txt")"
+
+          if [ "$fail" = "1" ]; then
+            echo "::error::DECLARATION REJECTED. Nothing was attempted against Azure. A run that asserts nothing must not report success."
+            exit 1
+          fi
+          echo "Declarations accepted."
+
+      # ------------------------------------------------------------- 1. the real claims
+      - name: Assert the token's OWN claims — subject, repository, environment
+        id: claims
+        env:
+          AUDIENCE: ${{ inputs.token_audience }}
+          EXPECT_REPO: ${{ steps.preflight.outputs.expect_repository }}
+          EXPECT_ENVIRONMENT: ${{ inputs.environment }}
+          EXPECT_JWR: ${{ inputs.expect_job_workflow_ref_prefix }}
+        run: |
+          set -uo pipefail
+          set +e
+          # Anything token-shaped is stripped from every line this job prints. The token is
+          # ALSO handed to the runner's masker the instant it exists, so a later step that
+          # echoes it by accident still cannot leak it. No backslash appears in these
+          # patterns: a bracket class is used where an escape would normally go.
+          redact() {
+            sed -E -e 's/eyJ[A-Za-z0-9_-]{8,}([.][A-Za-z0-9_-]+)+/[redacted-jwt]/g' -e 's/[Bb]earer [A-Za-z0-9._~+=-]{16,}/bearer [redacted]/g' -e 's/[A-Za-z0-9_-]{20,}[.][A-Za-z0-9_-]{20,}[.][A-Za-z0-9_-]{10,}/[redacted-jwt]/g'
+          }
+          b64url_decode() {
+            s="$1"
+            m=$(( ${#s} % 4 ))
+            if [ "$m" -eq 2 ]; then s="${s}=="; elif [ "$m" -eq 3 ]; then s="${s}="; fi
+            printf '%s' "$s" | tr '_-' '/+' | base64 -d 2>/dev/null
+          }
+
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            echo "::error title=UNAVAILABLE::No OIDC token endpoint in the environment, so the job is missing id-token write permission. That is UNAVAILABLE, not a refusal: nothing about the boundary was established."
+            exit 1
+          fi
+
+          RESP=$(curl -sS --max-time 30 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" 2>&1)
+          rc=$?
+          TOKEN=$(printf '%s' "$RESP" | jq -r '.value // empty' 2>/dev/null)
+          if [ "$rc" -ne 0 ] || [ -z "$TOKEN" ]; then
+            echo "::error title=UNAVAILABLE::Could not mint an inspection token (curl rc=$rc). That proves nothing."
+            printf '%s' "$RESP" | redact | head -5
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+
+          CLAIMS=$(b64url_decode "$(printf '%s' "$TOKEN" | cut -d. -f2)")
+          TOKEN=""
+          RESP=""
+          if ! printf '%s' "$CLAIMS" | jq -e . >/dev/null 2>&1; then
+            echo "::error title=UNAVAILABLE::The token payload did not decode to JSON. That proves nothing."
+            exit 1
+          fi
+
+          g() { printf '%s' "$CLAIMS" | jq -r --arg k "$1" '.[$k] // ""'; }
+          C_SUB=$(g sub)
+          C_REPO=$(g repository)
+          C_ENV=$(g environment)
+          C_REF=$(g ref)
+          C_JWR=$(g job_workflow_ref)
+          C_WFREF=$(g workflow_ref)
+          C_RID=$(g repository_id)
+          C_ROID=$(g repository_owner_id)
+          C_AUD=$(g aud)
+          C_ISS=$(g iss)
+
+          # THESE ARE THE TOKEN'S OWN VALUES. Nothing below is reconstructed from inputs;
+          # inputs supply only the EXPECTATION each claim is compared against.
+          echo "Claims as presented by the OIDC provider:"
+          for kv in "sub=$C_SUB" "repository=$C_REPO" "environment=$C_ENV" "ref=$C_REF" "job_workflow_ref=$C_JWR" "workflow_ref=$C_WFREF" "repository_id=$C_RID" "repository_owner_id=$C_ROID" "aud=$C_AUD" "iss=$C_ISS"; do
+            printf '  %s' "$kv" | redact
+            echo ""
+          done
+
+          fail=0
+          # GitHub issues the subject in TWO shapes, and a credential matches whichever one the
+          # token presents (docs/adoption/SETUP.md). PLAIN is repo:<owner>/<name>:environment:<env>.
+          # ID_QUALIFIED is the immutable-id form, repo:<owner>@<owner_id>/<name>@<repo_id>:...,
+          # which hosted runs 38824385082 and 38824392100 (2026-10-15) presented from a genuine
+          # caller: this step, comparing only the plain shape, refused it BEFORE login, on a
+          # subject the login itself had accepted in September (run 35757818464). The ids are
+          # accepted only when they equal the token's OWN repository_owner_id and repository_id
+          # claims, both present and numeric; the names and the environment are compared exactly
+          # as presented -- case-sensitively, the comparison the plain form has always had, since
+          # no offline GitHub document states a different rule. Anything else is UNMATCHED and
+          # the existing hard failure. The form verified is recorded, so a reader can tell them
+          # apart. tests/prove_oidc_subject_forms.py runs this step as shipped.
+          EXPECT_SUB="repo:${EXPECT_REPO}:environment:${EXPECT_ENVIRONMENT}"
+          EXPECT_OWNER="${EXPECT_REPO%%/*}"
+          EXPECT_NAME="${EXPECT_REPO#*/}"
+          SUBJECT_FORM="UNMATCHED"
+          if [ "$C_SUB" = "$EXPECT_SUB" ]; then
+            SUBJECT_FORM="PLAIN"
+          elif [ "$EXPECT_OWNER" != "$EXPECT_REPO" ] && [ -n "$EXPECT_OWNER" ] && [ -n "$EXPECT_NAME" ] \
+               && printf '%s' "$C_ROID" | grep -Eq '^[0-9]+$' \
+               && printf '%s' "$C_RID" | grep -Eq '^[0-9]+$' \
+               && [ "$C_SUB" = "repo:${EXPECT_OWNER}@${C_ROID}/${EXPECT_NAME}@${C_RID}:environment:${EXPECT_ENVIRONMENT}" ]; then
+            SUBJECT_FORM="ID_QUALIFIED"
+          fi
+          echo "  subject_form=$SUBJECT_FORM"
+          if [ "$SUBJECT_FORM" = "UNMATCHED" ]; then
+            echo "::error title=Subject mismatch::the token's sub claim is not the expected caller repository and environment in either accepted form. Expected '$EXPECT_SUB', or 'repo:${EXPECT_OWNER}@<repository_owner_id>/${EXPECT_NAME}@<repository_id>:environment:${EXPECT_ENVIRONMENT}' with both ids equal to the token's own numeric claims; presented '$C_SUB'."
+            fail=1
+          fi
+          if [ "$C_REPO" != "$EXPECT_REPO" ]; then
+            echo "::error title=Repository claim mismatch::expected '$EXPECT_REPO', presented '$C_REPO'."
+            fail=1
+          fi
+          if [ "$C_ENV" != "$EXPECT_ENVIRONMENT" ]; then
+            echo "::error title=Environment claim mismatch::expected '$EXPECT_ENVIRONMENT', presented '$C_ENV'. A job that does not declare an environment presents the REF subject instead, which is the usual cause of AADSTS700213."
+            fail=1
+          fi
+          if [ -z "$C_JWR" ]; then
+            echo "::error title=UNAVAILABLE::no job_workflow_ref claim, so the reusable-workflow identity cannot be recorded and requirement 8 is NOT_ESTABLISHED."
+            fail=1
+          fi
+
+          # job_workflow_ref names owner/name/path@ref of the workflow that actually ran. When
+          # that repository differs from the repository claim, the caller resolved a workflow
+          # in ANOTHER repository — which is the cross-repo capability itself.
+          JWR_REPO=$(printf '%s' "$C_JWR" | cut -d/ -f1,2)
+          RESOLUTION="SAME_REPO"
+          if [ -n "$JWR_REPO" ] && [ "$JWR_REPO" != "$C_REPO" ]; then RESOLUTION="CROSS_REPO"; fi
+          echo "  resolution=$RESOLUTION (job_workflow_ref repository '$JWR_REPO' vs caller '$C_REPO')"
+
+          JWR_STATE="UNASSERTED"
+          if [ -n "$EXPECT_JWR" ]; then
+            case "$C_JWR" in
+              "$EXPECT_JWR"*) JWR_STATE="MATCHED" ;;
+              *) JWR_STATE="MISMATCHED"
+                 echo "::error title=Reusable workflow identity mismatch::expected job_workflow_ref to start with '$EXPECT_JWR', presented '$C_JWR'."
+                 fail=1 ;;
+            esac
+          fi
+
+          {
+            echo "subject=$C_SUB"
+            echo "subject_form=$SUBJECT_FORM"
+            echo "claim_repository=$C_REPO"
+            echo "claim_environment=$C_ENV"
+            echo "claim_ref=$C_REF"
+            echo "job_workflow_ref=$C_JWR"
+            echo "resolution=$RESOLUTION"
+            echo "jwr_state=$JWR_STATE"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$fail" = "1" ]; then
+            echo "::error::The identity presenting itself is not the one this run was authorised to assert about. Refusing to probe any scope."
+            exit 1
+          fi
+          echo "Subject, repository and environment claims all match the declared expectation (subject form $SUBJECT_FORM)."
+
+      # ------------------------------------------------------------- 2. authenticate
       - name: Assert the secrets are actually reachable
         env:
           CID: ${{ secrets.AZURE_CLIENT_ID }}
           TID: ${{ secrets.AZURE_TENANT_ID }}
           SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          IN_ENVIRONMENT: ${{ inputs.environment }}
         run: |
           set -uo pipefail
+          set +e
+          # A dual-trigger workflow resolves the secrets context from the caller on
+          # workflow_call and from the repository or environment on workflow_dispatch. Both
+          # paths are checked rather than assumed, because an unset secret surfaces
+          # downstream as an authentication error and reads like a refusal.
           missing=0
           for n in CID TID SID; do
-            v=$(eval echo "\$$n")
-            if [ -z "$v" ]; then echo "  MISSING: $n"; missing=1; else echo "  present: $n"; fi
+            if [ -z "${!n}" ]; then echo "  MISSING: $n"; missing=1; else echo "  present: $n"; fi
           done
           if [ "$missing" = "1" ]; then
-            echo "::error::Secrets not reachable. Check they are in the '${{ inputs.environment }}'"
-            echo "Environment (not repo scope, not Variables) and that this job declares that environment."
+            echo "::error::Secrets not reachable. On workflow_call the CALLER must pass them. On dispatch they must be in the '$IN_ENVIRONMENT' Environment — not repo scope, not Variables."
             exit 1
           fi
 
@@ -78,12 +540,23 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Assert context integrity — observed MUST equal declared
+        id: context
         env:
           EXPECTED_TID: ${{ secrets.AZURE_TENANT_ID }}
           EXPECTED_SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           EXPECTED_CID: ${{ secrets.AZURE_CLIENT_ID }}
+          # A caller-DECLARED expectation, as data. Blank keeps the comparison against the
+          # login's own secrets; a value adds a SECOND comparison. This is the refusal fixture:
+          # the expectation used to be ONLY the three secrets the login had just used, and a
+          # changed secret fails the login one step earlier -- so no permitted action could ever
+          # make this step fail, and an assertion that has never failed is decoration.
+          # tests/prove_context_integrity_refuses.py runs this step as shipped.
+          IN_EXPECT_TID: ${{ inputs.expect_tenant_id }}
+          IN_EXPECT_SID: ${{ inputs.expect_subscription_id }}
+          IN_EXPECT_CID: ${{ inputs.expect_client_id }}
         run: |
           set -uo pipefail
+          set +e
           # A cloud CLI's ambient context is NOT an authorization decision. Authenticating
           # successfully proves only that SOME identity reached SOME tenant. Before anything
           # consequential, the observed context must equal the declared one.
@@ -91,20 +564,34 @@ jobs:
           # This matters most where it is least visible: a workstation or runner carrying a
           # stale profile from another tenant will happily target the wrong estate without
           # ever emitting an error. Deploy adapters MUST reproduce this assertion.
-          OBS_TID=$(az account show --query tenantId -o tsv 2>/dev/null || echo "")
-          OBS_SID=$(az account show --query id       -o tsv 2>/dev/null || echo "")
-          OBS_CID=$(az account show --query user.name -o tsv 2>/dev/null || echo "")
+          OBS_TID=$(az account show --query tenantId -o tsv 2>/dev/null)
+          OBS_SID=$(az account show --query id       -o tsv 2>/dev/null)
+          OBS_CID=$(az account show --query user.name -o tsv 2>/dev/null)
 
           fail=0
-          check() {  # name observed expected — never echoes either value
+          check() {  # name observed expected source — never echoes any value
             if [ -z "$2" ]; then echo "  UNRESOLVED: $1"; fail=1
-            elif [ "$2" = "$3" ]; then echo "  match: $1"
-            else echo "::error title=Context mismatch::$1 observed does not equal declared."; fail=1
+            elif [ "$2" = "$3" ]; then echo "  match: $1 ($4)"
+            else echo "::error title=Context mismatch::$1 observed does not equal declared ($4)."; fail=1
             fi
           }
-          check tenant       "$OBS_TID" "$EXPECTED_TID"
-          check subscription "$OBS_SID" "$EXPECTED_SID"
-          check identity     "$OBS_CID" "$EXPECTED_CID"
+          # THE AMBIENT CHECK ALWAYS RUNS: the session must be the one the login's own secrets
+          # name. A declaration never replaces it -- it is compared in addition, so a caller can
+          # only make this step stricter, never looser.
+          check tenant       "$OBS_TID" "$EXPECTED_TID" FROM_SECRETS
+          check subscription "$OBS_SID" "$EXPECTED_SID" FROM_SECRETS
+          check identity     "$OBS_CID" "$EXPECTED_CID" FROM_SECRETS
+          declared() {  # name observed declared — records the source; compares only when declared
+            if [ -n "$3" ]; then
+              echo "$1_source=DECLARED" >> "$GITHUB_OUTPUT"
+              check "$1" "$2" "$3" DECLARED
+            else
+              echo "$1_source=FROM_SECRETS" >> "$GITHUB_OUTPUT"
+            fi
+          }
+          declared tenant       "$OBS_TID" "$IN_EXPECT_TID"
+          declared subscription "$OBS_SID" "$IN_EXPECT_SID"
+          declared identity     "$OBS_CID" "$IN_EXPECT_CID"
 
           if [ "$fail" = "1" ]; then
             echo "::error::Authentication succeeded but landed in an UNEXPECTED context. Refusing to"
@@ -114,36 +601,385 @@ jobs:
           fi
           echo "Context integrity verified: tenant, subscription and workload identity all as declared."
 
-      - name: Confirm identity and subscription
-        run: |
-          set -euo pipefail
-          az account show --output table
-          echo "signed-in object id: $(az ad signed-in-user show --query id -o tsv 2>/dev/null || echo 'n/a — service principal, expected')"
-
-      - name: Assert the tenant is empty, as expected for this test scope
+      # ------------------------------------------------------------- 3. baseline
+      - name: Snapshot every reachable scope BEFORE any probe
+        id: before
         run: |
           set -uo pipefail
-          # Read-only. Establishes the PRE_TEST_RESOURCE_COUNT precondition that makes
-          # full teardown defensible later. See docs/architecture/ROLLBACK_CONTRACT.md.
-          COUNT=$(az resource list --query "length(@)" -o tsv 2>/dev/null || echo "unknown")
-          echo "PRE_TEST_RESOURCE_COUNT=$COUNT"
-          {
-            echo "### Azure OIDC verified"
-            echo ""
-            if [ -n "${{ inputs.environment }}" ]; then
-              echo "- Subject: \`repo:${{ github.repository }}:environment:${{ inputs.environment }}\`"
-            else
-              echo "- Subject: \`repo:${{ github.repository }}:ref:${{ github.ref }}\`"
+          set +e
+          # The claim "nothing was created, modified or deleted" is asserted by comparison,
+          # not by assurance. A scope that cannot be snapshotted yields NOT_ESTABLISHED,
+          # which is a failure — an unobservable estate is not an unchanged estate.
+          SNAP="$RUNNER_TEMP/snapshot-before.txt"
+          : > "$SNAP"
+          unavailable=0
+          while IFS='|' read -r label rg; do
+            if [ -z "$rg" ]; then continue; fi
+            grp=$(az group show --name "$rg" --query "{name:name,location:location,tags:tags,managedBy:managedBy,state:properties.provisioningState}" -o json 2>&1)
+            g_rc=$?
+            res=$(az resource list --resource-group "$rg" --query "sort_by([].{id:id,type:type,location:location,kind:kind,sku:sku,tags:tags,managedBy:managedBy,identity:identity}, &id)" -o json 2>&1)
+            r_rc=$?
+            if [ "$g_rc" -ne 0 ] || [ "$r_rc" -ne 0 ]; then
+              echo "  UNAVAILABLE: $rg could not be snapshotted"
+              echo "$rg=UNAVAILABLE" >> "$SNAP"
+              unavailable=1
+              continue
             fi
-            echo "- Resources visible in subscription: **$COUNT**"
-            echo ""
-            echo "No resources were created, modified, or deleted by this run."
-          } >> "$GITHUB_STEP_SUMMARY"
-          if [ "$COUNT" = "unknown" ]; then
-            echo "::warning::Could not enumerate resources — the identity may lack Reader at subscription scope."
-            echo "That is fine for auth verification; it matters before any deploy test."
+            h=$(printf '%s%s' "$(printf '%s' "$grp" | jq -Sc .)" "$(printf '%s' "$res" | jq -Sc .)" | sha256sum | cut -d' ' -f1)
+            n=$(printf '%s' "$res" | jq 'length')
+            echo "  $rg  resources=$n  digest=${h:0:16}"
+            echo "$rg=$h" >> "$SNAP"
+          done < "$RUNNER_TEMP/scopes-reachable.txt"
+          echo "unavailable=$unavailable" >> "$GITHUB_OUTPUT"
+          if [ "$unavailable" = "1" ]; then
+            echo "::warning title=Baseline incomplete::at least one declared-reachable scope could not be read. Adjudication records that as a FAILURE; it is not treated as an empty scope."
           fi
 
-      - name: Confirm nothing was created
+      # ------------------------------------------------------------- 4. the boundary
+      - name: Probe the authorization boundary and classify every outcome
+        id: probe
+        env:
+          IN_LOCATION: ${{ inputs.subscription_probe_location }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -uo pipefail
+          set +e
+          RESULTS="$RUNNER_TEMP/assertions.jsonl"
+          : > "$RESULTS"
+
+          redact() {
+            sed -E -e 's/eyJ[A-Za-z0-9_-]{8,}([.][A-Za-z0-9_-]+)+/[redacted-jwt]/g' -e 's/[Bb]earer [A-Za-z0-9._~+=-]{16,}/bearer [redacted]/g' -e 's/[A-Za-z0-9_-]{20,}[.][A-Za-z0-9_-]{20,}[.][A-Za-z0-9_-]{10,}/[redacted-jwt]/g'
+          }
+
+          # ---- the four states, and the order they are tested in -----------------------
+          # Order is load-bearing. A policy denial arrives as 403 and would otherwise be
+          # counted as an RBAC refusal: it is a DIFFERENT control, so it is tested first and
+          # classified UNAVAILABLE. It proves the request was stopped; it does not prove this
+          # identity lacks the permission being asserted about.
+          PROBE_STATE=""
+          PROBE_REASON=""
+          PROBE_OUT=""
+          classify() {
+            rc="$1"
+            out="$2"
+            if [ "$rc" -eq 0 ]; then PROBE_STATE="REACHED"; PROBE_REASON="call-succeeded"; return 0; fi
+            if printf '%s' "$out" | grep -Eqi 'RequestDisallowedByPolicy|DisallowedByPolicy|ResourceNotAllowedByPolicy|disallowed by policy'; then
+              PROBE_STATE="UNAVAILABLE"; PROBE_REASON="policy-denial-not-rbac"; return 0
+            fi
+            if printf '%s' "$out" | grep -Eqi 'AuthorizationFailed|LinkedAuthorizationFailed|does not have authorization to perform action|is not authorized to perform|[(]Forbidden[)]|[(]403[)]|StatusCode: *403|"statusCode": *403|HTTP 403'; then
+              PROBE_STATE="REFUSED"; PROBE_REASON="rbac-authorization-denied"; return 0
+            fi
+            if printf '%s' "$out" | grep -Eqi 'ResourceGroupNotFound|SubscriptionNotFound|ResourceNotFound|ParentResourceNotFound|could not be found|was not found|[(]NotFound[)]|[(]404[)]|StatusCode: *404'; then
+              PROBE_STATE="NOT_FOUND"; PROBE_REASON="scope-does-not-exist"; return 0
+            fi
+            if printf '%s' "$out" | grep -Eqi 'TooManyRequests|429|ServiceUnavailable|503|GatewayTimeout|504|Max retries exceeded|Connection aborted|Read timed out|timed out|SSLError|ConnectionError|Temporary failure in name resolution'; then
+              PROBE_STATE="UNAVAILABLE"; PROBE_REASON="transport-or-throttle"; return 0
+            fi
+            if printf '%s' "$out" | grep -Eqi 'unrecognized arguments|invalid choice|the following arguments are required|InvalidResourceGroupName|InvalidResourceName|BadRequest|[(]400[)]'; then
+              PROBE_STATE="UNAVAILABLE"; PROBE_REASON="malformed-request-or-cli-error"; return 0
+            fi
+            if printf '%s' "$out" | grep -Eqi "az login|not logged in|AADSTS|ExpiredAuthenticationToken|InvalidAuthenticationToken"; then
+              PROBE_STATE="UNAVAILABLE"; PROBE_REASON="no-usable-credential"; return 0
+            fi
+            # An error nobody classified is NOT a refusal. Defaulting to UNAVAILABLE is the
+            # whole point: the unknown case must cost the run, not be absorbed by it.
+            PROBE_STATE="UNAVAILABLE"
+            PROBE_REASON="unclassified-error"
+          }
+
+          # Transient UNAVAILABLE is retried so a throttle cannot masquerade as a verdict. A
+          # persistent one is reported as UNAVAILABLE and fails the run.
+          run_probe() {
+            attempt=1
+            while : ; do
+              PROBE_OUT=$("$@" 2>&1)
+              classify "$?" "$PROBE_OUT"
+              if [ "$PROBE_REASON" != "transport-or-throttle" ] || [ "$attempt" -ge 3 ]; then break; fi
+              echo "    retry $attempt after $PROBE_REASON"
+              sleep $(( attempt * 5 ))
+              attempt=$(( attempt + 1 ))
+            done
+          }
+
+          record() {  # id label scope expected observed reason verdict evidence
+            jq -nc --arg id "$1" --arg label "$2" --arg scope "$3" --arg expected "$4" --arg observed "$5" --arg reason "$6" --arg verdict "$7" --arg evidence "$8" '{id:$id,label:$label,scope:$scope,expected:$expected,observed:$observed,reason:$reason,verdict:$verdict,evidence:$evidence}' >> "$RESULTS"
+            printf '  %-30s %-34s expected=%-9s observed=%-11s %s (%s)' "$1" "$3" "$4" "$5" "$7" "$6"
+            echo ""
+            # The body the classifier read, already redacted and truncated by short(). Without
+            # this line a DISPATCHED run shows that a scope was REFUSED and never what Azure said:
+            # the evidence reached only the workflow_call output (tests/prove_boundary_evidence_visible.py).
+            printf '      evidence: %s' "${8:-<empty>}"
+            echo ""
+          }
+
+          short() { printf '%s' "$1" | redact | tr '\n' ' ' | cut -c1-220; }
+
+          # ---- calibration: can this identity tell a 403 from a 404 at all? ------------
+          GHOST="scknx-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-absent"
+          echo "Discrimination control — probing a scope that cannot exist: $GHOST"
+          run_probe az group show --name "$GHOST" --output none
+          GHOST_STATE="$PROBE_STATE"
+          DISCRIMINATION="UNDETERMINED"
+          CONTROL_VERDICT="DEGRADED"
+          if [ "$GHOST_STATE" = "NOT_FOUND" ]; then
+            DISCRIMINATION="DISTINCTION_OBSERVABLE"
+            CONTROL_VERDICT="INFORMATIVE"
+          elif [ "$GHOST_STATE" = "REFUSED" ]; then
+            DISCRIMINATION="DISTINCTION_NOT_OBSERVABLE"
+          fi
+          record "control.discrimination" "nonexistent-scope" "$GHOST" "NOT_FOUND" "$GHOST_STATE" "calibration-only" "$CONTROL_VERDICT" "$(short "$PROBE_OUT")"
+          if [ "$DISCRIMINATION" = "DISTINCTION_NOT_OBSERVABLE" ]; then
+            echo "::warning title=Refusal evidence is DEGRADED::this identity receives 403 for a scope that does not exist, so a REFUSED outcome proves the name is unreadable but does NOT prove it denotes a real sibling. Correlate the assertions output against the run that reaches this scope to close the gap."
+          elif [ "$DISCRIMINATION" != "DISTINCTION_OBSERVABLE" ]; then
+            echo "::warning title=Calibration inconclusive::the discrimination control returned $GHOST_STATE, so the strength of every REFUSED below is unknown."
+          fi
+          echo "discrimination=$DISCRIMINATION" >> "$GITHUB_OUTPUT"
+
+          # ---- requirements 3 and 4: declared-reachable scopes MUST be REACHED ---------
+          echo ""
+          echo "Scopes declared REACHABLE — anything but REACHED fails:"
+          while IFS='|' read -r label rg; do
+            if [ -z "$rg" ]; then continue; fi
+            run_probe az group show --name "$rg" --output none
+            v="FAIL"
+            if [ "$PROBE_STATE" = "REACHED" ]; then v="PASS"; fi
+            record "reachable.$label" "$label" "$rg" "REACHED" "$PROBE_STATE" "$PROBE_REASON" "$v" "$(short "$PROBE_OUT")"
+          done < "$RUNNER_TEMP/scopes-reachable.txt"
+
+          # ---- requirements 5 and 6: declared-refused scopes MUST be REFUSED -----------
+          echo ""
+          echo "Scopes declared REFUSED — REACHED is a breached boundary, and NOT_FOUND or UNAVAILABLE prove nothing and also fail:"
+          while IFS='|' read -r label rg; do
+            if [ -z "$rg" ]; then continue; fi
+            run_probe az group show --name "$rg" --output none
+            v="FAIL"
+            if [ "$PROBE_STATE" = "REFUSED" ]; then v="PASS"; fi
+            record "refused.$label" "$label" "$rg" "REFUSED" "$PROBE_STATE" "$PROBE_REASON" "$v" "$(short "$PROBE_OUT")"
+          done < "$RUNNER_TEMP/scopes-refused.txt"
+
+          # ---- requirement 7: subscription-scope mutation MUST be REFUSED --------------
+          # "deployment sub validate" requires Microsoft.Resources/deployments/validate/action
+          # AT SUBSCRIPTION SCOPE — a write-class permission a resource-group-scoped
+          # Contributor does not hold. It DEPLOYS NOTHING even when it is authorized, and the
+          # template it validates declares zero resources, so the probe cannot create anything
+          # by succeeding. The template is written with printf, not a heredoc, and contains no
+          # backslash of any kind.
+          echo ""
+          echo "Subscription-scope mutation probe (validate only — deploys nothing):"
+          TPL="$RUNNER_TEMP/empty-subscription-deployment.json"
+          printf '%s' '{"$schema":"https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#","contentVersion":"1.0.0.0","resources":[]}' > "$TPL"
+          run_probe az deployment sub validate --location "$IN_LOCATION" --template-file "$TPL" --name "scknx-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --output none
+          v="FAIL"
+          if [ "$PROBE_STATE" = "REFUSED" ]; then v="PASS"; fi
+          record "refused.subscription-mutation" "subscription-scope-write" "/subscriptions/${SUBSCRIPTION_ID}" "REFUSED" "$PROBE_STATE" "$PROBE_REASON" "$v" "$(short "$PROBE_OUT")"
+          if [ "$PROBE_STATE" = "REACHED" ]; then
+            echo "::error title=Subscription-scope write is AUTHORIZED::this identity passed a subscription-scope validate, so its Contributor grant is not confined to its resource groups. Nothing was deployed — the template declares zero resources — but the boundary this kit claims does not exist."
+          fi
+
+          echo ""
+          echo "Probing complete. Adjudication is a separate step so a probe error cannot decide the verdict."
+
+      # ------------------------------------------------------------- 5. the verdict
+      - name: Adjudicate — NOT_FOUND and UNAVAILABLE are failures, not passes
+        id: adjudicate
         if: always()
-        run: echo "This workflow performs no mutations. Nothing to clean up."
+        env:
+          BASELINE_UNAVAILABLE: ${{ steps.before.outputs.unavailable }}
+        run: |
+          set -uo pipefail
+          set +e
+          # This step runs on always(). A baseline step that never wrote its answer took no
+          # baseline, so its silence is UNAVAILABLE -- the `:-0` below used to read it as taken.
+          [ -n "${BASELINE_UNAVAILABLE:-}" ] || BASELINE_UNAVAILABLE=1
+          RESULTS="$RUNNER_TEMP/assertions.jsonl"
+          if [ ! -s "$RESULTS" ]; then
+            {
+              echo "verdict=FAIL"
+              echo "assertions=[]"
+            } >> "$GITHUB_OUTPUT"
+            echo "::error title=No evidence::the probe step produced no assertion records, so the boundary state is UNKNOWN. That is not a pass."
+            exit 1
+          fi
+
+          total=$(jq -rs 'length' "$RESULTS")
+          fails=$(jq -rs '[.[] | select(.verdict == "FAIL")] | length' "$RESULTS")
+          unavail=$(jq -rs '[.[] | select(.observed == "UNAVAILABLE")] | length' "$RESULTS")
+          notfound=$(jq -rs '[.[] | select(.observed == "NOT_FOUND" and .expected != "NOT_FOUND")] | length' "$RESULTS")
+          breached=$(jq -rs '[.[] | select(.expected == "REFUSED" and .observed == "REACHED")] | length' "$RESULTS")
+          echo "records=$total failing=$fails unavailable=$unavail not_found=$notfound boundary_breaches=$breached"
+
+          VERDICT="PASS"
+          if [ "$fails" -gt 0 ] || [ "${BASELINE_UNAVAILABLE:-0}" = "1" ]; then VERDICT="FAIL"; fi
+
+          # Machine-readable, on ONE line, so a caller or a fleet reconciler can consume it.
+          # Correlating the refused scopes here against the runs that REACH them is what turns
+          # fifteen single-identity results into a proof that fifteen boundaries are disjoint.
+          ASSERTIONS=$(jq -rsc . "$RESULTS")
+          {
+            echo "verdict=$VERDICT"
+            echo "assertions=$ASSERTIONS"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$breached" -gt 0 ]; then
+            echo "::error title=BOUNDARY BREACHED::$breached scope(s) declared refused were REACHED. This identity's authority is wider than declared."
+          fi
+          if [ "$unavail" -gt 0 ]; then
+            echo "::error title=UNAVAILABLE::$unavail assertion(s) never reached a decision — throttled, policy-denied, malformed or unclassified. THE CONTROL COULD NOT BE ACQUIRED. That is not the same as the control finding nothing, and it is not a pass."
+          fi
+          if [ "$notfound" -gt 0 ]; then
+            echo "::error title=NOT_FOUND::$notfound scope(s) do not exist. A call that finds nothing to be refused BY has established nothing about authorization."
+          fi
+          if [ "${BASELINE_UNAVAILABLE:-0}" = "1" ]; then
+            echo "::error title=Baseline UNAVAILABLE::a declared-reachable scope could not be snapshotted, so the no-mutation assertion has no baseline to compare against."
+          fi
+          if [ "$VERDICT" != "PASS" ]; then
+            echo "::error::AUTHORIZATION BOUNDARY NOT_ESTABLISHED."
+            exit 1
+          fi
+          echo "Every declared boundary was established: reachable scopes REACHED, refused scopes REFUSED on authorization."
+
+      # ------------------------------------------------------------- 6. no mutation
+      - name: Assert nothing was created, modified or deleted
+        id: after
+        if: always()
+        run: |
+          set -uo pipefail
+          set +e
+          # Runs even when the boundary assertions failed. "Did this run change the estate?"
+          # must be answerable on the failure path too — that is the path where a half-run
+          # probe is most likely to have left something behind.
+          BEFORE="$RUNNER_TEMP/snapshot-before.txt"
+          AFTER="$RUNNER_TEMP/snapshot-after.txt"
+          SCOPES="$RUNNER_TEMP/scopes-reachable.txt"
+
+          # No scope list means the run never got past its own declarations, so no Azure call
+          # was ever made. NOT_ATTEMPTED, not NOT_ESTABLISHED: there is nothing to establish.
+          if [ ! -s "$SCOPES" ] || [ ! -s "$BEFORE" ]; then
+            echo "mutation_state=NOT_ATTEMPTED" >> "$GITHUB_OUTPUT"
+            echo "NOT_ATTEMPTED — the run stopped before any scope was read, so it issued no call that could have changed anything."
+            exit 0
+          fi
+          if grep -q '=UNAVAILABLE$' "$BEFORE"; then
+            echo "mutation_state=NOT_ESTABLISHED" >> "$GITHUB_OUTPUT"
+            echo "::error title=NOT_ESTABLISHED::the baseline itself contains an unreadable scope, so no comparison over it is possible."
+            exit 1
+          fi
+
+          : > "$AFTER"
+          unavailable=0
+          while IFS='|' read -r label rg; do
+            if [ -z "$rg" ]; then continue; fi
+            grp=$(az group show --name "$rg" --query "{name:name,location:location,tags:tags,managedBy:managedBy,state:properties.provisioningState}" -o json 2>&1)
+            g_rc=$?
+            res=$(az resource list --resource-group "$rg" --query "sort_by([].{id:id,type:type,location:location,kind:kind,sku:sku,tags:tags,managedBy:managedBy,identity:identity}, &id)" -o json 2>&1)
+            r_rc=$?
+            if [ "$g_rc" -ne 0 ] || [ "$r_rc" -ne 0 ]; then
+              echo "$rg=UNAVAILABLE" >> "$AFTER"
+              unavailable=1
+              continue
+            fi
+            h=$(printf '%s%s' "$(printf '%s' "$grp" | jq -Sc .)" "$(printf '%s' "$res" | jq -Sc .)" | sha256sum | cut -d' ' -f1)
+            echo "$rg=$h" >> "$AFTER"
+          done < "$SCOPES"
+
+          if [ "$unavailable" = "1" ]; then
+            echo "mutation_state=NOT_ESTABLISHED" >> "$GITHUB_OUTPUT"
+            echo "::error title=NOT_ESTABLISHED::a scope readable at baseline could not be re-read. An unobservable estate is not an unchanged estate."
+            exit 1
+          fi
+
+          if diff -u "$BEFORE" "$AFTER" > "$RUNNER_TEMP/snapshot.diff"; then
+            echo "mutation_state=UNCHANGED" >> "$GITHUB_OUTPUT"
+            echo "UNCHANGED — the canonical digest of every readable declared scope is identical before and after."
+            echo "BOUND: this covers creation, deletion, retagging, and changes to sku, kind, managedBy"
+            echo "       and identity WITHIN THE DECLARED REACHABLE SCOPES. It does not cover in-resource"
+            echo "       property changes, and it cannot cover the refused scopes — which this run proved"
+            echo "       it cannot read, and therefore cannot have written to either."
+          else
+            echo "mutation_state=CHANGED" >> "$GITHUB_OUTPUT"
+            echo "::error title=MUTATION DETECTED::a declared scope differs before and after this run."
+            cat "$RUNNER_TEMP/snapshot.diff"
+            exit 1
+          fi
+
+      # ------------------------------------------------------------- 7. the record
+      - name: Record the evidence
+        if: always()
+        env:
+          SUBJECT: ${{ steps.claims.outputs.subject }}
+          SUBJECT_FORM: ${{ steps.claims.outputs.subject_form }}
+          CLAIM_REPO: ${{ steps.claims.outputs.claim_repository }}
+          CLAIM_ENV: ${{ steps.claims.outputs.claim_environment }}
+          CLAIM_REF: ${{ steps.claims.outputs.claim_ref }}
+          JWR: ${{ steps.claims.outputs.job_workflow_ref }}
+          JWR_STATE: ${{ steps.claims.outputs.jwr_state }}
+          RESOLUTION: ${{ steps.claims.outputs.resolution }}
+          REPO_SOURCE: ${{ steps.preflight.outputs.repository_source }}
+          DISCRIMINATION: ${{ steps.probe.outputs.discrimination }}
+          VERDICT: ${{ steps.adjudicate.outputs.verdict }}
+          MUTATION: ${{ steps.after.outputs.mutation_state }}
+        run: |
+          set -uo pipefail
+          set +e
+          RESULTS="$RUNNER_TEMP/assertions.jsonl"
+          redact() {
+            sed -E -e 's/eyJ[A-Za-z0-9_-]{8,}([.][A-Za-z0-9_-]+)+/[redacted-jwt]/g' -e 's/[Bb]earer [A-Za-z0-9._~+=-]{16,}/bearer [redacted]/g' -e 's/[A-Za-z0-9_-]{20,}[.][A-Za-z0-9_-]{20,}[.][A-Za-z0-9_-]{10,}/[redacted-jwt]/g'
+          }
+          {
+            echo "### Azure OIDC authorization boundary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Verdict | **${VERDICT:-NOT_ATTEMPTED}** |"
+            echo "| Subject, from the token | ${SUBJECT:-unresolved} |"
+            echo "| Subject form verified | ${SUBJECT_FORM:-unresolved} |"
+            echo "| repository claim | ${CLAIM_REPO:-unresolved} (expectation ${REPO_SOURCE:-unknown}) |"
+            echo "| environment claim | ${CLAIM_ENV:-unresolved} |"
+            echo "| ref claim | ${CLAIM_REF:-unresolved} |"
+            echo "| job_workflow_ref | ${JWR:-unresolved} (${JWR_STATE:-UNASSERTED}) |"
+            echo "| Resolution | ${RESOLUTION:-unknown} |"
+            echo "| Refusal discrimination | ${DISCRIMINATION:-unknown} |"
+            echo "| Estate after the run | ${MUTATION:-NOT_ESTABLISHED} |"
+            echo ""
+            if [ -s "$RESULTS" ]; then
+              echo "| Assertion | Scope | Expected | Observed | Reason | Verdict |"
+              echo "|---|---|---|---|---|---|"
+              jq -r '"| " + .id + " | " + .scope + " | " + .expected + " | **" + .observed + "** | " + .reason + " | " + .verdict + " |"' "$RESULTS"
+            else
+              echo "No assertion records were produced. The boundary state is UNKNOWN."
+            fi
+            echo ""
+            echo "REACHED = the call succeeded. REFUSED = it reached Azure and was denied on"
+            echo "authorization. NOT_FOUND = the scope does not exist, which proves nothing."
+            echo "UNAVAILABLE = throttled, policy-denied, malformed or unclassified, which also"
+            echo "proves nothing. Only REFUSED is evidence of a boundary, and NOT_FOUND and"
+            echo "UNAVAILABLE fail this job rather than passing with a caveat."
+            echo ""
+            if [ "${DISCRIMINATION:-unknown}" = "DISTINCTION_NOT_OBSERVABLE" ]; then
+              echo "**Refusal evidence is DEGRADED for this identity.** A nonexistent scope also"
+              echo "returned 403, so REFUSED here proves the name is unreadable, not that it denotes"
+              echo "a real sibling. Closing that requires correlating this run's assertions output"
+              echo "with the run whose own workload scope is the one refused here."
+              echo ""
+            fi
+            echo "No resource was created, modified or deleted: asserted by comparing a canonical"
+            echo "before and after digest of every readable declared scope, not merely claimed. The"
+            echo "only non-read call is a subscription-scope deployment validate over a template"
+            echo "declaring zero resources, which deploys nothing even when it is authorized."
+          } | redact >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail the run if the boundary was not established
+        if: always()
+        env:
+          VERDICT: ${{ steps.adjudicate.outputs.verdict }}
+          MUTATION: ${{ steps.after.outputs.mutation_state }}
+        run: |
+          set -uo pipefail
+          set +e
+          # Terminal gate. A summary that renders is not a verdict, and a step that was skipped
+          # because an earlier one failed must not leave the run looking green.
+          if [ "${VERDICT:-NOT_ATTEMPTED}" != "PASS" ] || [ "${MUTATION:-NOT_ATTEMPTED}" != "UNCHANGED" ]; then
+            echo "::error::verdict=${VERDICT:-NOT_ATTEMPTED} mutation_state=${MUTATION:-NOT_ATTEMPTED}. The authorization boundary is NOT_ESTABLISHED by this run."
+            exit 1
+          fi
+          echo "Boundary established, and the estate is unchanged."

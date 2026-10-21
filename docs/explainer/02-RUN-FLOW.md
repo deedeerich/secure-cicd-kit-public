@@ -1,0 +1,142 @@
+# 02 · What happens in one run
+
+The consumer calls one reusable workflow:
+
+```yaml
+permissions:                   # everything the kit's jobs request, or GitHub refuses the run
+  contents: read
+  security-events: write
+  actions: read                # the CodeQL job
+jobs:
+  security:
+    uses: <kit-owner>/<kit-repo>/.github/workflows/reusable-security.yml@<commit-sha>
+    with:
+      environment: prod        # the baseline-ledger environment; empty names none
+      # language: auto, iac_mode: auto, paths: ".", soft_fail_sast: false are the defaults AND the
+      # baseline -- change nothing to get PROCEED on a clean run (part 05)
+    secrets:
+      SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}   # optional; the only secret it takes
+```
+
+Pin the kit by **commit SHA**, never a branch or a moving tag: the verdict is only as trustworthy as
+the code that produced it.
+
+## The job graph (VERIFIED against the workflow on trunk)
+
+```
+kit-scripts ─┐
+             ├─> secret-scan, code-quality, sast-semgrep, sast-bandit, sast-java, sast-go,
+discover ────┘   sast-dotnet, sast-cpp, codeql, deps-scan, iac-scan, malicious-deps, sbom,
+     │           image-scan                       (14 scanner jobs)
+     └─> resolve  (version fitness and capability selection; runs beside the scanners, not before)
+                          │
+                          v
+                       report  (renders 25 scanner rows; counts blocking findings per job;
+                                writes findings.json into the evidence artifact)
+                          │
+                          v
+                    security-gate  ── step `gate`    (what happened)
+                                   └─ step `posture` (what should happen next: routing_result,
+                                                      advisory_causes)
+```
+
+### 1. `kit-scripts` — the kit's own scripts, verified
+
+Writes the kit's helper scripts once and publishes them as a **run-scoped artifact** with a pinned
+SHA-256 manifest. Every scanner job downloads that artifact and verifies the digest before using it.
+A script that arrives unverified is a supply-chain step with no integrity check.
+
+If this job fails, every scanner is skipped — and a skipped scanner is **not** a clean scanner. The
+gate treats the toolchain as its own question: a `kit-scripts` failure blocks in every mode, including
+advisory.
+
+### 2. `discover` — what is actually here
+
+Seven presence probes (python, node, go, dotnet, java, cpp, iac) plus an unsupported-language sweep
+and a platform probe (visibility, code-scanning and secret-scanning availability, Dependabot state).
+Each probe distinguishes **found nothing** from **could not look**: a probe that errors does not read
+as "not present". If the survey itself cannot run, discovery turns **everything on** and reports
+`DISCOVERY_UNAVAILABLE` — over-scanning is recoverable, a silent skip is not.
+
+Languages present that no kit scanner can read are reported as `COVERAGE_GAP` — present, a control is
+owed, nothing looked — and the gate repeats them so a green result is never read as full coverage.
+
+**The search has a depth bound of 8 directory levels** (`11db350`, VERIFIED: `prove_discovery_depth.py`
+at `078ef90`). A probe that found nothing while the scope holds entries deeper than 8 levels reports
+`UNDETERMINED` and **runs the scanner** ("none within 8 levels; deeper not searched") instead of
+`NOT_APPLICABLE`, and any entry beyond the bound adds a `BeyondSearchDepth` coverage gap. The Node,
+.NET and Go root enumerations search the same 8 levels and declare deeper entries the same way. Cost:
+in a repository with anything deeper than 8 levels, every language discovery cannot see runs its scanner.
+
+The caller's `language` input can only **exclude** ecosystems discovery found (reported as
+`EXCLUDED_BY_SELECTOR` and recorded as a narrowing in the posture record).
+
+### 3. The scanner jobs
+
+Each scanner job follows the same shape (part 04 lists every job):
+
+```
+install the tool (pinned) → run it, never letting its exit code decide anything
+  → COUNT: report present? parseable? how many blocking findings? (absent/unparseable = COLLECTION_FAILED)
+  → ENFORCE: separate step; blocks only per the configured enforcement
+  → redact → keep the SARIF as an artifact → publish to the Security tab where available
+  → say plainly if publication degraded (publication never decides pass/fail)
+```
+
+A run that skipped part of its input is not a clean run: every `semgrep scan` runs with `--strict`, so
+a file Semgrep cannot parse is exit 3 and `COLLECTION_FAILED`, not a warning and a zero; a CodeQL
+autobuild that did not succeed makes that language's state `PARTIAL` in the summary (`1542c05`; the
+gate does not read it yet, part 04).
+
+**Detection is separated from enforcement**, and **redaction precedes every publication** in the job,
+including the last upload (VERIFIED: 29 uploads, each preceded by a redaction, checked by
+`tests/check_redaction_parity.py`).
+
+### 4. `report` — evidence assembled, findings counted
+
+Runs from the kit's own repository via a composite action (`$/` reference), so it executes beside the
+modules it imports. It renders one row per **scanner** (25 rows, not one per job — two scanners in one
+job each get their own verdict), applies approved dispositions read from the **protected default
+branch**, computes durable finding identity where it can, and publishes per job the count of
+**blocking findings** that remain. That count — not the job's conclusion — is what tells the gate
+whether findings exist. It uploads the evidence artifact `security-report-<run_attempt>`.
+
+A row reads **NOT ESTABLISHED** when the tool's evidence shows it examined nothing. What counts as
+"examined nothing" is per tool (KDEC-008 OD-2): since `fa19c02` the report agrees with the runner's
+validity check that a **clean Bandit run is not hollow** (Bandit lists only rules that fired, so an
+empty rule list is normal), and it reads error notifications from both SARIF notification arrays.
+
+### 5. `security-gate` — two questions, then a verdict
+
+Step `gate` answers two separate questions and never collapses them:
+
+| output | question |
+|---|---|
+| `assurance_state` | what did this run ESTABLISH? `PASS`, `FINDINGS`, `PARTIAL`, `UNDETERMINED` |
+| `enforcement_state` | what did the gate DO? `BLOCKED`, `ADVISORY`, `ALLOWED` |
+
+Then step `posture` (runs even when the gate blocked) enumerates every input, records each weakening
+and who decided it, and emits the **verdict**: `routing_result`. Deploy reads that. Part 03 has the
+exact rules.
+
+## What crosses the run boundary
+
+Only the merge commit and retained artifacts. Nothing computed in one run is re-classified in another;
+a later automation may retrieve and render a verdict computed in the run, never compute one after the
+fact (SINGLE_PIPELINE_TARGET §2.4, §3.1).
+
+## Triggers (DESIGNED; the flagship runs on whatever event the consumer wires)
+
+| context | what it arms |
+|---|---|
+| pull request | detection, identity matching (read-only), gate, verdict. Never writes the ledger or tickets |
+| merge to the protected branch | the above, plus ledger proposals and ticket reconciliation (separate privileged job) |
+| nightly / scheduled | deeper depth (history scan), revalidation of what is deployed, deferral sweeps |
+
+## Where the long-term shape is going (DESIGNED, partly built)
+
+The workflow is being decomposed so each scanner's logic lives in its own composite action called via
+`$/` from the kit repository (step 8 of the decomposition plan proved this works across repositories;
+the report is the first composite). Target: the main workflow around 42 KB, and a scanner registry
+(`scanner-registry.yaml`, already enforced by `tests/check_scanner_registry.py`) as the authoritative
+list the gate must read.

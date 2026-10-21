@@ -265,12 +265,23 @@ def main():
                      'yes' if enforced else 'no', 'NOT ESTABLISHED HERE'])
 
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
-    with io.open(a.out, 'w', encoding='utf-8', newline='') as fh:
-        w = csv.writer(fh)
-        w.writerow(['Capability', 'Static state', 'Invoked in', 'Jobs', 'Merely mentioned in',
-                    'Result surfaced in run', 'Outcome captured', 'Referenced by gate',
-                    'EFFECTIVE (needs live seeded run)'])
-        w.writerows(rows)
+    # LF, as committed, and NOT REWRITTEN WHEN NOTHING CHANGED. csv's default terminator is
+    # CRLF: on the hosted runner every run "changed" the tracked file (self-test run
+    # 38786589890, tree-clean sweep). Writing LF alone then dirtied a Windows checkout, whose
+    # copy is CRLF under autocrlf. Compare with line endings normalised; write only a change.
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator='\n')
+    w.writerow(['Capability', 'Static state', 'Invoked in', 'Jobs', 'Merely mentioned in',
+                'Result surfaced in run', 'Outcome captured', 'Referenced by gate',
+                'EFFECTIVE (needs live seeded run)'])
+    w.writerows(rows)
+    new = buf.getvalue()
+    old = None
+    if os.path.isfile(a.out):
+        old = io.open(a.out, encoding='utf-8', newline='').read().replace('\r\n', '\n')
+    if old != new:
+        with io.open(a.out, 'w', encoding='utf-8', newline='') as fh:
+            fh.write(new)
 
     print('')
     print('%-18s %-34s %-7s %-8s %s' % ('capability', 'static state', 'surfaced', 'captured',

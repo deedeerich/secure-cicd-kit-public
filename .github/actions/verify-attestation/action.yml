@@ -1,0 +1,139 @@
+name: "Verify Attestation (V1)"
+description: >-
+  Verify the signed build-provenance attestation for an image digest BEFORE any deploy mutation.
+  Five outcomes, never a boolean; routing per rung (PROVENANCE_AND_ATTESTATION.md section 6.3); a
+  plan that offers no attestations is held as debt, not wired as a permanent red.
+# "A stamp is a write. An attestation is a signature. A verification is a refusal." This is the
+# refusal. It reads; it needs no write permission (section 8.2). The caller branches on
+# routing_result -- this step does not fail on its own verdict, so the verdict cannot be lost to a
+# skipped job; it fails only on malformed input.
+inputs:
+  image-digest:
+    description: "sha256:<64 hex> digest of the image about to be deployed."
+    required: true
+  subject-name:
+    description: "Registry/repository name the attestation was made for (e.g. myacr.azurecr.io/team/app)."
+    required: true
+  repository:
+    description: "owner/repo whose attestations are trusted (gh --repo). Scopes the lookup."
+    required: true
+  signer-workflow:
+    description: >-
+      The workflow that must have signed (gh --signer-workflow), e.g.
+      owner/secure-cicd-kit/.github/workflows/reusable-build-docker.yml. Without it, "GitHub signed
+      something" passes for "our build signed this digest" (section 4.5).
+    required: true
+  rung:
+    description: "crawl | walk | run -- the enforcement rung whose section 6.3 column applies."
+    required: false
+    default: "run"
+  repository-visibility:
+    description: "public | private | internal. A public repository arms verification on every plan."
+    required: false
+    default: "${{ github.event.repository.visibility }}"
+  attestations-available:
+    description: >-
+      "true" when the plan offers attestations on a private repository (Enterprise Cloud). On
+      Free/Pro/Team a private repository cannot verify (section 5); the outcome is then
+      ATTESTATION_HELD_BY_PLAN, carried as IMPLEMENTATION_HELD debt with the plan as its trigger.
+    required: false
+    default: "false"
+outputs:
+  outcome:
+    description: >-
+      ATTESTATION_VERIFIED | ATTESTATION_ABSENT | ATTESTATION_CONTRADICTED |
+      ATTESTATION_NOT_ESTABLISHABLE | ATTESTATION_HELD_BY_PLAN.
+    value: ${{ steps.verify.outputs.outcome }}
+  routing_result:
+    description: "This control's contribution to the run's routing_result, per rung (section 6.3)."
+    value: ${{ steps.verify.outputs.routing_result }}
+  debt:
+    description: "IMPLEMENTATION_HELD when the plan holds verification; empty otherwise."
+    value: ${{ steps.verify.outputs.debt }}
+runs:
+  using: composite
+  steps:
+    - name: Verify the attestation for the digest about to be deployed
+      id: verify
+      shell: bash
+      env:
+        DIGEST: ${{ inputs.image-digest }}
+        SUBJECT: ${{ inputs.subject-name }}
+        REPO: ${{ inputs.repository }}
+        SIGNER: ${{ inputs.signer-workflow }}
+        RUNG: ${{ inputs.rung }}
+        VISIBILITY: ${{ inputs.repository-visibility }}
+        AVAILABLE: ${{ inputs.attestations-available }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        case "$RUNG" in crawl|walk|run) ;; *)
+          echo "::error title=Unknown rung::'$RUNG' is not crawl, walk or run."; exit 1 ;; esac
+        if ! printf '%s' "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+          echo "::error title=Malformed digest::'$DIGEST' is not sha256:<64 hex>."; exit 1
+        fi
+        debt=""
+        # PLAN UNAVAILABILITY IS NOT A MISSING ATTESTATION (section 6.4). Spelled differently,
+        # never calls the API, and carried as held debt whose trigger is the plan, not a date.
+        if [ "$VISIBILITY" != public ] && [ "$AVAILABLE" != true ]; then
+          outcome=ATTESTATION_HELD_BY_PLAN; debt=IMPLEMENTATION_HELD
+        elif [ -z "$SIGNER" ]; then
+          # No signer to pin: "GitHub signed something" would pass for "the kit's build signed
+          # this digest" (section 4.5). The check cannot be performed as specified; gh is not asked.
+          outcome=ATTESTATION_NOT_ESTABLISHABLE
+        elif ! command -v gh >/dev/null 2>&1; then
+          outcome=ATTESTATION_NOT_ESTABLISHABLE
+        else
+          set +e
+          out="$(gh attestation verify "oci://$SUBJECT@$DIGEST" --repo "$REPO" \
+                   --signer-workflow "$SIGNER" --deny-self-hosted-runners --format json 2>err.txt)"
+          rc=$?
+          set -e
+          err="$(cat err.txt 2>/dev/null)"; rm -f err.txt
+          if [ "$rc" = 0 ]; then
+            # Defence in depth: every verified statement must name THIS digest.
+            want="${DIGEST#sha256:}"
+            if printf '%s' "$out" | jq -e --arg d "$want" \
+                 'type == "array" and length > 0 and
+                  all(.[]; [.verificationResult.statement.subject[]?.digest.sha256] | index($d))' \
+                 >/dev/null 2>&1; then
+              outcome=ATTESTATION_VERIFIED
+            else
+              outcome=ATTESTATION_CONTRADICTED
+            fi
+          elif printf '%s' "$err" | grep -qiE 'no attestations found|HTTP 404'; then
+            outcome=ATTESTATION_ABSENT
+          elif printf '%s' "$err" | grep -qiE 'failed to verify|does not match|signature|certificate|mismatch|expected'; then
+            outcome=ATTESTATION_CONTRADICTED
+          else
+            # Unreachable, unauthorised, rate-limited, or something unrecognised: the check could
+            # not be performed. Never a pass, never a contradiction.
+            outcome=ATTESTATION_NOT_ESTABLISHABLE
+          fi
+          [ -z "$err" ] || echo "gh: ${err%%$'\n'*}"
+        fi
+        case "$outcome:$RUNG" in
+          ATTESTATION_VERIFIED:*)            route=PROCEED ;;
+          ATTESTATION_ABSENT:crawl)          route=PROCEED_WITH_ADVISORY ;;
+          ATTESTATION_ABSENT:*)              route=DECISION_REQUIRED ;;
+          ATTESTATION_CONTRADICTED:*)        route=BLOCKED ;;
+          # Held: neither a permanent stop nor a clean pass -- visible, and owed.
+          ATTESTATION_HELD_BY_PLAN:*)        route=PROCEED_WITH_ADVISORY ;;
+          *)                                 route=EVIDENCE_UNTRUSTED ;;
+        esac
+        {
+          echo "outcome=$outcome"
+          echo "routing_result=$route"
+          echo "debt=$debt"
+        } >> "$GITHUB_OUTPUT"
+        {
+          echo "### Attestation verification (V1)"
+          echo ""
+          echo "| subject | outcome | rung | routing |"
+          echo "|---|---|---|---|"
+          echo "| \`$SUBJECT@$DIGEST\` | **$outcome** | $RUNG | \`$route\` |"
+          if [ -n "$debt" ]; then
+            echo ""
+            echo "> Held, not failed: this repository's plan offers no attestations (PROVENANCE_AND_ATTESTATION.md section 6.4). Debt \`$debt\`; trigger: the plan moves to Enterprise Cloud or the repository is public."
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+        echo "attestation: $outcome -> $route"

@@ -195,8 +195,19 @@ def main(roots):
     print("   It establishes nothing about whether the workflow discovers, scans, and correctly")
     print("   interprets it. That requires a run against a real consumer and has not happened.")
 
-    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
-                       "consumer-coverage.json")
+    # OUTSIDE THE REPOSITORY, BY DEFAULT (W4K-114). The record lists absolute paths of every
+    # directory under the surveyed roots -- the operator's private estate -- and it used to be
+    # written into the kit's own root, where only a .gitignore line stood between it and a commit
+    # (or a fresh clone without that line). CONSUMER_COVERAGE_OUT chooses another place.
+    import tempfile
+    out = os.environ.get("CONSUMER_COVERAGE_OUT") or os.path.join(
+        tempfile.gettempdir(), "consumer-coverage.json")
+    kit_root = os.path.normcase(os.path.abspath(os.path.join(os.path.dirname(
+        os.path.abspath(__file__)), "..")))
+    if os.path.normcase(os.path.abspath(out)).startswith(kit_root + os.sep):
+        print("refusing to write the census inside the kit (%s): it names private paths."
+              % os.path.normpath(out))
+        return 1
     io.open(out, "w", encoding="utf-8").write(json.dumps(
         {"repos": repos, "non_repos": non_repos, "failed": failed,
          "supported": est_sup, "unsupported": est_unsup}, indent=2))

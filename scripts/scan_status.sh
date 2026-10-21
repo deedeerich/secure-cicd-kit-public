@@ -33,7 +33,29 @@ scan_status() {
     # error text is not useful in a summary block; the STATE survives and is published. If this
     # fails in a way other than "not valid SARIF" -- jq missing, file unreadable -- the result is
     # the same and is still not a clean zero, which is the outcome that matters.
-    if _c=$(jq '[.runs[].results[]] | length' "$_sarif" 2>/dev/null); then
+    # A PARSEABLE REPORT IS NOT YET A REPORT THAT SOMEONE LOOKED (ledger L05). Before a count
+    # may be printed, the SARIF must evidence a run that attempted and did not fail -- the same
+    # reading the validity rows apply (PIPELINE_ORDERING section 4.5, rows 3-6):
+    #   no runs                                    the tool reported nothing about a run
+    #   a run with `results` absent or null        "did not attempt" (SARIF 3.14.23)
+    #   an error-level tool notification           "SHALL mean that the run failed" (3.20.21);
+    #                                              bandit writes exactly this, exit 0, for a
+    #                                              file it could not parse
+    #   executionSuccessful false                  (3.20.14)
+    # Each prints NOT ESTABLISHED, never 0. tests/prove_scan_status_zero.py.
+    _why=""
+    if _v=$(jq -r '
+        if (.runs | type) != "array" or (.runs | length) == 0 then "no run is recorded in the report"
+        elif any(.runs[]; (.results | type) != "array") then "a run has no results array -- it did not attempt"
+        elif any(.runs[]; any((.invocations // [])[]; ((.toolExecutionNotifications // []) + (.toolConfigurationNotifications // [])) | any(.level == "error"))) then "the tool reported an error-level notification -- the run failed"
+        elif any(.runs[]; any((.invocations // [])[]; .executionSuccessful == false)) then "the tool reported executionSuccessful false"
+        else "" end' "$_sarif" 2>/dev/null); then
+      _why="$_v"
+    fi
+    if [ -n "$_why" ]; then
+      _sar="GENERATED -- $_why"
+      _n="NOT ESTABLISHED"
+    elif _c=$(jq '[.runs[].results[]] | length' "$_sarif" 2>/dev/null); then
       _sar="GENERATED"
       # Only a scanner that actually completed may report a count. A crashed run that happens to
       # have left a partial report behind must not publish a number from it.

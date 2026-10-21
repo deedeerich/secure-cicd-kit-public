@@ -1,0 +1,725 @@
+name: Discover what is actually here
+description: >-
+  The discover job's two step bodies: the applicability and coverage survey (part: survey,
+  step id d) and the platform-capability probe (part: platform, step id platform). They
+  lived inline in the `discover` job until the flagship reached 473 KB with LF line endings
+  and 481 KB in a CRLF checkout -- over the 475 KB fail line in tests/check_workflow_size.py,
+  which sits below GitHub's 500 KB ceiling at which a workflow does not fail, it never starts.
+  Reached through `$/`, which delivers the
+  whole kit at the commit the caller pinned, exactly as resolve and scan-report are. The job
+  invokes this composite twice, once per part, with the step ids d and platform, so its
+  outputs block reads exactly what it read inline. tests/test_discovery.py runs the survey
+  as shipped, from this file, against fixture trees. FAIL-SAFE as before: a survey that
+  cannot run turns everything on and says DISCOVERY_UNAVAILABLE; it never reads as a tidy
+  row of NOT_APPLICABLE.
+
+inputs:
+  part:
+    description: >-
+      Which half to run -- survey (applicability and coverage) or platform (platform
+      capability). Anything else fails the step: a miswired call is a kit defect, and a
+      discovery that ran nothing must never read as one that found nothing.
+    required: true
+  paths:
+    description: The caller's `paths`, verbatim. Empty or not a directory means the whole checkout. Survey only.
+    required: false
+    default: ''
+  language:
+    description: The caller's `language` selector, verbatim (auto, multi, or a list). Survey only.
+    required: false
+    default: ''
+  iac-mode:
+    description: The caller's `iac_mode`, verbatim (auto, required, disabled). Survey only.
+    required: false
+    default: ''
+  enable-iac:
+    description: The caller's deprecated `enable_iac`, as text. Read only to say out loud that it is ignored. Survey only.
+    required: false
+    default: ''
+
+outputs:
+  # The job maps each of these to a job output of the same name, from the invocation that
+  # runs its part: steps.d.outputs.<name> for the survey, steps.platform.outputs.<name> for
+  # the platform probe. The other invocation's copy of an output is empty and nobody reads it.
+  python:
+    description: 'true / false. "true" also when the probe could not look (fail-safe: run it).'
+    value: ${{ steps.d.outputs.python }}
+  node:
+    description: true / false, as python.
+    value: ${{ steps.d.outputs.node }}
+  go:
+    description: true / false, as python.
+    value: ${{ steps.d.outputs.go }}
+  dotnet:
+    description: true / false, as python.
+    value: ${{ steps.d.outputs.dotnet }}
+  java:
+    description: true / false, as python.
+    value: ${{ steps.d.outputs.java }}
+  cpp:
+    description: true / false, as python.
+    value: ${{ steps.d.outputs.cpp }}
+  iac:
+    description: true / false, as python, after iac_mode.
+    value: ${{ steps.d.outputs.iac }}
+  state:
+    description: COMPLETE / DISCOVERY_PARTIAL / DISCOVERY_UNAVAILABLE.
+    value: ${{ steps.d.outputs.state }}
+  unsupported:
+    description: Comma list of unscannable extensions; empty = none seen; UNDETERMINED = the probe failed.
+    value: ${{ steps.d.outputs.unsupported }}
+  coverage_gaps:
+    description: Comma list of artifact classes present that no scanner here can read.
+    value: ${{ steps.d.outputs.coverage_gaps }}
+  coverage_gap_count:
+    description: How many classes. 0 only when every discovered class had a capable scanner.
+    value: ${{ steps.d.outputs.coverage_gap_count }}
+  ghas_available:
+    description: true / false / unknown. UNKNOWN is a real value, never coerced to false.
+    value: ${{ steps.platform.outputs.ghas_available }}
+  code_scanning:
+    description: ENABLED / UNAVAILABLE / UNKNOWN.
+    value: ${{ steps.platform.outputs.code_scanning }}
+  secret_scanning:
+    description: ENABLED / NOT_CONFIGURED / UNAVAILABLE / unknown.
+    value: ${{ steps.platform.outputs.secret_scanning }}
+  push_protection:
+    description: ENABLED / NOT_CONFIGURED / UNAVAILABLE / unknown.
+    value: ${{ steps.platform.outputs.push_protection }}
+  dependabot_alerts:
+    description: ENABLED / unknown.
+    value: ${{ steps.platform.outputs.dependabot_alerts }}
+  dependabot_updates:
+    description: ENABLED / NOT_CONFIGURED / unknown.
+    value: ${{ steps.platform.outputs.dependabot_updates }}
+  dependabot_config:
+    description: PRESENT / ABSENT (file presence).
+    value: ${{ steps.platform.outputs.dependabot_config }}
+  visibility:
+    description: The repos API visibility, or unknown.
+    value: ${{ steps.platform.outputs.visibility }}
+  platform_source:
+    description: How the platform values were established; "none" when nobody asked successfully.
+    value: ${{ steps.platform.outputs.platform_source }}
+
+runs:
+  using: composite
+  steps:
+    - name: Refuse a part this composite does not have
+      if: inputs.part != 'survey' && inputs.part != 'platform'
+      shell: bash
+      env:
+        in_part: ${{ inputs.part }}
+      run: |
+        echo "::error title=Discovery miswired::the discover composite was called with part='${in_part}', which is neither survey nor platform. Nothing was surveyed, and that is not the same as nothing being here."
+        exit 1
+
+    - name: Survey what is in scope
+      id: d
+      if: inputs.part == 'survey'
+      shell: bash
+      env:
+        # CALLER-CONTROLLED INPUT ARRIVES AS DATA, NOT AS SCRIPT TEXT.
+        #
+        # These were interpolated straight into the script, and `scope` then fed
+        # `find "$scope"`. A caller passing  x"; rm -rf /; #  as `paths` would have executed
+        # it inside the shared workflow every consumer runs.
+        #
+        # Lower exposure than the PR-body case -- setting these needs write access to the
+        # CALLING repository, not merely the ability to open a pull request. It is not the
+        # same class and it is not nothing: this kit is meant to be consumed by many repos,
+        # and one misconfigured or compromised caller should not get code execution in the
+        # workflow the others share. A trusted input can still be a malformed input.
+        IN_PATHS: ${{ inputs.paths }}
+        IN_LANGUAGE: ${{ inputs.language }}
+        IN_IAC_MODE: ${{ inputs.iac-mode }}
+        IN_ENABLE_IAC: ${{ inputs.enable-iac }}
+      run: |
+        set -uo pipefail
+        state=COMPLETE
+        scope="${IN_PATHS:-.}"
+        [ -d "$scope" ] || scope="."
+        sel="${IN_LANGUAGE:-auto}"
+        iac_mode="${IN_IAC_MODE:-auto}"
+
+        # A DEAD INPUT MUST SAY SO OUT LOUD. `enable_iac` was superseded by `iac_mode` and left
+        # declared, so a caller could set it, watch it be accepted, and get nothing. Silence
+        # here is what let a configured-looking run scan no infrastructure at all.
+        if [ "${IN_ENABLE_IAC:-false}" = "true" ]; then
+          echo "::warning title=enable_iac is ignored::This input is deprecated and nothing"
+          echo "reads it. IaC applicability is decided by artifact presence; use iac_mode to"
+          echo "force or disable. Your setting had NO effect on this run."
+          echo "| (config) | enable_iac IGNORED | deprecated; use iac_mode |" >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+        # FAIL-SAFE: if the survey itself cannot run, everything is enabled and the state says so.
+        trap 'echo "::error title=Discovery failed::Applicability could not be established."; \
+              for k in python node go dotnet java cpp iac; do echo "$k=true" >> "$GITHUB_OUTPUT"; done; \
+              echo "state=DISCOVERY_UNAVAILABLE" >> "$GITHUB_OUTPUT"; exit 0' ERR
+
+        # PER-PROBE SENTINEL FILES, NOT ONE GLOBAL FLAG, AND NOT VARIABLES.
+        #
+        # Two separate reasons, both learned the hard way:
+        #
+        # (1) SUBSHELL. probe is invoked inside $( ), so any variable it sets is discarded on
+        #     the way out. An earlier version detected survey failure correctly and then threw
+        #     the answer away, reporting COMPLETE. A survey that fails and reports success is
+        #     precisely the defect this job exists to prevent.
+        #
+        # (2) PARTIAL IS NOT TOTAL. The version after THAT used a single shared flag, so one
+        #     failing probe discarded six perfectly good answers and declared total ignorance.
+        #     Discarding established evidence is as destructive as inventing it -- merely in
+        #     the opposite direction. Each ecosystem's applicability is established, or not,
+        #     ON ITS OWN.
+        FAILDIR="$(mktemp -d)"
+        probe() {
+          # "FOUND NOTHING" AND "COULD NOT LOOK" ARE DIFFERENT ANSWERS.
+          #
+          # The obvious idiom -- [ -n "$(find ...)" ] && yes || no -- collapses them. A find
+          # that ERRORS produces empty output, which reads as "this ecosystem is not present",
+          # which becomes NOT_APPLICABLE, which becomes a green run over code nobody scanned.
+          #
+          # -print -quit, NOT `| head -1`. With `pipefail` set, head closing the pipe after one
+          # line kills find with SIGPIPE and the pipeline reports 141 -- so the survey announced
+          # FAILURE on any repository large enough to produce a second match. Measured: 5,000
+          # files => rc=141, one file => rc=0. Discovery would therefore have reported
+          # DISCOVERY_UNAVAILABLE on essentially every real repository, force-enabling every
+          # scanner and rendering the alarm meaningless through constant false firing. It failed
+          # SAFE, which is why nothing caught it: over-scanning is quiet. -print -quit is find's
+          # OWN early exit -- no pipe, no signal, no lie.
+          _k="$1"; shift
+          _res="$(find "$scope" -maxdepth 8 \( "$@" \) \
+            -not -path '*/node_modules/*' -not -path '*/vendor/*' -not -path '*/.git/*' \
+            -print -quit 2>/dev/null)"
+          _rc=$?
+          if [ "$_rc" -ne 0 ]; then
+            : > "$FAILDIR/$_k"
+            echo "::warning title=Probe failed::find exited $_rc probing $_k; applicability for $_k is UNDETERMINED."
+            printf 'no'
+            return 0
+          fi
+          # A BOUNDED SEARCH THAT FOUND NOTHING HAS NOT SHOWN ABSENCE BEYOND ITS BOUND (W4K-120).
+          # The probe stops at 8 levels. When it found nothing and the scope holds entries deeper
+          # than that, nothing was looked at down there, and NOT_APPLICABLE ("searched, none
+          # found") would be a claim about places never searched. That is UNDETERMINED, which
+          # runs the scanner and says why -- the same answer as a probe that could not run.
+          if [ -z "$_res" ] && [ -n "$(find "$scope" -mindepth 9 \
+               -not -path '*/node_modules/*' -not -path '*/vendor/*' -not -path '*/.git/*' \
+               -print -quit 2>/dev/null)" ]; then
+            : > "$FAILDIR/$_k"; : > "$FAILDIR/$_k.depth"
+            echo "::warning title=COVERAGE_GAP - beyond depth 8::nothing for $_k within 8 levels of '$scope', and deeper entries were not searched; applicability for $_k is UNDETERMINED, not NOT_APPLICABLE."
+            printf 'no'
+            return 0
+          fi
+          [ -n "$_res" ] && printf 'yes' || printf 'no'
+        }
+
+        selected() {
+                  # A LIST IS THE OBVIOUS THING A CALLER WRITES, AND IT USED TO MEAN "NONE".
+          #
+          # The selector was an exact match against one ecosystem name, so `language: python,javascript`
+          # -- the natural way to say "this repo is both" -- matched neither `auto`, `multi`, nor any
+          # single name, and EXCLUDED_BY_SELECTOR fired for every ecosystem present. The first live run
+          # of this kit against a seeded corpus scanned exactly the ecosystem-AGNOSTIC jobs and skipped
+          # CodeQL, Bandit and IaC over a repository containing Python, JSX, Terraform and a Dockerfile.
+          # The run went green.
+          #
+          # It was not silent -- each exclusion emitted a notice and a summary row, which is the only
+          # reason it was diagnosable. But a config value that reads as "scan these two languages" and
+          # means "scan no languages" is a footgun whichever way it is annotated, so the selector now
+          # accepts a delimited list. Separators: comma, space, semicolon, plus.
+          #
+          # Aliases exist because the ecosystem keys are internal and the names callers reach for are
+          # not: javascript/typescript/js/ts all mean `node`, csharp/c#/.net mean `dotnet`, c/c++/cpp
+          # mean `cpp`, py means `python`, tf/terraform mean `iac`.
+          case "$sel" in auto|multi) return 0 ;; esac
+          _want="$(printf '%s' "$sel" | tr "A-Z" "a-z" | tr ",;+" "   ")"
+          _unknown=""
+          for _w in $_want; do
+            case "$_w" in
+              javascript|typescript|js|ts|node) ;;
+              py|python) ;;
+              "c#"|csharp|dotnet|.net) ;;
+              c|c++|cpp) ;;
+              tf|terraform|iac) ;;
+              go|java|kotlin|scala) ;;
+              *) _unknown="$_unknown $_w" ;;
+            esac
+          done
+          if [ -n "$_unknown" ]; then
+            # FAIL CLOSED, LOUDLY. An unrecognised selector used to mean "matches nothing", so a
+            # typo or an unsupported name silently emptied the scan and the run went green. An
+            # input this tool does not understand is an UNKNOWN, and an unknown must never resolve
+            # to "scan less" -- that is the same inversion as treating a failed probe as absence.
+            echo "::error title=Unrecognised language selector::language=\'$sel\' contains$_unknown,"
+            echo "which this kit does not recognise. Refusing to silently scan less. Use auto, or"
+            echo "a list of: python node go java dotnet cpp iac (aliases: js/ts, py, c#, c++, tf)."
+            echo "| (selector) | UNRECOGNISED | $_unknown -- refused, see error |" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          for _w in $_want; do
+            case "$_w" in
+              javascript|typescript|js|ts|node) _w=node ;;
+              py|python) _w=python ;;
+              "c#"|csharp|dotnet|.net) _w=dotnet ;;
+              c|c++|cpp) _w=cpp ;;
+              tf|terraform|iac) _w=iac ;;
+            esac
+            [ "$_w" = "$1" ] && return 0
+          done
+          return 1
+        }
+
+        {
+          echo "### Discovery"
+          echo ""
+          echo "| ecosystem | decision | evidence |"
+          echo "|---|---|---|"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        emit() {
+          n="$1"; found="$2"; label="$3"
+          # UNDETERMINED IS ITS OWN ANSWER. This ecosystem's probe could not run, so we do not
+          # know whether it is here. We do not get to call that NOT_APPLICABLE, and we do not
+          # get to call it a finding either -- we enable it and say why. Note this deliberately
+          # OVERRIDES the language selector: a selector narrows what we scan among things we
+          # KNOW are present. It cannot narrow away something whose presence was never
+          # established, because that would let a config value silently resolve an unknown.
+          if [ -e "$FAILDIR/$n.depth" ]; then
+            echo "$n=true" >> "$GITHUB_OUTPUT"
+            printf '  %-8s UNDETERMINED -> RUN   none within 8 levels; deeper not searched\n' "$n"
+            echo "| $n | UNDETERMINED -> RUN | none within 8 levels, deeper entries not searched (COVERAGE_GAP), so enabled |" >> "$GITHUB_STEP_SUMMARY"
+            return 0
+          fi
+          if [ -e "$FAILDIR/$n" ]; then
+            echo "$n=true" >> "$GITHUB_OUTPUT"
+            printf '  %-8s UNDETERMINED -> RUN   probe failed; presence unknown\n' "$n"
+            echo "| $n | UNDETERMINED -> RUN | probe failed; presence unknown, so enabled |" >> "$GITHUB_STEP_SUMMARY"
+            return 0
+          fi
+          if [ "$found" = "yes" ] && selected "$n"; then
+            echo "$n=true" >> "$GITHUB_OUTPUT"
+            printf '  %-8s RUN                   %s\n' "$n" "$label"
+            echo "| $n | RUN | $label |" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$found" = "yes" ]; then
+            echo "$n=false" >> "$GITHUB_OUTPUT"
+            printf '  %-8s EXCLUDED_BY_SELECTOR  present, language=%s excludes it\n' "$n" "$sel"
+            echo "::notice title=$n excluded::Present in scope but language='$sel' excludes it."
+            echo "| $n | EXCLUDED_BY_SELECTOR | present, excluded by language=$sel |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "$n=false" >> "$GITHUB_OUTPUT"
+            printf '  %-8s NOT_APPLICABLE        searched, none found\n' "$n"
+            echo "| $n | NOT_APPLICABLE | searched, none found |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+        }
+
+        py="$(probe python -name '*.py' -o -name requirements.txt -o -name pyproject.toml)"
+        nd="$(probe node   -name package.json)"
+        go="$(probe go     -name go.mod)"
+        dn="$(probe dotnet -name '*.csproj' -o -name '*.sln')"
+        jv="$(probe java   -name pom.xml -o -name build.gradle -o -name build.gradle.kts)"
+        cp="$(probe cpp    -name '*.c' -o -name '*.cpp' -o -name '*.cc' -o -name '*.h' -o -name '*.hpp')"
+        ia="$(probe iac    -name '*.tf' -o -name '*.bicep' -o -name 'Dockerfile*' -o -name Chart.yaml -o -name kustomization.yaml -o -name azuredeploy.json)"
+
+        # WHAT IS HERE THAT WE CANNOT SCAN?
+        #
+        # Discovery previously asked seven CLOSED questions -- is Python here, is Go here -- and
+        # never asked whether there was code it did not recognise. A repository of Rust, Ruby and
+        # PHP therefore produced state=COMPLETE, every ecosystem false, and a green run over code
+        # nothing had looked at. Discovery had not failed; it succeeded at answering the wrong
+        # question, which is the more dangerous of the two.
+        #
+        # COMPLETE means "I asked all my questions", NOT "I understand this repository". Those
+        # are different claims and the consumer needs both. This is the coverage claim, kept as
+        # a SEPARATE output rather than folded into state: a scanner gap is not a survey failure,
+        # and collapsing them would let a known limitation hide inside an error condition.
+        #
+        # It is a COVERAGE DECLARATION, NOT A FINDING. Unsupported code present is not a
+        # vulnerability and must never be scored as one -- it is this platform telling an adopter
+        # exactly where its assurance stops inside their specific repository, which is the single
+        # most useful thing it can say to someone deciding whether to trust it.
+
+        # STATE IS COMPUTED FROM HOW MUCH WAS ESTABLISHED, NOT FROM WHETHER ANYTHING FAILED.
+        # Every probe failing is genuinely total ignorance. SOME failing is not, and collapsing
+        # the two throws away answers we actually have. Failed probes are force-enabled
+        # individually by emit(), so DISCOVERY_UNAVAILABLE needs no special case -- it falls
+        # out of every probe having failed.
+        failed=0
+        for k in python node go dotnet java cpp iac; do
+          [ -e "$FAILDIR/$k" ] && failed=$((failed + 1))
+        done
+        if [ "$failed" -eq 7 ]; then
+          state=DISCOVERY_UNAVAILABLE
+          echo "::error title=Discovery unavailable::Every probe failed. Applicability could not"
+          echo "be established at all, so every capability is force-enabled. Results from this"
+          echo "run must NOT be read as coverage."
+        elif [ "$failed" -gt 0 ]; then
+          state=DISCOVERY_PARTIAL
+          echo "::warning title=Discovery partial::$failed of 7 probes failed. What the other"
+          echo "probes established still holds; the failed ones are enabled as UNDETERMINED."
+        fi
+
+        emit python "$py" "*.py / requirements.txt / pyproject.toml"
+        emit node   "$nd" "package.json"
+        emit go     "$go" "go.mod"
+        emit dotnet "$dn" "*.csproj / *.sln"
+        emit java   "$jv" "pom.xml / build.gradle"
+        emit cpp    "$cp" "*.c / *.cpp / *.h"
+
+        # IaC carries its own mode, because "off by default" was the wrong worldview.
+        case "$iac_mode" in
+          disabled)
+            echo "iac=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=IaC scanning DISABLED::Explicitly turned off for this run."
+            echo "| iac | DISABLED | explicit exception, not a default |" >> "$GITHUB_STEP_SUMMARY"
+            ;;
+          required)
+            if [ -e "$FAILDIR/iac" ]; then
+              # "ABSENCE IS THE FINDING" REQUIRES THAT ABSENCE WAS ESTABLISHED. The probe did
+              # not run, so nothing was discovered AND nothing was ruled out. Declaring it
+              # missing here would turn a failure to observe into a confident negative finding
+              # -- the exact inversion this job exists to prevent, just pointing the other way.
+              echo "iac=true" >> "$GITHUB_OUTPUT"
+              echo "::warning title=IaC required, presence UNDETERMINED::The IaC probe failed."
+              echo "Absence was NOT established, so this is not a missing-IaC finding. Enabled."
+              echo "| iac | UNDETERMINED -> RUN | required; probe failed, absence not established |" >> "$GITHUB_STEP_SUMMARY"
+            elif [ "$ia" = "yes" ]; then
+              echo "iac=true" >> "$GITHUB_OUTPUT"
+              echo "| iac | RUN | required, and found |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "iac=false" >> "$GITHUB_OUTPUT"
+              echo "::error title=IaC REQUIRED but absent::This repository is declared to contain"
+              echo "infrastructure-as-code and none was discovered. ABSENCE IS THE FINDING."
+              # Only ever DEGRADE the state. If probes already established total ignorance,
+              # this must not quietly upgrade it to merely partial.
+              [ "$state" = "COMPLETE" ] && state=DISCOVERY_PARTIAL
+              echo "| iac | MISSING_BUT_REQUIRED | declared by profile, none discovered |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            ;;
+          # IaC APPLICABILITY IS DECIDED BY ARTIFACT PRESENCE, NEVER BY THE LANGUAGE SELECTOR.
+          #
+          # `emit` applies the language selector, so a caller who wrote `language: python` got no
+          # IaC scan over a repository full of Terraform -- the scanner was switched off by an
+          # input about APPLICATION LANGUAGE, which is a different axis entirely. AXES_AND_PHASES.md
+          # says discovery decides applicability and names contamination between axes as the defect;
+          # this was that, in the code, while the document described it as a principle.
+          #
+          # A .tf file is not written in Python or JavaScript. Its presence is the whole question.
+          *)
+            if [ -e "$FAILDIR/iac" ]; then
+              echo "iac=true" >> "$GITHUB_OUTPUT"
+              echo "| iac | UNDETERMINED -> RUN | probe failed; presence unknown, so enabled |" >> "$GITHUB_STEP_SUMMARY"
+            elif [ "$ia" = "yes" ]; then
+              echo "iac=true" >> "$GITHUB_OUTPUT"
+              printf '  %-8s RUN                   %s\n' iac "*.tf / *.bicep / Dockerfile / Chart.yaml"
+              echo "| iac | RUN | artifact present; applicability is not a language question |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "iac=false" >> "$GITHUB_OUTPUT"
+              echo "| iac | NOT_APPLICABLE | no IaC artifact discovered |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            ;;
+        esac
+
+        # THREE STATES A READER MUST NEVER SEE COLLAPSED:
+        #
+        #   NOT_APPLICABLE   the artifact is not here            nothing to find
+        #   CLEAN            a scanner ran and found nothing     evidence of absence
+        #   COVERAGE_GAP     the artifact is here, nothing scans it   ABSENCE OF EVIDENCE
+        #
+        # The first two are answers. The third is the admission that no question was asked, and
+        # it is the one that used to disappear. Reporting a gap as NOT_APPLICABLE is a
+        # fabricated negative; reporting it as nothing at all is worse, because a reader cannot
+        # even tell something was omitted.
+        #
+        #   ARTIFACT_PRESENT + CAPABILITY_REQUIRED + SCANNER_UNAVAILABLE = COVERAGE_GAP
+        #
+        # Each discovered-but-unscannable CLASS gets its own row, its own ::warning and its own
+        # entry in `coverage_gaps` -- named, not spelled as a file extension, because "Shell" and
+        # "GitHub Actions workflow" are what an adopter is deciding about. A single squashed
+        # "UNSUPPORTED_PRESENT: kt,ps1,sh" row made eight separate admissions look like one
+        # footnote.
+        gap_class() {
+          case "$1" in
+            rs)     printf 'Rust' ;;
+            rb)     printf 'Ruby' ;;
+            php)    printf 'PHP' ;;
+            swift)  printf 'Swift' ;;
+            kt|kts) printf 'Kotlin' ;;
+            scala)  printf 'Scala' ;;
+            ex|exs) printf 'Elixir' ;;
+            erl)    printf 'Erlang' ;;
+            hs)     printf 'Haskell' ;;
+            lua)    printf 'Lua' ;;
+            pl)     printf 'Perl' ;;
+            r)      printf 'R' ;;
+            jl)     printf 'Julia' ;;
+            dart)   printf 'Dart' ;;
+            groovy) printf 'Groovy' ;;
+            clj)    printf 'Clojure' ;;
+            zig)    printf 'Zig' ;;
+            nim)    printf 'Nim' ;;
+            vb)     printf 'VisualBasic' ;;
+            fs)     printf 'FSharp' ;;
+            sh)     printf 'Shell' ;;
+            ps1)    printf 'PowerShell' ;;
+            gha)    printf 'GitHubActionsWorkflow' ;;
+            *)      printf '%s' "$1" ;;
+          esac
+        }
+
+        gaps=""
+        gap_count=0
+        declare_gap() {
+          _cls="$1"; _cnt="$2"; _need="$3"
+          gaps="${gaps}${gaps:+,}${_cls}"
+          gap_count=$((gap_count + 1))
+          echo "::warning title=COVERAGE_GAP: $_cls::ARTIFACT_PRESENT + CAPABILITY_REQUIRED + SCANNER_UNAVAILABLE. ${_cnt} ${_cls} file(s) are in scope and this kit has no scanner for them (${_need}). They were NOT scanned. This is not NOT_APPLICABLE and it is not CLEAN -- nothing looked."
+          echo "| $_cls | COVERAGE_GAP | ARTIFACT_PRESENT, no capable scanner -- ${_cnt} file(s), needs ${_need} |" >> "$GITHUB_STEP_SUMMARY"
+        }
+
+        unsupported=""
+        unsup_raw="$(find "$scope" -maxdepth 8 -type f \( \
+            -name '*.rs' -o -name '*.rb' -o -name '*.php' -o -name '*.swift' -o -name '*.kt' \
+            -o -name '*.scala' -o -name '*.ex' -o -name '*.exs' -o -name '*.erl' -o -name '*.hs' \
+            -o -name '*.lua' -o -name '*.pl' -o -name '*.r' -o -name '*.jl' -o -name '*.dart' \
+            -o -name '*.groovy' -o -name '*.clj' -o -name '*.zig' -o -name '*.nim' \
+            -o -name '*.vb' -o -name '*.fs' -o -name '*.sh' -o -name '*.ps1' \) \
+            -not -path '*/node_modules/*' -not -path '*/vendor/*' -not -path '*/.git/*' \
+            -print 2>/dev/null)"
+        unsup_rc=$?
+        if [ "$unsup_rc" -ne 0 ]; then
+          # Same rule as every other probe: could-not-look is not found-nothing.
+          unsupported="UNDETERMINED"
+          echo "::warning title=Coverage probe failed::Could not determine whether unsupported"
+          echo "languages are present. This is unknown, not absent."
+          echo "| (coverage) | UNDETERMINED | the coverage probe itself could not run |" >> "$GITHUB_STEP_SUMMARY"
+        elif [ -n "$unsup_raw" ]; then
+          # sed takes the final dot, so a dotted directory name cannot masquerade as an
+          # extension. sort -u after, never a pipe to an early-exiting reader.
+          unsupported="$(printf '%s\n' "$unsup_raw" | sed 's/.*\.//' | sort -u | tr '\n' ',' | sed 's/,$//')"
+          echo "::warning title=Unsupported languages present::This repository contains code this"
+          echo "platform has no scanner for: $unsupported"
+          echo "Those files were NOT scanned. This run establishes nothing about them."
+          # ONE ROW PER CLASS. `unsupported` stays an extension list so no existing consumer
+          # breaks; the per-class rows are what a human reads.
+          for _ext in $(printf '%s\n' "$unsup_raw" | sed 's/.*\.//' | sort -u); do
+            # suppression: EXPECTED_NEGATIVE_RESULT -- grep exits 1 when the count is ZERO, which
+            # is a legitimate count and not an error. Left unguarded it would fire the ERR trap
+            # and turn a per-class tally into a declared survey failure.
+            # discards: grep's exit status, which here only distinguishes count==0 from count>0
+            # preserved_by: the COUNT ITSELF, which grep -c has already printed to stdout and
+            # preserved_by: which is what the row and the warning report
+            _n="$(printf '%s\n' "$unsup_raw" | grep -c -- "\.${_ext}\$" || true)"
+            declare_gap "$(gap_class "$_ext")" "${_n:-0}" "a .${_ext} scanner"
+          done
+        fi
+        echo "unsupported=$unsupported" >> "$GITHUB_OUTPUT"
+
+        # THE PIPELINE'S OWN DEFINITION FILES ARE AN ARTIFACT CLASS TOO.
+        #
+        # Workflow YAML decides what runs, with what permissions, against which refs -- and no
+        # probe above asks about it, so a repository whose only unscanned artifact was
+        # .github/workflows/*.yml produced a completely silent survey. Checkov's CKV_GHA_* rules
+        # fire only when the IaC job happens to be enabled and pointed at the right scope; that
+        # is incidental coverage, not a declared capability, and this kit ships no actionlint.
+        # suppression: PRESENTATION_ONLY -- find's stderr is noise on unreadable subtrees; the
+        # EXIT STATUS is captured on the next line and drives UNDETERMINED rather than reading
+        # as 'no workflows here'.
+        # discards: find's stderr on permission-denied or unreadable subtrees
+        # preserved_by: gha_rc on the next line, which turns a failed probe into an explicit
+        # preserved_by: UNDETERMINED row instead of a silent absence
+        gha_raw="$(find "$scope" -maxdepth 8 -type f -path '*/.github/workflows/*' \
+            \( -name '*.yml' -o -name '*.yaml' \) \
+            -not -path '*/node_modules/*' -not -path '*/vendor/*' -not -path '*/.git/*' \
+            -print 2>/dev/null)"
+        gha_rc=$?
+        if [ "$gha_rc" -ne 0 ]; then
+          echo "::warning title=Workflow coverage probe failed::Could not determine whether"
+          echo "GitHub Actions workflow definitions are present. Unknown, not absent."
+          echo "| GitHubActionsWorkflow | UNDETERMINED | probe failed; presence unknown |" >> "$GITHUB_STEP_SUMMARY"
+        elif [ -n "$gha_raw" ]; then
+          # suppression: EXPECTED_NEGATIVE_RESULT -- grep exits 1 on a zero count, which is a
+          # count and not an error; unguarded it would fire the ERR trap.
+          # discards: grep's exit status, which only distinguishes count==0 from count>0
+          # preserved_by: the COUNT grep -c printed, which is what the gap row reports
+          _n="$(printf '%s\n' "$gha_raw" | grep -c . || true)"
+          declare_gap "$(gap_class gha)" "${_n:-0}" "a workflow linter (e.g. actionlint)"
+        fi
+
+        # THE SEARCH BOUND IS A COVERAGE GAP OF ITS OWN (W4K-120). Every probe above, and every
+        # scanner job's root enumeration, stops at 8 levels. Entries deeper than that were not
+        # looked at by anything here, so they are declared rather than left to read as absence.
+        # suppression: PRESENTATION_ONLY -- find's stderr is noise on unreadable subtrees; an
+        # unreadable deep subtree is still deeper than the bound, and is still not claimed.
+        # discards: find's stderr on permission-denied subtrees
+        # preserved_by: the gap row, which is declared whenever any entry beyond depth 8 is seen
+        deep_hit="$(find "$scope" -mindepth 9 \
+            -not -path '*/node_modules/*' -not -path '*/vendor/*' -not -path '*/.git/*' \
+            -print -quit 2>/dev/null || true)"
+        if [ -n "$deep_hit" ]; then
+          gaps="${gaps}${gaps:+,}BeyondSearchDepth"
+          gap_count=$((gap_count + 1))
+          echo "::warning title=COVERAGE_GAP: BeyondSearchDepth::Entries deeper than 8 levels under '$scope' (e.g. $deep_hit) were not searched by discovery or by any scanner's root enumeration. Nothing there was scanned; this is a declared limit, not an absence."
+          echo "| BeyondSearchDepth | COVERAGE_GAP | entries deeper than 8 levels were not searched or scanned |" >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+        # COUNTED AND PUBLISHED, NEVER INFERRED FROM A STRING. A consumer asking "was this
+        # repository fully covered" gets a number, and 0 is only ever printed because every
+        # discovered class had a capable scanner.
+        echo "coverage_gaps=$gaps" >> "$GITHUB_OUTPUT"
+        echo "coverage_gap_count=$gap_count" >> "$GITHUB_OUTPUT"
+        if [ "$gap_count" -gt 0 ]; then
+          printf '  %-8s %s\n' "(gaps)" "COVERAGE_GAP x${gap_count}: $gaps"
+          {
+            echo ""
+            echo "**COVERAGE_GAP x${gap_count}** — \`$gaps\`"
+            echo ""
+            echo "> These artifact classes are PRESENT in this repository and NO scanner in this"
+            echo "> kit can look at them. That is not NOT_APPLICABLE (the artifact is here) and"
+            echo "> not CLEAN (nothing ran). It is absence of evidence, and it is where this"
+            echo "> platform's assurance stops inside this specific repository."
+          } >> "$GITHUB_STEP_SUMMARY"
+        else
+          printf '  %-8s %s\n' "(gaps)" "none — every discovered artifact class has a capable scanner"
+        fi
+
+        echo "state=$state" >> "$GITHUB_OUTPUT"
+        echo "discovery state: $state"
+
+    # ─────────────────────────────────────────────────────────────────────
+    # PLATFORM APPLICABILITY — a different axis from language applicability
+    # ─────────────────────────────────────────────────────────────────────
+    #
+    # "Is there Python here" and "is CodeQL available to us at all" are unrelated questions,
+    # and conflating them is how a repository full of Python gets a green run with no semantic
+    # analysis. Every downstream job previously answered this for itself, which meant sixteen
+    # jobs could hold sixteen different beliefs about the same organisation setting.
+    #
+    # FOUR STATES, DELIBERATELY NOT COLLAPSED INTO `skipped`:
+    #
+    #   UNAVAILABLE      not licensed / not available to this repository   -> platform action
+    #   NOT_CONFIGURED   available and switched off                        -> platform action
+    #   NOT_APPLICABLE   no code of a supported kind in scope              -> nobody's action
+    #   ENABLED          available and on                                  -> run it
+    #   UNKNOWN          this token cannot see the answer                  -> run it, say so
+    #
+    # `skipped` renders all five identically in the Actions UI, so the run tells a reader
+    # nothing about whether a decision, a licence or a defect produced the gap.
+    #
+    # UNKNOWN IS NOT FALSE. The security_and_analysis block is only returned to callers with
+    # admin permission on the repository. A read-scoped GITHUB_TOKEN legitimately cannot see it.
+    # Reporting `false` there would be a fabricated negative -- the same defect as a fabricated
+    # zero, and it would silently disable scanners on repositories that are fully licensed.
+    - name: Establish platform capability
+      id: platform
+      if: inputs.part == 'platform'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -uo pipefail
+
+        ghas=unknown; codescan=unknown; secret=unknown
+        push=unknown; dep=unknown; depupd=unknown; vis=unknown
+        how="none"
+
+        if repo_json=$(gh api "repos/${GITHUB_REPOSITORY}" 2>/dev/null); then
+          vis=$(printf '%s' "$repo_json" | jq -r '.visibility // "unknown"')
+          sa=$(printf '%s' "$repo_json" | jq -r '.security_and_analysis // empty')
+          if [ -n "$sa" ]; then
+            how="security_and_analysis"
+            g=$(printf '%s' "$sa" | jq -r '.advanced_security.status // "absent"')
+            s=$(printf '%s' "$sa" | jq -r '.secret_scanning.status // "absent"')
+            p=$(printf '%s' "$sa" | jq -r '.secret_scanning_push_protection.status // "absent"')
+            d=$(printf '%s' "$sa" | jq -r '.dependabot_security_updates.status // "absent"')
+            case "$g" in enabled) ghas=true ;; disabled) ghas=false ;; esac
+            case "$s" in enabled) secret=ENABLED ;; disabled) secret=NOT_CONFIGURED ;; esac
+            case "$p" in enabled) push=ENABLED ;; disabled) push=NOT_CONFIGURED ;; esac
+            case "$d" in enabled) depupd=ENABLED ;; disabled) depupd=NOT_CONFIGURED ;; esac
+          fi
+        fi
+
+        # PUBLIC REPOSITORIES GET CODE SCANNING AND SECRET SCANNING WITHOUT GHAS.
+        # Deriving availability from the licence alone reports UNAVAILABLE on every public
+        # repository in the estate, which is wrong in the direction that switches scanning off.
+        if [ "$vis" = "public" ]; then
+          [ "$ghas" = "unknown" ] && ghas=true
+          [ "$secret" = "unknown" ] && secret=ENABLED
+        fi
+
+        # BEHAVIOURAL PROBE, when the settings object was not visible. Asking the code-scanning
+        # API what it says is more reliable than inferring from a licence field we cannot read.
+        # 403 with an advanced-security message is a definite UNAVAILABLE; 404 means enabled but
+        # no analysis has ever been uploaded, which is NOT the same as unavailable.
+        if [ "$ghas" = "unknown" ] || [ "$how" = "none" ]; then
+          body=$(gh api "repos/${GITHUB_REPOSITORY}/code-scanning/alerts?per_page=1" 2>&1) || true
+          case "$body" in
+            *"Advanced Security"*|*"advanced security"*|*"not enabled"*)
+                      ghas=false; how="${how},code-scanning probe" ;;
+            *"no analysis found"*|*"No analysis found"*)
+                      ghas=true;  how="${how},code-scanning probe" ;;
+            \[*|*'"number"'*)
+                      ghas=true;  how="${how},code-scanning probe" ;;
+          esac
+        fi
+
+        case "$ghas" in
+          true)  codescan=ENABLED ;;
+          false) codescan=UNAVAILABLE
+                 [ "$secret" = "unknown" ] && secret=UNAVAILABLE
+                 [ "$push"   = "unknown" ] && push=UNAVAILABLE ;;
+          *)     codescan=UNKNOWN ;;
+        esac
+
+        # Dependabot ALERTS are on for public repos and licence-gated for private ones;
+        # Dependabot UPDATES are a separate switch. Two different things, two outputs --
+        # collapsing them is how "we have Dependabot" came to mean four different things.
+        [ "$dep" = "unknown" ] && [ "$vis" = "public" ] && dep=ENABLED
+        if [ -f .github/dependabot.yml ] || [ -f .github/dependabot.yaml ]; then
+          cfg=PRESENT
+        else
+          cfg=ABSENT
+        fi
+
+        {
+          echo "ghas_available=$ghas"
+          echo "code_scanning=$codescan"
+          echo "secret_scanning=$secret"
+          echo "push_protection=$push"
+          echo "dependabot_alerts=$dep"
+          echo "dependabot_updates=$depupd"
+          echo "dependabot_config=$cfg"
+          echo "visibility=$vis"
+          echo "platform_source=$how"
+        } >> "$GITHUB_OUTPUT"
+
+        {
+          echo ""
+          echo "### Platform capability discovery"
+          echo ""
+          echo "| capability | state | how established |"
+          echo "|---|---|---|"
+          echo "| GitHub Advanced Security | $ghas | $how |"
+          echo "| Code scanning (CodeQL) | $codescan | derived from GHAS + visibility |"
+          echo "| Secret scanning | $secret | $how |"
+          echo "| Push protection | $push | $how |"
+          echo "| Dependabot alerts | $dep | $how |"
+          echo "| Dependabot updates | $depupd | $how |"
+          echo "| dependabot.yml | $cfg | file presence |"
+          echo "| Repository visibility | $vis | repos API |"
+          echo ""
+          if [ "$how" = "none" ]; then
+            echo "**The settings object was not readable by this token.** That is expected for a"
+            echo "read-scoped token without admin on the repository. UNKNOWN here means *nobody"
+            echo "asked successfully*, not *the capability is absent* -- scanners run anyway and"
+            echo "report their applicability as UNKNOWN rather than claiming a clean result."
+          fi
+          echo ""
+          echo "UNAVAILABLE, NOT_CONFIGURED, NOT_APPLICABLE and UNKNOWN are four different"
+          echo "situations with four different owners. The Actions UI renders all of them as"
+          echo "\`skipped\`, which is why they are established here once and consumed everywhere"
+          echo "rather than guessed independently by each job."
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        echo "platform: ghas=$ghas code-scanning=$codescan secret=$secret push=$push"
+        echo "          dependabot alerts=$dep updates=$depupd config=$cfg via ${how}"

@@ -12,3 +12,98 @@ consumer-coverage.json
 # document said one thing, tree did another, and GitHub push protection is what found it when the
 # neutral mirror was first published. Regenerate with:  python tests/make_fixture.py --out <dir>
 tests/consumer-fixture/full/secrets/
+
+# Agent worktrees — transient, never part of the kit
+.claude/worktrees/
+
+# Local credential material. NEVER committed.
+#
+# This kit ships a secret scanner. A token committed here would be caught by its own
+# gitleaks job -- in CI, AFTER the value is already in git history and already
+# mirrored public. Rotation is the only remedy at that point, so the ignore must
+# exist BEFORE the file does.
+#
+# CI does not read these. Workflow credentials are GitHub Actions secrets/vars
+# (see a consumer overlay under overlays/: JIRA_HOST and JIRA_PROJECT are vars, the token is a
+# secret). A .env is for a developer's own machine and nothing else.
+.env
+.env.*
+!.env.example
+
+# ── Credential and key material, beyond .env ─────────────────────────────────────────
+# A security product does not get to leak one of these. Broad on purpose: a false
+# positive costs a `git add -f`, a false negative costs a rotation and a disclosure.
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_ecdsa
+id_ed25519
+*.ppk
+.npmrc
+.pypirc
+.netrc
+credentials.json
+service-account*.json
+*-credentials.json
+secrets.y*ml
+!secrets.example.y*ml
+
+# ── Cloud CLI and tool state ─────────────────────────────────────────────────────────
+.azure/
+.aws/
+.kube/
+azureauth.json
+*.publishsettings
+
+# ── Terraform. State files carry resource ids, connection strings and sometimes
+#    plaintext secrets; a plan file carries everything the state does plus intent.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+errored.tfstate
+
+# ── Scanner output. Regenerable, and a SARIF is redacted on the way OUT of a job --
+#    a copy sitting in the tree never went through that step.
+*.sarif
+!tests/**/expected*.sarif
+sbom*.json
+trivy-results*
+checkov-report*
+.semgrep/
+.scannerwork/
+
+# ── Build, test and editor noise ─────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+node_modules/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# NOT ignored, deliberately: overlays/. An overlay is one organisation's adaptation and
+# must never reach a public copy -- but that is enforced STRUCTURALLY at export time
+# (EXCLUDE_TREES in scripts/export_for_adoption.py), not by leaving it untracked. Ignoring
+# it here would lose the work from the private repo and add no protection at all.

@@ -60,6 +60,10 @@ DEFAULT_DENY = os.path.join('scripts', 'export-deny.txt')
 # Excluded from the scan, each for a stated reason rather than because it was noisy.
 EXCLUDE_PREFIXES = (
     'overlays/',              # an overlay may know its own identity; that is what it is
+    # A profile names its recipient's overlay by design, and the export never ships the directory
+    # (export_for_adoption.py EXCLUDE_TOP). Excluded here once the deny pattern learned the
+    # hyphenated slug an overlay directory takes (2026-10-16).
+    'scripts/export-profiles/',
 )
 EXCLUDE_EXACT = (
     'scripts/export-deny.txt',  # names what it protects, by design; marked never-export
@@ -69,8 +73,23 @@ SKIP_EXT = {'.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip', '.gz', '.py
             '.woff2', '.ttf', '.class', '.jar', '.so', '.dll', '.exe'}
 
 
+def exporter():
+    """The export gate itself, loaded as a module, so this check reads the deny list with the
+    gate's own rules instead of a second copy of them (they disagreed once; see self_test)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'export_for_adoption', os.path.join(ROOT, 'scripts', 'export_for_adoption.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def load_deny(path):
-    """-> [(compiled, why, raw)]. Format: <regex> || <why>. Blank lines and # comments ignored."""
+    """-> [(compiled, why, raw)]. Format: [!]<regex> || <why>. Blank lines and # comments ignored.
+
+    The leading `!` is the gate's never-lift marker, not part of the regex, and is stripped
+    exactly as the gate strips it (export_for_adoption.NEVER_LIFT_MARKER)."""
+    marker = exporter().NEVER_LIFT_MARKER
     out = []
     with io.open(path, encoding='utf-8', errors='replace') as fh:
         for line in fh:
@@ -79,6 +98,8 @@ def load_deny(path):
                 continue
             raw, why = (s.split('||', 1) + [''])[:2]
             raw, why = raw.strip(), why.strip()
+            if raw.startswith(marker):
+                raw = raw[len(marker):].strip()
             if not raw:
                 continue
             try:
@@ -172,6 +193,19 @@ def self_test():
     if not [f for f in files if in_scope(f)]:
         fails.append('no file was in scope; a vacuous pass is not a pass')
 
+    # THE NEVER-LIFT MARKER IS NOT PART OF THE PATTERN (2026-10-16). The deny list marks the
+    # developing account's identities `!name`, which the export gate strips before compiling;
+    # this check compiled `!name` as a regex, which needs a literal "!" and so matched nothing.
+    # The gate refused a document naming the account while this check said CLEAN. A seeded
+    # account-name line must be caught here exactly as the gate catches it.
+    dn2 = os.path.join(d, 'deny2.txt')
+    io.open(dn2, 'w', encoding='utf-8').write('!acmeowner   || developing account identity\n')
+    io.open(os.path.join(d, 'account.md'), 'w', encoding='utf-8').write(
+        'pushed from the acmeowner account\n')
+    if not any(h[0] == 'account.md' for h in scan(d, load_deny(dn2), ['account.md'])):
+        fails.append('a never-lift (`!`) account pattern caught nothing -- the marker was compiled '
+                     'into the regex, so the export gate refuses what this check calls CLEAN')
+
     if fails:
         print('SELF-TEST FAILED:')
         for f in fails:
@@ -203,6 +237,16 @@ def main():
     if not deny:
         print('::error title=Empty deny list::%s compiled to zero patterns. A check that '
               'inspects nothing reports success forever (LM-017).' % dpath)
+        return 2
+    # ONE SET OF PATTERNS, OR SAY SO. This check must refuse everything the export gate refuses
+    # for a neutral export, so it holds exactly the patterns the gate loads from the same file.
+    gate = {p for p, _w, _n in (exporter().load_deny(os.path.dirname(dpath)) or [])} \
+        if os.path.basename(dpath) == 'export-deny.txt' else None
+    if gate is not None and gate != {raw for _rx, _why, raw in deny}:
+        mine = {raw for _rx, _why, raw in deny}
+        print('::error title=Deny sets disagree::this check and the export gate read different '
+              'patterns from %s (only here: %d, only in the gate: %d).'
+              % (dpath, len(mine - gate), len(gate - mine)))
         return 2
 
     files = tracked_files(ROOT)

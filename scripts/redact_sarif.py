@@ -33,12 +33,25 @@ USAGE
 
 EXIT
     0 rewritten (or nothing to do)      1 a file was unreadable      2 self-test failed
+    3 a report could not be rewritten and was WITHHELD from upload instead
+    4 a report could be neither redacted nor withheld -- credential material may be published
+
+    Only 4 is worth failing a job over. 1, 2 and 3 mean the reports at risk are no longer on
+    the upload path, so the scan's verdict stands and nothing leaks; failing there would be a
+    housekeeping step deciding a security verdict, which is the defect this file keeps hitting.
 """
 import io
 import json
 import os
 import re
 import sys
+import tempfile
+
+EXIT_OK = 0
+EXIT_UNREADABLE = 1
+EXIT_SELFTEST = 2
+EXIT_WITHHELD = 3
+EXIT_UNPROTECTED = 4
 
 # BEGIN SECRET_PATTERNS -- must stay identical to scripts/scan_report.py.
 # Two copies exist because each file is inlined into the workflow separately and neither can
@@ -174,13 +187,125 @@ def self_test():
     return True
 
 
+def _write_back(p, payload):
+    """Rewrite p in place with payload. -> None on success, else a short reason string.
+
+    READABLE IS NOT WRITABLE, AND THIS USED TO BE FATAL TOO.
+
+    checkov-action is a CONTAINER action: it runs as root and leaves
+    checkov.sarif/results_sarif.sarif owned by root at mode 0644 inside a root-owned
+    directory. The runner user could open it for reading -- so json.load() succeeded, scrub()
+    succeeded, the self-test passed -- and then died on the write back with
+    `PermissionError: [Errno 13] Permission denied`, unhandled, exit 1. Once again a job whose
+    SCAN HAD SUCCEEDED went red in its housekeeping.
+
+    Three ways in, cheapest first: the file may merely lack the write bit while still being
+    ours (chmod); or it may not be ours while its DIRECTORY is, in which case replacing the
+    inode works where writing through it does not.
+    """
+    try:
+        io.open(p, 'w', encoding='utf-8').write(payload)
+        return None
+    except (OSError, IOError) as e:
+        reason = '%s: %s' % (type(e).__name__, e)
+    try:
+        os.chmod(p, os.stat(p).st_mode | 0o200)
+        io.open(p, 'w', encoding='utf-8').write(payload)
+        return None
+    except (OSError, IOError):
+        pass
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(p)), suffix='.redacted')
+        with io.open(fd, 'w', encoding='utf-8') as fh:
+            fh.write(payload)
+        os.replace(tmp, p)
+        return None
+    except (OSError, IOError):
+        if tmp and os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    return reason
+
+
+def withhold(p):
+    """Move a report we could not redact off the upload path. -> the new name, or None.
+
+    FAILING THE STEP DOES NOT STOP THE UPLOAD. Every upload step downstream carries
+    `if: always()` -- deliberately, so one scanner's verdict cannot cancel another's
+    collection -- which means a red redaction step publishes the unredacted file anyway.
+    Exiting non-zero is a complaint, not a control. The only defence that actually works is
+    to make the path stop existing.
+
+    Renaming needs write permission on the CONTAINING directory, not on the file. When the
+    report is root-owned inside a root-owned directory, the directory the runner CAN rename
+    is the one above that, so walk up until a rename succeeds. Never touches the working
+    directory itself.
+    """
+    target = os.path.abspath(p)
+    stop = os.path.abspath(os.getcwd())
+    while len(target) > len(stop):
+        dest = target + '.UNREDACTED-WITHHELD'
+        try:
+            os.rename(target, dest)
+            return dest
+        except OSError:
+            pass
+        parent = os.path.dirname(target)
+        if parent == target:
+            break
+        target = parent
+    return None
+
+
+def _save_or_withhold(p, payload, note):
+    """Write payload over p, or take p off the upload path. -> exit-code contribution."""
+    err = _write_back(p, payload)
+    if not err:
+        print('  %s: %s' % (os.path.basename(p), note))
+        return EXIT_OK
+    dest = withhold(p)
+    if dest:
+        print('::error title=SARIF withheld, not redacted::%s could not be rewritten in place '
+              '(%s), so it was moved to %s and will NOT be uploaded. The scan itself succeeded '
+              'and its findings already reached the gate; only the downloadable copy is gone.'
+              % (p, err, os.path.basename(dest)))
+        return EXIT_WITHHELD
+    print('::error title=UNREDACTED SARIF MAY BE PUBLISHED::%s could be neither rewritten (%s) '
+          'nor moved out of the upload path. It may still carry credential material.'
+          % (p, err))
+    return EXIT_UNPROTECTED
+
+
+def _withhold_all(paths, why):
+    """Last resort when nothing can be redacted at all. -> exit-code contribution."""
+    rc = EXIT_OK
+    for p in paths:
+        if not os.path.isfile(p):
+            continue
+        dest = withhold(p)
+        if dest:
+            print('::error title=SARIF withheld, not redacted::%s was moved to %s and will NOT '
+                  'be uploaded (%s).' % (p, os.path.basename(dest), why))
+            rc = max(rc, EXIT_WITHHELD)
+        else:
+            print('::error title=UNREDACTED SARIF MAY BE PUBLISHED::%s could not be moved out '
+                  'of the upload path (%s).' % (p, why))
+            rc = max(rc, EXIT_UNPROTECTED)
+    return rc
+
+
 def main():
     argv = [a for a in sys.argv[1:] if not a.startswith('-')]
     if '--self-test' in sys.argv:
         return 0 if self_test() else 2
     if not self_test():
         print('ABORTING -- a redactor that cannot prove it redacts is worse than none.')
-        return 2
+        # Aborting alone would still publish every report, because the upload steps run with
+        # if: always(). Unproven redaction means the reports must not leave the runner.
+        return max(EXIT_SELFTEST, _withhold_all(argv, 'the redactor failed its own self-test'))
     rc = 0
     for p in argv:
         # A DIRECTORY IS NOT A REPORT, AND THIS USED TO BE FATAL.
@@ -205,15 +330,15 @@ def main():
             print('::warning title=Unredactable SARIF::%s could not be parsed (%s); it is '
                   'replaced with an empty report rather than uploaded unexamined.'
                   % (p, type(e).__name__))
-            io.open(p, 'w', encoding='utf-8').write(
-                json.dumps({'version': '2.1.0', 'runs': [],
-                            '_redaction': 'ORIGINAL UNPARSEABLE - WITHHELD'}))
-            rc = 1
+            rc = max(rc, EXIT_UNREADABLE, _save_or_withhold(
+                p, json.dumps({'version': '2.1.0', 'runs': [],
+                               '_redaction': 'ORIGINAL UNPARSEABLE - WITHHELD'}),
+                'unparseable, replaced with an empty report'))
             continue
         snips, masked = scrub(doc)
-        json.dump(doc, io.open(p, 'w', encoding='utf-8'))
-        print('  %s: %d snippet/fingerprint field(s) removed, %d message(s) masked'
-              % (os.path.basename(p), snips, masked))
+        rc = max(rc, _save_or_withhold(
+            p, json.dumps(doc),
+            '%d snippet/fingerprint field(s) removed, %d message(s) masked' % (snips, masked)))
     return rc
 
 

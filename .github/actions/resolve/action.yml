@@ -1,0 +1,1936 @@
+name: Resolve versions, capability, coverage and plan
+description: >-
+  The position between discover and the scanners (SINGLE_PIPELINE_TARGET section 5.1;
+  PIPELINE_ORDERING_AND_SCAN_VALIDITY section 1.6): the version each discovered class is
+  WRITTEN FOR per root (R2), each scanner's DECLARED range matched against it (R3), class-and-count
+  coverage, an advisory execution plan (R4), and the platform-probe consumers (section 6). The
+  step bodies lived inline in the `resolve` job until the flagship reached 518 KB -- over GitHub's
+  500 KB ceiling, where a workflow does not fail, it never starts. Reached through `$/`, which
+  delivers the whole kit at the commit the caller pinned, exactly as scan-report is (C1, KDEC-002).
+  tests/test_resolve.py runs these steps as shipped, from this file, against fixture trees.
+  Every answer is DATA on $GITHUB_OUTPUT; nothing here fails the job -- a resolver that failed
+  closed would turn its own defect into an unscanned repository.
+
+inputs:
+  # ── the caller's inputs, verbatim -- the RUNNER toolchain, not what the repository targets ──
+  paths:
+    description: The scope the caller asked to scan. Empty or missing means the whole checkout.
+    required: false
+    default: ''
+  python-version:
+    description: The Python the kit installs on the runner. bandit's and mypy's ceiling.
+    required: false
+    default: ''
+  node-version:
+    description: The Node the kit installs on the runner.
+    required: false
+    default: ''
+  go-version:
+    description: The Go the kit installs on the runner.
+    required: false
+    default: ''
+  dotnet-version:
+    description: The .NET SDK the kit installs on the runner. The restore ceiling (NETSDK1045).
+    required: false
+    default: ''
+  java-version:
+    description: The JDK the kit installs on the runner. CodeQL autobuild's ceiling.
+    required: false
+    default: ''
+  image-ref:
+    description: The container image the caller named, if any. Decides image-scan in the plan.
+    required: false
+    default: ''
+  enable-sbom:
+    description: The caller's enable_sbom, as text. Decides sbom in the plan.
+    required: false
+    default: ''
+  enable-malicious-pkg-scan:
+    description: The caller's enable_malicious_pkg_scan, as text. Decides malicious-deps in the plan.
+    required: false
+    default: ''
+  # ── what discovery established. Read as DATA; empty is "discovery did not say", an unknown ──
+  discovered-python:
+    description: needs.discover.outputs.python -- "true", "false" or "".
+    required: false
+    default: ''
+  discovered-node:
+    description: needs.discover.outputs.node.
+    required: false
+    default: ''
+  discovered-go:
+    description: needs.discover.outputs.go.
+    required: false
+    default: ''
+  discovered-dotnet:
+    description: needs.discover.outputs.dotnet.
+    required: false
+    default: ''
+  discovered-java:
+    description: needs.discover.outputs.java.
+    required: false
+    default: ''
+  discovered-cpp:
+    description: needs.discover.outputs.cpp.
+    required: false
+    default: ''
+  discovered-iac:
+    description: needs.discover.outputs.iac.
+    required: false
+    default: ''
+  discovery-state:
+    description: needs.discover.outputs.state -- COMPLETE, DISCOVERY_PARTIAL or DISCOVERY_UNAVAILABLE.
+    required: false
+    default: ''
+  coverage-gaps:
+    description: needs.discover.outputs.coverage_gaps -- the classes present that no scanner here reads.
+    required: false
+    default: ''
+  unsupported:
+    description: needs.discover.outputs.unsupported.
+    required: false
+    default: ''
+  # ── the trigger context, for the advisory plan's depth (EXECUTION_PLANNING section 3.2) ──
+  event-name:
+    description: github.event_name. Set by GitHub, so TRUSTED; passed as data so the step reads one name.
+    required: false
+    default: ''
+  # ── the platform-probe values discover established once (PIPELINE_ORDERING section 6) ──
+  ghas-available:
+    description: needs.discover.outputs.ghas_available.
+    required: false
+    default: ''
+  code-scanning:
+    description: needs.discover.outputs.code_scanning -- ENABLED, NOT_CONFIGURED, UNAVAILABLE or UNKNOWN.
+    required: false
+    default: ''
+  secret-scanning:
+    description: needs.discover.outputs.secret_scanning.
+    required: false
+    default: ''
+  push-protection:
+    description: needs.discover.outputs.push_protection.
+    required: false
+    default: ''
+  dependabot-alerts:
+    description: needs.discover.outputs.dependabot_alerts.
+    required: false
+    default: ''
+  dependabot-updates:
+    description: needs.discover.outputs.dependabot_updates.
+    required: false
+    default: ''
+  dependabot-config:
+    description: needs.discover.outputs.dependabot_config -- PRESENT or ABSENT.
+    required: false
+    default: ''
+  visibility:
+    description: needs.discover.outputs.visibility.
+    required: false
+    default: ''
+  platform-source:
+    description: needs.discover.outputs.platform_source -- how the platform values were established.
+    required: false
+    default: ''
+
+outputs:
+  # The job maps every one of these to a job output of the same name, so consumers read
+  # `needs.resolve.outputs.<name>` and never learn where the step runs.
+  state:
+    description: COMPLETE / DISCOVERY_PARTIAL / DISCOVERY_UNAVAILABLE for this position.
+    value: ${{ steps.r.outputs.state }}
+  versions:
+    description: R2. JSON list, one record per (class, root, kind), with the strength of the evidence.
+    value: ${{ steps.r.outputs.versions }}
+  capability:
+    description: R3. JSON list, one row per (class, root, scanner job, tool), with the answer and its basis.
+    value: ${{ steps.r.outputs.capability }}
+  version_gaps:
+    description: Every VERSION_UNSUPPORTED answer as class@root:job/tool, comma-separated.
+    value: ${{ steps.r.outputs.version_gaps }}
+  version_gap_count:
+    description: The count of version_gaps; UNDETERMINED when the resolver itself failed.
+    value: ${{ steps.r.outputs.version_gap_count }}
+  version_undetermined_count:
+    description: The count of VERSION_SUPPORT_UNDETERMINED answers; UNDETERMINED when the resolver failed.
+    value: ${{ steps.r.outputs.version_undetermined_count }}
+  coverage:
+    description: Class-and-count coverage, never a percentage.
+    value: ${{ steps.r.outputs.coverage }}
+  plan:
+    description: R4, ADVISORY. The execution plan as data; enforced by nothing.
+    value: ${{ steps.r.outputs.plan }}
+  # ── KDEC-010: the capability selects the scanner ──────────────────────────────────────
+  selection:
+    description: >-
+      JSON list, one record per (capability, root): the ordered candidates with each one's
+      verdict, the default, the selected scanner, and SERVED / SUBSTITUTION / VERSION_GAP.
+    value: ${{ steps.r.outputs.selection }}
+  substitutions:
+    description: Every SUBSTITUTION as capability@root:default->selected, comma-separated. Never equivalence.
+    value: ${{ steps.r.outputs.substitutions }}
+  capability_gaps:
+    description: Every capability@root no carried scanner can read, comma-separated. Each is PARTIAL, never PASS.
+    value: ${{ steps.r.outputs.capability_gaps }}
+  capability_gap_count:
+    description: The count of capability_gaps; UNDETERMINED when the resolver itself failed.
+    value: ${{ steps.r.outputs.capability_gap_count }}
+  capped_jobs:
+    description: Space-separated scanner jobs pointed at a VERSION_GAP. Their PASS is capped at PARTIAL by the gate and the report.
+    value: ${{ steps.r.outputs.capped_jobs }}
+  proven_gap_jobs:
+    description: >-
+      KDEC-014. Space-separated capped jobs at least one of whose VERSION_GAPs is established by
+      READ ranges for every claimed candidate, each answering that it cannot read the target. A
+      production-tier deploy enforces those; a gap resting on an UNVERIFIED range, or on a target
+      no range can be held against (no version declared, a floor spanning the ceiling), is
+      recorded instead.
+    value: ${{ steps.r.outputs.proven_gap_jobs }}
+  not_selected_jobs:
+    description: >-
+      Space-separated scanner jobs that cannot read a target another selected scanner serves.
+      Their PASS for it is PARTIAL; the selected scanner carries the claim.
+    value: ${{ steps.r.outputs.not_selected_jobs }}
+  fitness_notes:
+    description: One human-readable note per capped or not-selected job, " ; "-separated, for the gate summary.
+    value: ${{ steps.r.outputs.fitness_notes }}
+  dependabot_state:
+    description: Dependabot alerts read as a scanner -- FINDINGS / PASS / UNAVAILABLE / COLLECTION_FAILED.
+    value: ${{ steps.platform.outputs.dependabot_state }}
+  dependabot_open_alerts:
+    description: The open-alert count behind dependabot_state, when one was read.
+    value: ${{ steps.platform.outputs.dependabot_open_alerts }}
+  dependabot_basis:
+    description: Why dependabot_state is what it is; an API answer has no SARIF behind it.
+    value: ${{ steps.platform.outputs.dependabot_basis }}
+  dependabot_owner_role:
+    description: The ROLE that owns the Dependabot state, never a person.
+    value: ${{ steps.platform.outputs.dependabot_owner_role }}
+  dataflow_capability:
+    description: >-
+      ordinary | UNKNOWN for interprocedural dataflow on this tier. Code scanning UNAVAILABLE is
+      UNKNOWN, not a gap: it refuses publication, and CodeQL's own job says whether it analysed (D-10).
+    value: ${{ steps.platform.outputs.dataflow_capability }}
+  platform_owners:
+    description: JSON list of every platform-owned state with its owner role and action.
+    value: ${{ steps.platform.outputs.platform_owners }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve versions, capability, coverage and the plan
+      id: r
+      shell: bash
+      env:
+        # CALLER-CONTROLLED INPUT ARRIVES AS DATA, NOT AS SCRIPT TEXT (same rule as discover).
+        IN_PATHS: ${{ inputs.paths }}
+        # The RUNNER toolchain versions. These are what the kit installs; they are NOT what the
+        # repository targets, and the whole point of this job is to compare the two.
+        IN_PYTHON_VERSION: ${{ inputs.python-version }}
+        IN_NODE_VERSION: ${{ inputs.node-version }}
+        IN_GO_VERSION: ${{ inputs.go-version }}
+        IN_DOTNET_VERSION: ${{ inputs.dotnet-version }}
+        IN_JAVA_VERSION: ${{ inputs.java-version }}
+        IN_IMAGE_REF: ${{ inputs.image-ref }}
+        IN_ENABLE_SBOM: ${{ inputs.enable-sbom }}
+        IN_ENABLE_MALICIOUS_PKG_SCAN: ${{ inputs.enable-malicious-pkg-scan }}
+        # The platform's answer for code scanning (PO 6). It governs PUBLICATION, not analysis
+        # (KNOWN_DEFECTS D-10): recorded on the CodeQL candidate, never a withdrawal of it.
+        IN_CODE_SCANNING: ${{ inputs.code-scanning }}
+        # What discovery established. Read as DATA; an empty value is "discovery did not say",
+        # which is an unknown and is treated as one, never as false.
+        D_PYTHON: ${{ inputs.discovered-python }}
+        D_NODE: ${{ inputs.discovered-node }}
+        D_GO: ${{ inputs.discovered-go }}
+        D_DOTNET: ${{ inputs.discovered-dotnet }}
+        D_JAVA: ${{ inputs.discovered-java }}
+        D_CPP: ${{ inputs.discovered-cpp }}
+        D_IAC: ${{ inputs.discovered-iac }}
+        D_STATE: ${{ inputs.discovery-state }}
+        D_COVERAGE_GAPS: ${{ inputs.coverage-gaps }}
+        D_UNSUPPORTED: ${{ inputs.unsupported }}
+        # The trigger context, for the advisory plan's depth (EXECUTION_PLANNING §3.2). Set
+        # by GitHub, so TRUSTED; passed as data anyway so the step reads one name.
+        gh_event: ${{ inputs.event-name }}
+      run: |
+        set -uo pipefail
+        scope="${IN_PATHS:-.}"
+        [ -d "$scope" ] || scope="."
+
+        # FAIL-SAFE, THE SAME SHAPE AS DISCOVERY'S. If the resolver itself cannot run, nothing
+        # it would have established is established. That is DISCOVERY_UNAVAILABLE for this
+        # position -- every capability answer is undetermined, which is a gap, and the scanners
+        # still run. It must never present as a tidy COMPLETE, and it must never block the
+        # scanners from running: a resolver that fails closed would convert its own defect into
+        # an unscanned repository.
+        trap 'echo "::error title=Resolve failed::Versions and capability could not be established. Every version answer is VERSION_SUPPORT_UNDETERMINED; scanners run and their silence is not coverage."; \
+              echo "state=DISCOVERY_UNAVAILABLE" >> "$GITHUB_OUTPUT"; \
+              echo "versions=[]" >> "$GITHUB_OUTPUT"; \
+              echo "capability=[]" >> "$GITHUB_OUTPUT"; \
+              echo "coverage=[]" >> "$GITHUB_OUTPUT"; \
+              echo "plan={\"advisory\":true,\"enforced_by\":\"nothing\",\"survey\":\"DISCOVERY_UNAVAILABLE\",\"jobs\":[],\"decisions\":{}}" >> "$GITHUB_OUTPUT"; \
+              echo "version_gaps=" >> "$GITHUB_OUTPUT"; \
+              echo "version_gap_count=UNDETERMINED" >> "$GITHUB_OUTPUT"; \
+              echo "version_undetermined_count=UNDETERMINED" >> "$GITHUB_OUTPUT"; \
+              echo "selection=[]" >> "$GITHUB_OUTPUT"; \
+              echo "substitutions=" >> "$GITHUB_OUTPUT"; \
+              echo "capability_gaps=" >> "$GITHUB_OUTPUT"; \
+              echo "capability_gap_count=UNDETERMINED" >> "$GITHUB_OUTPUT"; \
+              echo "capped_jobs=" >> "$GITHUB_OUTPUT"; \
+              echo "proven_gap_jobs=" >> "$GITHUB_OUTPUT"; \
+              echo "not_selected_jobs=" >> "$GITHUB_OUTPUT"; \
+              echo "fitness_notes=" >> "$GITHUB_OUTPUT"; \
+              echo "| (resolve) | DISCOVERY_UNAVAILABLE | the resolver itself failed; every version answer is undetermined |" >> "$GITHUB_STEP_SUMMARY"; \
+              exit 0' ERR
+
+        # Lower-case env names on purpose: these are transport, not vocabulary, and the taxonomy
+        # reconciler reads an upper-case underscored name as a state.
+        export resolve_scope="$scope"
+        export resolve_work="$(mktemp -d)"
+
+        # ── THE PER-SCANNER RANGE TABLE, AS DATA ──────────────────────────────────────────
+        # A byte-for-byte copy of `version_support:` in scanner-registry.yaml, carried here because
+        # a reusable workflow cannot read the kit's own files at consumer runtime.
+        # tests/test_resolve.py fails if this copy and the registry differ. EDIT THE REGISTRY, then
+        # paste `json.dumps(version_support, indent=2, sort_keys=True)` here.
+        cat > "$resolve_work/version_support.json" <<'JSON'
+        {
+          "code-quality": {
+            "node": [
+              {
+                "basis": "eslint's parser is configured by the project (ecmaVersion); not established here.",
+                "compare": "version",
+                "max": null,
+                "max_from_input": null,
+                "min": null,
+                "tool": "eslint",
+                "unbounded": false,
+                "verified": "UNVERIFIED"
+              }
+            ],
+            "python": [
+              {
+                "basis": "mypy parses with the running interpreter and exits 2 on a syntax it cannot read (PO section 3.6). ruff has its own parser and is not declared here.",
+                "compare": "version",
+                "max": null,
+                "max_from_input": "python_version",
+                "min": null,
+                "tool": "mypy",
+                "unbounded": false,
+                "verified": "READ"
+              }
+            ]
+          },
+          "codeql": {
+            "cpp": [
+              {
+                "basis": "C89 to C23, C++98 to C++23, the 23s in beta; C++20 modules not supported (same page).",
+                "compare": "standard_year",
+                "max": "23",
+                "max_from_input": null,
+                "min": null,
+                "tool": "codeql",
+                "unbounded": false,
+                "verified": "READ"
+              }
+            ],
+            "dotnet": [
+              {
+                "basis": "C# up to 14 and .NET up to 10 (same page); autobuild restores with the SDK the caller chose.",
+                "compare": "version",
+                "max": "10",
+                "max_from_input": "dotnet_version",
+                "min": null,
+                "tool": "codeql",
+                "unbounded": false,
+                "verified": "READ"
+              }
+            ],
+            "go": [
+              {
+                "basis": "Go up to 1.27, requires Go 1.11 or newer (same page).",
+                "compare": "version",
+                "max": "1.27",
+                "max_from_input": null,
+                "min": "1.11",
+                "tool": "codeql",
+                "unbounded": false,
+                "verified": "READ"
+              }
+            ],
+            "java": [
+              {
+                "basis": "Java 7 to 26 (javac, ECJ) (same page); autobuild compiles with the JDK the caller chose, so a release above it fails the build (PO section 3.5, the cq_build defect).",
+                "compare": "version",
+                "max": "26",
+                "max_from_input": "java_version",
+                "min": "7",
+                "tool": "codeql",
+                "unbounded": false,
+                "verified": "READ"
+              }
+            ],
+            "node": [
+              {
+                "basis": "ECMAScript 2022 or lower; TypeScript 2.6 to 7.0 (same page). A node RUNTIME version does not establish the syntax level; tsconfig target does.",
+                "compare": "syntax_level",
+                "max": "ES2022",
+                "max_from_input": null,
+                "min": null,
+                "tool": "codeql",
+                "unbounded": false,
+                "verified": "READ"
+              }
+            ],
+            "python": [
+              {
+                "basis": "Python 2.7, 3.5 to 3.14; the extractor needs a Python 3 to run but parses independently of it (CodeQL supported languages page as fetched 2026-09-23, PO section 3.5). 2.7 is not modelled.",
+                "compare": "version",
+                "max": "3.14",
+                "max_from_input": null,
+                "min": "3.5",
+                "tool": "codeql",
+                "unbounded": false,
+                "verified": "READ"
+              }
+            ]
+          },
+          "iac-scan": {
+            "iac": [
+              {
+                "basis": "MEASURED by the seeded Terraform corpus (tests/corpora/terraform_corpus.py; D-VF-4): checkov 3.3.30 (and 3.3.29) read the seed in every family 0.12..1.14 (families: 0.12, 0.13, 0.14, 0.15, 1.1, 1.2, 1.3, 1.4, 1.5, 1.7, 1.8, 1.9, 1.10, 1.11, 1.14); every family in the corpus was read; no newer family is in it, so a newer release is outside what was measured. Releases with no new .tf construct are claimed through their neighbours. Measured 2026-10-21 (locally: the image checkov-action@v12 runs, ghcr.io/bridgecrewio/checkov 3.3.30 by digest sha256:4b65e89f1fde, and pip 3.3.29/3.3.30 on Windows; confirmed hosted by probe-scanner-corpora run 39640950138 on 37e4e77, --check PASS) by tests/corpora/probe_iac_corpus.py.",
+                "compare": "version",
+                "corpus": "tests/corpora/terraform_corpus.py",
+                "max": "1.14",
+                "max_from_input": null,
+                "min": "0.12",
+                "tool": "checkov",
+                "unbounded": false,
+                "verified": "READ"
+              },
+              {
+                "basis": "MEASURED by the seeded Terraform corpus (tests/corpora/terraform_corpus.py; D-VF-4): trivy-config 0.71.2 (and 0.70.0) read the seed in every family 0.12..1.14 (families: 0.12, 0.13, 0.14, 0.15, 1.1, 1.2, 1.3, 1.4, 1.5, 1.7, 1.8, 1.9, 1.10, 1.11, 1.14); every family in the corpus was read; no newer family is in it, so a newer release is outside what was measured. Releases with no new .tf construct are claimed through their neighbours. Measured 2026-10-21 (locally, sha256-verified Windows release binaries; confirmed hosted for 0.71.2 and 0.70.0 by probe-scanner-corpora run 39640950138 on 37e4e77, --check PASS) by tests/corpora/probe_iac_corpus.py.",
+                "compare": "version",
+                "corpus": "tests/corpora/terraform_corpus.py",
+                "max": "1.14",
+                "max_from_input": null,
+                "min": "0.12",
+                "tool": "trivy-config",
+                "unbounded": false,
+                "verified": "READ"
+              }
+            ]
+          },
+          "sast-bandit": {
+            "python": [
+              {
+                "basis": "bandit builds its AST with the ast module of the interpreter it runs under, so its ceiling IS the runner interpreter. Reproduced 2026-09-23: PEP 695 syntax skipped with exit 0 under 3.11 (PO section 3.1-3.2).",
+                "compare": "version",
+                "max": null,
+                "max_from_input": "python_version",
+                "min": null,
+                "tool": "bandit",
+                "unbounded": false,
+                "verified": "READ"
+              }
+            ]
+          },
+          "sast-cpp": {
+            "cpp": [
+              {
+                "basis": "simple lexical tokenisation, no parse, so no language standard can break it; blind only by file extension (PO section 3.6).",
+                "compare": "standard_year",
+                "max": null,
+                "max_from_input": null,
+                "min": null,
+                "tool": "flawfinder",
+                "unbounded": true,
+                "verified": "READ"
+              },
+              {
+                "basis": "not established; whether its critical-error report survives into SARIF is PO section 3.6's open experiment.",
+                "compare": "standard_year",
+                "max": null,
+                "max_from_input": null,
+                "min": null,
+                "tool": "cppcheck",
+                "unbounded": false,
+                "verified": "UNVERIFIED"
+              }
+            ]
+          },
+          "sast-dotnet": {
+            "dotnet": [
+              {
+                "basis": "dotnet restore and dotnet list package run on the runner SDK the caller chose; a TargetFramework newer than that SDK cannot be restored (NETSDK1045).",
+                "compare": "version",
+                "max": null,
+                "max_from_input": "dotnet_version",
+                "min": null,
+                "tool": "dotnet-sdk",
+                "unbounded": false,
+                "verified": "READ"
+              },
+              {
+                "basis": "own parser; per-version support not published.",
+                "compare": "version",
+                "max": null,
+                "max_from_input": null,
+                "min": null,
+                "tool": "semgrep",
+                "unbounded": false,
+                "verified": "UNVERIFIED"
+              }
+            ]
+          },
+          "sast-go": {
+            "go": [
+              {
+                "basis": "the pinned container carries its own Go toolchain and a module whose go directive is newer than it fails to LOAD (sast-go job comment; PO section 3.6). The toolchain version inside the image is not established here.",
+                "compare": "version",
+                "max": null,
+                "max_from_input": null,
+                "min": null,
+                "tool": "gosec",
+                "unbounded": false,
+                "verified": "UNVERIFIED"
+              }
+            ]
+          },
+          "sast-java": {
+            "java": [
+              {
+                "basis": "the job installs the caller's java_version but runs only semgrep, which does not compile; own parser, per-version support not published.",
+                "compare": "version",
+                "max": null,
+                "max_from_input": null,
+                "min": null,
+                "tool": "semgrep",
+                "unbounded": false,
+                "verified": "UNVERIFIED"
+              }
+            ]
+          },
+          "sast-semgrep": {
+            "dotnet": [
+              {
+                "basis": "own parser; per-version support not published.",
+                "compare": "version",
+                "max": null,
+                "max_from_input": null,
+                "min": null,
+                "tool": "semgrep",
+                "unbounded": false,
+                "verified": "UNVERIFIED"
+              }
+            ],
+            "go": [
+              {
+                "basis": "own parser; per-version support not published.",
+                "compare": "version",
+                "max": null,
+                "max_from_input": null,
+                "min": null,
+                "tool": "semgrep",
+                "unbounded": false,
+                "verified": "UNVERIFIED"
+              }
+            ],
+            "java": [
+              {
+                "basis": "own parser; per-version support not published.",
+                "compare": "version",
+                "max": null,
+                "max_from_input": null,
+                "min": null,
+                "tool": "semgrep",
+                "unbounded": false,
+                "verified": "UNVERIFIED"
+              }
+            ],
+            "node": [
+              {
+                "basis": "own parser; per-version support not published.",
+                "compare": "version",
+                "max": null,
+                "max_from_input": null,
+                "min": null,
+                "tool": "semgrep",
+                "unbounded": false,
+                "verified": "UNVERIFIED"
+              }
+            ],
+            "python": [
+              {
+                "basis": "semgrep carries its own parser, independent of the runner interpreter. PEP 695 parsed at 1.178.0; the kit pins 1.90.0 and nothing measured that version (PO section 3.4). Per-version language support is not published.",
+                "compare": "version",
+                "max": null,
+                "max_from_input": null,
+                "min": null,
+                "tool": "semgrep",
+                "unbounded": false,
+                "verified": "UNVERIFIED"
+              }
+            ]
+          },
+          "secret-scan": {
+            "*": [
+              {
+                "basis": "regex plus entropy, and line-scanning plugins; neither uses a language parser, so neither is gated by language version (PO section 3.6, 5.4). Their blind spot is scope, not syntax.",
+                "compare": "version",
+                "max": null,
+                "max_from_input": null,
+                "min": null,
+                "tool": "gitleaks+detect-secrets",
+                "unbounded": true,
+                "verified": "READ"
+              }
+            ]
+          }
+        }
+        JSON
+
+        # ── THE CAPABILITY SELECTION TABLE, AS DATA (KDEC-010) ────────────────────────────
+        # A byte-for-byte copy of `capability_selection:` in scanner-registry.yaml: per capability,
+        # the carried scanners that can serve it, IN ORDER OF PREFERENCE; the first is the default.
+        # tests/test_resolve.py fails if this copy and the registry differ. EDIT THE REGISTRY, then
+        # paste `json.dumps(capability_selection, indent=2, sort_keys=True)` here.
+        cat > "$resolve_work/capability_selection.json" <<'SELECTION'
+        {
+          "cpp-sast": {
+            "candidates": [
+              "sast-cpp/flawfinder",
+              "sast-cpp/cppcheck",
+              "codeql/codeql"
+            ],
+            "class": "cpp"
+          },
+          "dotnet-nuget-audit": {
+            "candidates": [
+              "sast-dotnet/dotnet-sdk"
+            ],
+            "class": "dotnet"
+          },
+          "dotnet-sast": {
+            "candidates": [
+              "sast-dotnet/semgrep",
+              "sast-semgrep/semgrep",
+              "codeql/codeql"
+            ],
+            "class": "dotnet"
+          },
+          "go-sast": {
+            "candidates": [
+              "sast-go/gosec",
+              "sast-semgrep/semgrep",
+              "codeql/codeql"
+            ],
+            "class": "go"
+          },
+          "iac": {
+            "candidates": [
+              "iac-scan/checkov",
+              "iac-scan/trivy-config"
+            ],
+            "class": "iac"
+          },
+          "java-sast": {
+            "candidates": [
+              "sast-java/semgrep",
+              "sast-semgrep/semgrep",
+              "codeql/codeql"
+            ],
+            "class": "java"
+          },
+          "node-quality": {
+            "candidates": [
+              "code-quality/eslint"
+            ],
+            "class": "node"
+          },
+          "node-sast": {
+            "candidates": [
+              "sast-semgrep/semgrep",
+              "codeql/codeql"
+            ],
+            "class": "node"
+          },
+          "python-quality": {
+            "candidates": [
+              "code-quality/mypy"
+            ],
+            "class": "python"
+          },
+          "python-sast": {
+            "candidates": [
+              "sast-bandit/bandit",
+              "sast-semgrep/semgrep",
+              "codeql/codeql"
+            ],
+            "class": "python"
+          }
+        }
+        SELECTION
+
+        python3 - <<'PY'
+        import json, os, re, sys
+
+        scope = os.environ["resolve_scope"]
+        gh_out = os.environ["GITHUB_OUTPUT"]
+        gh_sum = os.environ["GITHUB_STEP_SUMMARY"]
+
+        def out(k, v):
+            with open(gh_out, "a", encoding="utf-8") as f:
+                f.write("%s=%s\n" % (k, v))
+
+        def summ(line):
+            with open(gh_sum, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+
+        def discovered(cls):
+            # "", "true" or "false". Empty is "discovery did not say" -- an unknown, never false.
+            return os.environ.get("D_" + cls.upper(), "")
+
+        # ── THE WALK: full, no early exit, the same exclusions discovery applies ─────────────
+        # discovery's presence probes stop at the first match on purpose (-print -quit); a probe
+        # built to stop counting cannot produce a count. This is the one full walk this position
+        # pays for, and every later answer -- roots, files in scope, enumeration -- reads it.
+        exclude = {"node_modules", "vendor", ".git"}
+        maxdepth = 8
+        unreadable_dirs = []
+        # Directories the walk deliberately did not enter (beyond maxdepth). Not an error, and
+        # not nothing: a file down there is in the repository and was not enumerated, so the
+        # enumeration is PARTIAL and the count says so. PO §5.2 (2): "a walk that failed on one
+        # subtree exits non-zero exactly like one that failed on all of them" -- so the paths
+        # are kept and counted rather than collapsed into one flag.
+        unreached_dirs = []
+
+        def rel(p):
+            r = os.path.relpath(p, scope).replace(os.sep, "/")
+            return "." if r == "." else r
+
+        def walk():
+            files = []
+            def onerr(e):
+                unreadable_dirs.append(rel(getattr(e, "filename", None) or scope))
+            for root, dirs, names in os.walk(scope, onerror=onerr):
+                depth = 0 if root == scope else rel(root).count("/") + 1
+                dirs[:] = sorted(d for d in dirs if d not in exclude)
+                if depth >= maxdepth:
+                    unreached_dirs.extend(rel(os.path.join(root, d)) for d in dirs)
+                    dirs[:] = []
+                for n in sorted(names):
+                    files.append(os.path.join(root, n))
+            return files
+
+        files = walk()
+        by_dir = {}
+        for f in files:
+            by_dir.setdefault(rel(os.path.dirname(f)), []).append(os.path.basename(f))
+
+        unreadable_files = []
+
+        def read(path):
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    return f.read()
+            except OSError:
+                unreadable_files.append(rel(path))
+                return None
+
+        # ── VERSION ARITHMETIC ───────────────────────────────────────────────────────────────
+        def vt(s):
+            m = re.match(r"\s*v?(\d+(?:\.\d+)*)", s or "")
+            return tuple(int(x) for x in m.group(1).split(".")) if m else None
+
+        def vs(t):
+            return ".".join(str(x) for x in t)
+
+        def bump(t, at):
+            t = list(t[: at + 1]) + [0] * max(0, at + 1 - len(t))
+            t[at] += 1
+            return tuple(t[: at + 1])
+
+        def clause(c):
+            """One comparison -> (min, min_inc, max, max_inc) over tuples, or None if unparsed."""
+            c = c.strip()
+            if not c or c in ("*", "x", "X"):
+                return (None, True, None, True)
+            m = re.match(r"^(>=|<=|==|~=|~>|!=|>|<|\^|~|=)?\s*v?([0-9][0-9A-Za-z.*-]*)$", c)
+            if not m:
+                return None
+            op, ver = m.group(1) or "", m.group(2)
+            if op == "!=":
+                return (None, True, None, True)
+            wild = ver.endswith((".x", ".X", ".*"))
+            t = vt(ver)
+            if t is None:
+                return None
+            if op in (">=",):
+                return (t, True, None, True)
+            if op == ">":
+                return (t, False, None, True)
+            if op == "<=":
+                return (None, True, t, True)
+            if op == "<":
+                return (None, True, t, False)
+            if op == "^":
+                nz = next((i for i, x in enumerate(t) if x), 0)
+                return (t, True, bump(t, nz), False)
+            if op == "~":
+                return (t, True, bump(t, 1 if len(t) >= 2 else 0), False)
+            if op in ("~=", "~>"):
+                return (t, True, bump(t, max(0, len(t) - 2)), False)
+            if wild:
+                return (t, True, bump(t, len(t) - 1), False)
+            # bare or == : a full X.Y.Z is exact; a shorter bare value is a line, e.g. "20" = 20.x
+            if op in ("==", "=") or len(t) >= 3:
+                return (t, True, t, True)
+            return (t, True, bump(t, len(t) - 1), False)
+
+        def hull(a, b):
+            lo = a if b[0] is None else b if a[0] is None else min(a, b, key=lambda x: x[0])
+            hi = a if b[2] is None else b if a[2] is None else max(a, b, key=lambda x: x[2])
+            return (lo[0], lo[1], hi[2], hi[3])
+
+        def intersect(a, b):
+            lo, lo_inc = a[0], a[1]
+            if b[0] is not None and (lo is None or b[0] > lo or (b[0] == lo and not b[1])):
+                lo, lo_inc = b[0], b[1]
+            hi, hi_inc = a[2], a[3]
+            if b[2] is not None and (hi is None or b[2] < hi or (b[2] == hi and not b[3])):
+                hi, hi_inc = b[2], b[3]
+            return (lo, lo_inc, hi, hi_inc)
+
+        def parse_constraint(spec):
+            """A version SET. Returns (range, strength) or (None, 'unreadable')."""
+            spec = (spec or "").strip().strip("'\"")
+            if not spec:
+                return None, "unreadable"
+            alts = []
+            for alt in re.split(r"\s*\|\|\s*", spec):
+                hy = re.match(r"^\s*v?([0-9][0-9.]*)\s+-\s+v?([0-9][0-9.]*)\s*$", alt)
+                if hy:
+                    alts.append((vt(hy.group(1)), True, vt(hy.group(2)), True))
+                    continue
+                rng = (None, True, None, True)
+                parts = [p for p in re.split(r"\s*,\s*|\s+", alt.strip()) if p]
+                # "> 1.0" written with a space: re-join an operator to its number
+                joined, i = [], 0
+                while i < len(parts):
+                    if parts[i] in (">=", "<=", "==", "~=", "~>", "!=", ">", "<", "^", "~", "=") \
+                            and i + 1 < len(parts):
+                        joined.append(parts[i] + parts[i + 1]); i += 2
+                    else:
+                        joined.append(parts[i]); i += 1
+                for p in joined:
+                    c = clause(p)
+                    if c is None:
+                        return None, "unreadable"
+                    rng = intersect(rng, c)
+                alts.append(rng)
+            r = alts[0]
+            for a in alts[1:]:
+                r = hull(r, a)
+            if r[0] is not None and r[2] is not None and r[0] == r[2] and r[1] and r[3]:
+                return r, "exact"
+            if r[2] is None:
+                return r, "floor"
+            return r, "constraint"
+
+        def range_json(r):
+            if r is None:
+                return None
+            return {"min": vs(r[0]) if r[0] is not None else None, "min_inclusive": r[1],
+                    "max": vs(r[2]) if r[2] is not None else None, "max_inclusive": r[3]}
+
+        # ── RECORDS ──────────────────────────────────────────────────────────────────────────
+        records = []
+
+        def record(cls, root, kind, version=None, strength="none", rng=None, source=None,
+                   checked=(), **extra):
+            rec = {"class": cls, "root": root, "kind": kind, "version": version,
+                   "strength": strength, "range": range_json(rng), "source": source,
+                   "checked": sorted(set(checked)), "discovered": discovered(cls)}
+            rec.update(extra)
+            if version is not None or (rng is not None and strength in ("floor", "constraint")):
+                rec["evidence"] = "VERSION_DISCOVERED"
+            records.append(rec)
+            return rec
+
+        def exact(cls, root, kind, ver, source, checked, **extra):
+            t = vt(ver)
+            if t is None:
+                return record(cls, root, kind, strength="unreadable", source=source,
+                              checked=checked, note="could not parse %r" % ver, **extra)
+            return record(cls, root, kind, version=vs(t), strength="exact",
+                          rng=(t, True, t, True), source=source, checked=checked, **extra)
+
+        def constrained(cls, root, kind, spec, source, checked, **extra):
+            rng, strength = parse_constraint(spec)
+            if rng is None:
+                return record(cls, root, kind, strength="unreadable", source=source,
+                              checked=checked, note="could not parse %r" % spec, **extra)
+            ver = vs(rng[0]) if strength == "exact" else None
+            return record(cls, root, kind, version=ver, strength=strength, rng=rng,
+                          source=source, checked=checked, constraint=spec, **extra)
+
+        def path(root, name):
+            return os.path.join(scope, "" if root == "." else root, name)
+
+        def rsrc(root, name):
+            return name if root == "." else root + "/" + name
+
+        def first_line(text):
+            for ln in (text or "").splitlines():
+                ln = ln.split("#", 1)[0].strip()
+                if ln:
+                    return ln
+            return ""
+
+        # ── python: pin > requires-python > setup.cfg/setup.py > tox > Dockerfile > runtime.txt
+        py_sources = [".python-version", "pyproject.toml", "setup.cfg", "setup.py", "tox.ini",
+                      "Dockerfile", "runtime.txt"]
+
+        def probe_python(root, names):
+            present = [n for n in py_sources if n in names] + \
+                      [n for n in names if n.startswith("Dockerfile") and n != "Dockerfile"]
+            if not present:
+                return False
+            checked = [rsrc(root, n) for n in present]
+            failures = []
+            for n in present:
+                text = read(path(root, n))
+                if text is None:
+                    failures.append(n); continue
+                src = rsrc(root, n)
+                if n == ".python-version":
+                    exact("python", root, "language", first_line(text), src, checked); return True
+                if n == "pyproject.toml":
+                    spec = None
+                    try:
+                        import tomllib
+                        doc = tomllib.loads(text)
+                        spec = (doc.get("project") or {}).get("requires-python") or \
+                            ((doc.get("tool") or {}).get("poetry") or {}).get("dependencies", {}).get("python")
+                    except Exception:
+                        m = re.search(r'^\s*requires-python\s*=\s*"([^"]*)"', text, re.M)
+                        if m and m.group(1).strip():
+                            spec = m.group(1)
+                        else:
+                            record("python", root, "language", strength="unreadable", source=src,
+                                   checked=checked, note="pyproject.toml did not parse")
+                            return True
+                    if spec:
+                        constrained("python", root, "language", spec, src + ":requires-python", checked)
+                        return True
+                    continue
+                if n == "setup.cfg":
+                    m = re.search(r"^\s*python_requires\s*=\s*(.+)$", text, re.M)
+                    if m:
+                        constrained("python", root, "language", m.group(1), src + ":python_requires", checked)
+                        return True
+                    continue
+                if n == "setup.py":
+                    m = re.search(r"python_requires\s*=\s*['\"]([^'\"]+)['\"]", text)
+                    if m:
+                        constrained("python", root, "language", m.group(1), src + ":python_requires", checked)
+                        return True
+                    continue
+                if n == "tox.ini":
+                    m = re.search(r"^\s*envlist\s*=\s*(.+)$", text, re.M)
+                    pys = sorted(set((int(a), int(b)) for a, b in re.findall(r"\bpy(\d)(\d+)\b", m.group(1)))) if m else []
+                    if pys:
+                        lo, hi = pys[0], pys[-1]
+                        spec = ">=%d.%d,<=%d.%d" % (lo[0], lo[1], hi[0], hi[1])
+                        constrained("python", root, "language", spec, src + ":envlist", checked)
+                        return True
+                    continue
+                if n.startswith("Dockerfile"):
+                    m = re.search(r"^\s*FROM\s+(?:[\w.\-/]+/)?python:v?(\d+(?:\.\d+)+)", text, re.M | re.I)
+                    if m:
+                        exact("python", root, "language", m.group(1), src + ":FROM", checked); return True
+                    continue
+                if n == "runtime.txt":
+                    m = re.search(r"python-(\d+(?:\.\d+)*)", text)
+                    if m:
+                        exact("python", root, "language", m.group(1), src, checked); return True
+                    continue
+            if failures:
+                record("python", root, "language", strength="unreadable", checked=checked,
+                       note="could not read " + ", ".join(failures))
+                return True
+            return False
+
+        # ── node: .nvmrc/.node-version > volta > engines; tsconfig target carried alongside ─
+        def probe_node(root, names):
+            present = [n for n in (".nvmrc", ".node-version", "package.json", "tsconfig.json") if n in names]
+            if "package.json" not in names and not any(n in names for n in (".nvmrc", ".node-version")):
+                return False
+            checked = [rsrc(root, n) for n in present]
+            extra = {}
+            if "tsconfig.json" in names:
+                text = read(path(root, "tsconfig.json"))
+                m = re.search(r'"target"\s*:\s*"([^"]+)"', text or "")
+                if m:
+                    extra["syntax_level"] = m.group(1)
+            for n in (".nvmrc", ".node-version"):
+                if n in names:
+                    text = read(path(root, n))
+                    if text is not None:
+                        exact("node", root, "language", first_line(text), rsrc(root, n), checked, **extra)
+                        return True
+            if "package.json" in names:
+                text = read(path(root, "package.json"))
+                if text is None:
+                    record("node", root, "language", strength="unreadable", checked=checked, **extra)
+                    return True
+                try:
+                    doc = json.loads(text)
+                except Exception:
+                    record("node", root, "language", strength="unreadable", checked=checked,
+                           note="package.json did not parse", **extra)
+                    return True
+                volta = ((doc.get("volta") or {}).get("node")) if isinstance(doc, dict) else None
+                if volta:
+                    exact("node", root, "language", str(volta), rsrc(root, "package.json") + ":volta.node", checked, **extra)
+                    return True
+                eng = ((doc.get("engines") or {}).get("node")) if isinstance(doc, dict) else None
+                if eng:
+                    constrained("node", root, "language", str(eng), rsrc(root, "package.json") + ":engines.node", checked, **extra)
+                    return True
+                record("node", root, "language", strength="none", checked=checked, **extra)
+                return True
+            return False
+
+        # ── go: the go directive is mandatory and is a language version ─────────────────────
+        def probe_go(root, names):
+            if "go.mod" not in names:
+                return False
+            text = read(path(root, "go.mod"))
+            src = rsrc(root, "go.mod")
+            if text is None:
+                record("go", root, "language", strength="unreadable", checked=[src]); return True
+            m = re.search(r"^\s*go\s+(\d+(?:\.\d+)*)", text, re.M)
+            if m:
+                exact("go", root, "language", m.group(1), src + ":go", [src])
+            else:
+                record("go", root, "language", strength="none", checked=[src], note="no go directive")
+            t = re.search(r"^\s*toolchain\s+go(\d+(?:\.\d+)*)", text, re.M)
+            if t:
+                exact("go", root, "toolchain", t.group(1), src + ":toolchain", [src])
+            return True
+
+        # ── dotnet: TargetFramework(s) exact and plural; LangVersion may be a moving target ──
+        def probe_dotnet(root, names):
+            projs = [n for n in names if n.endswith((".csproj", ".fsproj", ".vbproj")) or n == "Directory.Build.props"]
+            found = False
+            for n in projs:
+                text = read(path(root, n))
+                src = rsrc(root, n)
+                if text is None:
+                    record("dotnet", root, "language", strength="unreadable", checked=[src]); found = True; continue
+                tfms = re.findall(r"<TargetFrameworks?>\s*([^<]+?)\s*</TargetFrameworks?>", text)
+                for grp in tfms:
+                    for tfm in [x.strip() for x in grp.split(";") if x.strip()]:
+                        m = re.match(r"^net(\d+\.\d+)", tfm)
+                        if m:
+                            exact("dotnet", root, "language", m.group(1), src + ":TargetFramework", [src], tfm=tfm)
+                        elif re.match(r"^netcoreapp(\d+\.\d+)", tfm):
+                            exact("dotnet", root, "language", re.match(r"^netcoreapp(\d+\.\d+)", tfm).group(1), src + ":TargetFramework", [src], tfm=tfm)
+                        elif re.match(r"^netstandard(\d+\.\d+)", tfm):
+                            exact("dotnet", root, "netstandard", re.match(r"^netstandard(\d+\.\d+)", tfm).group(1), src + ":TargetFramework", [src], tfm=tfm)
+                        elif re.match(r"^net(\d)(\d)(\d?)$", tfm):
+                            g = re.match(r"^net(\d)(\d)(\d?)$", tfm).groups()
+                            exact("dotnet", root, "netframework", ".".join(x for x in g if x), src + ":TargetFramework", [src], tfm=tfm)
+                        else:
+                            record("dotnet", root, "language", strength="unreadable", source=src + ":TargetFramework", checked=[src], note="unrecognised tfm %r" % tfm, tfm=tfm)
+                        found = True
+                lv = re.search(r"<LangVersion>\s*([^<]+?)\s*</LangVersion>", text)
+                if lv:
+                    val = lv.group(1)
+                    if vt(val):
+                        exact("dotnet", root, "langversion", val, src + ":LangVersion", [src])
+                    else:
+                        record("dotnet", root, "langversion", strength="moving", source=src + ":LangVersion", checked=[src], note="LangVersion %s is a moving target" % val)
+                    found = True
+                if not tfms and n != "Directory.Build.props":
+                    record("dotnet", root, "language", strength="none", checked=[src], note="no TargetFramework in " + n)
+                    found = True
+            if "global.json" in names:
+                text = read(path(root, "global.json"))
+                src = rsrc(root, "global.json")
+                try:
+                    ver = ((json.loads(text or "") or {}).get("sdk") or {}).get("version")
+                except Exception:
+                    ver = None
+                    record("dotnet", root, "sdk", strength="unreadable", checked=[src], note="global.json did not parse")
+                    found = True
+                if ver:
+                    exact("dotnet", root, "sdk", str(ver), src + ":sdk.version", [src]); found = True
+            return found
+
+        # ── java: pom release/source/target > gradle toolchain/sourceCompatibility > .sdkmanrc
+        def java_norm(v):
+            t = vt(v)
+            if t and t[0] == 1 and len(t) >= 2:
+                return vs(t[1:])
+            return v
+
+        def probe_java(root, names):
+            present = [n for n in ("pom.xml", "build.gradle.kts", "build.gradle", ".sdkmanrc") if n in names]
+            if not present:
+                return False
+            checked = [rsrc(root, n) for n in present]
+            # Strongest first; a source that is present but silent does not stop the weaker ones
+            # from being read. Only an UNREADABLE source ends the search, as its own sentinel.
+            for n in present:
+                text = read(path(root, n)); src = rsrc(root, n)
+                if text is None:
+                    record("java", root, "language", strength="unreadable", checked=checked,
+                           note="could not read " + n)
+                    return True
+                if n == "pom.xml":
+                    for tag in ("maven.compiler.release", "maven.compiler.source", "maven.compiler.target",
+                                "java.version", "release", "source"):
+                        m = re.search(r"<%s>\s*([^<$]+?)\s*</%s>" % (re.escape(tag), re.escape(tag)), text)
+                        if m:
+                            exact("java", root, "language", java_norm(m.group(1)), src + ":" + tag, checked)
+                            return True
+                elif n.startswith("build.gradle"):
+                    pats = [r"JavaLanguageVersion\.of\((\d+)\)", r"VERSION_(\d+(?:_\d+)?)",
+                            r"sourceCompatibility\s*=\s*['\"]?(\d+(?:\.\d+)?)['\"]?",
+                            r"options\.release(?:\.set\(|\s*=\s*)(\d+)", r"release\.set\((\d+)\)"]
+                    for p in pats:
+                        m = re.search(p, text)
+                        if m:
+                            exact("java", root, "language", java_norm(m.group(1).replace("_", ".")), src, checked)
+                            return True
+                elif n == ".sdkmanrc":
+                    m = re.search(r"^\s*java\s*=\s*v?(\d+(?:\.\d+)*)", text, re.M)
+                    if m:
+                        exact("java", root, "language", m.group(1), src, checked)
+                        return True
+            record("java", root, "language", strength="none", checked=checked,
+                   note="no compiler level declared in " + ", ".join(present))
+            return True
+
+        # ── cpp: a mixed tree can hold several standards at once; each is a record ──────────
+        def probe_cpp(root, names):
+            found = False
+            for n in names:
+                if n not in ("CMakeLists.txt", "Makefile", "GNUmakefile", "compile_commands.json") and not n.endswith((".mk", ".cmake")):
+                    continue
+                text = read(path(root, n)); src = rsrc(root, n)
+                if text is None:
+                    record("cpp", root, "cxx", strength="unreadable", checked=[src]); found = True; continue
+                seen = set()
+                for m in re.finditer(r"CMAKE_CXX_STANDARD\s+(\d+)|cxx_std_(\d+)|-std=(?:gnu|c)\+\+(\d+)", text):
+                    v = next(g for g in m.groups() if g)
+                    if ("cxx", v) not in seen:
+                        seen.add(("cxx", v)); exact("cpp", root, "cxx", v, src, [src]); found = True
+                for m in re.finditer(r"CMAKE_C_STANDARD\s+(\d+)|c_std_(\d+)|-std=(?:gnu|c)(\d+)\b", text):
+                    v = next(g for g in m.groups() if g)
+                    if ("c", v) not in seen:
+                        seen.add(("c", v)); exact("cpp", root, "c", v, src, [src]); found = True
+            return found
+
+        # ── iac: required_version is a constraint; Chart.yaml apiVersion is exact ────────────
+        def probe_iac(root, names):
+            found = False
+            for n in names:
+                if n.endswith(".tf"):
+                    text = read(path(root, n)); src = rsrc(root, n)
+                    m = re.search(r'required_version\s*=\s*"([^"]+)"', text or "")
+                    if m:
+                        constrained("iac", root, "terraform", m.group(1), src + ":required_version", [src]); found = True
+                if n == "Chart.yaml":
+                    text = read(path(root, n)); src = rsrc(root, n)
+                    m = re.search(r"^\s*apiVersion:\s*v?(\d+)", text or "", re.M)
+                    if m:
+                        exact("iac", root, "helm", m.group(1), src + ":apiVersion", [src]); found = True
+            return found
+
+        probes = {"python": probe_python, "node": probe_node, "go": probe_go, "dotnet": probe_dotnet,
+                  "java": probe_java, "cpp": probe_cpp, "iac": probe_iac}
+        remediation = {"python": ".python-version (or requires-python in pyproject.toml)",
+                       "node": ".nvmrc (or engines.node in package.json)", "go": "a go directive in go.mod",
+                       "dotnet": "TargetFramework in the project file", "java": "maven.compiler.release in pom.xml (or a Gradle toolchain)",
+                       "cpp": "a C++ standard (set(CMAKE_CXX_STANDARD n)) in CMakeLists.txt", "iac": "required_version in a terraform block"}
+
+        for cls, probe in probes.items():
+            any_root = False
+            for root in sorted(by_dir):
+                if probe(root, set(by_dir[root])):
+                    any_root = True
+            if not any_root and discovered(cls) != "false":
+                # The class is here (or discovery could not say) and no root declares a version.
+                record(cls, ".", "language", strength="none", remediation="add " + remediation[cls])
+
+        # ── STATE: a manifest that could not be read is not a manifest that was absent ───────
+        state = "COMPLETE"
+        if unreadable_dirs or unreadable_files or any(r["strength"] == "unreadable" for r in records):
+            state = "DISCOVERY_PARTIAL"
+
+        summ("")
+        summ("### Resolve — versions, capability, plan")
+        summ("")
+        summ("| class | root | kind | target version | evidence | source |")
+        summ("|---|---|---|---|---|---|")
+        for r in sorted(records, key=lambda r: (r["class"], r["root"], r["kind"])):
+            if r["strength"] == "exact":
+                ev, tgt = "VERSION_DISCOVERED (exact)", r["version"]
+            elif r["strength"] in ("floor", "constraint"):
+                rg = r["range"] or {}
+                tgt = "%s %s .. %s %s" % (">=" if rg.get("min_inclusive") else ">", rg.get("min") or "any",
+                                          "<=" if rg.get("max_inclusive") else "<", rg.get("max") or "any")
+                ev = "VERSION_DISCOVERED (%s -- a constraint is not a version)" % r["strength"]
+            elif r["strength"] == "moving":
+                ev, tgt = "moving target", r.get("note") or "-"
+            elif r["strength"] == "unreadable":
+                ev, tgt = "unreadable -- could not read is not found nothing", r.get("note") or "-"
+            else:
+                ev, tgt = "not discovered -- a gap; " + r.get("remediation", ""), "-"
+            summ("| %s | %s | %s | %s | %s | %s |" % (r["class"], r["root"], r["kind"], tgt, ev, r.get("source") or "-"))
+        if unreadable_dirs:
+            summ("")
+            summ("Directories the walk could not read (enumeration is PARTIAL, not complete): " + ", ".join(sorted(set(unreadable_dirs))))
+
+        out("versions", json.dumps(records, separators=(",", ":"), sort_keys=True))
+
+        # ── R3: CAPABILITY. Each declared range against each discovered target ──────────────
+        #
+        # PIPELINE_ORDERING §2.4. Four answers, three of them computed here (the fourth, no tool
+        # at all, is discovery's COVERAGE_GAP). The scanner runs in every case; what changes is
+        # what its silence is allowed to mean. ASSUME-SUPPORTED IS THE ONE FORBIDDEN ANSWER.
+        with open(os.path.join(os.environ["resolve_work"], "version_support.json"), encoding="utf-8") as f:
+            table = json.load(f)
+
+        def runner_input(name):
+            return os.environ.get("IN_" + name.upper(), "")
+
+        def es_year(level):
+            m = re.match(r"^\s*es(\d+)\s*$", str(level or ""), re.I)
+            if not m:
+                return None
+            n = int(m.group(1))
+            return {3: 1999, 5: 2009, 6: 2015}.get(n, n if n >= 1990 else None)
+
+        def std_year(t):
+            # C and C++ standards are two-digit years and are NOT monotonic as numbers: 89 < 99
+            # and both are older than 11. Compared as years, or C89 reads as newer than C23.
+            if t is None:
+                return None
+            n = t[0]
+            return (n,) if n >= 1900 else ((1900 + n,) if n >= 80 else (2000 + n,))
+
+        def upper(t, inc):
+            # exclusive upper bound; an inclusive "3.14" covers every 3.14.x
+            return bump(t, len(t) - 1) if inc else t
+
+        def lower_ok(s_lo, s_inc, r_lo):
+            if r_lo is None:
+                return True
+            if s_lo is None:
+                return False
+            return s_lo >= r_lo
+
+        def match(rec, job, entry):
+            """-> (state, reason, declared range) for one version record against one tool."""
+            compare = entry.get("compare") or "version"
+            lo = vt(entry["min"]) if entry.get("min") else None
+            hi = vt(entry["max"]) if entry.get("max") else None
+            if compare == "syntax_level":
+                y = es_year(entry.get("max"))
+                hi = (y,) if y else None
+            if compare == "standard_year":
+                lo, hi = std_year(lo), std_year(hi)
+            declared = {"min": vs(lo) if lo else None, "max": vs(hi) if hi else None,
+                        "ceiling_from": "declared range"}
+            # UNDETERMINED IS NOT CAPABLE (KDEC-010, D-VF-4). A range nobody established is not
+            # a range, whatever is written in it: an UNVERIFIED row answers UNDETERMINED before
+            # any arithmetic, so it can never be selected to serve a capability. Checked FIRST,
+            # ahead of `unbounded`, because "version-immune" is a claim that needs verifying too.
+            if entry.get("verified") != "READ":
+                return ("VERSION_SUPPORT_UNDETERMINED",
+                        "the range for %s/%s in scanner-registry.yaml version_support is UNVERIFIED "
+                        "(declared %s .. %s): nothing established it, so it is not a range; a seeded "
+                        "corpus at the target version would (D-VF-4)"
+                        % (job, entry["tool"], declared["min"] or "any", declared["max"] or "any"),
+                        declared)
+            mfi = entry.get("max_from_input")
+            if mfi:
+                rv = vt(runner_input(mfi))
+                if rv is None:
+                    return ("VERSION_SUPPORT_UNDETERMINED",
+                            "the runner input %s=%r is not a version, so this tool's ceiling is unknown"
+                            % (mfi, runner_input(mfi)), declared)
+                if hi is None or rv < hi:
+                    hi = rv
+                    declared["max"] = vs(rv)
+                    declared["ceiling_from"] = "runner input " + mfi
+            if entry.get("unbounded") and lo is None and hi is None:
+                return ("SCANNER_SUPPORTS", "version-immune: " + (entry.get("basis") or "")[:80], declared)
+            if lo is None and hi is None:
+                return ("VERSION_SUPPORT_UNDETERMINED",
+                        "no range declared for %s/%s in scanner-registry.yaml version_support; "
+                        "declaring one is the remediation" % (job, entry["tool"]), declared)
+            if compare == "syntax_level":
+                lvl = rec.get("syntax_level")
+                if not lvl:
+                    return ("VERSION_SUPPORT_UNDETERMINED",
+                            "a runtime version does not establish the syntax level and no tsconfig "
+                            "target was found", declared)
+                y = es_year(lvl)
+                if y is None:
+                    return ("VERSION_SUPPORT_UNDETERMINED",
+                            "syntax level %r is a moving target or unrecognised" % lvl, declared)
+                t_lo, t_hi, hi_inc = (y,), (y,), True
+            else:
+                if rec["strength"] in ("none", "unreadable"):
+                    return ("VERSION_SUPPORT_UNDETERMINED",
+                            "target version not discovered: " + (rec.get("remediation") or rec.get("note") or "no source"),
+                            declared)
+                if rec["strength"] == "moving":
+                    return ("VERSION_SUPPORT_UNDETERMINED",
+                            "the target is a moving value: " + (rec.get("note") or ""), declared)
+                rg = rec["range"] or {}
+                t_lo = vt(rg["min"]) if rg.get("min") else None
+                t_hi = vt(rg["max"]) if rg.get("max") else None
+                hi_inc = rg.get("max_inclusive", True)
+                if compare == "standard_year":
+                    t_lo, t_hi = std_year(t_lo), std_year(t_hi)
+            r_up = upper(hi, True) if hi is not None else None
+            s_up = upper(t_hi, hi_inc) if t_hi is not None else None
+            inside = lower_ok(t_lo, True, lo) and (r_up is None or (s_up is not None and s_up <= r_up))
+            if inside:
+                return ("SCANNER_SUPPORTS", "every permitted target version is inside the declared range", declared)
+            disjoint = (r_up is not None and t_lo is not None and t_lo >= r_up) or \
+                       (lo is not None and s_up is not None and s_up <= lo)
+            if disjoint:
+                return ("VERSION_UNSUPPORTED",
+                        "no permitted target version is inside the declared range", declared)
+            return ("VERSION_SUPPORT_UNDETERMINED",
+                    "the constraint spans the declared ceiling; checking the oldest permitted version "
+                    "would establish support for the version the code is least likely written in",
+                    declared)
+
+        capability = []
+        askable = ("language", "cxx", "c", "terraform")
+        for rec in records:
+            if rec["kind"] not in askable or discovered(rec["class"]) == "false":
+                continue
+            for job, classes in sorted(table.items()):
+                entries = list(classes.get(rec["class"]) or []) + list(classes.get("*") or [])
+                for entry in entries:
+                    st, why, declared = match(rec, job, entry)
+                    target = rec["version"] if rec["version"] else (rec.get("constraint") or rec.get("syntax_level") or "-")
+                    capability.append({"class": rec["class"], "root": rec["root"], "kind": rec["kind"],
+                                       "job": job, "tool": entry["tool"], "state": st, "target": target,
+                                       "range": declared, "reason": why,
+                                       "verified": entry.get("verified"), "basis": entry.get("basis")})
+
+        gaps = ["%s@%s:%s/%s" % (c["class"], c["root"], c["job"], c["tool"])
+                for c in capability if c["state"] == "VERSION_UNSUPPORTED"]
+        undetermined = [c for c in capability if c["state"] == "VERSION_SUPPORT_UNDETERMINED"]
+
+        summ("")
+        summ("#### Capability, declared before the scan")
+        summ("")
+        summ("| class | root | scanner | tool | declared range | answer | why |")
+        summ("|---|---|---|---|---|---|---|")
+        for c in sorted(capability, key=lambda c: (c["class"], c["root"], c["job"], c["tool"])):
+            rg = c["range"]
+            rtxt = "%s .. %s (%s)" % (rg.get("min") or "any", rg.get("max") or "any", rg.get("ceiling_from"))
+            summ("| %s | %s | %s | %s | %s | %s | %s |" % (c["class"], c["root"], c["job"], c["tool"], rtxt, c["state"], c["reason"]))
+        for c in capability:
+            rg = c["range"]
+            if c["state"] == "VERSION_UNSUPPORTED":
+                print("::warning title=COVERAGE_GAP: %s@%s %s/%s::VERSION_UNSUPPORTED. Target %s; %s declares %s .. %s (%s). "
+                      "Declared BEFORE the scan: the scanner still runs, its findings are findings, and its silence is NOT coverage."
+                      % (c["class"], c["root"], c["job"], c["tool"], c["target"], c["tool"], rg.get("min") or "any", rg.get("max") or "any", rg.get("ceiling_from")))
+            elif c["state"] == "VERSION_SUPPORT_UNDETERMINED":
+                print("::notice title=VERSION_SUPPORT_UNDETERMINED: %s@%s %s/%s::%s. A gap, never support: the scanner runs and contributes PARTIAL."
+                      % (c["class"], c["root"], c["job"], c["tool"], c["reason"]))
+        summ("")
+        if gaps:
+            summ("**COVERAGE_GAP x%d, declared before the scan** -- `%s`" % (len(gaps), ", ".join(gaps)))
+            summ("")
+            summ("> VERSION_UNSUPPORTED is a cause of COVERAGE_GAP, not a peer of it. These scanners still run;")
+            summ("> what changes is what their silence may mean. Findings from them are findings. Absence from")
+            summ("> them is not absence. Declared here, from two established values, needing no inference from a zero.")
+        else:
+            summ("No VERSION_UNSUPPORTED answer: every declared range covered its target.")
+        if undetermined:
+            summ("")
+            summ("**VERSION_SUPPORT_UNDETERMINED x%d** -- a gap, never support. Each of these scanners contributes PARTIAL, not PASS." % len(undetermined))
+
+        # ── KDEC-010: THE CAPABILITY SELECTS THE SCANNER ─────────────────────────────────────
+        #
+        # "It's supposed to change scanners if there is one that has the capabilities, not just
+        # partial, and if there is not one then it annotates and goes to partial." The candidates
+        # per capability are DATA, ordered by preference (scanner-registry.yaml
+        # capability_selection); the first is the default. For each (capability, root) the first
+        # candidate that CAN read the target is selected. UNDETERMINED IS NOT CAPABLE: only a
+        # SCANNER_SUPPORTS from a READ row counts. Code scanning UNAVAILABLE / NOT_CONFIGURED does
+        # NOT withdraw CodeQL (KNOWN_DEFECTS D-10): the licence governs PUBLICATION to the Security
+        # tab, not the analysis -- run 38817782084 read UNAVAILABLE and CodeQL analysed and retained
+        # nine results anyway. The pre-flight is recorded on the candidate as `publication`; whether
+        # the analysis itself ran is the job's own evidence, read by the gate's CodeQL rows.
+        # Every scanner still RUNS -- findings are findings -- but only the selected scanner's
+        # silence may mean coverage. Three outcomes, never collapsed:
+        #   SERVED        the default can read it
+        #   SUBSTITUTION  the default cannot, a later candidate can: labelled, never equivalence
+        #   VERSION_GAP   none can: every job pointed at it is CAPPED at PARTIAL, never PASS, and
+        #                 the registry row (or the repository file) that would close it is named
+        with open(os.path.join(os.environ["resolve_work"], "capability_selection.json"), encoding="utf-8") as f:
+            selection_table = json.load(f)
+        code_scanning = runner_input("code_scanning").strip()
+        publication_refused = {"codeql"} if code_scanning in ("UNAVAILABLE", "NOT_CONFIGURED") else set()
+
+        by_target = {}
+        for c in capability:
+            by_target.setdefault((c["class"], c["root"], c["kind"]), {})["%s/%s" % (c["job"], c["tool"])] = c
+
+        selection, substitutions, cap_gaps = [], [], []
+        job_fit = {}   # job -> {"selected": [], "capable": [], "not_selected": [], "capped": []}
+
+        def fit(job):
+            return job_fit.setdefault(job, {"selected": [], "capable": [], "not_selected": [], "capped": [],
+                                            "proven": [], "notes": []})
+
+        for cap_name in sorted(selection_table):
+            spec = selection_table[cap_name]
+            cands = list(spec.get("candidates") or [])
+            for (cls, root, kind), rows in sorted(by_target.items()):
+                if cls != spec.get("class") or not cands:
+                    continue
+                # one id per (capability, root); cpp alone asks two kinds (cxx, c), so only those are suffixed
+                target_id = "%s@%s" % (cap_name, root) + ("#" + kind if kind in ("cxx", "c") else "")
+                target = next(iter(rows.values()))["target"]
+                verdicts, selected = [], None
+                for cand in cands:
+                    job = cand.split("/", 1)[0]
+                    row = rows.get(cand)
+                    if row is None:
+                        verdicts.append({"scanner": cand, "state": "NOT_CLAIMED", "verified": None,
+                                         "capable": False, "reason": "declares no range for %s" % cls})
+                        continue
+                    st, why = row["state"], row["reason"]
+                    capable = st == "SCANNER_SUPPORTS" and row.get("verified") == "READ"
+                    verdict = {"scanner": cand, "state": st, "verified": row.get("verified"),
+                               "capable": capable, "reason": why}
+                    if job in publication_refused:
+                        verdict["publication"] = code_scanning
+                        verdict["reason"] = (why + "; code scanning is %s here, so %s's SARIF is retained "
+                                             "and its publication to the Security tab is refused -- the "
+                                             "analysis still runs (D-10)" % (code_scanning, job))
+                    verdicts.append(verdict)
+                    if capable and selected is None:
+                        selected = cand
+                default = cands[0]
+                dv = verdicts[0]
+                closes = None
+                if selected == default:
+                    outcome, why = "SERVED", "%s can read %s" % (default, target)
+                elif selected:
+                    outcome = "SUBSTITUTION"
+                    why = ("%s cannot read %s (%s: %s); routed to %s -- a SUBSTITUTION, not equivalence"
+                           % (default, target, dv["state"], dv["reason"], selected))
+                    substitutions.append("%s:%s->%s" % (target_id, default, selected))
+                else:
+                    outcome = "VERSION_GAP"
+                    # KDEC-014: A GAP IS PROVEN ONLY BY PROVEN RANGES. When every claimed candidate's
+                    # range is READ (a citation or a seeded corpus), the gap is established and a
+                    # production-tier deploy enforces it; while any candidate's range is UNVERIFIED,
+                    # the gap is unverified by construction and is recorded, not enforced. The switch
+                    # is this data: a later READ row turns enforcement on with no caller toggle.
+                    gap_ranges = ("READ" if all(v["verified"] == "READ" for v in verdicts
+                                                if v["state"] != "NOT_CLAIMED") else "UNVERIFIED")
+                    # ...AND ONLY A DEFINITE ANSWER FROM THOSE RANGES. A READ range that answered
+                    # UNDETERMINED was not the cause: the TARGET is (no version declared, a moving
+                    # value, or a floor spanning the measured ceiling). Nothing measured that no
+                    # scanner can read the code, so the gap is recorded, never enforced -- else
+                    # every repository without an exact pin is refused at prod (ledger B-03).
+                    established = gap_ranges == "READ" and all(
+                        v["state"] == "VERSION_UNSUPPORTED" for v in verdicts if v["state"] != "NOT_CLAIMED")
+                    why = ("no carried scanner can read %s: " % target
+                           + "; ".join("%s %s" % (v["scanner"], v["state"]) for v in verdicts)
+                           + " -- PARTIAL, never PASS")
+                    cap_gaps.append(target_id)
+                    parts = []
+                    for v in verdicts:
+                        if v["state"] == "NOT_CLAIMED":
+                            continue
+                        reason = v["reason"] or ""
+                        if reason.startswith("target version not discovered") or reason.startswith("the target is a moving"):
+                            parts.append("the repository: " + reason)
+                        elif v["verified"] != "READ":
+                            parts.append("scanner-registry.yaml version_support %s (UNVERIFIED): a READ range from a seeded corpus at %s (D-VF-4)" % (v["scanner"], target))
+                        else:
+                            parts.append("scanner-registry.yaml version_support %s (READ): a release whose declared range covers %s, or a runner toolchain at %s" % (v["scanner"], target, target))
+                    closes = "; ".join(parts)
+                selection.append({"capability": cap_name, "class": cls, "root": root, "kind": kind,
+                                  "target": target, "default": default, "selected": selected,
+                                  "state": outcome, "why": why, "candidates": verdicts, "closes": closes,
+                                  "gap_ranges": gap_ranges if outcome == "VERSION_GAP" else None,
+                                  "established": established if outcome == "VERSION_GAP" else None})
+                for v in verdicts:
+                    if v["state"] == "NOT_CLAIMED":
+                        continue
+                    job = v["scanner"].split("/", 1)[0]
+                    if outcome == "VERSION_GAP":
+                        fit(job)["capped"].append(target_id)
+                        if established:
+                            fit(job)["proven"].append(target_id)
+                        fit(job)["notes"].append("%s: VERSION_GAP %s (%s %s) -- PARTIAL, never PASS; closes: %s"
+                                                 % (job, target_id, v["scanner"], v["state"], closes))
+                    elif v["scanner"] == selected:
+                        fit(job)["selected"].append(target_id)
+                    elif v["capable"]:
+                        fit(job)["capable"].append(target_id)
+                    else:
+                        fit(job)["not_selected"].append(target_id)
+                        fit(job)["notes"].append("%s: not selected for %s (%s %s); served by %s (%s, not equivalence)"
+                                                 % (job, target_id, v["scanner"], v["state"], selected, outcome))
+
+        capped_jobs = sorted(j for j, f in job_fit.items() if f["capped"])
+        proven_gap_jobs = sorted(j for j, f in job_fit.items() if f["proven"])
+        not_selected_jobs = sorted(j for j, f in job_fit.items() if f["not_selected"] and not f["capped"])
+        fitness_notes = " ; ".join(n for j in sorted(job_fit) for n in job_fit[j]["notes"])
+
+        summ("")
+        summ("#### Capability selection (KDEC-010) -- the capability selects the scanner")
+        summ("")
+        summ("| capability | root | target | default | selected | outcome | why |")
+        summ("|---|---|---|---|---|---|---|")
+        for s in selection:
+            summ("| %s | %s | %s | %s | %s | %s | %s |" % (s["capability"], s["root"], s["target"], s["default"],
+                                                           s["selected"] or "-", s["state"], s["why"]))
+        summ("")
+        for s in selection:
+            if s["state"] == "SUBSTITUTION":
+                print("::notice title=SUBSTITUTION: %s@%s::%s. Labelled as a substitution, never presented as equivalent coverage."
+                      % (s["capability"], s["root"], s["why"]))
+            elif s["state"] == "VERSION_GAP":
+                print("::warning title=VERSION_GAP: %s@%s::%s. Every job pointed at it is capped at PARTIAL. What would close it: %s"
+                      % (s["capability"], s["root"], s["why"], s["closes"]))
+        if substitutions:
+            summ("**SUBSTITUTION x%d** -- `%s`. The default could not read the target and another carried scanner can, so the"
+                 " claim is carried by that one. Labelled, and not equivalence: pattern matching says the dangerous call is"
+                 " present; only taint tracking says attacker input reaches it (PO section 6). The default still runs; its"
+                 " silence is not coverage." % (len(substitutions), ", ".join(substitutions)))
+            summ("")
+        if cap_gaps:
+            summ("**VERSION_GAP x%d -- PARTIAL, never PASS** -- `%s`. No carried scanner can read the target version. The scan"
+                 " still runs where it can; every job pointed at a gap (%s) is capped at scanner_state.PARTIAL, and the"
+                 " registry row or repository file that would close each gap is named in the table above."
+                 % (len(cap_gaps), ", ".join(cap_gaps), ", ".join(capped_jobs)))
+        elif selection:
+            summ("Every capability present is served by a scanner that can read its target version.")
+        else:
+            summ("No capability to select for: nothing version-gated was discovered.")
+
+        # ── R3, one level up: CLASS-AND-COUNT COVERAGE. Never a percentage ──────────────────
+        #
+        # PIPELINE_ORDERING §5.3: a full per-file matrix is S x F cells, mostly structural zeroes,
+        # answering a question nobody asks. The affordable claim is per artefact class: how many
+        # files, whether the walk reached them all, which scanners' version check passed, and
+        # on what basis the coverage claim rests. It supports "this class holds N files; these
+        # scanners were pointed at it; their capability was established or was not" -- and it
+        # must never be written as "N% of files were scanned", because a percentage over a
+        # class denominator invites comparison between figures with different denominators.
+        #
+        # coverage_basis is `scope-inference` for every covered class, because §3.7 measured
+        # that no scanner in this suite names the files it examined in its output. The strong
+        # basis (`named-in-output`) exists in the vocabulary and is reachable by nothing today.
+        ext_class = {".py": "python", ".js": "node", ".jsx": "node", ".mjs": "node", ".cjs": "node",
+                     ".ts": "node", ".tsx": "node", ".go": "go", ".cs": "dotnet", ".java": "java",
+                     ".c": "cpp", ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".h": "cpp", ".hpp": "cpp",
+                     ".hh": "cpp", ".hxx": "cpp", ".tf": "iac", ".bicep": "iac",
+                     ".rs": "Rust", ".rb": "Ruby", ".php": "PHP", ".swift": "Swift", ".kt": "Kotlin",
+                     ".kts": "Kotlin", ".scala": "Scala", ".ex": "Elixir", ".exs": "Elixir",
+                     ".erl": "Erlang", ".hs": "Haskell", ".lua": "Lua", ".pl": "Perl", ".r": "R",
+                     ".jl": "Julia", ".dart": "Dart", ".groovy": "Groovy", ".clj": "Clojure",
+                     ".zig": "Zig", ".nim": "Nim", ".vb": "VisualBasic", ".fs": "FSharp",
+                     ".sh": "Shell", ".ps1": "PowerShell"}
+        name_class = {"Chart.yaml": "iac", "kustomization.yaml": "iac", "azuredeploy.json": "iac"}
+
+        def classify(path):
+            base = os.path.basename(path)
+            if base.startswith("Dockerfile"):
+                return "iac"
+            if base in name_class:
+                return name_class[base]
+            r = rel(path)
+            if "/.github/workflows/" in "/" + r and base.endswith((".yml", ".yaml")):
+                return "GitHubActionsWorkflow"
+            return ext_class.get(os.path.splitext(base)[1].lower())
+
+        counts, roots_by_class = {}, {}
+        for f in files:
+            cls = classify(f)
+            if cls:
+                counts[cls] = counts.get(cls, 0) + 1
+                roots_by_class.setdefault(cls, set()).add(rel(os.path.dirname(f)))
+
+        enumeration = "COMPLETE" if not unreadable_dirs and not unreached_dirs else "PARTIAL"
+        coverage = []
+        for cls in sorted(counts):
+            rows = [c for c in capability if c["class"] == cls]
+            covered, not_covered = [], []
+            for key in sorted({(c["job"], c["tool"]) for c in rows}):
+                states = {c["state"] for c in rows if (c["job"], c["tool"]) == key}
+                label = "%s/%s" % key
+                if states == {"SCANNER_SUPPORTS"}:
+                    covered.append(label)
+                else:
+                    not_covered.append("%s: %s" % (label, "/".join(sorted(s for s in states if s != "SCANNER_SUPPORTS"))))
+            if discovered(cls) == "false" and cls in probes:
+                basis, note = "none", "EXCLUDED_BY_SELECTOR -- present, and the caller's selector excluded it"
+            elif covered:
+                basis, note = "scope-inference", "the tools were pointed at a scope containing these files; none names the files it read"
+            elif rows:
+                basis, note = "none", "every claiming tool is VERSION_UNSUPPORTED or VERSION_SUPPORT_UNDETERMINED"
+            else:
+                basis, note = "none", "COVERAGE_GAP -- no scanner in this kit claims this class"
+            coverage.append({"class": cls, "files_in_scope": counts[cls], "enumeration": enumeration,
+                             "unreadable_dirs": len(unreadable_dirs), "unreached_dirs": len(unreached_dirs),
+                             "roots": sorted(roots_by_class[cls]), "covered_by": covered,
+                             "not_covered_by": not_covered, "coverage_basis": basis, "note": note})
+
+        summ("")
+        summ("#### Coverage, by class and count -- never a percentage")
+        summ("")
+        summ("| class | files in scope | enumeration | covered by | not covered by | basis |")
+        summ("|---|---|---|---|---|---|")
+        for c in coverage:
+            en = c["enumeration"]
+            if en == "PARTIAL":
+                en += " (%d unreadable, %d beyond depth %d)" % (c["unreadable_dirs"], c["unreached_dirs"], maxdepth)
+            summ("| %s | %d | %s | %s | %s | %s |" % (c["class"], c["files_in_scope"], en,
+                 ", ".join(c["covered_by"]) or "-", ", ".join(c["not_covered_by"]) or "-",
+                 "scope inference" if c["coverage_basis"] == "scope-inference" else c["note"]))
+        summ("")
+        summ("> A count is a claim with units. These rows support \"this class holds N files and these tools")
+        summ("> were pointed at it with their version capability established\"; they do not support a fraction")
+        summ("> of files scanned, because no scanner in this suite names the files it read.")
+
+        # ── R4: THE PLAN, ADVISORY. docs/architecture/EXECUTION_PLANNING.md ─────────────────
+        #
+        # One object, computed last, from values that all exist before any scanner starts:
+        # depth from the trigger context, a decision per registered scanner job from its
+        # applicability rule, the capability states riding on each row, the declared gaps.
+        # `advisory: true` and `enforced_by: "nothing"` are literal, because nothing reads
+        # this yet; §5 of the design is the change that would. THE DECISION NEVER READS THE
+        # CAPABILITY ANSWERS: a VERSION_UNSUPPORTED scanner still runs (PO §2.4).
+        event = os.environ.get("gh_event", "")
+        survey = os.environ.get("D_STATE", "")
+        depth_table = {
+            "pr":      {"codeql_suite": "default", "secrets_scope": "diff only", "paths": "changed paths", "posture": "advisory on new categories"},
+            "merge":   {"codeql_suite": "security-extended", "secrets_scope": "full tree", "paths": "whole repo", "posture": "blocking"},
+            "nightly": {"codeql_suite": "security-and-quality", "secrets_scope": "full git history", "paths": "whole repo", "posture": "report only"},
+        }
+        if event == "pull_request":
+            depth, basis = "pr", "pull_request event (AXES_AND_PHASES depth table)"
+        elif event == "push":
+            depth, basis = "merge", "push event; ASSUMED to be the protected default branch, which stage 1 (policy resolution, ABSENT) would establish (EXECUTION_PLANNING 3.2)"
+        elif event == "schedule":
+            depth, basis = "nightly", "schedule event (AXES_AND_PHASES depth table)"
+        else:
+            depth, basis = None, "event %r maps to no depth; an owner decision (EXECUTION_PLANNING 8, EP-2)" % event
+
+        # (job, applicability rule as the workflow actually evaluates it, JOB_TOPOLOGY §4 group)
+        plan_jobs = [
+            ("secret-scan",    "always",                          "secrets"),
+            ("code-quality",   "discover.python|discover.node",   "sast-python"),
+            ("sast-semgrep",   "always",                          "sast-multi"),
+            ("sast-bandit",    "discover.python",                 "sast-python"),
+            ("codeql",         "discover.any-codeql-lang",        "codeql"),
+            ("deps-scan",      "always",                          "sca"),
+            ("iac-scan",       "discover.iac",                    "iac"),
+            ("sast-dotnet",    "discover.dotnet",                 "sast-dotnet"),
+            ("sast-java",      "discover.java",                   "sast-java"),
+            ("sast-go",        "discover.go",                     "sast-go"),
+            ("sast-cpp",       "discover.cpp",                    "sast-cpp"),
+            ("image-scan",     "input.image_ref",                 "container"),
+            ("malicious-deps", "input.enable_malicious_pkg_scan", "sca"),
+            ("sbom",           "input.enable_sbom",               "sca"),
+        ]
+        codeql_langs = ["python", "node", "go", "dotnet", "java", "cpp"]
+
+        def decide(rule):
+            if survey == "DISCOVERY_UNAVAILABLE":
+                return "forced", "DISCOVERY_UNAVAILABLE"
+            if rule == "always":
+                return "run", "RUN"
+            if rule.startswith("discover."):
+                classes = codeql_langs if rule == "discover.any-codeql-lang" else \
+                    [r.split(".", 1)[1] for r in rule.split("|")]
+                vals = [discovered(c) for c in classes]
+                if "true" in vals:
+                    return "run", "RUN"
+                if "" in vals:
+                    return "forced", "UNDETERMINED_PRESENT"
+                return "skip", "NOT_APPLICABLE"
+            if rule == "input.image_ref":
+                return ("run", "RUN") if runner_input("image_ref").strip() else ("skip", "NOT_APPLICABLE")
+            if rule.startswith("input.enable_"):
+                return ("run", "RUN") if runner_input(rule.split(".", 1)[1]).strip().lower() == "true" else ("skip", "DISABLED")
+            return "forced", "UNDETERMINED_PRESENT"
+
+        plan_rows, decisions = [], {}
+        for job, rule, group in plan_jobs:
+            decision, reason = decide(rule)
+            states = sorted({c["state"] for c in capability if c["job"] == job})
+            f = job_fit.get(job) or {}
+            # KDEC-010: the routing. `selected_for` is what this job's silence may mean coverage
+            # for; `not_selected_for` is served by another scanner (its PASS there is PARTIAL);
+            # `capped_for` is a gap nothing can read (PARTIAL, never PASS). The decision to RUN
+            # never reads any of it: the default still runs, and its findings are findings.
+            plan_rows.append({"job": job, "group": group, "applies": rule, "decision": decision,
+                              "reason": reason, "capability_states": states,
+                              "selected_for": sorted(f.get("selected", []) + f.get("capable", [])),
+                              "not_selected_for": sorted(f.get("not_selected", [])),
+                              "capped_for": sorted(f.get("capped", []))})
+            decisions[job] = decision
+        # ── V-03 (PO 1.4): THE TOOLCHAIN CHOSEN FROM THE TARGET, not only compared against it ──
+        # Per runner input that bounds a scanner (max_from_input), the version the discovered
+        # targets need: the highest EXACT target among the classes that input bounds. A floor or
+        # a range is not a version to install, so it recommends nothing and says so. Advisory
+        # here (the plan); the setup steps using it, or refusing a lower input, are the flagship's.
+        bounded = {}
+        for job_classes in table.values():
+            for tcls, entries in job_classes.items():
+                for e in entries:
+                    if e.get("max_from_input"):
+                        bounded.setdefault(e["max_from_input"], set()).add(tcls)
+        toolchain = {}
+        for name in sorted(bounded):
+            exacts = [r for r in records if r["class"] in bounded[name] and r["kind"] in askable
+                      and r["strength"] == "exact" and vt(r.get("version"))]
+            runner = runner_input(name)
+            row = {"input": name, "runner": runner or None, "classes": sorted(bounded[name]),
+                   "recommended": None, "below_target": None, "from": []}
+            if not exacts:
+                row["why"] = ("no exact target version was discovered for %s; a floor or range is not "
+                              "a version to install" % "/".join(sorted(bounded[name])))
+            else:
+                top = max(vt(r["version"]) for r in exacts)
+                row["recommended"] = vs(top)
+                row["from"] = sorted(set(r.get("source") or "" for r in exacts if vt(r["version"]) == top))
+                rv = vt(runner)
+                if rv is None:
+                    row["why"] = "the runner input %s=%r is not a version" % (name, runner)
+                else:
+                    # at the runner's own precision: "3.12" installs the newest 3.12.x
+                    row["below_target"] = rv < top[:len(rv)]
+                    row["why"] = "the highest exact target is %s (%s)" % (vs(top), ", ".join(row["from"]))
+                    if row["below_target"]:
+                        print("::warning title=Runner toolchain below the target: %s::The caller's %s=%s is below the "
+                              "%s the code is written for (%s). The scanners bounded by it cannot read that code; "
+                              "set %s to %s (PIPELINE_ORDERING 1.4)." % (name, name, runner, vs(top),
+                                                                          ", ".join(row["from"]), name, vs(top)))
+            toolchain[name] = row
+
+        plan = {"advisory": True, "enforced_by": "nothing", "toolchain": toolchain,
+                "context": {"event": event, "depth": depth, "depth_basis": basis},
+                "survey": survey, "jobs": plan_rows, "decisions": decisions,
+                "depth_settings": depth_table.get(depth),
+                "declared_gaps": {"coverage_gaps": [g for g in os.environ.get("D_COVERAGE_GAPS", "").split(",") if g],
+                                  "version_gaps": gaps, "capability_gaps": cap_gaps},
+                "substitutions": substitutions}
+
+        summ("")
+        summ("#### Execution plan -- advisory, enforced by nothing")
+        summ("")
+        summ("Depth: **%s** (%s). Survey: %s." % (depth or "none", basis, survey or "not stated"))
+        summ("")
+        summ("| job | group | decision | reason | capability states |")
+        summ("|---|---|---|---|---|")
+        for row in plan_rows:
+            summ("| %s | %s | %s | %s | %s |" % (row["job"], row["group"], row["decision"], row["reason"],
+                                                 ", ".join(row["capability_states"]) or "-"))
+        summ("")
+        summ("> `forced` is a third decision: the job runs because applicability was not established, and")
+        summ("> its result is PARTIAL, never coverage. The decision never reads the capability answers; a")
+        summ("> VERSION_UNSUPPORTED scanner still runs and its silence is not coverage. Nothing enforces")
+        summ("> this plan yet -- docs/architecture/EXECUTION_PLANNING.md 5 is the change that would.")
+
+        out("plan", json.dumps(plan, separators=(",", ":"), sort_keys=True))
+        out("coverage", json.dumps(coverage, separators=(",", ":"), sort_keys=True))
+        out("capability", json.dumps(capability, separators=(",", ":"), sort_keys=True))
+        out("version_gaps", ",".join(gaps))
+        out("version_gap_count", str(len(gaps)))
+        out("version_undetermined_count", str(len(undetermined)))
+        out("selection", json.dumps(selection, separators=(",", ":"), sort_keys=True))
+        out("substitutions", ",".join(substitutions))
+        out("capability_gaps", ",".join(cap_gaps))
+        out("capability_gap_count", str(len(cap_gaps)))
+        out("capped_jobs", " ".join(capped_jobs))
+        out("proven_gap_jobs", " ".join(proven_gap_jobs))
+        out("not_selected_jobs", " ".join(not_selected_jobs))
+        out("fitness_notes", fitness_notes)
+        out("state", state)
+        print("resolve: %d version record(s); %d capability answer(s); %d declared gap(s); %d undetermined; "
+              "%d substitution(s); %d capability gap(s); state %s"
+              % (len(records), len(capability), len(gaps), len(undetermined), len(substitutions), len(cap_gaps), state))
+        PY
+
+    # ─────────────────────────────────────────────────────────────────────
+    # THE PLATFORM-PROBE VALUES GET CONSUMERS (PIPELINE_ORDERING §6.1-6.4)
+    # ─────────────────────────────────────────────────────────────────────
+    #
+    # `discover` establishes nine platform values once. Until this step, the report rendered
+    # two of them and nothing acted on any: "ghas_available is consumed by no job at all".
+    # Three consumers here, each the one the design asks for:
+    #
+    #   1  DEPENDABOT ALERTS READ AS A SCANNER. Free on every plan, public or private; the
+    #      alerts endpoint is asked and the answer lands in scanner_state's own words.
+    #      No SARIF exists behind it, so §4's validity rule cannot apply; the basis is recorded
+    #      beside the state rather than the state being quietly upgraded.
+    #   2  NOT_CONFIGURED AND UNAVAILABLE AGAINST A NAMED OWNER ROLE. A run cannot flip an
+    #      organisation setting from a read-scoped token; what it can do is say who can, and
+    #      what the action is. "Available and switched off" is a decision somebody made or
+    #      never made, and the row names the role that owns that decision.
+    #   3  THE CODEQL HALF. On a private repository without Code Security there is no CodeQL
+    #      and no publication to the Security tab at all. Interprocedural dataflow is a declared COVERAGE_GAP for
+    #      that tier -- never Semgrep presented as parity, because pattern matching says the
+    #      dangerous call is present and only taint tracking says attacker input reaches it.
+    #
+    # Every answer here is read as DATA from env (lower-case names: transport, not vocabulary).
+    # UNKNOWN stays UNKNOWN. The step cannot fail the job: an error is UNAVAILABLE with a reason.
+    - name: Consume the platform-probe values
+      id: platform
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        p_ghas_available: ${{ inputs.ghas-available }}
+        p_code_scanning: ${{ inputs.code-scanning }}
+        p_secret_scanning: ${{ inputs.secret-scanning }}
+        p_push_protection: ${{ inputs.push-protection }}
+        p_dependabot_alerts: ${{ inputs.dependabot-alerts }}
+        p_dependabot_updates: ${{ inputs.dependabot-updates }}
+        p_dependabot_config: ${{ inputs.dependabot-config }}
+        p_visibility: ${{ inputs.visibility }}
+        p_platform_source: ${{ inputs.platform-source }}
+      run: |
+        set -uo pipefail
+        trap 'echo "::error title=Platform consumers failed::The platform step itself failed; Dependabot is UNAVAILABLE and the dataflow capability is UNKNOWN for this run."; \
+              echo "dependabot_state=UNAVAILABLE" >> "$GITHUB_OUTPUT"; \
+              echo "dependabot_open_alerts=" >> "$GITHUB_OUTPUT"; \
+              echo "dependabot_basis=the platform step failed before an answer was established" >> "$GITHUB_OUTPUT"; \
+              echo "dependabot_owner_role=workflow maintainer" >> "$GITHUB_OUTPUT"; \
+              echo "dataflow_capability=UNKNOWN" >> "$GITHUB_OUTPUT"; \
+              echo "platform_owners=[]" >> "$GITHUB_OUTPUT"; \
+              exit 0' ERR
+
+        owners=""
+        {
+          echo ""
+          echo "#### Platform-owned states, each with an owner role and an action"
+          echo ""
+          echo "| capability | state | owner role | action |"
+          echo "|---|---|---|---|"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        # owner CAPABILITY STATE ROLE ACTION -- one JSON object and one summary row. A role,
+        # never a person: the kit is neutral and the person changes; the role does not.
+        owner() {
+          owners="${owners}${owners:+,}{\"capability\":\"$1\",\"state\":\"$2\",\"owner_role\":\"$3\",\"action\":\"$4\"}"
+          echo "| $1 | $2 | $3 | $4 |" >> "$GITHUB_STEP_SUMMARY"
+        }
+
+        # Which role owns which state. UNAVAILABLE is licensing, NOT_CONFIGURED is a repository
+        # setting, UNKNOWN is the token this workflow runs with.
+        classify() {
+          _cap="$1"; _state="$2"; _enable="$3"
+          case "$_state" in
+            UNAVAILABLE|false)
+              owner "$_cap" "UNAVAILABLE" "organisation owner (licensing)" "license GitHub Code Security or Secret Protection for this repository, or make it public (PO 6.2)" ;;
+            NOT_CONFIGURED)
+              owner "$_cap" "NOT_CONFIGURED" "repository administrator" "$_enable" ;;
+            UNKNOWN|unknown)
+              owner "$_cap" "UNKNOWN" "workflow maintainer (token scope)" "run with a token that can read security_and_analysis, or record UNKNOWN as a declared limit; never read it as absent" ;;
+            *) ;;
+          esac
+        }
+        classify ghas_available   "$p_ghas_available"   "-"
+        classify code_scanning    "$p_code_scanning"    "enable code scanning in the repository's security settings"
+        classify secret_scanning  "$p_secret_scanning"  "enable secret scanning in the repository's security settings"
+        classify push_protection  "$p_push_protection"  "enable push protection in the repository's security settings"
+        classify dependabot_alerts  "$p_dependabot_alerts"  "enable Dependabot alerts in the repository's security settings (free on every plan)"
+        classify dependabot_updates "$p_dependabot_updates" "enable Dependabot security updates in the repository's security settings"
+        if [ "$p_dependabot_config" = "ABSENT" ]; then
+          owner dependabot_config ABSENT "repository maintainer" "add .github/dependabot.yml so Dependabot version updates run (free on every plan)"
+        fi
+
+        # ── 1  Dependabot alerts, read as a scanner ──────────────────────────────────────
+        dep_state=UNAVAILABLE; dep_n=""; dep_basis=""; dep_role="-"
+        case "$p_dependabot_alerts" in
+          NOT_CONFIGURED)
+            dep_role="repository administrator"
+            dep_basis="platform NOT_CONFIGURED: Dependabot alerts are available and switched off, so nothing was asked. Not a scanner defect and not clean." ;;
+          UNAVAILABLE)
+            dep_role="organisation owner (licensing)"
+            dep_basis="platform UNAVAILABLE: Dependabot alerts are not available to this repository." ;;
+          *)
+            # ENABLED, or unknown: ask. Asking is how UNKNOWN becomes an answer or an honest refusal.
+            # EVERY PAGE (ledger L25). The first page alone stopped counting at 100 open alerts.
+            # --paginate prints one JSON array per page, concatenated; jq -s sums them, and any
+            # page that is not an array makes the whole answer uncountable, never a smaller count.
+            if body=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/dependabot/alerts?state=open&per_page=100" 2>&1); then
+              if dep_n=$(printf '%s' "$body" | jq -s -r 'if length > 0 and all(.[]; type=="array") then (map(length) | add) else empty end' 2>/dev/null) && [ -n "$dep_n" ]; then
+                if [ "$dep_n" -gt 0 ]; then dep_state=FINDINGS; else dep_state=PASS; fi
+                dep_basis="GET /repos/{owner}/{repo}/dependabot/alerts?state=open, every page (100 per page). There is no SARIF behind this answer: its validity rests on the API having answered, which nothing external corroborates (PO 6.4). Same word as every scanner; weaker basis, recorded here."
+              else
+                dep_state=COLLECTION_FAILED; dep_n=""
+                dep_basis="the alerts endpoint answered and the body could not be counted. An uncounted answer is not zero."
+              fi
+            else
+              case "$body" in
+                *isabled*)
+                  dep_role="repository administrator"
+                  dep_basis="the alerts endpoint reports Dependabot alerts disabled for this repository: platform NOT_CONFIGURED, learned by asking. ${body:0:140}"
+                  owner dependabot_alerts NOT_CONFIGURED "repository administrator" "enable Dependabot alerts in the repository's security settings (free on every plan)" ;;
+                *)
+                  dep_basis="the alerts endpoint refused, so no alert set was read. Never PASS: ${body:0:160}" ;;
+              esac
+            fi ;;
+        esac
+
+        # ── 3  The CodeQL half: interprocedural dataflow on this tier ───────────────────
+        # UNAVAILABLE IS A PUBLICATION ANSWER, NOT A DATAFLOW ONE (KNOWN_DEFECTS D-10): run
+        # 38817782084 read UNAVAILABLE and CodeQL analysed anyway; only upload-sarif was refused.
+        # So the pre-flight cannot say dataflow is missing -- the CodeQL job's own evidence does.
+        case "$p_code_scanning" in
+          ENABLED)     dataflow=ordinary ;;
+          *)           dataflow=UNKNOWN ;;
+        esac
+        if [ "$p_code_scanning" = "UNAVAILABLE" ]; then
+          echo "::warning title=Code scanning UNAVAILABLE: publication refused::Code scanning is UNAVAILABLE to this repository (visibility=${p_visibility}, established via ${p_platform_source}), so no publication to the Security tab is accepted. CodeQL's analysis may still run and its SARIF is retained (D-10); whether interprocedural dataflow was established is the CodeQL job's own evidence. This is a PLATFORM action (organisation owner, licensing), never a developer one, and substitution is not parity."
+        fi
+
+        {
+          echo ""
+          echo "| Dependabot alerts (as a scanner) | $dep_state | ${dep_role} | ${dep_n:-not counted} open; $dep_basis |"
+          echo ""
+          echo "**Interprocedural dataflow on this tier: $dataflow.**"
+          if [ "$p_code_scanning" = "UNAVAILABLE" ]; then
+            echo "Code scanning is UNAVAILABLE here: publication to the Security tab is refused, and CodeQL's analysis may still run with its SARIF retained (D-10), so its own job says whether dataflow was established. Semgrep finds the sink; CodeQL follows the flow. Substitution is not parity. Owner: organisation owner (licensing)."
+          elif [ "$dataflow" = "UNKNOWN" ]; then
+            echo "The token could not establish whether code scanning is available. UNKNOWN is not absent and not present; the CodeQL job reports its own outcome."
+          fi
+          echo ""
+          echo "UNAVAILABLE, NOT_CONFIGURED and UNKNOWN each have an owner above. Nobody's action is listed as somebody's, and no one's name appears: a role outlives the person in it."
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        {
+          echo "dependabot_state=$dep_state"
+          echo "dependabot_open_alerts=$dep_n"
+          echo "dependabot_basis=$dep_basis"
+          echo "dependabot_owner_role=$dep_role"
+          echo "dataflow_capability=$dataflow"
+          echo "platform_owners=[$owners]"
+        } >> "$GITHUB_OUTPUT"
+        echo "platform consumers: dependabot=$dep_state (${dep_n:-n/a} open) dataflow=$dataflow owners=$(printf '%s' "$owners" | grep -o '"capability"' | wc -l)"

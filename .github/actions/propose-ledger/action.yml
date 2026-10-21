@@ -1,0 +1,191 @@
+name: Propose the baseline ledger change
+description: >-
+  Runs scripts/propose_ledger.py -- the ONLY write authority over the baseline ledger -- over the
+  findings file the report published, and turns its payload into files the calling job can commit
+  and open a pull request from. It writes nothing to the repository, makes no commit and pushes
+  nothing: the job does that, to its own proposal branch only, and tests/prove_propose_ledger_job_scope.py
+  holds that line. Reached through `$/`, so the script runs beside the identity modules it imports
+  (C1, KDEC-002). ETFB section 5.4; SINGLE_PIPELINE_TARGET.md sections 6.1 and 9.3; L45.
+
+inputs:
+  findings:
+    description: The findings file the report wrote (L52), downloaded from the evidence artifact.
+    required: true
+  environment:
+    description: >-
+      The (repository, environment) cell the ledger is keyed by. Empty refuses: nothing can be
+      admitted to an environment nobody named.
+    required: false
+    default: ''
+  default-branch:
+    description: The repository's default branch. The ledger is read from, and proposed against, its tip.
+    required: true
+  run-id:
+    description: This run's id, recorded as provenance on every admitted entry.
+    required: true
+  commit:
+    description: The commit this run observed, recorded as provenance.
+    required: true
+  observed-at-source:
+    description: >-
+      The registered observation-time source for `observed_at`. SIDECAR by default: the time is
+      written by the collecting process at the moment it ran, which is this job's clock on the
+      run that observed the findings. Only a claimable source lets a NEW entry carry an
+      established age; UNKNOWN never does.
+    required: false
+    default: SIDECAR
+  establish-approver-role:
+    description: >-
+      Set ONLY to establish a baseline where none exists, naming the approver ROLE. Absent, a
+      missing ledger refuses: a baseline nobody approved is not a baseline (ETFB section 10).
+    required: false
+    default: ''
+  ledger-path:
+    description: Where the ledger lives on the default branch.
+    required: false
+    default: .security/finding-baseline.json
+  ticket-ledger-proposal:
+    description: >-
+      The ticket ledger the ticket-reconcile job proposed (its ticket-ledger-proposal.json), or
+      empty. A changed one is carried in the SAME pull request (T-20: one write path); a missing
+      file proposes nothing for tickets and says so; a malformed one refuses.
+    required: false
+    default: ''
+  ticket-ledger-path:
+    description: Where the ticket ledger lives on the default branch (under .security/).
+    required: false
+    default: .security/ticket-ledger.json
+  reconciliation-window-days:
+    description: >-
+      The bounded window a newly opened scanner-generation reconciliation gets (L46, ETFB 5.5).
+      An owner number (O-06); 30 is the placeholder until it is set.
+    required: false
+    default: '30'
+
+outputs:
+  status:
+    description: proposed | unchanged | refused. Only `proposed` carries a branch and files.
+    value: ${{ steps.p.outputs.status }}
+  why:
+    description: The reason, when refused or unchanged.
+    value: ${{ steps.p.outputs.why }}
+  branch:
+    description: The proposal branch name (baseline-proposal/<environment>/<run id>), when proposed.
+    value: ${{ steps.p.outputs.branch }}
+  base:
+    description: The branch the pull request targets -- the default branch.
+    value: ${{ steps.p.outputs.base }}
+  path:
+    description: The ledger path inside the repository.
+    value: ${{ steps.p.outputs.path }}
+  title:
+    description: The pull-request title.
+    value: ${{ steps.p.outputs.title }}
+  tree:
+    description: >-
+      A directory holding every proposed file at its repository path (the ledger, and the lineage
+      ledger plus its head anchor when a finding moved), all under .security/, when proposed.
+    value: ${{ steps.p.outputs.tree }}
+  body-file:
+    description: A file holding the pull-request body, when proposed.
+    value: ${{ steps.p.outputs.body-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Produce the pull-request payload
+      id: p
+      shell: bash
+      env:
+        # Every value arrives as data, never as script text (the rule, not a case-by-case call).
+        FINDINGS: ${{ inputs.findings }}
+        ENVIRONMENT: ${{ inputs.environment }}
+        DEFAULT_BRANCH: ${{ inputs.default-branch }}
+        RUN_ID: ${{ inputs.run-id }}
+        COMMIT: ${{ inputs.commit }}
+        OBSERVED_AT_SOURCE: ${{ inputs.observed-at-source }}
+        ESTABLISH_APPROVER_ROLE: ${{ inputs.establish-approver-role }}
+        LEDGER_PATH: ${{ inputs.ledger-path }}
+        TICKET_PROPOSAL: ${{ inputs.ticket-ledger-proposal }}
+        TICKET_LEDGER_PATH: ${{ inputs.ticket-ledger-path }}
+        RECONCILIATION_WINDOW_DAYS: ${{ inputs.reconciliation-window-days }}
+        EVENT_NAME: ${{ github.event_name }}
+        REF: ${{ github.ref }}
+      run: |
+        set -uo pipefail
+        kit_root="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)"
+        tool="${kit_root}/scripts/propose_ledger.py"
+        if [ ! -s "$tool" ]; then
+          echo "::error title=propose_ledger absent::${tool} is not in the kit delivered by \$/."
+          exit 1
+        fi
+        # NO FINDINGS FILE IS NOT "NO FINDINGS". The report writes it before any fault exit, so
+        # its absence means the report never got that far, and a proposal built on nothing would
+        # mark every ledger entry POTENTIALLY_ABSENT on the strength of a run that saw nothing.
+        if [ ! -s "$FINDINGS" ]; then
+          echo "::error title=No findings file::${FINDINGS} is absent or empty. Nothing to propose from."
+          exit 1
+        fi
+        # The ledger is read from the default branch's TIP, by ref. Never from this working tree.
+        # suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE -- an unreachable ref is reported by
+        # propose_ledger.py itself as a refusal with the reason in the payload.
+        git fetch --no-tags origin "$DEFAULT_BRANCH" >/dev/null 2>&1 || true
+
+        out="${RUNNER_TEMP}/proposal.json"
+        tree="${RUNNER_TEMP}/proposal-tree"
+        mkdir -p "$tree"
+        observed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        rc=0
+        python3 "$tool" --repo . --path "$LEDGER_PATH" --tree-out "$tree" \
+          --default-ref "origin/${DEFAULT_BRANCH}" --default-branch "$DEFAULT_BRANCH" \
+          --event "$EVENT_NAME" --ref "$REF" --environment "$ENVIRONMENT" \
+          --observations "$FINDINGS" --run-id "$RUN_ID" --commit "$COMMIT" \
+          --observed-at "$observed_at" --observed-at-source "$OBSERVED_AT_SOURCE" \
+          ${ESTABLISH_APPROVER_ROLE:+--establish-approver-role "$ESTABLISH_APPROVER_ROLE"} \
+          ${TICKET_PROPOSAL:+--ticket-ledger-proposal "$TICKET_PROPOSAL"} \
+          --ticket-ledger-path "$TICKET_LEDGER_PATH" \
+          --reconciliation-window-days "$RECONCILIATION_WINDOW_DAYS" \
+          --out "$out" || rc=$?
+        # 1 is a REFUSAL with its reason in the payload -- a legitimate outcome this step reports.
+        # 2 is usage or an unreadable observations file: nothing was decided, so this fails.
+        if [ "$rc" -eq 2 ] || [ ! -s "$out" ]; then
+          echo "::error title=propose-ledger could not run::exit ${rc}; no payload was produced."
+          exit 2
+        fi
+        status="$(jq -r '.status // "refused"' "$out")"
+        why="$(jq -r '.why // ""' "$out" | head -c 2000 | tr '\n' ' ')"
+        echo "status=${status}" >> "$GITHUB_OUTPUT"
+        echo "why=${why}" >> "$GITHUB_OUTPUT"
+        {
+          echo "### Baseline ledger proposal"
+          echo ""
+          echo "| | |"
+          echo "|---|---|"
+          echo "| status | \`${status}\` |"
+          echo "| environment | ${ENVIRONMENT:-_(none named)_} |"
+          echo "| ledger | \`${LEDGER_PATH}\` on \`${DEFAULT_BRANCH}\` |"
+        } >> "$GITHUB_STEP_SUMMARY"
+        if [ "$status" != "proposed" ]; then
+          echo "| reason | ${why} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "${status}: ${why}"
+          exit 0
+        fi
+        jq -r '.body' "$out" > "${RUNNER_TEMP}/proposal-body.md"
+        {
+          echo "branch=$(jq -r '.branch' "$out")"
+          echo "base=$(jq -r '.base' "$out")"
+          echo "path=$(jq -r '.path' "$out")"
+          echo "title=$(jq -r '.title' "$out" | tr '\n' ' ')"
+          echo "tree=${tree}"
+          echo "body-file=${RUNNER_TEMP}/proposal-body.md"
+        } >> "$GITHUB_OUTPUT"
+        {
+          echo "| branch | \`$(jq -r '.branch' "$out")\` |"
+          echo "| admitted / moved | $(jq -r '.delta.admitted | length' "$out") / $(jq -r '.delta.moved | length' "$out") |"
+          echo "| files | $(jq -r '[.files[].path] | join(", ")' "$out") |"
+          echo "| ticket ledger | $(jq -r '.delta.ticket_ledger // "not supplied"' "$out") |"
+          echo "| held: scanner generation not reconciled | $(jq -r '[.delta.held_generation // {} | .[] | length] | add // 0' "$out") |"
+          echo "| potentially absent | $(jq -r '.delta.potentially_absent | length' "$out") |"
+          echo "| not admitted (untrusted) | $(jq -r '.delta.evidence_untrusted | length' "$out") |"
+        } >> "$GITHUB_STEP_SUMMARY"
+        echo "proposed: $(jq -r '.title' "$out")"

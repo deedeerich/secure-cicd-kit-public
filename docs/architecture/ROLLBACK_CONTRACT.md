@@ -1,8 +1,19 @@
 # Rollback contract — blocking requirement for the deploy workflows
 
 ```
-Status: REQUIREMENT, not implemented. The deploy workflows MUST NOT be promoted
-beyond `requires-integration-environment` until this contract is satisfied.
+Status (2026-10-16, trunk 3830edb): IMPLEMENTED in both deploy reusables and PROVEN LIVE on a
+sandbox Azure subscription, through live-deploy-acceptance.yml calling them as a consumer does
+(tests/reconcile_validation.py, `deploy-containerapp` and `deploy-appservice`, both `observed`):
+  verified rollback   Container Apps 38855747496, 38858033863; App Service 38878189985;
+                      App Service slot 38912546778 (no swap, production untouched)
+  second actor        Container Apps 38855929525 (deferred to the later release, ROLLBACK_PARTIAL);
+                      App Service 38886279650 (REVERSAL_REFUSED_CONFLICT, ROLLBACK_PARTIAL)
+  refusal / healthy   38853176286 (BLOCKED verdict, no login); 38853184615 (prod, no slot, refused);
+                      38855599716, 38857259257, 38857271571, 38912063363 (healthy; slot swapped)
+NOT live (stub-proven only, tests/prove_deploy_outcome.py): EMPTY and UNKNOWN previous state,
+PARTIAL_APPLY / STATUS_UNTRUSTED (matrix B and D), a capability refusal at a production tier,
+provenance tags written, a post-swap production failure. `requires-integration-environment` is
+empty: the three surfaces left it on the runs above.
 ```
 
 ## The rule
@@ -69,6 +80,16 @@ ROLLBACK_REQUIRES_HUMAN_DECISION
 
 An unknown must not resolve toward destruction because destruction is the easier branch to code.
 This is typed absence applied where it costs the most.
+
+**This rule is stated about the RUN, and it also holds PER OBJECT.** A run can have a perfectly
+established previous state and still meet, inside its own change manifest, an object whose current
+ownership or version it cannot read — because something else modified that object between the
+deployment and the reversal. *"I created this"* is a true statement about the past and is not
+sufficient authority to delete in the present. The per-object precondition model, its disposition
+table and the ownership-stamp mechanism are in
+`docs/architecture/DEPLOYMENT_CONTRACT_RECONCILIATION.md` §8, with the vocabulary registered in
+`assurance-taxonomy.yaml` under `release_ownership`, `reversal_conflict` and
+`reversal_disposition`.
 
 ## Reversible ≠ safe to reverse
 
@@ -196,18 +217,61 @@ to know it exists.
 Until then, treat every deploy workflow in this kit as a **candidate implementation**, not a
 recommendation.
 
+> **Status of gate 2 (2026-10-16).** `DEPLOYMENT_CONTRACT_RECONCILIATION.md` did the
+> difference-by-difference comparison (2026-09-18) and says it closes this gate; whether that claim
+> stands is an open owner decision (completion ledger O-09, recommended: yes for the comparison,
+> with promotion — DCR gap 11 — still open). Gate 1 is implemented and proven live (header).
+
 ## Promotion gate
 
-`deploy-appservice`, `deploy-containerapp` and `image-push` stay at
-`requires-integration-environment` until:
+`deploy-appservice`, `deploy-containerapp` and `image-push` were held at
+`requires-integration-environment` until the boxes below held. They left it on the live runs in the
+header (2026-10-15/16); the registry now records all three `observed`.
 
-- [ ] Pre-change snapshot captured for the declared mutation surface
-- [ ] Change manifest records created / updated / deleted / redirected per run
-- [ ] Rollback scoped to the change manifest — never to a container scope
-- [ ] `ROLLBACK_REQUIRES_HUMAN_DECISION` emitted when pre-state is unknown
-- [ ] Live-state verification after rollback, not command exit status
-- [ ] Capability-specific adapters rather than one generic destroy
-- [ ] Harness cleanup path kept out of the reusable workflow
+A tick below means **proven locally against a stub cloud** (`tests/_fake_az.py`, the whole job
+run step by step by `tests/_workflow_runner.py`), in the proof named, and — where the box names it —
+observed live. Live coverage per box: the snapshot, the change manifest, manifest-scoped reversal,
+live-state verification and second-actor refusal are observed live; EMPTY/UNKNOWN previous state and
+PARTIAL_APPLY / STATUS_UNTRUSTED are stub-only (DCR §7.8 matrix B and D).
+
+- [x] Pre-change snapshot captured for the declared mutation surface — `deploy_contract.py
+      capture`; `tests/prove_deploy_outcome.py` gap4/gap6. *Limit:* the surface is the image,
+      revisions, traffic, mode and tags; app settings, ingress and identity are not captured
+      because the run does not change them.
+- [x] Change manifest records created / updated / deleted / redirected per run — written
+      `planned` before the first mutation; gap6. *No run deletes anything, so no DELETED entry
+      exists to record.*
+- [x] Rollback scoped to the change manifest — never to a container scope — gap5, gap7.
+- [x] Per-object preconditions evaluated against LIVE state before any removal — every entry
+      through `scripts/derive_reversal_disposition.py` (`tests/prove_reversal_disposition.py`,
+      exhaustive sweep); second-actor dependency withheld in gap5. *Limit:* P3/P5/P6 are adapter
+      declarations or narrow live reads (traffic labels, later stamped revisions); no release
+      graph exists.
+- [ ] `ROLLBACK_REQUIRES_HUMAN_DECISION` emitted when pre-state is unknown — NOT ticked. Unknown
+      pre-state now refuses BEFORE any mutation (`previous_state` UNKNOWN -> `DEPLOY_REFUSED`), and
+      a mutation that loses visibility reports `STATUS_UNTRUSTED` with an escalation contract; the
+      `rollback_state` value itself is not emitted anywhere.
+- [x] Live-state verification after rollback, not command exit status — gap7, including an
+      apply-then-error case decided by live state. An entry the reversal did not act on (refused,
+      withheld, deferred, mechanism not valid) makes the run `ROLLBACK_PARTIAL` whatever live
+      state happens to equal — live run 38879879589 reported a REFUSED reversal as verified
+      because a second actor's image equalled the prior one (`prove_deploy_outcome.py`
+      `live_appservice_refused_reversal_is_not_verified`). *Limit:* on App Service the comparison
+      reads the CONFIGURED image; the running container is reported separately, from the
+      platform's container start record, and is not part of the verdict.
+- [x] Capability-specific adapters rather than one generic destroy — Container Apps (traffic,
+      revision deactivation, refused in single-revision mode) and App Service (swap back, image
+      restore); gap5, gap7, gap9.
+- [x] Harness cleanup path kept out of the reusable workflow — `tests/harness/teardown_scope.py`,
+      `tests/prove_harness_teardown.py` (structural check included).
+
+`image-push` is outside this list's proof: DCR gap 10 (push as a point of no return) is in
+`reusable-build-docker.yml`, which this work did not change. It has since been proven on its own
+terms against a real local registry (`tests/prove_build_push_round_trip.py`, 2026-10-15): the
+capability step reads a held tag as the rollback point, an unreachable registry refuses before the
+push, and the change manifest records the prior digest. The live half followed: an ACR behind the
+test identity's OIDC login, runs 38857011286, 38857017667, 38857024014 (build once, gate before
+push, `REGISTRY_IDENTITY_PROVEN`, digests confirmed independently and then deployed).
 
 ## Timeouts are a cancellation vector — and mutating jobs are deliberately unbounded
 

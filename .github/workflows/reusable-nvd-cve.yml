@@ -63,10 +63,13 @@ on:
         required: false
         default: "${{ github.repository }}"
       fail_on_cvss:
-        description: "Fail the job when a finding at or above this CVSS score exists. 11 = never fail."
+        description: >-
+          Fail the job when a finding at or above this CVSS score exists. Ships at 9.0 (owner
+          ruling O-12: an unreachable default is a decorative gate). Above 10 never fails, and
+          the posture record calls any value above 9.0 a softened gate.
         type: number
         required: false
-        default: 11
+        default: 9.0
       trivy_severities:
         description: "Trivy severities to report."
         type: string
@@ -109,6 +112,13 @@ on:
         # So the version is a live dependency of the scan working at all, not a preference. Upstream
         # latest at time of change: v12.1.0.
         default: "12.1.0"
+      dependency_check_sha256:
+        description: >-
+          SHA-256 of dependency-check-<version>-release.zip. The download is refused unless it
+          matches. The default is the digest of the default version; change both together.
+        type: string
+        required: false
+        default: "0e5ba6ae58e753d5841048c6c8e495dbc4c7a4ea921a2b14daeac65195700532"
       python_version:
         description: "Python version used for the scan runner environment."
         type: string
@@ -119,6 +129,42 @@ on:
         type: number
         required: false
         default: 30
+      # ── GOVERNANCE OF WEAKENINGS ────────────────────────────────────────────────────────
+      # A WEAKENING IS A GOVERNED EXCEPTION, NOT A BOOLEAN PREFERENCE. These four inputs are
+      # where the exception is recorded. They are optional, so no existing caller breaks; a
+      # caller who supplies none gets identical behaviour PLUS a record saying the weakening
+      # in force is unattributed, which is the truth and was previously invisible.
+      weakening_reason:
+        description: >-
+          Why a control on this invocation is weaker than baseline. Free text. Empty means the
+          record says WEAKENING_UNATTRIBUTED and routing_result becomes DECISION_REQUIRED —
+          not a failure, and not a pass: a decision nobody has made yet.
+        type: string
+        required: false
+        default: ""
+      weakening_authority:
+        description: >-
+          WHO decided. A role, a team, a named approver. A reason without an authority is an
+          explanation, not a decision, and both are required before a weakening is attributed.
+        type: string
+        required: false
+        default: ""
+      weakening_exception_ref:
+        description: >-
+          Where the exception or deferral is recorded — a ticket, a disposition id, a register
+          entry. Reported when present, and its ABSENCE is reported too: an exception nobody
+          can find is an exception nobody can review or expire.
+        type: string
+        required: false
+        default: ""
+      weakening_expires:
+        description: >-
+          ISO date (YYYY-MM-DD) on which the weakening lapses. Empty means no expiry was set,
+          which is reported. A past date routes to DECISION_REQUIRED — silence must never renew
+          a weakening, the same mechanism disposition_type and validation_debt_state already use.
+        type: string
+        required: false
+        default: ""
     outputs:
       # THE SAME TAXONOMY AS reusable-security. NVD has different scanner details; it does NOT get
       # a different assurance vocabulary. A caller must not have to learn a second dialect to find
@@ -144,6 +190,50 @@ on:
       cache_state:
         description: "RESTORED_COMPLETE | RESTORED_PARTIAL | COLD — why this run cost what it cost."
         value: ${{ jobs.nvd-cve-scan.outputs.cache_state }}
+      # ── THE CONTROL POSTURE RECORD ──────────────────────────────────────────────────────
+      # WHAT THIS INVOCATION SHOULD HAVE RUN, WHAT IT ACTUALLY RAN, AND WHAT WAS WEAKENED.
+      # Without these a caller who softens a control is reported identically to one that passed
+      # honestly — the collapse this kit refuses everywhere else, performed at its own boundary.
+      # Every value is a term from assurance-taxonomy.yaml :: control_weakening / routing_result.
+      routing_result:
+        description: >-
+          PROCEED | PROCEED_WITH_ADVISORY | DECISION_REQUIRED | BLOCKED | EVIDENCE_UNTRUSTED.
+          What should happen next. EVIDENCE_UNTRUSTED is the one that matters: a scanner that
+          could not be acquired is not a decision someone owes and is emphatically not clean.
+        value: ${{ jobs.nvd-cve-scan.outputs.routing_result }}
+      controls_required:
+        description: "Comma list of the controls this invocation should have run."
+        value: ${{ jobs.nvd-cve-scan.outputs.controls_required }}
+      controls_executed:
+        description: "Comma list of the controls that actually ran. Never includes a skipped one."
+        value: ${{ jobs.nvd-cve-scan.outputs.controls_executed }}
+      controls_unavailable:
+        description: >-
+          Controls whose tool could not be acquired or whose evidence could not be collected.
+          NOT THE SAME AS CLEAN, and not the same as a decision being owed.
+        value: ${{ jobs.nvd-cve-scan.outputs.controls_unavailable }}
+      controls_reduced:
+        description: "Controls that ran with severity lowered, depth reduced or scope narrowed."
+        value: ${{ jobs.nvd-cve-scan.outputs.controls_reduced }}
+      controls_skipped:
+        description: "Controls that were not run at all. Nothing looked, so nothing was established."
+        value: ${{ jobs.nvd-cve-scan.outputs.controls_skipped }}
+      weakenings:
+        description: >-
+          JSON array, one object per declared input that governs a control: input, class,
+          control, baseline, value and state. The enumeration is TOTAL over the workflow's
+          inputs — a hand-written list is a list that goes stale.
+        value: ${{ jobs.nvd-cve-scan.outputs.weakenings }}
+      weakening_attribution:
+        description: >-
+          WEAKENING_AT_BASELINE | WEAKENING_ATTRIBUTED | WEAKENING_UNATTRIBUTED |
+          WEAKENING_EXCEPTION_EXPIRED — whether a person stands behind the weakening.
+        value: ${{ jobs.nvd-cve-scan.outputs.weakening_attribution }}
+      weakening_record:
+        description: >-
+          Reason, authority, exception reference and expiry as one compact JSON object, so a
+          consumer gets the decision and its provenance together rather than four loose strings.
+        value: ${{ jobs.nvd-cve-scan.outputs.weakening_record }}
     secrets:
       NVD_API_KEY:
         description: "NVD API key. Strongly recommended — without it, DB updates are heavily rate limited."
@@ -158,12 +248,21 @@ jobs:
   nvd-cve-scan:
     name: NVD CVE scan
     outputs:
-      assurance_state:    ${{ steps.summary.outputs.assurance_state }}
-      enforcement_state:  ${{ steps.summary.outputs.enforcement_state }}
-      undetermined:       ${{ steps.summary.outputs.undetermined }}
-      evidence_artifact:  ${{ steps.summary.outputs.evidence_artifact }}
+      assurance_state: ${{ steps.summary.outputs.assurance_state }}
+      enforcement_state: ${{ steps.summary.outputs.enforcement_state }}
+      undetermined: ${{ steps.summary.outputs.undetermined }}
+      evidence_artifact: ${{ steps.summary.outputs.evidence_artifact }}
       nvd_database_state: ${{ steps.summary.outputs.nvd_database_state }}
-      cache_state:        ${{ steps.summary.outputs.cache_state }}
+      cache_state: ${{ steps.summary.outputs.cache_state }}
+      routing_result: ${{ steps.posture.outputs.routing_result }}
+      controls_required: ${{ steps.posture.outputs.controls_required }}
+      controls_executed: ${{ steps.posture.outputs.controls_executed }}
+      controls_unavailable: ${{ steps.posture.outputs.controls_unavailable }}
+      controls_reduced: ${{ steps.posture.outputs.controls_reduced }}
+      controls_skipped: ${{ steps.posture.outputs.controls_skipped }}
+      weakenings: ${{ steps.posture.outputs.weakenings }}
+      weakening_attribution: ${{ steps.posture.outputs.weakening_attribution }}
+      weakening_record: ${{ steps.posture.outputs.weakening_record }}
     # The environment is what makes NVD_API_KEY resolvable at all -- see the input's note.
     environment: ${{ inputs.github_environment }}
     runs-on: ubuntu-latest
@@ -178,6 +277,10 @@ jobs:
     # sibling jobs would have killed every legitimate cold run. Sized from DOCUMENTATION, not
     # evidence; re-size once a real run produces a number.
     timeout-minutes: 60
+    env:
+      # Every step writes its evidence here, and "Upload scan artifacts" collects exactly this
+      # directory. Referenced as $OUTDIR and defined NOWHERE until ledger L90.
+      OUTDIR: nvd-scan-results
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -193,6 +296,7 @@ jobs:
       # ---------------------------------------------------------------- Trivy
 
       - name: Trivy filesystem scan (SARIF)
+        id: trivy_fs
         if: inputs.enable_trivy
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -274,6 +378,9 @@ jobs:
       # runner ships a JRE and unzip. The cheapest fix for a hang is not to make the hanging call.
       - name: Install OWASP Dependency-Check
         if: inputs.enable_dependency_check
+        env:
+          DC_VERSION: ${{ inputs.dependency_check_version }}   # caller input: data, not script text
+          DC_SHA256: ${{ inputs.dependency_check_sha256 }}
         run: |
           set -euo pipefail
 
@@ -336,16 +443,11 @@ jobs:
           # the toolchain is fit BY CONSTRUCTION -- JVM selection, classpath and all. This is the
           # same tool-is-not-a-proxy-for-the-tool rule that caught a probe proving Dependency-
           # Check the binary while the workflow around it had never run.
-          echo "JAVA_HOME=${JAVA_HOME:-<unset -- dependency-check will resolve java from PATH>}"
-          if ! dc_ver="$(/opt/dependency-check/bin/dependency-check.sh --version 2>&1)"; then
-            echo "::error title=DEPENDENCY_ACQUISITION_UNAVAILABLE::dependency-check.sh will not run."
-            echo "Output was: $dc_ver"
-            echo "The scanner never ran. This is NOT evidence of no vulnerabilities."
-            exit 1
-          fi
-          echo "  dependency-check: $dc_ver"
-
-          VER="${{ inputs.dependency_check_version }}"
+          #
+          # ORDER (ledger L91): the tool must EXIST before it can be run. This check used to sit
+          # here, before the download below, so on every fresh runner it ran a binary that was not
+          # there yet and refused acquisition every time. It now runs after the unzip.
+          VER="$DC_VERSION"
           URL="https://github.com/jeremylong/DependencyCheck/releases/download/v${VER}/dependency-check-${VER}-release.zip"
           # Bound each attempt AND the total. A 429/5xx from the release host is transient; an
           # unreachable host is a classification to report, never a reason to wait out the job bound.
@@ -360,8 +462,25 @@ jobs:
             echo "The scanner never ran. This is NOT evidence of no vulnerabilities."
             exit 1
           fi
+          # VERIFIED BYTES (ledger L84). The digest is the caller's dependency_check_sha256 (default:
+          # the digest of the default version). A version bumped without its digest is refused,
+          # not installed unverified.
+          if ! echo "$DC_SHA256  dependency-check-${VER}-release.zip" | sha256sum -c -; then
+            echo "::error title=DEPENDENCY_ACQUISITION_UNAVAILABLE::dependency-check ${VER} does not match dependency_check_sha256."
+            echo "The scanner never ran. This is NOT evidence of no vulnerabilities."
+            exit 1
+          fi
           unzip -q "dependency-check-${VER}-release.zip" -d /opt/
           sudo chmod +x /opt/dependency-check/bin/dependency-check.sh
+
+          echo "JAVA_HOME=${JAVA_HOME:-<unset -- dependency-check will resolve java from PATH>}"
+          if ! dc_ver="$(/opt/dependency-check/bin/dependency-check.sh --version 2>&1)"; then
+            echo "::error title=DEPENDENCY_ACQUISITION_UNAVAILABLE::dependency-check.sh will not run."
+            echo "Output was: $dc_ver"
+            echo "The scanner never ran. This is NOT evidence of no vulnerabilities."
+            exit 1
+          fi
+          echo "  dependency-check: $dc_ver"
           echo "/opt/dependency-check/bin" >> "$GITHUB_PATH"
 
       - name: Warn when no NVD API key is configured
@@ -391,7 +510,14 @@ jobs:
           # Update failure is not silently swallowed: it downgrades the run to
           # report-only and says so, rather than scanning against a stale DB
           # while implying currency.
-          if ! /opt/dependency-check/bin/dependency-check.sh "${ARGS[@]}"; then
+          #
+          # `complete` is the ONLY signal the cache saves may read. This step swallows its own
+          # failure on purpose (the scan still runs, marked stale), so its OUTCOME is success either
+          # way -- and the good-cache save keyed on that outcome stored a STALE database under the
+          # key every later run prefers (ledger L91: a poisoned good cache).
+          if /opt/dependency-check/bin/dependency-check.sh "${ARGS[@]}"; then
+            echo "complete=true" >> "$GITHUB_OUTPUT"
+          else
             echo "::warning title=NVD update failed::Scanning against whatever cached NVD data \
             exists. Results may be STALE — do not treat an empty result as 'no vulnerabilities'."
             echo "NVD_UPDATE_FAILED=true" >> "$GITHUB_ENV"
@@ -401,7 +527,7 @@ jobs:
       # artifact that was correctly produced must not be destroyed by a later stage's failure --
       # the same contagion shape as a publication failure cancelling detection, one layer over.
       - name: Save NVD data cache (complete)
-        if: always() && inputs.enable_dependency_check && steps.nvd_update.outcome == 'success'
+        if: always() && inputs.enable_dependency_check && steps.nvd_update.outputs.complete == 'true'
         uses: actions/cache/save@v6
         with:
           path: /tmp/nvd-data
@@ -418,28 +544,36 @@ jobs:
       # run that restores it still has NVD_UPDATE_FAILED semantics available: an incomplete database
       # can never produce a "no known vulnerabilities" verdict.
       - name: Save NVD data cache (partial — resume base only)
-        if: always() && inputs.enable_dependency_check && steps.nvd_update.outcome != 'success'
+        if: always() && inputs.enable_dependency_check && steps.nvd_update.outputs.complete != 'true'
         uses: actions/cache/save@v6
         with:
           path: /tmp/nvd-data
           key: nvd-data-partial-${{ runner.os }}-${{ github.run_id }}
 
       - name: Run OWASP Dependency-Check
+        id: dc_run
         if: inputs.enable_dependency_check
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+          # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
+          W_PROJECT_NAME: ${{ inputs.project_name }}
+          W_FAIL_ON_CVSS: ${{ inputs.fail_on_cvss }}
+          W_SCAN_PATHS: ${{ inputs.scan_paths }}
         run: |
           set -euo pipefail
           ARGS=(
-            --project "${{ inputs.project_name }}"
+            --project "$W_PROJECT_NAME"
             --format JSON --format HTML --format SARIF
             --out nvd-scan-results/dependency-check
             --data /tmp/nvd-data
             --enableExperimental
             --disableOssIndex
-            --failOnCVSS "${{ inputs.fail_on_cvss }}"
+            --failOnCVSS "$W_FAIL_ON_CVSS"
           )
-          for p in ${{ inputs.scan_paths }}; do ARGS+=(--scan "$p"); done
+          # Unquoted on purpose: scan_paths is SPACE-SEPARATED by contract, so it is word-split
+          # (and globbed) as before -- but a quote or `$( )` in it is now data, not shell.
+          # shellcheck disable=SC2086
+          for p in $W_SCAN_PATHS; do ARGS+=(--scan "$p"); done
           if [ -n "${NVD_API_KEY:-}" ]; then ARGS+=(--nvdApiKey "$NVD_API_KEY"); fi
           /opt/dependency-check/bin/dependency-check.sh "${ARGS[@]}"
 
@@ -490,23 +624,29 @@ jobs:
       # image was MEANT to contain; the SBOM says what the build ACTUALLY produced, and the
       # image digest is the artifact itself.
       - name: Re-scan recorded SBOM against current vulnerability data
+        id: sbom_reval
         if: inputs.sbom_path != ''
         # suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE -- a revalidation run must not be
         # aborted by one artifact it could not read. The other revalidation targets and the
         # source scans still need to produce their evidence, and an absent or unparseable SBOM
         # is reported as NOT ESTABLISHED rather than silently passing.
         continue-on-error: true
+        env:
+          SBOM_PATH: ${{ inputs.sbom_path }}   # caller input: data, not script text
         run: |
           set -uo pipefail
-          if [ ! -s "${{ inputs.sbom_path }}" ]; then
-            echo "::warning title=SBOM absent::${{ inputs.sbom_path }} is missing or empty."
+          # $OUTDIR is set at JOB level (ledger L90). It was referenced here and defined nowhere,
+          # so under set -u this step died before scanning, and continue-on-error hid it.
+          if [ ! -s "$SBOM_PATH" ]; then
+            echo "::warning title=SBOM absent::$SBOM_PATH is missing or empty."
             echo "Revalidation state: NOT ESTABLISHED. This is not a clean result."
             exit 0
           fi
           # suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE -- a non-zero exit here means
           # findings were present, which is the gate's verdict to make and not this step's.
-          # The SARIF is produced and published either way.
-          trivy sbom --format sarif --output "$OUTDIR/trivy-sbom-revalidation.sarif"             "${{ inputs.sbom_path }}" || true
+          # The SARIF is produced and published either way; its ABSENCE is what the posture
+          # record reads as "did not run".
+          trivy sbom --format sarif --output "$OUTDIR/trivy-sbom-revalidation.sarif" "$SBOM_PATH" || true
           n=$(jq '[.runs[].results[]] | length' "$OUTDIR/trivy-sbom-revalidation.sarif" 2>/dev/null || echo "")
           {
             echo ""
@@ -514,38 +654,42 @@ jobs:
             echo ""
             echo "| | |"
             echo "|---|---|"
-            echo "| SBOM | \`${{ inputs.sbom_path }}\` |"
-            echo "| Findings against CURRENT data | ${n:-PRESENT -- count unavailable from current parser} |"
+            echo "| SBOM | \`$SBOM_PATH\` |"
+            echo "| Findings against CURRENT data | ${n:-NOT ESTABLISHED -- no readable SARIF} |"
             echo ""
             echo "The software did not change; the vulnerability database did. A finding here is"
             echo "a vulnerability disclosed AFTER the build that produced this SBOM passed."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Re-scan deployed image
+        id: image_reval
         if: inputs.image_ref != ''
         # suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE -- a registry that is unreachable at
         # 05:00 must not delete the rest of the run's evidence. Unreachable is reported; it is
         # not the same as scanned-and-clean.
         continue-on-error: true
+        env:
+          IMAGE_REF: ${{ inputs.image_ref }}   # caller input: data, not script text
         run: |
           set -uo pipefail
           # suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE -- same reason as above; findings
           # are the gate's decision, and the report is produced regardless.
-          trivy image --format sarif --output "$OUTDIR/trivy-image-revalidation.sarif"             "${{ inputs.image_ref }}" || true
+          trivy image --format sarif --output "$OUTDIR/trivy-image-revalidation.sarif" "$IMAGE_REF" || true
           {
             echo ""
             echo "### Deployed image revalidation"
             echo ""
-            echo "| Image | \`${{ inputs.image_ref }}\` |"
+            echo "| Image | \`$IMAGE_REF\` |"
             echo "|---|---|"
           } >> "$GITHUB_STEP_SUMMARY"
-          case "${{ inputs.image_ref }}" in
+          case "$IMAGE_REF" in
             *@sha256:*) : ;;
             *) echo "::warning title=Image referenced by tag::A tag is a moving pointer. This"
                echo "result cannot be matched against a deployment record later. Prefer a digest." ;;
           esac
 
       - name: Scan Dockerfiles for misconfiguration
+        id: dockerfile
         if: always() && inputs.scan_dockerfiles
         run: |
           set -euo pipefail
@@ -569,8 +713,12 @@ jobs:
             echo "No Dockerfiles found; skipping."
             exit 0
           fi
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-            | sudo sh -s -- -b /usr/local/bin latest
+          # Pinned (ledger L84): release v0.71.2, verified against a digest recorded in this file --
+          # never `main`, never `latest`. Bump the version and the digest together.
+          t=trivy_0.71.2_Linux-64bit.tar.gz
+          curl -sSfLO "https://github.com/aquasecurity/trivy/releases/download/v0.71.2/$t"
+          echo "0510e71e2fd39bf863856d499c8dc19feb4e7336546394c502a8f5cc7ab27460  $t" | sha256sum -c -
+          tar -xzf "$t" trivy && sudo mv trivy /usr/local/bin/ && rm -f "$t"
           trivy config --format table --exit-code 0 . | tee nvd-scan-results/trivy-dockerfile.txt
 
       # --------------------------------------------------------------- Results
@@ -586,18 +734,80 @@ jobs:
       - name: Summary
         id: summary
         if: always()
+        env:
+          # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py). These
+          # two decide whether this run could block anything at all, and they are PRINTED into
+          # the summary -- a value interpolated into the script would truncate at the first
+          # quote and could be read as shell.
+          W_FAIL_ON_CVSS: ${{ inputs.fail_on_cvss }}
+          W_TRIVY_FAIL_SEVERITIES: ${{ inputs.trivy_fail_severities }}
+          W_SCAN_PATHS: ${{ inputs.scan_paths }}
+          # WHAT ACTUALLY RAN (ledger L91). Each scanner's own step outcome, read here, because
+          # the posture record used to derive "executed" from the INPUTS -- a crashed scanner was
+          # reported as having run.
+          ENABLE_TRIVY: ${{ inputs.enable_trivy }}
+          ENABLE_DC: ${{ inputs.enable_dependency_check }}
+          ENABLE_DOCKERFILE: ${{ inputs.scan_dockerfiles }}
+          TRIVY_OUTCOME: ${{ steps.trivy_fs.outcome }}
+          DC_OUTCOME: ${{ steps.dc_run.outcome }}
+          DOCKERFILE_OUTCOME: ${{ steps.dockerfile.outcome }}
+          SBOM_REQUESTED: ${{ inputs.sbom_path != '' }}
+          IMAGE_REQUESTED: ${{ inputs.image_ref != '' }}
         run: |
           # EMIT THE CALLER CONTRACT. Same taxonomy as reusable-security -- a consumer must
           # not have to learn a second dialect to discover whether posture was established.
           # NVD-specific facts (database freshness, cache) are ADDITIONAL fields, never a
           # competing vocabulary.
-          und=false
-          if [ "${NVD_UPDATE_FAILED:-false}" = "true" ]; then und=true; fi
-          dc_report=nvd-scan-results/dependency-check/dependency-check-report.sarif
-          if [ "${{ inputs.enable_dependency_check }}" = "true" ] && [ ! -s "$dc_report" ]; then
-            und=true
+          #
+          # ASSURANCE IS DERIVED FROM THE EVIDENCE, not from the inputs. A scanner is COMPLETE when
+          # its report exists and parses (Dependency-Check also needs a database that updated --
+          # a stale one cannot establish "no known vulnerabilities"). Then:
+          #   no enabled scanner complete       -> UNDETERMINED
+          #   some enabled scanner incomplete   -> PARTIAL
+          #   all complete, any result          -> FINDINGS
+          #   all complete, zero results        -> PASS
+          # It used to be PASS or UNDETERMINED only, so findings read as PASS.
+          R=nvd-scan-results
+          enabled=0; done_=0; found=0; unav=""
+          # Empty output = absent or unparseable. `|| true` because this step runs under `bash -e`,
+          # where a failed command substitution would kill the step that reports the failure.
+          results() { jq '[.runs[]?.results[]?] | length' "$1" 2>/dev/null || true; }
+          if [ "$ENABLE_TRIVY" = true ]; then
+            enabled=$((enabled+1))
+            n="$(results "$R/trivy-nvd.sarif")"
+            if [ "$TRIVY_OUTCOME" = success ] && [ -n "$n" ]; then
+              done_=$((done_+1)); found=$((found+n))
+            else unav="$unav,nvd-trivy"; fi
           fi
+          if [ "$ENABLE_DC" = true ]; then
+            enabled=$((enabled+1))
+            n="$(results "$R/dependency-check/dependency-check-report.sarif")"
+            # Dependency-Check exits non-zero when failOnCVSS trips, so a REPORT, not the outcome,
+            # is what says it ran.
+            if [ -n "$n" ] && [ "${NVD_UPDATE_FAILED:-false}" != true ]; then
+              done_=$((done_+1)); found=$((found+n))
+            else unav="$unav,nvd-dependency-check"; fi
+          fi
+          if [ "$ENABLE_DOCKERFILE" = true ]; then
+            enabled=$((enabled+1))
+            if [ "$DOCKERFILE_OUTCOME" = success ]; then done_=$((done_+1))
+            else unav="$unav,nvd-dockerfile"; fi
+          fi
+          if [ "$SBOM_REQUESTED" = true ] && [ -z "$(results "$R/trivy-sbom-revalidation.sarif")" ]; then
+            unav="$unav,nvd-sbom-revalidation"
+          fi
+          if [ "$IMAGE_REQUESTED" = true ] && [ -z "$(results "$R/trivy-image-revalidation.sarif")" ]; then
+            unav="$unav,nvd-image-revalidation"
+          fi
+          if [ "$done_" -eq 0 ]; then state=UNDETERMINED
+          elif [ "$done_" -lt "$enabled" ]; then state=PARTIAL
+          elif [ "$found" -gt 0 ]; then state=FINDINGS
+          else state=PASS; fi
+          und=false
+          case "$state" in UNDETERMINED|PARTIAL) und=true ;; esac
           emit() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
+          emit unavailable "${unav#,}"
+          emit findings_count "$found"
           emit undetermined "$und"
           emit evidence_artifact "nvd-scan-results"
           if [ "${NVD_UPDATE_FAILED:-false}" = "true" ]; then
@@ -608,14 +818,15 @@ jobs:
           emit cache_state "${NVD_CACHE_STATE:-COLD}"
           # UNDETERMINED is never PASS. A stale database cannot establish 'no known
           # vulnerabilities' -- that was the original defect this workflow was rebuilt to fix.
-          if [ "$und" = "true" ]; then
-            emit assurance_state UNDETERMINED
-          else
-            emit assurance_state PASS
-          fi
-          # fail_on_cvss 11 means never fail: this workflow REPORTS by default and gates only
-          # when a threshold was deliberately set.
-          if [ "${{ inputs.fail_on_cvss }}" -le 10 ] 2>/dev/null; then
+          emit assurance_state "$state"
+          # fail_on_cvss ships at 9.0 (owner ruling O-12, 2026-10-16/21): the gate can block by
+          # default. A value above 10 is unreachable and makes this workflow report only.
+          # NUMERIC, NOT `-le`: `[ 9.0 -le 10 ]` is an error, and an error here read as "cannot
+          # block" -- a 9.0 threshold reported ALLOWED (tests/prove_nvd_cvss_default.py N2).
+          cvss_can_block() {
+            awk -v v="$1" 'BEGIN { exit !(v ~ /^[0-9]+([.][0-9]+)?$/ && v + 0 <= 10) }'
+          }
+          if cvss_can_block "$W_FAIL_ON_CVSS"; then
             emit enforcement_state BLOCKED
           else
             emit enforcement_state ALLOWED
@@ -624,6 +835,33 @@ jobs:
           {
             echo "### NVD CVE scan"
             echo ""
+            # THE ADVISORY POSTURE IS STATED BEFORE THE RESULTS, NOT AFTER THEM.
+            #
+            # A `fail_on_cvss` above 10 cannot be reached -- CVSS maxes at 10 -- and
+            # `trivy_fail_severities: ""` names no severity to fail on. The CVSS default is 9.0
+            # (O-12), so the banner below appears only when a caller raised it past 10 AND left
+            # the Trivy list at its empty default. But a run that REPORTS while a reader assumes it
+            # ENFORCES is worse than either posture honestly declared, and the only thing that
+            # previously said so was a posture table three sections further down, which is
+            # exactly where a reader stops looking once the top of the summary looks green.
+            #
+            # Changing these defaults is an interface version with migration guidance. Saying
+            # what they mean is not, and it is owed on every run.
+            _blocks=0
+            if cvss_can_block "${W_FAIL_ON_CVSS:-11}"; then _blocks=1; fi
+            if [ -n "${W_TRIVY_FAIL_SEVERITIES:-}" ]; then _blocks=1; fi
+            if [ "$_blocks" -eq 0 ]; then
+              echo "> ## THIS RUN BLOCKED NOTHING, BY CONFIGURATION"
+              echo ">"
+              echo "> \`fail_on_cvss: ${W_FAIL_ON_CVSS}\` — CVSS maxes at 10, so no score can reach this."
+              echo "> \`trivy_fail_severities: \"${W_TRIVY_FAIL_SEVERITIES}\"\` — empty names no severity to fail on."
+              echo ">"
+              echo "> Every finding below was REPORTED and PERSISTED. None of them could have"
+              echo "> stopped anything. **A green result here is the absence of a gate, not the"
+              echo "> absence of risk.** To enforce, set \`fail_on_cvss\` to 9 or lower and give"
+              echo "> \`trivy_fail_severities\` a value such as \`CRITICAL,HIGH\`."
+              echo ""
+            fi
             if [ "${NVD_UPDATE_FAILED:-false}" = "true" ]; then
               echo "⚠️ **NVD database update failed — results may be stale.**"
               echo "An empty result set here does NOT establish 'no known vulnerabilities'."
@@ -631,11 +869,273 @@ jobs:
             fi
             echo "| Scanner | Ran |"
             echo "|---|---|"
-            echo "| Trivy (fs) | ${{ inputs.enable_trivy }} |"
-            echo "| OWASP Dependency-Check | ${{ inputs.enable_dependency_check }} |"
-            echo "| Dockerfile config | ${{ inputs.scan_dockerfiles }} |"
+            echo "| Trivy (fs) | $ENABLE_TRIVY |"
+            echo "| OWASP Dependency-Check | $ENABLE_DC |"
+            echo "| Dockerfile config | $ENABLE_DOCKERFILE |"
             echo ""
-            echo "Paths scanned: \`${{ inputs.scan_paths }}\`"
+            echo "Paths scanned: \`$W_SCAN_PATHS\`"
             echo ""
             echo "_This product uses data from the NVD API but is not endorsed or certified by the NVD._"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── CONTROL POSTURE RECORD ────────────────────────────────────────────────────────────
+      #
+      # A WEAKENING IS A GOVERNED EXCEPTION, NOT A BOOLEAN PREFERENCE.
+      #
+      # Before this step existed a caller could switch a scanner off, empty the failing-severity
+      # list, or leave the CVSS gate at "never fail", and the run was reported exactly like one
+      # that passed honestly. Nothing named the weakening in the summary, in an output, or in an
+      # annotation. That is the collapse this kit refuses everywhere else, arriving at its own
+      # front door: `configured` is not `effective`, and an unrecorded weakening is
+      # indistinguishable from a clean result.
+      #
+      # THE ENUMERATION IS TOTAL OVER THE WORKFLOW'S OWN INPUTS. Every declared input carries
+      # exactly one `control_weakening` class below, and tests/check_weakening_record.py fails the
+      # build when an input exists without one — because a hand-written list of weakenings is a
+      # list that goes stale, and a stale list reports clean on a narrower denominator.
+      #
+      # Vocabulary: assurance-taxonomy.yaml :: control_weakening, routing_result.
+      - name: Control posture — required, executed, unavailable, reduced, skipped, and who decided
+        id: posture
+        if: always()
+        env:
+          # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py). Every
+          # value here is compared, printed and emitted; none of it is ever parsed as shell.
+          W_SBOM_PATH: ${{ inputs.sbom_path }}
+          W_IMAGE_REF: ${{ inputs.image_ref }}
+          W_SCAN_PATHS: ${{ inputs.scan_paths }}
+          W_FAIL_ON_CVSS: ${{ inputs.fail_on_cvss }}
+          W_TRIVY_SEVERITIES: ${{ inputs.trivy_severities }}
+          W_TRIVY_FAIL_SEVERITIES: ${{ inputs.trivy_fail_severities }}
+          W_ENABLE_DEPENDENCY_CHECK: ${{ inputs.enable_dependency_check }}
+          W_ENABLE_TRIVY: ${{ inputs.enable_trivy }}
+          W_SCAN_DOCKERFILES: ${{ inputs.scan_dockerfiles }}
+          W_WEAKENING_REASON: ${{ inputs.weakening_reason }}
+          W_WEAKENING_AUTHORITY: ${{ inputs.weakening_authority }}
+          W_WEAKENING_EXCEPTION_REF: ${{ inputs.weakening_exception_ref }}
+          W_WEAKENING_EXPIRES: ${{ inputs.weakening_expires }}
+          JOB_STATUS: ${{ job.status }}
+          SUM_UNAVAILABLE: ${{ steps.summary.outputs.unavailable }}
+          SUM_STATE: ${{ steps.summary.outputs.assurance_state }}
+        run: |
+          set -u
+          req=""; exe=""; skp=""; red=""; wk=""; dead=""; inforce=0; badclass=0
+
+          # AT BASELINE MEANS "AS STRONG AS THIS KIT SHIPS IT", NOT "AS STRONG AS IT COULD BE".
+          # Where the shipped default IS the weak side, the baseline is declared at the strong
+          # value and the default run therefore records a weakening. That is the honest reading
+          # and it is the whole point: this workflow blocks nothing by default, and until now
+          # nothing said so.
+          #   NONEMPTY  at baseline when any value was supplied
+          #   max:N     at baseline when the number is N or below
+          #   literal   at baseline on exact equality
+          at_baseline() {
+            case "$2" in
+              NONEMPTY) [ -n "$1" ] ;;
+              # Numeric, so a decimal is a number: `[ 9.0 -le 9 ]` is a shell ERROR, and the
+              # shipped 9.0 default read as a weakening of itself (prove_nvd_cvss_default N3).
+              max:*)    awk -v v="$1" -v m="${2#max:}" \
+                          'BEGIN { exit !(v ~ /^[0-9]+([.][0-9]+)?$/ && v + 0 <= m + 0) }' ;;
+              *)        [ "$1" = "$2" ] ;;
+            esac
+          }
+
+          # posture <input> <control_weakening class> <baseline> <control> "<value>"
+          posture() {
+            n="$1"; cls="$2"; base="$3"; ctl="$4"; val="${5-}"; st=WEAKENING_AT_BASELINE
+            case "$cls" in
+              NOT_A_CONTROL_SURFACE|EXCEPTION_ATTRIBUTION)
+                return 0 ;;
+              CONTROL_SURFACE_DEAD)
+                at_baseline "$val" "$base" || dead="$dead,$n" ;;
+              TARGET_NOT_SUPPLIED)
+                # Skipped because the caller supplied no target, which the kit cannot invent.
+                # Distinct from CONTROL_DISABLED and deliberately NOT counted as a weakening.
+                req="$req,$ctl"
+                if at_baseline "$val" "$base"; then exe="$exe,$ctl"; else skp="$skp,$ctl"; fi ;;
+              CONTROL_DISABLED)
+                req="$req,$ctl"
+                if at_baseline "$val" "$base"; then
+                  exe="$exe,$ctl"
+                else
+                  st=WEAKENING_IN_FORCE; skp="$skp,$ctl"; inforce=$((inforce+1))
+                fi ;;
+              GATE_SOFTENED)
+                # The control still runs and still reports. Only the block is withheld — which
+                # is why it lands in reduced and never in skipped.
+                req="$req,$ctl"; exe="$exe,$ctl"
+                at_baseline "$val" "$base" || {
+                  st=WEAKENING_IN_FORCE; red="$red,$ctl"; inforce=$((inforce+1)); } ;;
+              SCOPE_NARROWED|SEVERITY_RAISED|DEPTH_REDUCED)
+                # Direction is NOT established by a string comparison. Different is not provably
+                # weaker, and calling it equivalent to baseline would be the silence this record
+                # exists to end — so it is reported as owing a decision.
+                req="$req,$ctl"; exe="$exe,$ctl"
+                at_baseline "$val" "$base" || {
+                  st=CONTROL_RECONFIGURED; red="$red,$ctl"; inforce=$((inforce+1)); } ;;
+              *)
+                echo "::error title=Unregistered control_weakening class::$cls on input $n is not"
+                echo "a term in assurance-taxonomy.yaml. The posture record cannot be trusted."
+                badclass=1; return 0 ;;
+            esac
+            wk="$wk,{\"input\":\"$n\",\"class\":\"$cls\",\"control\":\"$ctl\",\"baseline\":\"$base\",\"value\":\"$val\",\"state\":\"$st\"}"
+          }
+
+          posture github_environment        NOT_A_CONTROL_SURFACE - -
+          posture project_name              NOT_A_CONTROL_SURFACE - -
+          posture python_version            NOT_A_CONTROL_SURFACE - -
+          posture artifact_retention_days   NOT_A_CONTROL_SURFACE - -
+          # Tool CURRENCY, not control strength. An outdated client fails acquisition and lands in
+          # controls_unavailable at run time; assurance-taxonomy.yaml :: toolchain_currency owns it.
+          posture dependency_check_version  NOT_A_CONTROL_SURFACE - -
+          # An integrity pin on the download, not a strength setting: a wrong value REFUSES the
+          # install (controls_unavailable), it never softens a control.
+          posture dependency_check_sha256   NOT_A_CONTROL_SURFACE - -
+          posture sbom_path                 TARGET_NOT_SUPPLIED  NONEMPTY               nvd-sbom-revalidation   "$W_SBOM_PATH"
+          posture image_ref                 TARGET_NOT_SUPPLIED  NONEMPTY               nvd-image-revalidation  "$W_IMAGE_REF"
+          posture scan_paths                SCOPE_NARROWED       "."                    nvd-trivy               "$W_SCAN_PATHS"
+          posture fail_on_cvss              GATE_SOFTENED        max:9.0                nvd-dependency-check    "$W_FAIL_ON_CVSS"
+          posture trivy_severities          SEVERITY_RAISED      "CRITICAL,HIGH,MEDIUM" nvd-trivy               "$W_TRIVY_SEVERITIES"
+          posture trivy_fail_severities     GATE_SOFTENED        NONEMPTY               nvd-trivy               "$W_TRIVY_FAIL_SEVERITIES"
+          posture enable_dependency_check   CONTROL_DISABLED     true                   nvd-dependency-check    "$W_ENABLE_DEPENDENCY_CHECK"
+          posture enable_trivy              CONTROL_DISABLED     true                   nvd-trivy               "$W_ENABLE_TRIVY"
+          posture scan_dockerfiles          CONTROL_DISABLED     true                   nvd-dockerfile          "$W_SCAN_DOCKERFILES"
+          posture weakening_reason          EXCEPTION_ATTRIBUTION - -
+          posture weakening_authority       EXCEPTION_ATTRIBUTION - -
+          posture weakening_exception_ref   EXCEPTION_ATTRIBUTION - -
+          posture weakening_expires         EXCEPTION_ATTRIBUTION - -
+
+          # UNAVAILABLE IS NOT CLEAN. A stale NVD database cannot establish "no known
+          # vulnerabilities" — an empty result set from data that could not be updated is a
+          # failure to observe, not an observation.
+          unav=""
+          [ "${NVD_UPDATE_FAILED:-false}" = "true" ] && unav="$unav,nvd-dependency-check"
+          # WHAT THE EVIDENCE SAYS DID NOT RUN (Summary, from each scanner's step outcome and
+          # report). A crashed scanner lands here and is removed from executed below (L91). If
+          # the Summary itself produced nothing, nothing it would have vouched for is trusted.
+          # Its unavailable list is read ONLY when it wrote its state (it writes the list first),
+          # so an empty list is the Summary's statement and never a default standing in for one.
+          if [ -n "${SUM_STATE:-}" ]; then
+            unav="$unav,$SUM_UNAVAILABLE"
+          else
+            unav="$unav,$req"
+          fi
+
+          dedupe() {
+            printf '%s' "${1#,}" | tr ',' '\n' | sed '/^$/d' | sort -u | tr '\n' ',' | sed 's/,$//'
+          }
+          REQ="$(dedupe "$req")"; EXE="$(dedupe "$exe")"
+          SKP="$(dedupe "$skp")"; RED="$(dedupe "$red")"; UNAV="$(dedupe "$unav")"
+          # A CONTROL THAT WAS SKIPPED DID NOT EXECUTE, whatever another input said about it.
+          # AND A CONTROL THAT CRASHED DID NOT EXECUTE either: it is unavailable, never both.
+          for c in $(printf '%s,%s' "$SKP" "$UNAV" | tr ',' ' '); do
+            EXE="$(printf '%s' "$EXE" | tr ',' '\n' | grep -vx "$c" | tr '\n' ',' | sed 's/,$//')"
+          done
+
+          # WHO DECIDED, AND ON WHAT BASIS. A reason without an authority is an explanation, not
+          # a decision. Silence never renews a weakening: a past expiry reverts to owing one.
+          auth=WEAKENING_AT_BASELINE
+          if [ "$inforce" -gt 0 ]; then
+            if [ -n "$W_WEAKENING_REASON" ] && [ -n "$W_WEAKENING_AUTHORITY" ]; then
+              auth=WEAKENING_ATTRIBUTED
+              # AN EXPIRY NOBODY CAN READ HAS NOT "NOT ARRIVED". Dates compare as strings below, which
+              # is correct only for a real YYYY-MM-DD: `never` or `31/12/1999` sorted after every ISO
+              # date and read as unexpired forever. Anything that is not a valid calendar date reverts
+              # to owing a decision, and says why. tests/prove_gate_routing.py, expiry_* scenarios.
+              if [ -n "$W_WEAKENING_EXPIRES" ]; then
+                if ! printf '%s' "$W_WEAKENING_EXPIRES" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' ||
+                   [ "$(date -u -d "$W_WEAKENING_EXPIRES" +%Y-%m-%d 2>/dev/null)" != "$W_WEAKENING_EXPIRES" ]; then
+                  echo "::warning title=Unreadable weakening expiry::'$W_WEAKENING_EXPIRES' is not a"
+                  echo "YYYY-MM-DD calendar date, so the exception cannot be shown to be in force."
+                  auth=WEAKENING_EXCEPTION_EXPIRED
+                elif [ "$(date -u +%Y-%m-%d)" ">" "$W_WEAKENING_EXPIRES" ]; then
+                  auth=WEAKENING_EXCEPTION_EXPIRED
+                fi
+              fi
+            else
+              auth=WEAKENING_UNATTRIBUTED
+            fi
+          fi
+
+          # ROUTING. Five outcomes, because pass/fail is the collapse this kit refuses.
+          #
+          # A REFUSAL MUST BE OBSERVED, NOT INFERRED. This workflow cannot tell a control that
+          # refused from a tool that could not be acquired once both are present, so it declines
+          # to claim BLOCKED while any control is unavailable. An unattributed failure is not an
+          # observed refusal, and EVIDENCE_UNTRUSTED is the honest answer.
+          route=PROCEED
+          if [ -n "$UNAV" ] || [ "$badclass" = "1" ]; then
+            route=EVIDENCE_UNTRUSTED
+          elif [ "${JOB_STATUS:-success}" = "failure" ]; then
+            route=BLOCKED
+          elif [ "$auth" = "WEAKENING_UNATTRIBUTED" ] || [ "$auth" = "WEAKENING_EXCEPTION_EXPIRED" ]; then
+            route=DECISION_REQUIRED
+          elif [ "$inforce" -gt 0 ]; then
+            route=PROCEED_WITH_ADVISORY
+          fi
+
+          emit() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
+          emit routing_result "$route"
+          emit controls_required "$REQ"
+          emit controls_executed "$EXE"
+          emit controls_unavailable "$UNAV"
+          emit controls_reduced "$RED"
+          emit controls_skipped "$SKP"
+          emit weakenings "[${wk#,}]"
+          emit weakening_attribution "$auth"
+          emit weakening_record "{\"reason\":\"$W_WEAKENING_REASON\",\"authority\":\"$W_WEAKENING_AUTHORITY\",\"exception_ref\":\"$W_WEAKENING_EXCEPTION_REF\",\"expires\":\"$W_WEAKENING_EXPIRES\"}"
+
+          {
+            echo "### Control posture — NVD CVE scan"
+            echo ""
+            echo "| Row | Value |"
+            echo "|---|---|"
+            echo "| controls required | \`${REQ:-none}\` |"
+            echo "| controls executed | \`${EXE:-none}\` |"
+            echo "| controls unavailable | \`${UNAV:-none}\` — tool could not be acquired; NOT the same as clean |"
+            echo "| controls reduced | \`${RED:-none}\` |"
+            echo "| controls skipped | \`${SKP:-none}\` |"
+            echo "| reason | ${W_WEAKENING_REASON:-_(none recorded)_} |"
+            echo "| authority | ${W_WEAKENING_AUTHORITY:-_(none recorded)_} |"
+            echo "| exception / deferral id | ${W_WEAKENING_EXCEPTION_REF:-_(none recorded)_} |"
+            echo "| expiry | ${W_WEAKENING_EXPIRES:-_(no expiry set)_} |"
+            echo "| attribution | \`$auth\` |"
+            echo "| **routing result** | **\`$route\`** |"
+            echo ""
+            # THE SAME FACT THE TOP OF THE SUMMARY STATES, RESTATED WHERE THE RECORD IS.
+            #
+            # `fail_on_cvss` and `trivy_fail_severities` are the two inputs that decide whether
+            # this workflow can block at all. They are already enumerated above as GATE_SOFTENED
+            # rows, which is precise and easy to read past. Said plainly, it is neither. Numeric,
+            # not `-gt`: a decimal threshold is a number, not a shell error.
+            if ! awk -v v="${W_FAIL_ON_CVSS:-11}" \
+                   'BEGIN { exit !(v ~ /^[0-9]+([.][0-9]+)?$/ && v + 0 <= 10) }' \
+               && [ -z "${W_TRIVY_FAIL_SEVERITIES:-}" ]; then
+              echo "> **Enforcement posture: REPORT ONLY.** \`fail_on_cvss=${W_FAIL_ON_CVSS}\`"
+              echo "> is unreachable (CVSS maxes at 10) and \`trivy_fail_severities\` is empty."
+              echo "> No finding in this run could have blocked anything. The shipped CVSS"
+              echo "> default is 9.0; this run raised it. It is recorded here so a green result"
+              echo "> is never read as an enforced one."
+              echo ""
+            fi
+            if [ -n "$dead" ]; then
+              echo "> **Dead input(s) set:** \`${dead#,}\` — declared and read by nothing. A dead"
+              echo "> input reads as configuration and silently means nothing."
+              echo ""
+            fi
+            if [ "$route" = "DECISION_REQUIRED" ]; then
+              echo "> **A weakening is in force and nobody has said why.** Not a failure and not a"
+              echo "> pass. Record \`weakening_reason\` and \`weakening_authority\` (and an expiry),"
+              echo "> or restore the control to baseline."
+              echo ""
+            fi
+            if [ "$route" = "EVIDENCE_UNTRUSTED" ]; then
+              echo "> **This result cannot be relied on.** A control was unavailable, so an empty"
+              echo "> finding set is a failure to observe rather than an observation. Do not read"
+              echo "> the absence of a block as the absence of risk."
+              echo ""
+            fi
+            echo "Vocabulary: \`assurance-taxonomy.yaml\` :: \`control_weakening\`, \`routing_result\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          printf 'routing_result=%s attribution=%s in_force=%s\n' "$route" "$auth" "$inforce"

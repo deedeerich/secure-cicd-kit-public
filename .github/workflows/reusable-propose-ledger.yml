@@ -1,0 +1,190 @@
+# Propose baseline-ledger changes as a pull request -- the only write path in the design.
+#
+# SEPARATE FROM reusable-security.yml ON PURPOSE. A reusable workflow's job permissions are capped
+# by what the CALLER grants, and GitHub refuses the whole run when a called job asks for more
+# (startup_failure, found by the first hosted milestone run, 2026-10-15). While this job lived inside
+# the security workflow, every consumer had to grant `contents: write` and `pull-requests: write` to
+# the security scan on every run -- pull requests included. Here, only a caller that chooses to
+# propose ledger changes grants them, and only to this workflow. tests/check_caller_permissions.py.
+#
+# Call it after the security workflow, in the same run, on the protected default branch only:
+#
+#   ledger:
+#     needs: security
+#     if: github.event_name != 'pull_request'
+#     permissions: {contents: write, pull-requests: write}
+#     uses: <kit-owner>/<kit-repo>/.github/workflows/reusable-propose-ledger.yml@<sha>
+#     with: {environment: prod}
+#
+# ESTABLISHING the first baseline (F-01) is the same call with `establish-approver-role` set, once:
+# the result is an ESTABLISH pull request that the named role merges (CODEOWNERS must cover the
+# ledger path, or it refuses). Leave it set or unset afterwards -- with a ledger present it is
+# ignored, so it can never re-baseline. Read `outputs.status` / `outputs.why` to see a refusal.
+name: "Kit: Propose baseline ledger"
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: >-
+          The baseline-ledger environment the security workflow ran for (its `environment`
+          input). Required: a proposal for an unnamed environment would be keyed to nothing.
+        type: string
+        required: true
+      establish-approver-role:
+        description: >-
+          Set ONLY to ESTABLISH a baseline where none exists, naming the approver ROLE (never a
+          person) recorded in the ledger header. Establishment is still only a pull request: it is
+          refused unless CODEOWNERS on the default branch covers the ledger path, so the named role
+          is the one who merges. Ignored when a ledger exists (it never re-baselines). No default:
+          a baseline nobody approved is not a baseline (ETFB section 5.4, section 10; F-01).
+        type: string
+        required: false
+        default: ''
+      ticket-ledger-artifact:
+        description: >-
+          The same-run artifact reusable-ticket-reconcile.yml uploaded (ticket-reconcile-<attempt>),
+          when the caller runs ticketing BEFORE this job. Its ticket-ledger-proposal.json joins this
+          pull request, so ticket references and predecessors persist through the one reviewed
+          write path (T-20). Empty: no ticket ledger is proposed.
+        type: string
+        required: false
+        default: ''
+    outputs:
+      status:
+        description: proposed | unchanged | refused (empty when the job did not run, e.g. on a PR).
+        value: ${{ jobs.propose-ledger.outputs.status }}
+      why:
+        description: The reason, when refused or unchanged -- including "no ledger and no approver role".
+        value: ${{ jobs.propose-ledger.outputs.why }}
+
+permissions:
+  contents: read
+
+jobs:
+  # ─── THE ONLY WRITE PATH IN THE DESIGN, AND IT WRITES A PULL REQUEST ───────────────
+  #
+  # ETFB section 5.4: "The ledger is a governance artifact, not a scanner output." SINGLE_PIPELINE_TARGET.md
+  # section 9.3: this job, and only this job, holds `contents: write` -- to a NON-PROTECTED ref --
+  # and `pull-requests: write`. It runs after the gate, on the protected branch's own non-PR
+  # runs, reads the findings file the report published, and opens a pull request carrying the
+  # proposed ledger. Branch protection and CODEOWNERS do the enforcing; a human merges it or
+  # does not. "If that job's authority ever grows to include the protected branch, the ledger
+  # has stopped being a governance artifact and the whole baseline becomes a scanner output."
+  #
+  # STRUCTURALLY NARROW, NOT NARROW BY DISCIPLINE. tests/prove_propose_ledger_job_scope.py fails
+  # the build if any step here can push to a ref that is not the proposal branch, holds a
+  # permission beyond the two above, uses a token that is not the run's own, or runs on a
+  # pull-request event. The gate does NOT wait for this job (scanner-registry.yaml class
+  # `governance`): a proposal must never be able to fail a verdict, and a job the gate waited
+  # for could not run after it.
+  propose-ledger:
+    name: Propose the baseline ledger change
+    # NEVER ON A PULL REQUEST, NEVER OFF THE DEFAULT BRANCH. A PR run may only read; a ledger
+    # written from a PR is a PR grandfathering what it introduces. propose_ledger.py refuses
+    # both again from `--event` and `--ref`, so the condition and the script agree.
+    if: >-
+      !startsWith(github.event_name, 'pull_request') &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Declared HERE, never at file level: in a reusable workflow the file-level block is the
+    # ceiling for every job, and this is the only job that may write anything.
+    permissions:
+      contents: write
+      pull-requests: write
+    # ONE PROPOSAL AT A TIME PER ENVIRONMENT, AND NEVER CANCELLED: concurrency is a safety
+    # setting for mutating work. Two runs proposing against one environment would race on the
+    # same ledger tip; cancelling one mid-push would leave a half-made branch.
+    concurrency:
+      group: baseline-proposal-${{ inputs.environment }}
+      cancel-in-progress: false
+    outputs:
+      status: ${{ steps.propose.outputs.status }}
+      why: ${{ steps.propose.outputs.why }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The ledger is read at the default branch's tip BY REF, and the proposal branch is
+          # cut from it; a depth-1 checkout has neither.
+          fetch-depth: 0
+
+      - name: Fetch the findings file the report published
+        uses: actions/download-artifact@v8
+        with:
+          name: security-report-${{ github.run_attempt }}
+          path: _report
+
+      - name: Fetch the ticket ledger proposal the ticket job published
+        if: inputs.ticket-ledger-artifact != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.ticket-ledger-artifact }}
+          path: _tickets
+
+      - name: Produce the pull-request payload
+        id: propose
+        uses: $/.github/actions/propose-ledger
+        with:
+          findings: _report/findings.json
+          environment: ${{ inputs.environment }}
+          default-branch: ${{ github.event.repository.default_branch }}
+          run-id: ${{ github.run_id }}
+          commit: ${{ github.sha }}
+          # F-01: without this hand-through no consumer could ever establish a baseline. Empty
+          # (the default) refuses on a missing ledger, with the reason in the `why` output.
+          establish-approver-role: ${{ inputs.establish-approver-role }}
+          # T-20: absent when no artifact was named or the ticket job wrote no proposal; the script
+          # says which, and proposes nothing for tickets.
+          ticket-ledger-proposal: _tickets/ticket-ledger-proposal.json
+
+      - name: Push the proposal branch and open the pull request
+        if: steps.propose.outputs.status == 'proposed'
+        env:
+          # Every value from the payload arrives as data. The body is a FILE, never an argument
+          # and never script text: it carries finding identities and reasons.
+          BRANCH: ${{ steps.propose.outputs.branch }}
+          BASE: ${{ steps.propose.outputs.base }}
+          TITLE: ${{ steps.propose.outputs.title }}
+          # Every proposed file at its repository path: the ledger, and the lineage ledger plus its
+          # head anchor when a finding moved (one move record, L51).
+          TREE: ${{ steps.propose.outputs.tree }}
+          BODY_FILE: ${{ steps.propose.outputs.body-file }}
+          # THE RUN'S OWN TOKEN. A PAT can push wherever its owner can, which may include the
+          # protected branch; github.token cannot pass branch protection and expires with the run.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # THE ONLY REF THIS JOB MAY WRITE IS ITS OWN PROPOSAL BRANCH. Refused before anything
+          # is touched, so a payload naming any other branch -- by defect or by tampering with
+          # the artifact -- pushes nothing. tests/prove_propose_ledger_job_scope.py runs this
+          # step against a throwaway remote with BRANCH=main and asserts the remote is untouched.
+          case "$BRANCH" in
+            baseline-proposal/*) ;;
+            *) echo "::error title=Refused::'$BRANCH' is not a baseline-proposal/ branch. Nothing pushed."; exit 1 ;;
+          esac
+          [ "$BRANCH" != "$BASE" ] || { echo "::error title=Refused::the proposal branch is the base branch. Nothing pushed."; exit 1; }
+          # EVERY FILE THE PROPOSAL CARRIES LIVES UNDER .security/, and nothing else is staged.
+          # Refused before anything is touched: a payload naming a workflow file writes nothing.
+          files="$(cd "$TREE" && find . -type f | sed 's#^\./##' | sort)"
+          [ -n "$files" ] || { echo "::error title=Refused::the proposal carries no files. Nothing pushed."; exit 1; }
+          while IFS= read -r f; do
+            case "$f" in
+              .security/*) ;;
+              *) echo "::error title=Refused::'$f' is outside .security/. Nothing pushed."; exit 1 ;;
+            esac
+            case "/$f/" in
+              */../*|*/./*) echo "::error title=Refused::'$f' is not a plain path. Nothing pushed."; exit 1 ;;
+            esac
+          done <<< "$files"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q -b "$BRANCH"
+          while IFS= read -r f; do
+            mkdir -p "$(dirname "$f")"
+            cp "$TREE/$f" "$f"
+            git add -- "$f"
+          done <<< "$files"
+          git commit -q -m "$TITLE"
+          git push origin "HEAD:refs/heads/$BRANCH"
+          gh pr create --base "$BASE" --head "$BRANCH" --title "$TITLE" --body-file "$BODY_FILE"

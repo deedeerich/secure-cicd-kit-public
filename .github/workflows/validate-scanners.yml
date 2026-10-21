@@ -145,7 +145,9 @@ jobs:
     # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
     # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
     timeout-minutes: 15
-    continue-on-error: true          # a probe failing must not hide the others
+    # NOT continue-on-error (ledger L76, lane L-E). It was, "so a probe failing must not hide the
+    # others" -- but `fail-fast: false` already keeps every leg running, and continue-on-error ALSO
+    # turned a failed probe into a green run. A probe that cannot fail the run proves nothing.
     strategy:
       fail-fast: false
       matrix:
@@ -153,6 +155,10 @@ jobs:
           - id: bandit
             lang: python
           - id: semgrep
+            lang: multi
+          # The SHIPPED container: the flagship's sast-semgrep job runs semgrep/semgrep:1.90.0, not
+          # the pip-installed 1.178.0 the C# and Java jobs use. W4K-116 left it unprobed (L76).
+          - id: semgrep-container
             lang: multi
           - id: gosec
             lang: go
@@ -182,15 +188,19 @@ jobs:
 
       - name: Probe
         id: probe
+        env:
+          # As data, not script text: it also keeps this long script free of any expression, so
+          # GitHub's 21,000-character expression-template limit cannot reach it (L76 grew it).
+          PROBE_ID: ${{ matrix.probe.id }}
         run: |
           set -uo pipefail
           exec 2>&1
-          ID="${{ matrix.probe.id }}"
+          ID="$PROBE_ID"
           EXEC=fail; DETECT=fail; ARTIFACT=fail; NOTE=""
 
           case "$ID" in
             bandit)
-              pip install --quiet bandit
+              pip install --quiet bandit==1.9.4
               # suppression: EXPECTED_NEGATIVE_RESULT -- this scanner exits nonzero when it FINDS something,
               # which is not an error. Detection is separated from enforcement here; the count step downstream
               # distinguishes 'found nothing' from 'produced no report' and emits COLLECTION_FAILED for the
@@ -222,7 +232,8 @@ jobs:
               [ "${n:-0}" -gt 0 ] && DETECT=ok; NOTE="$n findings"
               ;;
             semgrep)
-              pip install --quiet semgrep
+              # The SHIPPED pin (W4K-116); the 1.90.0 container job is not probed here.
+              pip install --quiet semgrep==1.178.0
               semgrep scan --config p/default --config p/csharp --config p/java \
                 --json --output out.json fixture >/dev/null 2>&1; EXEC=ok
               # A PARSE FAILURE IS NOT ZERO FINDINGS.
@@ -247,9 +258,41 @@ jobs:
               fi
               [ "${n:-0}" -gt 0 ] && DETECT=ok; NOTE="$n findings"
               ;;
+            semgrep-container)
+              # The image and the default rulesets the flagship's sast-semgrep job runs; the
+              # flagship job scans with --strict and SARIF, this probes DETECTION on the seeded
+              # fixture with the same binary. tests/prove_validate_scanners_matrix.py holds the
+              # image here equal to the flagship's.
+              # suppression: EXPECTED_NEGATIVE_RESULT -- semgrep exits 1 on findings
+              # preserved_by: the absent-report and parse checks below
+              # --user 0 and HOME=/tmp so the report can be written into the mounted workspace
+              # whatever the image's default user is.
+              docker run --rm --user 0 -e HOME=/tmp -v "$PWD":/src -w /src semgrep/semgrep:1.90.0 semgrep scan \
+                --config p/default --config p/owasp-top-ten --config p/xss --metrics=off \
+                --json --output /src/out.json fixture >/dev/null 2>&1 || true
+              EXEC=ok
+              if [ ! -s out.json ]; then
+                echo "::error title=COLLECTION_FAILED::out.json was not produced."
+                echo "An ABSENT report is not zero findings. Posture cannot be established from this run."
+                echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              if ! n=$(jq '.results|length' out.json 2>&1); then
+                echo "::error title=COLLECTION_FAILED::out.json is not valid semgrep JSON."
+                echo "jq said: $n"
+                echo "A PARSE FAILURE is not zero findings."
+                echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              [ "${n:-0}" -gt 0 ] && DETECT=ok; NOTE="$n findings (container 1.90.0)"
+              ;;
             gosec)
-              go install github.com/securego/gosec/v2/cmd/gosec@latest >/dev/null 2>&1
-              "$(go env GOPATH)"/bin/gosec -no-fail -fmt json -out out.json fixture/go/... >/dev/null 2>&1; EXEC=ok
+              # The SHIPPED image, without -no-fail, as the flagship runs it (W4K-116).
+              # suppression: EXPECTED_NEGATIVE_RESULT -- gosec exits 1 on findings
+              # preserved_by: the absent-report and parse checks below
+              docker run --rm -v "$PWD/fixture/go":/src -w /src securego/gosec:2.24.6 \
+                -fmt json -out /src/out.json ./... >/dev/null 2>&1 || true
+              mv fixture/go/out.json out.json 2>/dev/null || true; EXEC=ok
               # A PARSE FAILURE IS NOT ZERO FINDINGS.
               #
               # This was `jq ... 2>/dev/null || echo 0`, so a missing, truncated or malformed report
@@ -322,7 +365,7 @@ jobs:
               [ "${n:-0}" -gt 0 ] && DETECT=ok
               ;;
             checkov)
-              pip install --quiet checkov
+              pip install --quiet checkov==3.3.29
               checkov --version; checkov -d fixture/infra -o json --quiet --compact > out.json || true; EXEC=ok; ls -l out.json || true
               # A PARSE FAILURE IS NOT ZERO FINDINGS.
               #
@@ -347,7 +390,12 @@ jobs:
               [ "${n:-0}" -gt 0 ] && DETECT=ok; NOTE="$n failed checks"
               ;;
             trivy)
-              curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin latest >/dev/null 2>&1
+              # Pinned (ledger L84): release v0.71.2, verified against a digest recorded in this file --
+              # never `main`, never `latest`. Bump the version and the digest together.
+              t=trivy_0.71.2_Linux-64bit.tar.gz
+              curl -sSfLO "https://github.com/aquasecurity/trivy/releases/download/v0.71.2/$t"
+              echo "0510e71e2fd39bf863856d499c8dc19feb4e7336546394c502a8f5cc7ab27460  $t" | sha256sum -c -
+              tar -xzf "$t" trivy && sudo mv trivy /usr/local/bin/ && rm -f "$t"
               trivy fs --format json --output out.json --scanners vuln fixture >/dev/null 2>&1; EXEC=ok
               # A PARSE FAILURE IS NOT ZERO FINDINGS.
               #
@@ -373,7 +421,10 @@ jobs:
               ;;
             osv)
               # Release URL + JSON shape are the assumptions being tested here.
-              if curl -sSfL -o osv-scanner https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64; then
+              # Pinned (ledger L84): v2.7.0, verified against a recorded digest. It was
+              # the floating latest release: the probe proved whichever binary upstream shipped that morning.
+              if curl -sSfL -o osv-scanner https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_linux_amd64 \
+                 && echo "160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b  osv-scanner" | sha256sum -c -; then
                 chmod +x osv-scanner; ./osv-scanner scan source --recursive --format json --output out.json fixture >/dev/null 2>&1 || true
                 EXEC=ok
                 # A PARSE FAILURE IS NOT ZERO FINDINGS.
@@ -411,7 +462,11 @@ jobs:
               fi
               ;;
             syft)
-              curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sudo sh -s -- -b /usr/local/bin
+              # Pinned (ledger L84): syft v1.54.1, verified against a recorded digest.
+              s=syft_1.54.1_linux_amd64.tar.gz
+              curl -sSfLO "https://github.com/anchore/syft/releases/download/v1.54.1/$s"
+              echo "c069905b391cc4c20a5ba65ad5c10be2a7ba074f8ea6ad203e24d14e303dad47  $s" | sha256sum -c -
+              tar -xzf "$s" syft && sudo mv syft /usr/local/bin/ && rm -f "$s"
               syft version; syft dir:fixture -o cyclonedx-json=out.json || true; EXEC=ok; ls -l out.json || true
               # A PARSE FAILURE IS NOT ZERO FINDINGS.
               #
@@ -447,8 +502,10 @@ jobs:
                 timeout 180 sudo apt-get -o DPkg::Lock::Timeout=60 update -qq || true
                 timeout 300 sudo apt-get -o DPkg::Lock::Timeout=60 install -y                   --no-install-recommends openjdk-17-jre-headless unzip
               fi
-              VER=9.0.9
-              if wget -q "https://github.com/jeremylong/DependencyCheck/releases/download/v${VER}/dependency-check-${VER}-release.zip"; then
+              # 12.1.0, the version reusable-nvd-cve.yml ships (9.0.9 predates the NVD API change).
+              VER=12.1.0
+              if wget -q "https://github.com/jeremylong/DependencyCheck/releases/download/v${VER}/dependency-check-${VER}-release.zip" \
+                 && echo "0e5ba6ae58e753d5841048c6c8e495dbc4c7a4ea921a2b14daeac65195700532  dependency-check-${VER}-release.zip" | sha256sum -c -; then
                 unzip -q "dependency-check-${VER}-release.zip" -d /opt/
                 chmod +x /opt/dependency-check/bin/dependency-check.sh
                 EXEC=ok
@@ -518,12 +575,43 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+      - name: Install trivy (pinned, as the trivy probe)
+        run: |
+          set -euo pipefail
+          # THIS JOB NEVER INSTALLED TRIVY. `trivy fs` was "command not found", no out.json was
+          # written, and the job printed that the failed collection "did not masquerade as a clean
+          # result" -- a pass proving only that a missing binary writes no file -- on a step that
+          # was continue-on-error and so could not fail the run anyway (W4K-116).
+          t=trivy_0.71.2_Linux-64bit.tar.gz
+          curl -sSfLO "https://github.com/aquasecurity/trivy/releases/download/v0.71.2/$t"
+          echo "0510e71e2fd39bf863856d499c8dc19feb4e7336546394c502a8f5cc7ab27460  $t" | sha256sum -c -
+          tar -xzf "$t" trivy && sudo mv trivy /usr/local/bin/ && rm -f "$t"
       - name: Force a collection failure and assert it is NOT clean
         run: |
           set -uo pipefail
-          # A scanner pointed at a path that does not exist = collection failure.
-          if trivy fs --format json --output out.json /nonexistent-path 2>/dev/null; then
-            :
+          # THE CONTROL MUST BE ABLE TO FAIL, so it proves three things and fails on any:
+          #   1. the scanner is here at all (a missing tool is not a negative result);
+          #   2. POSITIVE CONTROL: pointed at a real directory it succeeds and writes a report
+          #      with a Results key -- so (3) is about the path, not a broken tool;
+          #   3. pointed at a path that does not exist it exits NON-ZERO, and whatever it wrote
+          #      is not an empty-but-well-formed success.
+          if ! command -v trivy >/dev/null 2>&1; then
+            echo "::error title=Negative control could not run::trivy is not installed, so nothing was tested."
+            exit 1
+          fi
+          mkdir -p nc-positive && printf 'x\n' > nc-positive/readme.txt
+          if ! trivy fs --format json --output pos.json --scanners vuln nc-positive >/dev/null 2>&1 \
+             || ! jq -e 'has("Results") or has("SchemaVersion")' pos.json >/dev/null 2>&1; then
+            echo "::error title=Positive control failed::trivy could not scan a real directory, so the negative below would prove nothing."
+            exit 1
+          fi
+          rm -f out.json
+          nc_rc=0
+          trivy fs --format json --output out.json /nonexistent-path >/dev/null 2>&1 || nc_rc=$?
+          if [ "$nc_rc" -eq 0 ]; then
+            echo "::error::A FAILED COLLECTION exited 0. A scanner pointed at a path that does not"
+            echo "exist reported success; a consumer reading its exit code cannot tell it from a clean scan."
+            exit 1
           fi
           if [ -s out.json ] && [ "$(jq '[.Results[]?]|length' out.json 2>/dev/null || echo 0)" = "0" ]; then
             echo "::error::A FAILED COLLECTION produced an empty-but-well-formed result."
@@ -531,8 +619,7 @@ jobs:
             echo "Required: emit COLLECTION_FAILED / UNKNOWN, never an empty success."
             exit 1
           fi
-          echo "✅ Failed collection did not masquerade as a clean result."
-        continue-on-error: true
+          echo "Failed collection (exit $nc_rc) did not masquerade as a clean result; the positive control passed."
 
   # ------------------------------------------------------------- gate behavior
   # A scanner working perfectly proves nothing about whether the control blocks.
@@ -552,7 +639,7 @@ jobs:
           python-version: "3.12"
       - name: Every job must be reachable by the gate
         run: |
-          python -m pip install --quiet PyYAML
+          python -m pip install --quiet PyYAML==6.0.3
           python tests/check_gate.py
 
   # ------------------------------------------------------------------ verdict
@@ -576,20 +663,51 @@ jobs:
       - name: Render matrix and name what is MISSING
         run: |
           python - <<'PY'
-          import json, glob, os
-          rows = []
-          for f in sorted(glob.glob('probes/*.json')):
-              try: rows.append(json.load(open(f)))
-              except Exception: pass
+          import datetime, json, os, sys
+          # THE ROSTER IS THE DENOMINATOR (ledger L76). This used to render whatever result files
+          # arrived and swallow any it could not parse, so a probe that died before writing one
+          # simply vanished from the table, and the job could not fail at all. Every probe in the
+          # matrix above is expected here; tests/prove_validate_scanners_matrix.py holds this list
+          # equal to the matrix ids.
+          EXPECTED = ["bandit", "semgrep", "semgrep-container", "gosec", "flawfinder", "checkov",
+                      "trivy", "osv", "syft", "dotnet", "depcheck"]
+          # NOT PROVEN, DATED, OWNED -- reported, not failed, until it expires. Silence never
+          # renews it. depcheck: this workflow has no NVD_API_KEY, so Dependency-Check builds no
+          # database and writes no report (hosted run 39618320185, "no report produced").
+          ACCEPTED_UNPROVEN = {
+              "depcheck": {"expires": "2026-11-30", "owner": "kit-maintainer",
+                           "reason": "no NVD_API_KEY reaches this workflow, so Dependency-Check "
+                                     "detection is not established here; owner decision: grant "
+                                     "the key to this workflow, or move the probe to nvd-cve.yml"},
+          }
+          today = datetime.date.today()
+          rows, unknown = {}, []
+          for pid in EXPECTED:
+              p = os.path.join("probes", pid + ".json")
+              if not os.path.exists(p):
+                  unknown.append(f"{pid}: no result file -- the probe died before reporting")
+                  continue
+              try:
+                  rows[pid] = json.load(open(p, encoding="utf-8"))
+              except ValueError as e:
+                  unknown.append(f"{pid}: result file unparseable ({e}) -- UNKNOWN, not clean")
           ok = lambda v: "✅" if v == "ok" else "❌"
           out = ["## Scanner capability matrix", "",
                  "| scanner | executed | detected seeded signal | artifact | note |",
                  "|---|---|---|---|---|"]
-          broken = []
-          for r in sorted(rows, key=lambda x: x['id']):
-              out.append(f"| `{r['id']}` | {ok(r['exec'])} | {ok(r['detect'])} | {ok(r['artifact'])} | {r['note']} |")
-              if r['exec'] != 'ok' or r['detect'] != 'ok':
-                  broken.append(r['id'])
+          broken, accepted = [], []
+          for pid in EXPECTED:
+              r = rows.get(pid)
+              if r is None:
+                  out.append(f"| `{pid}` | UNKNOWN | UNKNOWN | UNKNOWN | no result |")
+                  continue
+              out.append(f"| `{pid}` | {ok(r.get('exec'))} | {ok(r.get('detect'))} | {ok(r.get('artifact'))} | {r.get('note', '')} |")
+              if r.get("exec") != "ok" or r.get("detect") != "ok":
+                  a = ACCEPTED_UNPROVEN.get(pid)
+                  if a and datetime.date.fromisoformat(a["expires"]) >= today:
+                      accepted.append(f"{pid} (until {a['expires']}, {a['owner']}): {a['reason']}")
+                  else:
+                      broken.append(pid + (f" (acceptance EXPIRED {a['expires']})" if a else ""))
           out += ["", "### What is MISSING", ""]
           missing = [
               "CodeQL / GHAS — not in the kit; assumed unavailable, should be an optional job",
@@ -601,10 +719,18 @@ jobs:
               "Findings deduplication and disposition — scanners emit, nothing manages the output",
           ]
           out += [f"- {m}" for m in missing]
-          if broken:
-              out += ["", f"### ⚠️ Probes not proven this run: {', '.join(broken)}",
+          if accepted:
+              out += ["", "### Not proven, accepted until a date (not a pass)", ""]
+              out += [f"- {a}" for a in accepted]
+          if broken or unknown:
+              out += ["", f"### ⚠️ Probes not proven this run: {', '.join(broken + [u.split(':')[0] for u in unknown])}",
                       "Treat those capabilities as UNKNOWN, not working."]
+              out += [f"- {u}" for u in unknown]
           txt = "\n".join(out)
           print(txt)
-          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as fh: fh.write(txt + "\n")
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding="utf-8") as fh: fh.write(txt + "\n")
+          if broken or unknown:
+              print(f"::error title=Scanner capability not proven::{len(broken) + len(unknown)} probe(s) "
+                    "did not execute and detect their seeded signal. A matrix that cannot fail proves nothing.")
+              sys.exit(1)
           PY

@@ -54,10 +54,10 @@ jobs:
       # A detection fixture is INPUT to the test suite, never a subject of the kit's own posture.
       scan_paths: ".github scripts tests/reconcile_validation.py templates profiles"
       enable_dependency_check: ${{ inputs.enable_dependency_check }}
-      # 11 = never fail. FIRST RUNS EXIST TO PRODUCE EVIDENCE, NOT TO GATE. This workflow has no
-      # observed behaviour at all yet; gating on a scanner whose output nobody has seen would tell
-      # us only that it can fail. Raise this deliberately once the baseline is understood.
-      fail_on_cvss: 11
+      # 9.0, the shipped default (owner ruling O-12, recorded 2026-10-16/21). It was 11, which no
+      # CVSS score can reach, so the kit's own NVD scan could never fail on anything it found. Set
+      # explicitly, not inherited, so a later change to the default is a visible diff here too.
+      fail_on_cvss: 9.0
       trivy_fail_severities: ""
     # `inherit` is required, not stylistic: NVD_API_KEY is an ENVIRONMENT secret, and a caller job
     # that `uses:` a reusable workflow cannot declare an environment of its own. The secret resolves

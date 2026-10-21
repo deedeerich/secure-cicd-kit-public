@@ -95,6 +95,7 @@ def main() -> int:
 
     detected, missed, wrong_tool = [], [], []
     negatives_ok, negatives_bad = [], []
+    absent = []
 
     for item in expected:
         rel, signal = item["path"], item["expected_signal"]
@@ -102,7 +103,12 @@ def main() -> int:
         # Tools report paths relative to different roots, so match on suffix.
         hits = {t for uri, ts in observed.items() if uri.endswith(rel) for t in ts}
 
-        if signal.startswith("negative:"):
+        if not os.path.isfile(os.path.join(a.fixture, rel)):
+            # NOT IN THE SCANNED TREE, SO NOT GRADABLE (tests/prove_expected_signals_honest.py).
+            # A generated, git-ignored file is absent from every checkout: no scanner could
+            # have flagged it, and a negative control there passed nothing.
+            absent.append((rel, signal))
+        elif signal.startswith("negative:"):
             # A negative control MUST NOT be flagged. A scanner that fires on documented
             # near-misses is worse than one that misses: it trains people to ignore it.
             (negatives_ok if not hits else negatives_bad).append((rel, signal, sorted(hits)))
@@ -125,16 +131,19 @@ def main() -> int:
         print(f"{'MISSED':11} {sig:30} {want or '-':11} {rel}")
     for rel, sig, by in negatives_bad:
         print(f"{'FALSE-POS':11} {sig:30} {'-':11} {rel}  [{','.join(by)}]")
+    for rel, sig in absent:
+        print(f"{'ABSENT':11} {sig:30} {'-':11} {rel}")
 
     total_pos = len(detected) + len(missed) + len(wrong_tool)
     print()
     print(f"detected {len(detected)}/{total_pos} seeded signals; "
-          f"{len(negatives_ok)}/{len(negatives_ok) + len(negatives_bad)} negative controls clean")
+          f"{len(negatives_ok)}/{len(negatives_ok) + len(negatives_bad)} negative controls clean; "
+          f"{len(absent)} expectation(s) ABSENT from the scanned tree")
 
     if a.json:
         json.dump({"detected": detected, "missed": missed, "wrong_tool": wrong_tool,
                    "negatives_ok": negatives_ok, "negatives_bad": negatives_bad,
-                   "unreadable": unreadable},
+                   "absent": absent, "unreadable": unreadable},
                   open("expected-signals-result.json", "w", encoding="utf-8"), indent=2)
 
     rc = 0
@@ -160,6 +169,16 @@ def main() -> int:
               "covering for it is exactly the blind spot the pin exists to remove.")
         for rel, sig, want, by in wrong_tool:
             print(f"::error file={rel}::`{sig}` requires `{want}`; flagged only by {', '.join(by)}")
+        rc = 1
+    if absent:
+        print()
+        print("::error title=Seeded files ABSENT from the scanned tree::These expectations name "
+              "files that were never in the scanned tree, so no scanner could have flagged them "
+              "and no negative control among them passed. This is a fixture-DELIVERY defect "
+              "(e.g. a generated, git-ignored file the checkout cannot contain), not a detection "
+              "result -- do not read it as a scanner miss.")
+        for rel, sig in absent:
+            print(f"::error file={rel}::`{sig}` -- file absent from --fixture")
         rc = 1
     if negatives_bad:
         print()

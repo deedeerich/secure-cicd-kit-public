@@ -1,0 +1,353 @@
+# The denominator for reusable-security.yml.
+#
+# DECOMPOSITION PLAN §E.3 / §7 STEP 10. GitHub cannot generate jobs from a file, so this registry does
+# not CREATE jobs. It is the list every job in the workflow is checked AGAINST
+# (tests/check_scanner_registry.py), in both directions:
+#
+#   every row here   -> a job exists, the gate waits for it AND reads its result, the report waits for
+#                       it (scanners), it carries a registered capability, and it uses its composite
+#                       once one is named
+#   every job there  -> has a row here. An unregistered job is the failure this file exists to catch.
+#
+# Why a denominator and not a spot-check: the gate's `needs:` list and the gate's scanner loop are TWO
+# enumerations. `image-scan` was once in the first and missing from the second -- the gate waited for
+# the container scan and never read its result -- and tests/check_gate.py, which compares `needs`
+# against the job list, could not see it. A total comparison can.
+#
+# `composite` stays null until Phase 2 step 11/12 moves that job's logic into
+# .github/actions/<name>; from then on the checker requires the job to `uses: $/.github/actions/<name>`.
+#
+# classes:
+#   scanner         produces findings; read in the gate's scanner loop; waited for by `report`
+#   infrastructure  produces no findings; read by the gate AS ITSELF (never through its dependants)
+#   evidence        assembles the evidence artifact; read by the gate as itself
+#   gate            the verdict job itself
+#   governance      runs AFTER the gate, on the protected branch's own runs, and its only authority
+#                   is a pull request (propose-ledger, SINGLE_PIPELINE_TARGET.md section 9.3). The
+#                   gate must NOT wait for it -- a proposal can never fail a verdict -- and it must
+#                   need `report`, whose findings file it consumes. tests/prove_propose_ledger_job_scope.py
+#                   holds its write scope to the proposal branch.
+
+jobs:
+  kit-scripts:    {class: infrastructure, composite: null}
+  # Its two step bodies (the survey and the platform probe) run from the composite through `$/`
+  # since 2026-10-15, invoked once per part under the ids its outputs always read; inline they
+  # held the flagship over the 475 KB fail line. tests/test_discovery.py runs them from there.
+  discover:       {class: infrastructure, composite: discover}
+  # The position between discover and the scanners (SINGLE_PIPELINE_TARGET §5.1; PIPELINE_ORDERING
+  # §1.6). Versions, capability, coverage, plan. Registered 2026-10-14. Since 2026-10-15 the gate
+  # waits for it and reads needs.resolve.result as itself (failure or skipped is tooling, never
+  # NOT_APPLICABLE), and its step bodies run from the composite through `$/` -- inline, they took
+  # the flagship to 518 KB, past the ceiling at which a workflow never starts.
+  resolve:        {class: infrastructure, composite: resolve}
+  secret-scan:    {class: scanner, capability: secret-scan,    applies: always,                    composite: null}
+  # python OR node, as the job's own condition reads since the ESLint-behind-a-Python-gate fix.
+  # `applies` is read by nothing that enforces; the resolve job's advisory plan states the same rule.
+  code-quality:   {class: scanner, capability: code-quality,   applies: discover.python|discover.node, composite: null}
+  sast-semgrep:   {class: scanner, capability: sast-semgrep,   applies: always,                    composite: null}
+  sast-bandit:    {class: scanner, capability: sast-bandit,    applies: discover.python,           composite: null}
+  codeql:         {class: scanner, capability: codeql,         applies: discover.any-codeql-lang,  composite: null}
+  deps-scan:      {class: scanner, capability: deps-scan,      applies: always,                    composite: null}
+  iac-scan:       {class: scanner, capability: iac-scan,       applies: discover.iac,              composite: null}
+  sast-dotnet:    {class: scanner, capability: sast-dotnet,    applies: discover.dotnet,           composite: null}
+  sast-java:      {class: scanner, capability: sast-java,      applies: discover.java,             composite: null}
+  sast-go:        {class: scanner, capability: sast-go,        applies: discover.go,               composite: null}
+  sast-cpp:       {class: scanner, capability: sast-cpp,       applies: discover.cpp,              composite: null}
+  image-scan:     {class: scanner, capability: image-scan,     applies: input.image_ref,           composite: null}
+  malicious-deps: {class: scanner, capability: malicious-deps, applies: input.enable_malicious_pkg_scan, composite: null}
+  sbom:           {class: scanner, capability: sbom,           applies: input.enable_sbom,         composite: null}
+  report:         {class: evidence, composite: scan-report}
+  security-gate:  {class: gate, capability: security-gate, composite: null}
+  # propose-ledger MOVED 2026-10-15 to .github/workflows/reusable-propose-ledger.yml: a write-scoped job
+  # inside this workflow forced every consumer to grant write to the security scan (startup_failure).
+
+# ── VERSION SUPPORT — what each scanner DECLARES it can read, per artefact class ────────────
+#
+# PIPELINE_ORDERING_AND_SCAN_VALIDITY.md §2.4, and the registry's own rule under
+# version_applicability.SCANNER_SUPPORTS: "Declared PER SCANNER, never kit-wide. bandit, semgrep,
+# CodeQL, gosec and trivy each have their own range, and a single shared table would be a
+# convenient fiction whose first exception is silently wrong."
+#
+# This block is the DATA the `resolve` job matches discovered versions against. The composite the
+# job runs (.github/actions/resolve/action.yml) carries a byte-equivalent JSON copy, and
+# tests/test_resolve.py fails if the two differ. Edit HERE, then the copy there.
+#
+# Per (job, class) a LIST of tool entries. Fields:
+#   tool            the tool inside the job that makes the claim (a job can hold several)
+#   min / max       the declared inclusive range, as strings; null = not declared
+#   max_from_input  the ceiling is the runner toolchain the caller chose, read from this input.
+#                   This is the moment a language version becomes a CONTROL SURFACE (PO §7).
+#   unbounded       true = the tool is version-immune (lexical); null min/max then mean "any"
+#   compare         how the target is compared: version (default) | syntax_level | standard_year
+#   basis           WHY the range is what it is, with the measurement or citation
+#   verified        READ (cited vendor documentation or this kit's own measurement) |
+#                   UNVERIFIED (nothing establishes it; the resolver answers UNDETERMINED)
+#   corpus          (corpus-measured rows only) the seeded corpus that measured min..max; the
+#                   row is written by its probe (--write) and re-checked by it (--check)
+#
+# AN UNDECLARED RANGE IS A GAP, NOT A PASS. A null range yields VERSION_SUPPORT_UNDETERMINED for
+# every target, and the summary says so and names this file. Filling a row in is the remediation;
+# the honest way to fill it is a seeded corpus above the ceiling (PO §3.1 is the template).
+version_support:
+  sast-bandit:
+    python:
+      - tool: bandit
+        min: null
+        max: null
+        max_from_input: python_version
+        unbounded: false
+        compare: version
+        basis: "bandit builds its AST with the ast module of the interpreter it runs under, so its ceiling IS the runner interpreter. Reproduced 2026-09-23: PEP 695 syntax skipped with exit 0 under 3.11 (PO section 3.1-3.2)."
+        verified: READ
+  code-quality:
+    python:
+      - tool: mypy
+        min: null
+        max: null
+        max_from_input: python_version
+        unbounded: false
+        compare: version
+        basis: "mypy parses with the running interpreter and exits 2 on a syntax it cannot read (PO section 3.6). ruff has its own parser and is not declared here."
+        verified: READ
+    node:
+      - tool: eslint
+        min: null
+        max: null
+        max_from_input: null
+        unbounded: false
+        compare: version
+        basis: "eslint's parser is configured by the project (ecmaVersion); not established here."
+        verified: UNVERIFIED
+  sast-semgrep:
+    python:
+      - tool: semgrep
+        min: null
+        max: null
+        max_from_input: null
+        unbounded: false
+        compare: version
+        basis: "semgrep carries its own parser, independent of the runner interpreter. PEP 695 parsed at 1.178.0; the kit pins 1.90.0 and nothing measured that version (PO section 3.4). Per-version language support is not published."
+        verified: UNVERIFIED
+    node:
+      - tool: semgrep
+        min: null
+        max: null
+        max_from_input: null
+        unbounded: false
+        compare: version
+        basis: "own parser; per-version support not published."
+        verified: UNVERIFIED
+    go:
+      - tool: semgrep
+        min: null
+        max: null
+        max_from_input: null
+        unbounded: false
+        compare: version
+        basis: "own parser; per-version support not published."
+        verified: UNVERIFIED
+    java:
+      - tool: semgrep
+        min: null
+        max: null
+        max_from_input: null
+        unbounded: false
+        compare: version
+        basis: "own parser; per-version support not published."
+        verified: UNVERIFIED
+    dotnet:
+      - tool: semgrep
+        min: null
+        max: null
+        max_from_input: null
+        unbounded: false
+        compare: version
+        basis: "own parser; per-version support not published."
+        verified: UNVERIFIED
+  sast-dotnet:
+    dotnet:
+      - tool: dotnet-sdk
+        min: null
+        max: null
+        max_from_input: dotnet_version
+        unbounded: false
+        compare: version
+        basis: "dotnet restore and dotnet list package run on the runner SDK the caller chose; a TargetFramework newer than that SDK cannot be restored (NETSDK1045)."
+        verified: READ
+      - tool: semgrep
+        min: null
+        max: null
+        max_from_input: null
+        unbounded: false
+        compare: version
+        basis: "own parser; per-version support not published."
+        verified: UNVERIFIED
+  sast-java:
+    java:
+      - tool: semgrep
+        min: null
+        max: null
+        max_from_input: null
+        unbounded: false
+        compare: version
+        basis: "the job installs the caller's java_version but runs only semgrep, which does not compile; own parser, per-version support not published."
+        verified: UNVERIFIED
+  sast-go:
+    go:
+      - tool: gosec
+        min: null
+        max: null
+        max_from_input: null
+        unbounded: false
+        compare: version
+        basis: "the pinned container carries its own Go toolchain and a module whose go directive is newer than it fails to LOAD (sast-go job comment; PO section 3.6). The toolchain version inside the image is not established here."
+        verified: UNVERIFIED
+  sast-cpp:
+    cpp:
+      - tool: flawfinder
+        min: null
+        max: null
+        max_from_input: null
+        unbounded: true
+        compare: standard_year
+        basis: "simple lexical tokenisation, no parse, so no language standard can break it; blind only by file extension (PO section 3.6)."
+        verified: READ
+      - tool: cppcheck
+        min: null
+        max: null
+        max_from_input: null
+        unbounded: false
+        compare: standard_year
+        basis: "not established; whether its critical-error report survives into SARIF is PO section 3.6's open experiment."
+        verified: UNVERIFIED
+  iac-scan:
+    iac:
+      - tool: checkov
+        min: "0.12"
+        max: "1.14"
+        max_from_input: null
+        unbounded: false
+        compare: version
+        basis: "MEASURED by the seeded Terraform corpus (tests/corpora/terraform_corpus.py; D-VF-4): checkov 3.3.30 (and 3.3.29) read the seed in every family 0.12..1.14 (families: 0.12, 0.13, 0.14, 0.15, 1.1, 1.2, 1.3, 1.4, 1.5, 1.7, 1.8, 1.9, 1.10, 1.11, 1.14); every family in the corpus was read; no newer family is in it, so a newer release is outside what was measured. Releases with no new .tf construct are claimed through their neighbours. Measured 2026-10-21 (locally: the image checkov-action@v12 runs, ghcr.io/bridgecrewio/checkov 3.3.30 by digest sha256:4b65e89f1fde, and pip 3.3.29/3.3.30 on Windows; confirmed hosted by probe-scanner-corpora run 39640950138 on 37e4e77, --check PASS) by tests/corpora/probe_iac_corpus.py."
+        verified: READ
+        corpus: tests/corpora/terraform_corpus.py
+      - tool: trivy-config
+        min: "0.12"
+        max: "1.14"
+        max_from_input: null
+        unbounded: false
+        compare: version
+        basis: "MEASURED by the seeded Terraform corpus (tests/corpora/terraform_corpus.py; D-VF-4): trivy-config 0.71.2 (and 0.70.0) read the seed in every family 0.12..1.14 (families: 0.12, 0.13, 0.14, 0.15, 1.1, 1.2, 1.3, 1.4, 1.5, 1.7, 1.8, 1.9, 1.10, 1.11, 1.14); every family in the corpus was read; no newer family is in it, so a newer release is outside what was measured. Releases with no new .tf construct are claimed through their neighbours. Measured 2026-10-21 (locally, sha256-verified Windows release binaries; confirmed hosted for 0.71.2 and 0.70.0 by probe-scanner-corpora run 39640950138 on 37e4e77, --check PASS) by tests/corpora/probe_iac_corpus.py."
+        verified: READ
+        corpus: tests/corpora/terraform_corpus.py
+  codeql:
+    python:
+      - tool: codeql
+        min: "3.5"
+        max: "3.14"
+        max_from_input: null
+        unbounded: false
+        compare: version
+        basis: "Python 2.7, 3.5 to 3.14; the extractor needs a Python 3 to run but parses independently of it (CodeQL supported languages page as fetched 2026-09-23, PO section 3.5). 2.7 is not modelled."
+        verified: READ
+    node:
+      - tool: codeql
+        min: null
+        max: "ES2022"
+        max_from_input: null
+        unbounded: false
+        compare: syntax_level
+        basis: "ECMAScript 2022 or lower; TypeScript 2.6 to 7.0 (same page). A node RUNTIME version does not establish the syntax level; tsconfig target does."
+        verified: READ
+    go:
+      - tool: codeql
+        min: "1.11"
+        max: "1.27"
+        max_from_input: null
+        unbounded: false
+        compare: version
+        basis: "Go up to 1.27, requires Go 1.11 or newer (same page)."
+        verified: READ
+    java:
+      - tool: codeql
+        min: "7"
+        max: "26"
+        max_from_input: java_version
+        unbounded: false
+        compare: version
+        basis: "Java 7 to 26 (javac, ECJ) (same page); autobuild compiles with the JDK the caller chose, so a release above it fails the build (PO section 3.5, the cq_build defect)."
+        verified: READ
+    dotnet:
+      - tool: codeql
+        min: null
+        max: "10"
+        max_from_input: dotnet_version
+        unbounded: false
+        compare: version
+        basis: "C# up to 14 and .NET up to 10 (same page); autobuild restores with the SDK the caller chose."
+        verified: READ
+    cpp:
+      - tool: codeql
+        min: null
+        max: "23"
+        max_from_input: null
+        unbounded: false
+        compare: standard_year
+        basis: "C89 to C23, C++98 to C++23, the 23s in beta; C++20 modules not supported (same page)."
+        verified: READ
+  secret-scan:
+    "*":
+      - tool: gitleaks+detect-secrets
+        min: null
+        max: null
+        max_from_input: null
+        unbounded: true
+        compare: version
+        basis: "regex plus entropy, and line-scanning plugins; neither uses a language parser, so neither is gated by language version (PO section 3.6, 5.4). Their blind spot is scope, not syntax."
+        verified: READ
+
+# ── CAPABILITY SELECTION — which carried scanner serves each capability, in order (KDEC-010) ──
+#
+# "It's supposed to change scanners if there is one that has the capabilities, not just partial,
+# and if there is not one then it annotates and goes to partial." For each (capability, root)
+# the resolver walks `candidates` IN THIS ORDER and selects the first whose declared range above
+# CAN read the target version -- SCANNER_SUPPORTS, from a `verified: READ` row. The first
+# candidate is the DEFAULT. Three outcomes, and they never collapse:
+#
+#   SERVED         the default can read it; ordinary coverage
+#   SUBSTITUTION   the default cannot and a later candidate can; the scan is routed to that one
+#                  and the result is LABELLED as a substitution (which tool, why) -- never
+#                  presented as equivalent coverage (PIPELINE_ORDERING section 6: substitution is
+#                  not equivalence). The default still runs; its silence is not coverage.
+#   VERSION_GAP    no candidate can read it (unsupported, or undetermined, for every one). The
+#                  scan still runs where it can; every job pointed at the gap is CAPPED at
+#                  scanner_state.PARTIAL -- never PASS -- and the report names the registry row
+#                  above that would close it.
+#
+# UNDETERMINED IS NOT CAPABLE. A `verified: UNVERIFIED` row is never selected, whatever range is
+# written in it (D-VF-4: an unverified range needs a seeded corpus before it can be trusted). So
+# today: python-sast has a REAL substitute (bandit -> CodeQL); go-, java- and dotnet-sast are
+# served by CodeQL alone or not at all; iac is served by checkov (trivy-config behind it) for a
+# Terraform target inside the range the seeded corpus measured (D-VF-4: 0.12..1.14 on 2026-10-21,
+# tests/corpora/, re-measured weekly by probe-scanner-corpora.yml), and is a VERSION_GAP above it.
+# Code scanning UNAVAILABLE or NOT_CONFIGURED does NOT withdraw CodeQL: it refuses publication
+# to the Security tab, not the analysis (KNOWN_DEFECTS D-10; run 38817782084), so the candidate
+# stays and carries the pre-flight as `publication`.
+#
+# HONEST BY CONSTRUCTION: every candidate is a (job, tool) with a `version_support` row above --
+# nothing here names a tool the kit does not carry -- and every version-gated row above is a
+# candidate for exactly one capability (tests/test_resolve.py; tests/check_scanner_registry.py).
+# The composite carries a byte-equivalent JSON copy of this block; edit HERE, then the copy.
+capability_selection:
+  python-sast:        {class: python, candidates: [sast-bandit/bandit, sast-semgrep/semgrep, codeql/codeql]}
+  python-quality:     {class: python, candidates: [code-quality/mypy]}
+  node-sast:          {class: node,   candidates: [sast-semgrep/semgrep, codeql/codeql]}
+  node-quality:       {class: node,   candidates: [code-quality/eslint]}
+  go-sast:            {class: go,     candidates: [sast-go/gosec, sast-semgrep/semgrep, codeql/codeql]}
+  java-sast:          {class: java,   candidates: [sast-java/semgrep, sast-semgrep/semgrep, codeql/codeql]}
+  dotnet-sast:        {class: dotnet, candidates: [sast-dotnet/semgrep, sast-semgrep/semgrep, codeql/codeql]}
+  # `dotnet list package --vulnerable` audits NuGet metadata, not source; it is not a SAST
+  # substitute for anything and nothing substitutes for it.
+  dotnet-nuget-audit: {class: dotnet, candidates: [sast-dotnet/dotnet-sdk]}
+  cpp-sast:           {class: cpp,    candidates: [sast-cpp/flawfinder, sast-cpp/cppcheck, codeql/codeql]}
+  iac:                {class: iac,    candidates: [iac-scan/checkov, iac-scan/trivy-config]}

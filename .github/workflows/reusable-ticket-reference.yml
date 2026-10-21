@@ -1,0 +1,359 @@
+# A pull request must carry a well-formed reference to the Jira work item it implements.
+#
+# CORE, NOT AN OVERLAY (KDEC-013, 2026-10-16). This gate began in one consumer's overlay. The
+# MECHANISM -- find a work-item reference in the pull-request description, parse its key, and check
+# it against an id-format policy -- was never consumer-specific, and the owner moved the whole Jira
+# reference gate into the core. The one part that stays a consumer's is a RANGE on the issue number:
+# a consumer may choose to require, say, a fixed number of digits. The core ships with NO range.
+# Jira issue numbers are sequential and unbounded; a kit that defaulted to one organisation's ticket
+# volume would start rejecting legitimate work the day a project crossed that organisation's
+# ceiling, and every other consumer would inherit the rule without ever choosing it.
+#
+# CALL IT FROM A PULL-REQUEST WORKFLOW
+#
+#   on:
+#     pull_request:
+#       types: [opened, edited, synchronize, reopened]
+#   jobs:
+#     ticket-reference:
+#       permissions: {contents: read, pull-requests: read}
+#       uses: <kit-owner>/<kit-repo>/.github/workflows/reusable-ticket-reference.yml@<40-hex sha>
+#       with:
+#         tracker_host: ${{ vars.JIRA_HOST }}        # e.g. yourcompany.atlassian.net
+#         project_key: ${{ vars.JIRA_PROJECT }}      # e.g. WORK
+#         # Optional: constrain the issue number. Both or neither. No default range.
+#         # min_digits: "3"
+#         # max_digits: "6"
+#
+# THE PR BODY IS DATA, NEVER CODE. It reaches bash through `env:`. Interpolating it into the script
+# text made the original gate injectable ($(...) and backticks executed with the job's token) and
+# made a lone double quote truncate the body, so a link later in the description was reported
+# absent from text the gate never received. tests/prove_ticket_reference_gate.py runs this step as
+# shipped against both shapes.
+#
+# WHAT THIS PROVES, AND WHAT IT DOES NOT
+#
+#   reference supplied  !=  URL well-formed  !=  key syntactically valid
+#                       !=  the issue exists  !=  the issue is appropriate for this PR
+#
+# This gate establishes the first three. Existence needs a Jira API call and is a declared gap, not
+# an implication: a syntactically perfect link to a ticket nobody opened must not satisfy a
+# change-control gate. A ticket is not an authorization (TICKETING_CONTRACT.md). Ticket WRITES are
+# reusable-ticket-reconcile.yml's, after the merge; this gate only reads the PR description.
+name: "Kit: Ticket reference (reusable)"
+
+on:
+  workflow_call:
+    inputs:
+      tracker_host:
+        description: >-
+          The Jira site host, for example yourcompany.atlassian.net. A reference is a URL of the
+          form https://<host>/browse/<KEY>-<number>. Empty means the gate is not configured, and
+          the gate fails as a platform problem rather than passing.
+        type: string
+        required: true
+      project_key:
+        description: >-
+          The Jira project key, for example WORK. Empty means the gate is not configured, and the
+          gate fails as a platform problem rather than passing.
+        type: string
+        required: true
+      min_digits:
+        description: >-
+          Optional lower bound on the number of digits in the issue number. Set both bounds or
+          neither. Empty (the default) applies no range: any issue number is accepted.
+        type: string
+        default: ""
+      max_digits:
+        description: >-
+          Optional upper bound on the number of digits in the issue number. Set both bounds or
+          neither. Empty (the default) applies no range: any issue number is accepted.
+        type: string
+        default: ""
+    outputs:
+      outcome:
+        description: >-
+          REFERENCE_FOUND, NO_CANDIDATE_PASSED, NO_CANDIDATE, NO_TEXT, NOT_CONFIGURED,
+          POLICY_MISCONFIGURED or NOT_A_PULL_REQUEST. A state, never a boolean.
+        value: ${{ jobs.validate-reference.outputs.outcome }}
+      reference:
+        description: "The selected work-item key, when one satisfied the policy."
+        value: ${{ jobs.validate-reference.outputs.reference }}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  validate-reference:
+    name: Validate the Jira work-item reference
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      outcome: ${{ steps.validate.outputs.outcome }}
+      reference: ${{ steps.validate.outputs.reference }}
+    steps:
+      - name: Validate
+        id: validate
+        shell: bash
+        env:
+          # THE FIX THIS GATE EXISTS FOR. The body arrives as an environment variable, never as
+          # script text. Nothing a contributor writes in a PR description can execute or truncate.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          EVENT_NAME: ${{ github.event_name }}
+          TRACKER_HOST: ${{ inputs.tracker_host }}
+          PROJECT_KEY: ${{ inputs.project_key }}
+          MIN_DIGITS: ${{ inputs.min_digits }}
+          MAX_DIGITS: ${{ inputs.max_digits }}
+        run: |
+          set -uo pipefail   # deliberately NOT -e: this script reports its own failures
+
+          summary() { printf '%s\n' "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          finish() {
+            # outcome first, then exit: the caller reads a STATE, never only a colour. Written with
+            # the kit's `echo name=` idiom so scripts/trace_assurance_flow.py can see the producer.
+            echo "outcome=$1" >> "$GITHUB_OUTPUT"
+            echo "reference=${3:-}" >> "$GITHUB_OUTPUT"
+            exit "$2"
+          }
+          host="${TRACKER_HOST:-}"
+          proj="${PROJECT_KEY:-}"
+          mind="${MIN_DIGITS:-}"
+          maxd="${MAX_DIGITS:-}"
+
+          summary "### Jira reference validation"
+          summary ""
+
+          # THE ASSURANCE BLOCK IS EMITTED ON EVERY EXIT PATH, NOT ONLY ON PASS. What a gate did NOT
+          # check matters most when it failed, because that is when someone decides how much weight
+          # to put on the result.
+          assurance() {
+            summary ""
+            summary "**ASSURANCE**"
+            summary ""
+            summary "| Checked | |"
+            summary "|---|---|"
+            summary "| URL shape | YES |"
+            summary "| Issue-key syntax | YES |"
+            summary "| Issue-number range | $([ -n "$mind" ] && echo "YES (${mind}-${maxd} digits, a consumer rule)" || echo 'none configured') |"
+            summary "| Issue exists in Jira | **NO** — needs a Jira API call |"
+            summary "| Issue is open / in a valid state | **NO** |"
+            summary "| Issue describes THIS change | **NO** — reviewer judgement |"
+            summary "| Gate result | $1 |"
+            summary ""
+            summary "> reference supplied != URL well-formed != key syntactically valid !="
+            summary "> the issue exists != the issue is appropriate for this PR"
+          }
+
+          # NOT A PULL REQUEST: NOTHING TO ASSESS, AND SAID SO. This gate reads a pull-request
+          # description. On any other event there is none, so it reports NOT ASSESSED and exits 0 --
+          # the same contract as the ticket reconciler refusing to arm on a pull request. It is not
+          # a pass: the outcome is NOT_A_PULL_REQUEST and the summary says nothing was checked.
+          case "$EVENT_NAME" in
+            pull_request|pull_request_target) ;;
+            *)
+              summary "**RESULT**"
+              summary ""
+              summary "| | |"
+              summary "|---|---|"
+              summary "| Validation | **NOT ASSESSED** — event \`${EVENT_NAME}\` carries no pull-request description |"
+              summary "| Gate | not applicable on this event |"
+              summary ""
+              summary "**ACTION REQUIRED**"
+              summary ""
+              summary "- None. Call this gate from a pull_request workflow to assess a description."
+              summary ""
+              summary "**ASSURANCE**"
+              summary ""
+              summary "Nothing was checked. This is unestablished scope, not a clean result."
+              echo "::notice title=Jira reference not assessed::event ${EVENT_NAME} is not a pull request; nothing was checked."
+              finish NOT_A_PULL_REQUEST 0
+              ;;
+          esac
+
+          if [ -z "$host" ] || [ -z "$proj" ]; then
+            # NOT CONFIGURED IS A PLATFORM PROBLEM AND THE DEVELOPER MUST BE TOLD SO EXPLICITLY.
+            # Otherwise a red gate reads as "your Jira link is wrong" and they spend the afternoon
+            # editing a description that was never the problem.
+            summary "**RESULT**"
+            summary ""
+            summary "| | |"
+            summary "|---|---|"
+            summary "| Validation | **NOT ESTABLISHED** — the gate could not run |"
+            summary "| Gate | **FAIL** (could not run, which is not the same as failing a check) |"
+            summary ""
+            summary "**ACTION REQUIRED**"
+            summary ""
+            summary "- Developer action: **NONE**. Your PR was not assessed."
+            summary "- **Platform owner:** pass \`tracker_host\` (e.g. \`yourcompany.atlassian.net\`)"
+            summary "  and \`project_key\` (e.g. \`WORK\`) to this gate, then re-run."
+            summary "- Governance owner: none."
+            summary ""
+            summary "**ASSURANCE**"
+            summary ""
+            summary "Nothing was checked. This is unestablished scope, not a clean result."
+            echo "::error title=Jira validation not configured::pass tracker_host and project_key."
+            echo "The gate is NOT passing -- it could not run, which is different from passing."
+            echo "Developer action: NONE. This is a platform configuration task."
+            finish NOT_CONFIGURED 1
+          fi
+
+          # A RANGE IS BOTH BOUNDS OR NEITHER, AND IT IS NUMBERS. Half a policy is not a policy, and
+          # picking the missing bound here would be this gate inventing a consumer's numbering.
+          if [ -n "$mind$maxd" ]; then
+            bad=""
+            if [ -z "$mind" ] || [ -z "$maxd" ]; then
+              bad="set both min_digits and max_digits, or neither"
+            elif ! printf '%s' "$mind" | grep -qE '^[1-9][0-9]*$' \
+                 || ! printf '%s' "$maxd" | grep -qE '^[1-9][0-9]*$'; then
+              bad="min_digits and max_digits must be positive whole numbers"
+            elif [ "$mind" -gt "$maxd" ]; then
+              bad="min_digits (${mind}) is greater than max_digits (${maxd})"
+            fi
+            if [ -n "$bad" ]; then
+              summary "**RESULT**"
+              summary ""
+              summary "| | |"
+              summary "|---|---|"
+              summary "| Validation | **NOT ESTABLISHED** — the issue-number range is misconfigured |"
+              summary "| Problem | ${bad} |"
+              summary "| Gate | **FAIL** (could not run, which is not the same as failing a check) |"
+              summary ""
+              summary "**ACTION REQUIRED**"
+              summary ""
+              summary "- Developer action: **NONE**. Your PR was not assessed."
+              summary "- **Platform owner:** ${bad}."
+              summary "- Governance owner: none."
+              summary ""
+              summary "**ASSURANCE**"
+              summary ""
+              summary "Nothing was checked. This is unestablished scope, not a clean result."
+              echo "::error title=Jira reference range misconfigured::${bad}"
+              finish POLICY_MISCONFIGURED 1
+            fi
+          fi
+
+          if [ -z "${PR_BODY:-}" ]; then
+            summary "**RESULT**"
+            summary ""
+            summary "| | |"
+            summary "|---|---|"
+            summary "| Jira reference | **NOT FOUND** — the PR description is empty |"
+            summary "| Gate | **FAIL** |"
+            summary ""
+            summary "**ACTION REQUIRED**"
+            summary ""
+            summary "- **Developer:** describe the change and link its ${proj} work item."
+            summary "- Platform owner: none."
+            summary "- Governance owner: none."
+            assurance "FAIL"
+            echo "::error title=No PR description::Add a Jira work-item link."
+            finish NO_TEXT 1
+          fi
+
+          # FULLY escape both configuration values before they become regex fragments: a host or
+          # key containing a metacharacter must match itself, not act as syntax.
+          esc() { printf '%s' "$1" | sed 's/[][\.|$(){}?+*^\\/]/\\&/g'; }
+          host_re=$(esc "$host")
+          proj_re=$(esc "$proj")
+
+          # Capture the ENTIRE numeric suffix, so a range applies to the whole number and WORK-10034
+          # is never read as the prefix WORK-1003. The cap is 50 and a truncation is REPORTED: a
+          # silent cap makes the answer depend on how many links precede the real one.
+          # suppression: EXPECTED_NEGATIVE_RESULT -- grep exits 1 when the body holds no reference,
+          # which is the NO_CANDIDATE path below. A DIFFERENT failure (exit 2, e.g. a pattern grep
+          # cannot compile) also yields no candidates, so the gate FAILS closed; it never passes.
+          all=$(printf '%s\n' "$PR_BODY" | grep -oE "https://${host_re}/browse/${proj_re}-[0-9]+" || true)
+          seen=$(printf '%s\n' "$all" | sed '/^$/d' | wc -l | tr -d ' ')
+          urls=$(printf '%s\n' "$all" | sed '/^$/d' | head -50)
+
+          if [ -z "$urls" ]; then
+            summary "**RESULT**"
+            summary ""
+            summary "| | |"
+            summary "|---|---|"
+            summary "| Jira reference | **NOT FOUND** |"
+            summary "| Expected shape | \`https://${host}/browse/${proj}-<number>\` |"
+            summary "| Gate | **FAIL** |"
+            summary ""
+            summary "**ACTION REQUIRED**"
+            summary ""
+            summary "- **Developer:** add a ${proj} work-item link to the PR description."
+            summary "- Platform owner: none."
+            summary "- Governance owner: none."
+            assurance "FAIL"
+            echo "::error title=No Jira link found::Expected https://${host}/browse/${proj}-<number>"
+            echo "Searched the whole PR description and found no ${proj} work-item URL."
+            finish NO_CANDIDATE 1
+          fi
+
+          # EVERY CANDIDATE IS EVALUATED, NOT ONLY THE FIRST. The policy is "this PR carries at
+          # least one valid work-item reference"; validating only the first link fails an ordinary
+          # description that mentions an older ticket before the real story.
+          url=""; id=""; num=""; rejected=""
+          while IFS= read -r cand; do
+            [ -z "$cand" ] && continue
+            cand_id="${cand##*/}"
+            cand_num="${cand_id##*-}"
+            if [ -z "$mind" ] || { [ "${#cand_num}" -ge "$mind" ] && [ "${#cand_num}" -le "$maxd" ]; }; then
+              url="$cand"; id="$cand_id"; num="$cand_num"
+              break
+            fi
+            rejected="${rejected}${rejected:+, }${cand_id} (${#cand_num} digits)"
+          done < <(printf '%s\n' "$urls")
+
+          summary "**RESULT**"
+          summary ""
+          summary "| | |"
+          summary "|---|---|"
+          summary "| Jira references found | ${seen} |"
+          if [ "$seen" -gt 50 ]; then
+            summary "| Examined | the first 50 of ${seen} — TRUNCATED; the rest were not read |"
+          fi
+
+          if [ -z "$url" ]; then
+            summary "| Valid reference | **NONE** — every candidate failed the issue-number range |"
+            summary "| Rejected | ${rejected} |"
+            summary "| Range | ${mind}-${maxd} digits (a CONSUMER rule, not a Jira rule) |"
+            summary "| Gate | **FAIL** |"
+            summary ""
+            summary "**ACTION REQUIRED**"
+            summary ""
+            summary "- **Developer:** link the ${proj} work item this change implements."
+            summary "  Found: ${rejected} — none satisfy the configured issue-number range."
+            summary "- Platform owner: none."
+            summary "- **Governance owner:** if one of these IS the legitimate work item, the range"
+            summary "  has been outgrown — raise \`max_digits\` rather than asking the developer to"
+            summary "  work around the gate."
+            assurance "FAIL"
+            echo "::error title=No acceptable Jira reference::${seen} Jira URL(s) found; none"
+            echo "satisfy the ${mind}-${maxd} digit range. Rejected: ${rejected}"
+            echo "Jira issue numbers are unbounded -- this is a consumer rule, not a Jira constraint."
+            finish NO_CANDIDATE_PASSED 1
+          fi
+
+          summary "| Validated reference | \`${url}\` |"
+          summary "| Issue number | ${num} |"
+          if [ -n "$mind" ]; then
+            summary "| Format | VALID (${#num} digits, range ${mind}-${maxd}) |"
+          else
+            summary "| Format | VALID (any length; no range configured) |"
+          fi
+          if [ -n "$rejected" ]; then
+            summary "| Also present | ${rejected} — outside the range, not used |"
+          fi
+          summary "| Gate | **PASS** (format only) |"
+          summary ""
+          summary "**ACTION REQUIRED**"
+          summary ""
+          summary "None. A well-formed ${proj} reference is present."
+          summary ""
+          summary "Note: this gate has NOT confirmed the work item exists, is open, or describes"
+          summary "this change. A reviewer still owns that judgement."
+          assurance "PASS"
+
+          echo "::notice title=Jira reference valid::${id} — format only."
+          echo "${seen} candidate URL(s) found. Existence and state were NOT verified. This gate"
+          echo "proves the PR carries a well-formed reference, not that the work item is real or"
+          echo "appropriate."
+          finish REFERENCE_FOUND 0 "$id"

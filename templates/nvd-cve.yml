@@ -1,8 +1,16 @@
 # Consumer template — NVD CVE scanning.
-# Copy to .github/workflows/nvd-cve.yml in the consuming repo and pin @vX.
+# Copy to .github/workflows/nvd-cve.yml in the consuming repo, replace YOUR_ORG, and pin the kit by
+# its 40-hex commit SHA (a branch or moving tag means the result came from code nobody chose).
 #
-# Requires repo/org secret: NVD_API_KEY
+# NVD_API_KEY (strongly recommended; without it the DB update is rate-limited, 20-40 minutes):
 #   Free, self-service: https://nvd.nist.gov/developers/request-an-api-key
+#   A repository or organisation secret is passed as below. If the key is an ENVIRONMENT secret,
+#   also pass `github_environment: <env>` -- a caller job cannot declare an environment, and
+#   `secrets: inherit` does not carry environment secrets on its own.
+#
+# fail_on_cvss defaults to 9.0: a Dependency-Check finding at CVSS 9.0 or above fails the scan.
+# Raising it is a softened gate the posture record names; above 10 nothing can block. Read the
+# verdict from the `routing_result` output.
 
 name: NVD CVE Scan
 
@@ -18,13 +26,13 @@ permissions:
 
 jobs:
   cve:
-    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-nvd-cve.yml@v1
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-nvd-cve.yml@0000000000000000000000000000000000000000   # pin a commit SHA
     with:
       scan_paths: "."
       # Dependency-Check is slow on a cold cache. Common pattern: full scan on the
       # schedule, Trivy-only on PRs.
       enable_dependency_check: ${{ github.event_name != 'pull_request' }}
       trivy_fail_severities: ""     # start report-only; tighten when the backlog is triaged
-      fail_on_cvss: 11              # 11 = never fail; lower it deliberately
+      fail_on_cvss: 9.0             # the shipped default (O-12); a higher value softens the gate
     secrets:
       NVD_API_KEY: ${{ secrets.NVD_API_KEY }}

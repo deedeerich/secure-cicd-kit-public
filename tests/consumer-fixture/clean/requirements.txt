@@ -8,6 +8,10 @@
 # Last bumped 2026-08-14 because urllib3 2.2.3 acquired four HIGH advisories
 # (CVE-2025-66418, CVE-2025-66471, CVE-2026-21441, CVE-2026-44431) within hours of the
 # previous pin being written. That is not a fixture defect; it is the control firing.
+#
+# Bumped again 2026-10-15: urllib3 2.7.0 acquired two HIGH advisories (CVE-2026-97687,
+# CVE-2026-97689; fixed in 2.8.0) and the clean leg of consumer-path run 38779788549
+# blocked on them. requests 2.34.2 and PyYAML 6.0.3 are still PyPI's latest that day.
 requests==2.34.2
 PyYAML==6.0.3
-urllib3==2.7.0
+urllib3==2.8.0

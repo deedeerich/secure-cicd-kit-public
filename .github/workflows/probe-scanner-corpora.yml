@@ -1,0 +1,91 @@
+name: Probe scanner corpora
+
+# D-VF-4 (ledger V-02): the IaC scanners' version ranges in scanner-registry.yaml are READ because
+# a seeded corpus MEASURED them (tests/corpora/terraform_corpus.py), and KDEC-014 enforces a
+# version gap at uat/prod only where such a range establishes it. A range is only as good as the
+# scanner it was measured on, so this re-measures it on the pinned scanners and FAILS when the
+# registry claims more than was measured -- before a deploy trusts a range a scanner upgrade lost.
+#
+# It runs the scanners the security workflow runs: checkov from the very image checkov-action
+# runs, pinned by digest; trivy from the release tarball, verified against a recorded digest --
+# the version the kit pins (0.71.2) and the version trivy-action@v0.36.0 defaults to (0.70.0),
+# which is what iac-scan runs while it sets no `version:`. Read-only: it measures and compares,
+# it never writes the registry (tests/corpora/probe_iac_corpus.py --write is a reviewed commit).
+
+on:
+  schedule:
+    - cron: "0 7 * * 1"          # weekly, Monday, after validate-scanners
+  workflow_dispatch:
+  # A range must be re-measured when what it rests on changes: the claimed range, the corpus or
+  # this probe. This is also the only trigger that runs before the workflow reaches the default
+  # branch -- GitHub dispatches and schedules a workflow only from there (404 on the trunk,
+  # 2026-10-21).
+  push:
+    paths:
+      - scanner-registry.yaml
+      - tests/corpora/**
+      - .github/workflows/probe-scanner-corpora.yml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checkov:
+    name: "CORPUS: checkov (checkov-action's image, by digest)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Measure checkov over the seeded Terraform corpus and compare with the registry
+        env:
+          # ghcr.io/bridgecrewio/checkov:3.3.30 -- the image checkov-action@v12 names (fetched
+          # 2026-10-21). Pulled BY DIGEST: a tag can move, a digest cannot.
+          IMAGE: ghcr.io/bridgecrewio/checkov@sha256:4b65e89f1fde292249fc0aa0d0db43302c036dfe39f7370b2d3517571082b894
+        run: |
+          set -euo pipefail
+          docker pull "$IMAGE"
+          docker run --rm --entrypoint python -v "$GITHUB_WORKSPACE:/kit:ro" -w /kit "$IMAGE" \
+            -I tests/corpora/probe_iac_corpus.py --tool checkov --cmd checkov \
+            --tool-version 3.3.30 --check
+
+  trivy:
+    name: "CORPUS: trivy config ${{ matrix.version }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: "0.71.2"
+            sha256: "0510e71e2fd39bf863856d499c8dc19feb4e7336546394c502a8f5cc7ab27460"
+          - version: "0.70.0"
+            sha256: "8b4376d5d6befe5c24d503f10ff136d9e0c49f9127a4279fd110b727929a5aa9"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install trivy (pinned, digest-verified)
+        env:
+          V: ${{ matrix.version }}
+          SHA: ${{ matrix.sha256 }}
+        run: |
+          set -euo pipefail
+          t="trivy_${V}_Linux-64bit.tar.gz"
+          curl -sSfL --retry 3 --connect-timeout 20 -o "$RUNNER_TEMP/$t" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${V}/$t"
+          echo "${SHA}  $RUNNER_TEMP/$t" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/trivy"
+          tar -xzf "$RUNNER_TEMP/$t" -C "$RUNNER_TEMP/trivy" trivy
+      - name: Measure trivy config over the seeded Terraform corpus and compare with the registry
+        env:
+          V: ${{ matrix.version }}
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet pyyaml==6.0.2
+          python -I tests/corpora/probe_iac_corpus.py --tool trivy-config \
+            --cmd "$RUNNER_TEMP/trivy/trivy" --tool-version "$V" --check

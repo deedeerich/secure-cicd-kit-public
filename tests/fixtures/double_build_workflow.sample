@@ -1,0 +1,32 @@
+# Fixture: the shape reusable-build-docker.yml actually shipped in, before 2026-09-18.
+# It must FAIL. A guard nobody has watched fail is not a guard -- this repository has already
+# shipped five checks whose patterns matched nothing while reporting CLEAN.
+name: fixture double build
+on:
+  workflow_call:
+    outputs:
+      image_digest:
+        value: ${{ jobs.build.outputs.image_digest }}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image_digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Build (load locally for scan)
+        uses: docker/build-push-action@v7
+        with:
+          load: true
+          tags: reg.example/app:t
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: reg.example/app:t
+      - name: SBOM
+        run: syft reg.example/app:t -o spdx-json=sbom.json
+      - name: Push
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          push: true
+          tags: reg.example/app:t

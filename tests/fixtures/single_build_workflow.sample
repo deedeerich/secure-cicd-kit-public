@@ -1,0 +1,31 @@
+# Fixture: the corrected shape. It must PASS. Without this half the self-test cannot tell
+# "the rules work" from "the rules reject everything".
+name: fixture single build
+on:
+  workflow_call:
+    outputs:
+      image_digest:
+        value: ${{ jobs.build.outputs.image_digest }}
+      artifact_identity:
+        value: ${{ jobs.build.outputs.artifact_identity }}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build (once)
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          load: true
+          tags: reg.example/app:t
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: reg.example/app:t
+      - name: SBOM
+        run: syft docker:reg.example/app:t -o spdx-json=sbom.json
+      - name: Push the scanned bytes
+        id: push
+        run: docker push reg.example/app:t
+      - name: Assert artifact identity
+        run: docker buildx imagetools inspect --raw reg.example/app@$DIGEST

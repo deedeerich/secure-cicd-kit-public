@@ -16,9 +16,13 @@ on:
         required: false
         default: ""
       acr_login_server:
-        description: "ACR login server FQDN"
+        description: >-
+          ACR login server FQDN. REQUIRED when push is true; leave empty for a build-only run.
+          It was `required: true`, which made the documented build-only path impossible to call
+          without naming a registry the run would never contact.
         type: string
-        required: true
+        required: false
+        default: ""
       image_repository:
         description: "Image repository name"
         type: string
@@ -53,23 +57,144 @@ on:
         type: string
         required: false
         default: "commercial"
+      # ── GOVERNANCE OF WEAKENINGS ────────────────────────────────────────────────────────
+      # A WEAKENING IS A GOVERNED EXCEPTION, NOT A BOOLEAN PREFERENCE. Optional, so no existing
+      # caller breaks; a caller who supplies none gets identical behaviour PLUS a record saying
+      # any weakening in force is unattributed — which is the truth and was previously invisible.
+      weakening_reason:
+        description: >-
+          Why a control on this invocation is weaker than baseline. Empty means the record says
+          WEAKENING_UNATTRIBUTED and routing_result becomes DECISION_REQUIRED — not a failure and
+          not a pass: a decision nobody has made yet.
+        type: string
+        required: false
+        default: ""
+      weakening_authority:
+        description: >-
+          WHO decided. A role, a team, a named approver. A reason without an authority is an
+          explanation, not a decision, and both are required before a weakening is attributed.
+        type: string
+        required: false
+        default: ""
+      weakening_exception_ref:
+        description: >-
+          Where the exception or deferral is recorded — a ticket, a disposition id, a register
+          entry. Its ABSENCE is reported too: an exception nobody can find is one nobody can
+          review or expire.
+        type: string
+        required: false
+        default: ""
+      weakening_expires:
+        description: >-
+          ISO date (YYYY-MM-DD) on which the weakening lapses. A past date routes to
+          DECISION_REQUIRED — silence must never renew a weakening.
+        type: string
+        required: false
+        default: ""
+      attestations_available:
+        description: >-
+          Set true ONLY when this repository's plan offers artifact attestations on a PRIVATE
+          repository (GitHub Enterprise Cloud). A PUBLIC repository attests regardless: there the
+          capability is free on every plan. On Free/Pro/Team a private repository cannot attest at
+          all (PROVENANCE_AND_ATTESTATION.md section 5), so the attest job is skipped rather than
+          wired to fail on every run. A platform fact, not a control-strength choice.
+        type: boolean
+        required: false
+        default: false
+    # REQUIRED FOR A PUSH, NOT FOR A BUILD. All three were `required: true`, so a caller could
+    # not invoke the documented build-only path without supplying credentials for a registry the
+    # run would never contact. The guard below enforces the real rule: push needs them, build does
+    # not. Optional here does not mean optional in practice -- it means the requirement is stated
+    # where it is actually true.
     secrets:
       AZURE_TENANT_ID:
-        description: "Entra tenant ID for OIDC federated login. Not a secret value in the cryptographic sense, but org-identifying — keep it in secrets."
-        required: true
+        description: "Entra tenant ID for OIDC federated login. REQUIRED when push is true. Not a secret value in the cryptographic sense, but org-identifying — keep it in secrets."
+        required: false
       AZURE_SUBSCRIPTION_ID:
-        description: "Target Azure subscription ID for OIDC federated login."
-        required: true
+        description: "Target Azure subscription ID for OIDC federated login. REQUIRED when push is true."
+        required: false
       AZURE_CLIENT_ID:
-        description: "Client ID of the federated app registration / user-assigned identity used for OIDC login. No client secret is used."
-        required: true
+        description: "Client ID of the federated app registration / user-assigned identity used for OIDC login. REQUIRED when push is true. No client secret is used."
+        required: false
     outputs:
       image_digest:
-        description: "SHA256 digest of the pushed image"
+        description: >-
+          Registry manifest digest of the pushed image. Empty on a build-only run. This value is
+          only safe to treat as deployment provenance when artifact_identity is
+          REGISTRY_IDENTITY_PROVEN — see that output.
         value: ${{ jobs.build.outputs.image_digest }}
+      image_config_digest:
+        description: >-
+          Config digest of the image that the gate and the SBOM actually inspected. This is the
+          identity of the SCANNED artifact. A consumer that wants to know whether its assurance
+          evidence describes the thing it deployed compares this against the registry's config
+          digest for image_digest — which is exactly what this workflow does before it returns.
+        value: ${{ jobs.build.outputs.image_config_digest }}
+      artifact_identity:
+        description: >-
+          REGISTRY_IDENTITY_PROVEN | LOCAL_BUILD_ONLY | IDENTITY_UNVERIFIED | NOT_ESTABLISHED.
+          The three are not interchangeable and must never be collapsed into a boolean. Proven
+          means the registry was asked and agreed; local-build-only means nothing was pushed so
+          there is nothing to disagree with; unverified means a push happened and the check did
+          not establish the link. Could-not-establish is never established.
+        value: ${{ jobs.build.outputs.artifact_identity }}
       sbom_sha256:
         description: "SHA256 of the SPDX SBOM"
         value: ${{ jobs.build.outputs.sbom_sha256 }}
+      build_inputs:
+        description: >-
+          Compact JSON: what went INTO the build. base_images (ref, digest, pinned_by_digest,
+          resolved), all_base_images_resolved, lockfiles (path, sha256) and toolchain versions.
+          An unresolved base carries an empty digest and makes all_base_images_resolved false --
+          never read an empty digest as "no base". Pass it to render-version-metadata's
+          build-inputs so the stamp carries it.
+        value: ${{ jobs.build.outputs.build_inputs }}
+      # ── THE CONTROL POSTURE RECORD ──────────────────────────────────────────────────────
+      # What this invocation should have run, what actually ran, and what was weakened. Without
+      # it a caller who lowers the pre-push severity gate is reported exactly like one that
+      # passed it honestly. Vocabulary: assurance-taxonomy.yaml :: control_weakening,
+      # routing_result.
+      routing_result:
+        description: >-
+          PROCEED | PROCEED_WITH_ADVISORY | DECISION_REQUIRED | BLOCKED | EVIDENCE_UNTRUSTED.
+          EVIDENCE_UNTRUSTED covers the case that matters here: the registry round trip did not
+          establish that the pushed artifact is the scanned one, so the scan result describes an
+          artifact nobody can name.
+        value: ${{ jobs.build.outputs.routing_result }}
+      controls_required:
+        description: "Comma list of the controls this invocation should have run."
+        value: ${{ jobs.build.outputs.controls_required }}
+      controls_executed:
+        description: "Comma list of the controls that actually ran. Never includes a skipped one."
+        value: ${{ jobs.build.outputs.controls_executed }}
+      controls_unavailable:
+        description: "Controls whose evidence could not be collected. NOT the same as clean."
+        value: ${{ jobs.build.outputs.controls_unavailable }}
+      controls_reduced:
+        description: "Controls that ran with severity lowered, depth reduced or scope narrowed."
+        value: ${{ jobs.build.outputs.controls_reduced }}
+      controls_skipped:
+        description: "Controls that were not run at all."
+        value: ${{ jobs.build.outputs.controls_skipped }}
+      weakenings:
+        description: >-
+          JSON array, one object per declared input that governs a control. The enumeration is
+          TOTAL over this workflow's inputs — a hand-written list is a list that goes stale.
+        value: ${{ jobs.build.outputs.weakenings }}
+      weakening_attribution:
+        description: >-
+          WEAKENING_AT_BASELINE | WEAKENING_ATTRIBUTED | WEAKENING_UNATTRIBUTED |
+          WEAKENING_EXCEPTION_EXPIRED.
+        value: ${{ jobs.build.outputs.weakening_attribution }}
+      weakening_record:
+        description: "Reason, authority, exception reference and expiry as one JSON object."
+        value: ${{ jobs.build.outputs.weakening_record }}
+      attestation_url:
+        description: >-
+          URL of the signed SLSA build-provenance attestation for image_digest. EMPTY when nothing
+          was signed: a build-only run, an unproven identity, or a private repository whose plan
+          offers no attestations. Empty is not verified; verification is a separate step (V1).
+        value: ${{ jobs.attest.outputs.attestation_url }}
 
 # Concurrency for a CHANGE workflow is the opposite of concurrency for a validation
 # workflow. Validation cancels the superseded run — the answer is stale, killing it costs
@@ -98,9 +223,25 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       image_digest: ${{ steps.push.outputs.digest }}
+      image_config_digest: ${{ steps.built.outputs.config_digest }}
+      artifact_identity: ${{ steps.provenance.outputs.class }}
       sbom_sha256: ${{ steps.sbom.outputs.sha256 }}
+      build_inputs: ${{ steps.build_inputs.outputs.record }}
+      routing_result: ${{ steps.posture.outputs.routing_result }}
+      controls_required: ${{ steps.posture.outputs.controls_required }}
+      controls_executed: ${{ steps.posture.outputs.controls_executed }}
+      controls_unavailable: ${{ steps.posture.outputs.controls_unavailable }}
+      controls_reduced: ${{ steps.posture.outputs.controls_reduced }}
+      controls_skipped: ${{ steps.posture.outputs.controls_skipped }}
+      weakenings: ${{ steps.posture.outputs.weakenings }}
+      weakening_attribution: ${{ steps.posture.outputs.weakening_attribution }}
+      weakening_record: ${{ steps.posture.outputs.weakening_record }}
     env:
-      IMAGE: ${{ inputs.acr_login_server }}/${{ inputs.image_repository }}:${{ inputs.image_tag != '' && inputs.image_tag || github.sha }}
+      # A BUILD-ONLY RUN GETS A LOCAL NAME. With acr_login_server empty this used to produce
+      # `/repo:sha` -- a leading slash, an invalid reference, and a build that fails after doing
+      # all the work. The registry name belongs in the tag only when there is a registry.
+      REPO: ${{ inputs.acr_login_server != '' && format('{0}/{1}', inputs.acr_login_server, inputs.image_repository) || format('local/{0}', inputs.image_repository) }}
+      IMAGE: ${{ inputs.acr_login_server != '' && format('{0}/{1}', inputs.acr_login_server, inputs.image_repository) || format('local/{0}', inputs.image_repository) }}:${{ inputs.image_tag != '' && inputs.image_tag || github.sha }}
     steps:
       - name: Guard — push requires an environment
         if: inputs.push && inputs.github_environment == ''
@@ -113,9 +254,41 @@ jobs:
           echo "Either pass github_environment, or set push: false for a build-only run."
           exit 1
 
+      # The secrets are tested through env rather than in the `if:`, because the secrets context
+      # is not dependably available in a step condition and a guard that silently evaluates to
+      # false is worse than no guard.
+      - name: Guard — push requires a registry and credentials
+        if: inputs.push
+        env:
+          HAVE_REGISTRY: ${{ inputs.acr_login_server != '' }}
+          HAVE_CLIENT: ${{ secrets.AZURE_CLIENT_ID != '' }}
+          HAVE_TENANT: ${{ secrets.AZURE_TENANT_ID != '' }}
+          HAVE_SUBSCRIPTION: ${{ secrets.AZURE_SUBSCRIPTION_ID != '' }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ "$HAVE_REGISTRY" = "true" ] || missing="$missing acr_login_server"
+          [ "$HAVE_CLIENT" = "true" ] || missing="$missing AZURE_CLIENT_ID"
+          [ "$HAVE_TENANT" = "true" ] || missing="$missing AZURE_TENANT_ID"
+          [ "$HAVE_SUBSCRIPTION" = "true" ] || missing="$missing AZURE_SUBSCRIPTION_ID"
+          if [ -n "$missing" ]; then
+            echo "::error title=push=true is missing what a push needs::Missing:$missing. These are"
+            echo "declared optional on this workflow so the documented BUILD-ONLY path can be called"
+            echo "without them -- they are not optional for a push."
+            echo ""
+            echo "Caught here rather than after the build: failing late costs the whole build and"
+            echo "teaches nothing this guard could not have said first."
+            exit 1
+          fi
+
       - uses: actions/checkout@v7
 
+      # CONDITIONAL, because the contract says build-only needs no Azure auth and the
+      # implementation did not. Both logins ran unconditionally, so the documented
+      # feature-branch path attempted federated login and a registry login it had no
+      # credentials for. Static inspection was enough to see it; nothing had looked.
       - name: Azure login (OIDC)
+        if: inputs.push
         uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -124,11 +297,34 @@ jobs:
           environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
 
       - name: ACR login
-        run: az acr login --name "$(echo '${{ inputs.acr_login_server }}' | cut -d. -f1)"
+        if: inputs.push
+        env:
+          # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
+          ACR_LOGIN_SERVER: ${{ inputs.acr_login_server }}
+        run: az acr login --name "$(echo "$ACR_LOGIN_SERVER" | cut -d. -f1)"
 
       - uses: docker/setup-buildx-action@v4
 
-      - name: Build (load locally for scan)
+      # ── ONE BUILD, AND ONLY ONE ──────────────────────────────────────────────────────────
+      # This step used to have a twin: a second `docker/build-push-action` with `push: true`
+      # further down. Two invocations means TWO IMAGES. The Trivy gate and the SBOM described
+      # the first one; `image_digest` — the value every downstream consumer treats as the
+      # identity of the deployed artifact — came from the second. Nothing compared them.
+      #
+      # They are equal only if the Dockerfile is bit-reproducible. An unpinned apt index, a
+      # floating base tag, a `npm install` without a lockfile, an embedded build timestamp —
+      # any one of them is enough to make the pushed image a different artifact from the
+      # scanned one. And then the SBOM stamped as deployment provenance describes something
+      # that was never pushed, the gate cleared something that was never deployed, and every
+      # report built on top inherits a false subject.
+      #
+      # BUILT ≠ SCANNED ≠ PUSHED ≠ DEPLOYED unless each arrow is proven. An arrow nobody checks
+      # is an assumption wearing a digest.
+      #
+      # So: build once, scan THOSE BYTES, push THOSE BYTES, then ask the registry what it is
+      # holding and refuse to return a digest the registry does not confirm.
+      - name: Build (once — this is the only image that will exist)
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: ${{ inputs.context }}
@@ -136,35 +332,626 @@ jobs:
           load: true
           tags: ${{ env.IMAGE }}
 
+      - name: Establish the built image identity
+        id: built
+        run: |
+          set -euo pipefail
+          CONFIG_DIGEST="$(docker image inspect --format '{{.Id}}' "$IMAGE")"
+          if [ -z "$CONFIG_DIGEST" ]; then
+            echo "::error title=Built image identity not established::docker image inspect returned no Id for $IMAGE. Everything downstream would be describing an artifact this job cannot name. Failing here rather than scanning an image of unknown identity."
+            exit 1
+          fi
+          # The action reports its own view. Two independent reads agreeing is worth the four
+          # lines; two disagreeing means the tag moved between build and inspect, which is the
+          # precise condition this whole section exists to catch.
+          ACTION_ID="${{ steps.build.outputs.imageid }}"
+          if [ -n "$ACTION_ID" ] && [ "$ACTION_ID" != "$CONFIG_DIGEST" ]; then
+            echo "::error title=Image identity disagreement::build-push-action reported $ACTION_ID; the daemon reports $CONFIG_DIGEST for the same tag. The tag moved. Refusing to scan."
+            exit 1
+          fi
+          echo "config_digest=$CONFIG_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Scanning and pushing config digest: $CONFIG_DIGEST"
+
+      # TRIVY_IMAGE_SRC pins the gate to the DOCKER DAEMON. Without it Trivy's source order is
+      # docker, containerd, podman, remote — and after `az acr login` a same-tagged image in the
+      # registry is reachable. A gate that might have scanned a registry image instead of the one
+      # just built is not a gate, it is a coincidence.
       - name: Trivy image scan (gate before push)
+        id: trivy
         uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          TRIVY_IMAGE_SRC: docker
         with:
           image-ref: ${{ env.IMAGE }}
           severity: ${{ inputs.trivy_severity }}
           exit-code: "1"
           ignore-unfixed: "true"
 
+      # `docker:` prefix for the same reason: it forces the local daemon and removes Syft's
+      # source guessing. An SBOM of the wrong source is worse than no SBOM — it is confident.
       - name: SBOM (Syft, SPDX JSON)
         id: sbom
         run: |
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
-          syft "${{ env.IMAGE }}" -o spdx-json=sbom.spdx.json
+          set -euo pipefail
+          # Pinned (ledger L84): syft v1.54.1, verified against a recorded digest.
+          s=syft_1.54.1_linux_amd64.tar.gz
+          curl -sSfLO "https://github.com/anchore/syft/releases/download/v1.54.1/$s"
+          echo "c069905b391cc4c20a5ba65ad5c10be2a7ba074f8ea6ad203e24d14e303dad47  $s" | sha256sum -c -
+          tar -xzf "$s" syft && sudo mv syft /usr/local/bin/ && rm -f "$s"
+          syft "docker:$IMAGE" -o spdx-json=sbom.spdx.json
           echo "sha256=$(sha256sum sbom.spdx.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
-      - name: Push (digest-pinned)
+      # ── WHAT WENT INTO THE BUILD (PROVENANCE_AND_ATTESTATION.md §3 links 2-4, §9 step 1) ────
+      # Everything above proves the scanned bytes are the pushed bytes. Nothing said what PRODUCED
+      # them. A floating FROM tag makes any later claim about "the same build inputs"
+      # unfalsifiable, and an attestation signed over a record with these fields empty signs
+      # nothing interesting. No permission, no plan gate: this is the half of the gap that is free.
+      #
+      # A RECORD, NOT A GATE. It never fails the build -- and it never reads complete when it is
+      # not: an unresolvable FROM is recorded with an empty digest, resolved=false, and
+      # all_base_images_resolved=false. Empty is a fact to carry, not a field to drop.
+      - name: Record build inputs — base image digests, lockfile hashes, toolchain versions
+        id: build_inputs
+        if: always() && steps.built.outcome == 'success'
+        env:
+          # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
+          DOCKERFILE: ${{ inputs.dockerfile }}
+          BUILD_CONTEXT: ${{ inputs.context }}
+        run: |
+          set -uo pipefail
+          bases='[]'; aliases=' '
+          if [ -f "$DOCKERFILE" ]; then
+            while IFS= read -r line || [ -n "$line" ]; do
+              line="${line%$'\r'}"
+              set -f; set -- $line; set +f
+              [ "$#" -ge 2 ] || continue
+              [ "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')" = FROM ] || continue
+              shift
+              while [ "$#" -gt 0 ] && [ "${1#--}" != "$1" ]; do shift; done
+              img="${1:-}"; [ "$#" -gt 0 ] && shift
+              if [ "$#" -ge 2 ] && [ "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')" = AS ]; then
+                stage="$2"
+              else
+                stage=""
+              fi
+              # A stage built earlier in this file, or scratch, is not an external input.
+              case "$aliases" in *" $img "*) img="" ;; esac
+              [ "$img" = scratch ] && img=""
+              [ -n "$stage" ] && aliases="$aliases$stage "
+              [ -n "$img" ] || continue
+              digest=""; pinned=false
+              case "$img" in
+                *'$'*) ;;   # a build-arg reference: what it named is not knowable from here
+                *@sha256:*) digest="${img##*@}"; pinned=true ;;
+                *) digest="$(docker buildx imagetools inspect "$img" --format '{{json .Manifest}}' 2>/dev/null \
+                              | jq -r '.digest // empty' 2>/dev/null)" || digest="" ;;
+              esac
+              printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$' || digest=""
+              bases="$(jq -c --arg r "$img" --arg d "$digest" --argjson p "$pinned" \
+                '. + [{ref:$r, digest:$d, pinned_by_digest:$p, resolved:($d != "")}]' <<<"$bases")"
+            done < "$DOCKERFILE"
+          fi
+          locks='[]'
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            rel="${f#"$BUILD_CONTEXT"/}"; rel="${rel#./}"
+            locks="$(jq -c --arg p "$rel" --arg h "$(sha256sum "$f" | cut -d' ' -f1)" \
+              '. + [{path:$p, sha256:$h}]' <<<"$locks")"
+          done < <(find "$BUILD_CONTEXT" \( -name .git -o -name node_modules \) -prune -o -type f \
+                     \( -name requirements.txt -o -name poetry.lock -o -name Pipfile.lock \
+                        -o -name uv.lock -o -name package-lock.json -o -name yarn.lock \
+                        -o -name pnpm-lock.yaml -o -name go.sum -o -name Cargo.lock \
+                        -o -name Gemfile.lock -o -name composer.lock -o -name packages.lock.json \
+                        -o -name gradle.lockfile \) -print 2>/dev/null | sort)
+          v_docker="$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
+          v_buildx="$(docker buildx version 2>/dev/null | awk '{print $2; exit}' || true)"
+          v_syft="$( (syft version 2>/dev/null || true) | awk '/^Version:/{print $2; exit}')"
+          v_trivy="$( (trivy --version 2>/dev/null || true) | awk '/^Version:/{print $2; exit}')"
+          record="$(jq -cn --arg df "$DOCKERFILE" --argjson b "$bases" --argjson l "$locks" \
+            --arg d "$v_docker" --arg x "$v_buildx" --arg s "$v_syft" --arg t "$v_trivy" \
+            '{dockerfile:$df, base_images:$b,
+              all_base_images_resolved:(($b | length) > 0 and ($b | all(.resolved))),
+              lockfiles:$l, toolchain:{docker_engine:$d, buildx:$x, syft:$s, trivy:$t}}')"
+          echo "record=$record" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Build inputs"
+            echo ""
+            echo "| base image | digest | pinned in source |"
+            echo "|---|---|---|"
+            jq -r '.[] | "| `\(.ref)` | `\(if .digest == "" then "NOT RESOLVED" else .digest end)` | \(.pinned_by_digest) |"' <<<"$bases"
+            echo ""
+            echo "Lockfiles hashed: $(jq 'length' <<<"$locks"). Toolchain: docker ${v_docker:-?}, buildx ${v_buildx:-?}, syft ${v_syft:-?}, trivy ${v_trivy:-?}."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$(jq -r '.all_base_images_resolved' <<<"$record")" != true ]; then
+            echo "::warning title=Base image not resolved to a digest::The build record carries a FROM with no digest. Claims about 'the same build inputs' are not falsifiable for that base."
+          fi
+
+      # ── BEFORE THE POINT OF NO RETURN (docs/architecture/DEPLOYMENT_CONTRACT_RECONCILIATION.md
+      # section 5 gap 10, section 3.5; ledger L95) ─────────────────────────────────────────
+      # `docker push` is the first irreversible mutation this workflow performs: a tag in the
+      # registry is written or moved, and the digest both deploy reusables consume comes from
+      # it. The deploy contract (scripts/deploy_contract.py) captures the previous state,
+      # establishes rollback_capability and plans the change manifest BEFORE it mutates; the
+      # push did none of that. It now does the same three things, in the same order and the
+      # same vocabulary -- as bash, because this workflow carries no script bundle:
+      #
+      #   previous_state      EXISTING_DEPLOYMENT  the tag resolves; its manifest digest is the
+      #                                            rollback point
+      #                       EMPTY                the registry answered and holds no such tag
+      #                       UNKNOWN              the registry could not be read -- REFUSED. A
+      #                                            read failure is not an empty target (DCR gap 4)
+      #   rollback_capability AVAILABLE            re-point the tag at the captured digest
+      #                                            (docker buildx imagetools create)
+      #                       NO_PRIOR_STATE       reversal removes the tag this run creates
+      #                       UNAVAILABLE          previous state not established -- refused here,
+      #                                            before anything is written
+      #   manifest            planned here with the prior digest; applied by the push with the
+      #                       pushed digest. A run that dies between the two leaves `planned`.
+      #
+      # The record lives in $RUNNER_TEMP/build-evidence and is uploaded on every pushing path,
+      # so a later reversal can account for the push. tests/prove_push_capability.py.
+      - name: Establish push rollback capability (before the point of no return)
+        id: push_capability
+        if: inputs.push
+        run: |
+          set -uo pipefail
+          EVID="${RUNNER_TEMP:-.}/build-evidence"
+          mkdir -p "$EVID"
+          RELEASE="run-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
+          TAG="${IMAGE##*:}"
+          state=UNKNOWN; prior=""; err=""
+          if raw="$(docker buildx imagetools inspect "$IMAGE" --format '{{json .Manifest}}' 2>"$EVID/inspect.err")"; then
+            prior="$(printf '%s' "$raw" | jq -r '.digest // empty' 2>/dev/null || true)"
+            if printf '%s' "$prior" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+              state=EXISTING_DEPLOYMENT
+            else
+              err="the registry answered for $IMAGE but reported no manifest digest"
+            fi
+          else
+            err="$(head -c 300 "$EVID/inspect.err" | tr '\n' ' ')"
+            # A tag the registry does not hold is MEASURED empty. Anything else -- auth, network,
+            # a throttle -- is a read failure, which never resolves toward "nothing to reverse".
+            if printf '%s' "$err" | grep -Eiq 'not found|manifest_unknown|name_unknown|manifest unknown|no such manifest'; then
+              state=EMPTY; err=""
+            fi
+          fi
+          case "$state" in
+            EXISTING_DEPLOYMENT)
+              cap=AVAILABLE; action=MODIFIED
+              why="tag $TAG currently resolves to $prior; reversal re-points it at that digest" ;;
+            EMPTY)
+              cap=NO_PRIOR_STATE; action=CREATED
+              why="the registry holds no tag $TAG; reversal removes the tag this run creates" ;;
+            *)
+              cap=UNAVAILABLE; action=""
+              why="previous state not established: ${err:-unreadable}" ;;
+          esac
+          jq -cn --arg s "$state" --arg i "$IMAGE" --arg p "$prior" --arg e "$err" \
+            '{adapter:"registry-tag", target:$i, previous_state:$s, prior_digest:$p, reason:$e}' \
+            > "$EVID/snapshot.json"
+          decision=proceed
+          [ "$cap" = UNAVAILABLE ] && decision=refused
+          jq -cn --arg c "$cap" --arg w "$why" --arg d "$decision" \
+            '{rollback_capability:$c, why:$w, decision:$d}' > "$EVID/capability.json"
+          echo "previous_state=$state" >> "$GITHUB_OUTPUT"
+          echo "rollback_capability=$cap" >> "$GITHUB_OUTPUT"
+          if [ "$cap" = UNAVAILABLE ]; then
+            echo "::error title=Refused before the point of no return::rollback_capability UNAVAILABLE: $why. Nothing has been pushed. A read failure is not an empty target, and an unknown previous state never resolves toward mutation."
+            exit 1
+          fi
+          # THE CHANGE MANIFEST, PLANNED BEFORE THE MUTATION (DCR gap 6, as deploy_contract.py
+          # does). `prior` is the rollback point; `post` is filled in by the push itself.
+          PRIOR_REF=""
+          [ -n "$prior" ] && PRIOR_REF="$REPO@$prior"
+          jq -cn --arg r "$RELEASE" --arg a "$action" --arg i "$IMAGE" --arg p "$PRIOR_REF" \
+            --arg st "release_id=$RELEASE;run=${GITHUB_RUN_ID:-local};post=$IMAGE" \
+            '{release_id:$r, status:"planned",
+              entries:[{action:$a, object_type:"registry-tag", object:$i, prior:$p, post:"", stamp:$st}]}' \
+            > "$EVID/manifest.json"
+          echo "Previous state $state; rollback_capability $cap: $why. Manifest planned ($action $IMAGE)."
+
+      # `docker push` ships the bytes already in the daemon. It is not a build and cannot
+      # produce a different artifact — which is the entire reason it replaced a second
+      # build-push-action here.
+      - name: Push (the scanned bytes — not a rebuild)
         id: push
         if: inputs.push
-        uses: docker/build-push-action@v7
-        with:
-          context: ${{ inputs.context }}
-          file: ${{ inputs.dockerfile }}
-          push: true
-          tags: ${{ env.IMAGE }}
+        run: |
+          set -euo pipefail
+          # NO PLANNED MANIFEST, NO MUTATION (DCR gap 6; deploy_contract.py refuses the same way).
+          # A push that reaches here without the capability step's record would be the point of
+          # no return crossed with nothing to account for it.
+          EVID="${RUNNER_TEMP:-.}/build-evidence"
+          if [ "$(jq -r '.status // empty' "$EVID/manifest.json" 2>/dev/null)" != "planned" ]; then
+            echo "::error title=No change manifest::The push was reached without a planned change manifest ($EVID/manifest.json). rollback_capability was never established for this tag, so nothing is pushed."
+            exit 1
+          fi
+          docker push "$IMAGE"
+          DIGEST=""
+          while IFS= read -r rd; do
+            case "$rd" in
+              "$REPO"@sha256:*) DIGEST="${rd#*@}"; break ;;
+            esac
+          done < <(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE")
+          if [ -z "$DIGEST" ]; then
+            echo "::error title=Push digest not established::docker push reported success but the local image carries no RepoDigest for $REPO. The image may be in the registry; this job cannot name it, so it will not return a digest it cannot prove. The manifest stays planned: the push may or may not have applied."
+            exit 1
+          fi
+          # THE PUSH IS RECORDED IN THE CHANGE MANIFEST (DCR gap 10). Applied only now that the
+          # registry's digest is known: what this run wrote, by name, for a reversal to read.
+          jq -c --arg post "$REPO@$DIGEST" '.status = "applied" | .entries[0].post = $post' \
+            "$EVID/manifest.json" > "$EVID/manifest.json.new"
+          mv "$EVID/manifest.json.new" "$EVID/manifest.json"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "digest_id=${DIGEST#sha256:}" >> "$GITHUB_OUTPUT"
+
+      # The round trip. Everything above this line is one machine agreeing with itself.
+      - name: Assert artifact identity — the registry is holding the image that was scanned
+        id: assert_identity
+        if: inputs.push
+        run: |
+          set -euo pipefail
+          SCANNED='${{ steps.built.outputs.config_digest }}'
+          DIGEST='${{ steps.push.outputs.digest }}'
+          RAW="$(docker buildx imagetools inspect --raw "$REPO@$DIGEST")"
+          REGISTRY_CONFIG="$(printf '%s' "$RAW" | jq -r '.config.digest // empty')"
+          if [ -z "$REGISTRY_CONFIG" ]; then
+            echo "::error title=Artifact identity UNESTABLISHED::$REPO@$DIGEST resolved to a document with no .config.digest — an index or attestation manifest rather than a plain image manifest. The link between the scanned image and the pushed digest could not be established. UNESTABLISHED is not established: refusing to publish this digest as assured."
+            exit 1
+          fi
+          if [ "$REGISTRY_CONFIG" != "$SCANNED" ]; then
+            echo "::error title=ARTIFACT IDENTITY MISMATCH::Scanned $SCANNED; the registry says $REPO@$DIGEST has config $REGISTRY_CONFIG. The gate and the SBOM describe a different artifact from the one now in the registry. This is the defect the single-build rewrite exists to make impossible, so its recurrence means an assumption in that rewrite is wrong — do not suppress this check."
+            exit 1
+          fi
+          echo "Artifact identity PROVEN: $DIGEST -> config $SCANNED (scanned, SBOM'd, pushed)"
+
+      # An SBOM is evidence OF something, and the name has to say of what. Publishing an
+      # unverified SBOM under the name a verified one would carry is how a triage artefact gets
+      # cited as provenance six weeks later. Withheld is not the answer either — the SBOM is
+      # useful for triage when the gate fails. Named honestly is the answer.
+      - name: Classify what the SBOM is evidence of
+        id: provenance
+        if: always()
+        env:
+          # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
+          PUSH: ${{ inputs.push }}
+        run: |
+          set -euo pipefail
+          if [ ! -f sbom.spdx.json ]; then
+            echo "class=NOT_ESTABLISHED" >> "$GITHUB_OUTPUT"
+            echo "name=" >> "$GITHUB_OUTPUT"
+            echo "No SBOM was produced; nothing to classify."
+            exit 0
+          fi
+          if [ "$PUSH" != 'true' ]; then
+            CLASS=LOCAL_BUILD_ONLY
+            NAME="sbom-localbuild-${{ github.sha }}"
+          elif [ '${{ steps.assert_identity.outcome }}' = 'success' ]; then
+            CLASS=REGISTRY_IDENTITY_PROVEN
+            NAME="sbom-${{ steps.push.outputs.digest_id }}"
+          else
+            CLASS=IDENTITY_UNVERIFIED
+            NAME="sbom-IDENTITY-UNVERIFIED-${{ github.sha }}"
+          fi
+          echo "class=$CLASS" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Artifact identity"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| scanned config digest | \`${{ steps.built.outputs.config_digest }}\` |"
+            echo "| pushed manifest digest | \`${{ steps.push.outputs.digest }}\` |"
+            echo "| SBOM evidence class | **$CLASS** |"
+            echo "| SBOM artifact | \`$NAME\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload SBOM
-        if: always()
+        if: always() && steps.provenance.outputs.name != ''
         uses: actions/upload-artifact@v7
         with:
-          name: sbom-${{ github.sha }}
+          name: ${{ steps.provenance.outputs.name }}
           path: sbom.spdx.json
+          if-no-files-found: error
+
+      - name: Keep the run record (build evidence)
+        # The snapshot, rollback capability and change manifest of the push are the record a
+        # later reversal reads (ROLLBACK_CONTRACT.md: "the run record is the thing a cancelled
+        # run does not finish"). Uploaded on every pushing path, including a refusal before the
+        # push, so it does not die with the runner.
+        if: always() && inputs.push
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/build-evidence
           if-no-files-found: warn
+          retention-days: 30
+
+      # ── CONTROL POSTURE RECORD ────────────────────────────────────────────────────────────
+      #
+      # A WEAKENING IS A GOVERNED EXCEPTION, NOT A BOOLEAN PREFERENCE.
+      #
+      # A caller could drop `trivy_severity` to `CRITICAL` and the run reported exactly like one
+      # that passed the shipped gate. Nothing named the reduction in the summary, in an output or
+      # in an annotation, so `configured` and `effective` were indistinguishable at the point a
+      # human approves a promotion.
+      #
+      # The enumeration below is TOTAL over this workflow's declared inputs, and
+      # tests/check_weakening_record.py fails the build when an input exists without a class —
+      # a hand-written list of weakenings is a list that goes stale.
+      #
+      # Vocabulary: assurance-taxonomy.yaml :: control_weakening, routing_result.
+      - name: Control posture — required, executed, unavailable, reduced, skipped, and who decided
+        id: posture
+        if: always()
+        env:
+          # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
+          W_CONTEXT: ${{ inputs.context }}
+          W_TRIVY_SEVERITY: ${{ inputs.trivy_severity }}
+          W_PUSH: ${{ inputs.push }}
+          W_WEAKENING_REASON: ${{ inputs.weakening_reason }}
+          W_WEAKENING_AUTHORITY: ${{ inputs.weakening_authority }}
+          W_WEAKENING_EXCEPTION_REF: ${{ inputs.weakening_exception_ref }}
+          W_WEAKENING_EXPIRES: ${{ inputs.weakening_expires }}
+          JOB_STATUS: ${{ job.status }}
+          IDENTITY_CLASS: ${{ steps.provenance.outputs.class }}
+          TRIVY_OUTCOME: ${{ steps.trivy.outcome }}
+          # Whether the push's rollback capability was established before the point of no return
+          # (DCR gap 10). `skipped` on a build-only run, or when the gate refused first.
+          CAPABILITY_OUTCOME: ${{ steps.push_capability.outcome }}
+        run: |
+          set -u
+          req=""; exe=""; skp=""; red=""; wk=""; dead=""; inforce=0; badclass=0
+
+          # AT BASELINE MEANS "AS STRONG AS THIS KIT SHIPS IT", NOT "AS STRONG AS IT COULD BE".
+          #   NONEMPTY  at baseline when any value was supplied
+          #   max:N     at baseline when the number is N or below
+          #   literal   at baseline on exact equality
+          at_baseline() {
+            case "$2" in
+              NONEMPTY) [ -n "$1" ] ;;
+              max:*)    [ -n "$1" ] && [ "$1" -le "${2#max:}" ] 2>/dev/null ;;
+              *)        [ "$1" = "$2" ] ;;
+            esac
+          }
+
+          # posture <input> <control_weakening class> <baseline> <control> "<value>"
+          posture() {
+            n="$1"; cls="$2"; base="$3"; ctl="$4"; val="${5-}"; st=WEAKENING_AT_BASELINE
+            case "$cls" in
+              NOT_A_CONTROL_SURFACE|EXCEPTION_ATTRIBUTION)
+                return 0 ;;
+              CONTROL_SURFACE_DEAD)
+                at_baseline "$val" "$base" || dead="$dead,$n" ;;
+              TARGET_NOT_SUPPLIED)
+                req="$req,$ctl"
+                if at_baseline "$val" "$base"; then exe="$exe,$ctl"; else skp="$skp,$ctl"; fi ;;
+              CONTROL_DISABLED)
+                req="$req,$ctl"
+                if at_baseline "$val" "$base"; then
+                  exe="$exe,$ctl"
+                else
+                  st=WEAKENING_IN_FORCE; skp="$skp,$ctl"; inforce=$((inforce+1))
+                fi ;;
+              GATE_SOFTENED)
+                req="$req,$ctl"; exe="$exe,$ctl"
+                at_baseline "$val" "$base" || {
+                  st=WEAKENING_IN_FORCE; red="$red,$ctl"; inforce=$((inforce+1)); } ;;
+              SCOPE_NARROWED|SEVERITY_RAISED|DEPTH_REDUCED)
+                req="$req,$ctl"; exe="$exe,$ctl"
+                at_baseline "$val" "$base" || {
+                  st=CONTROL_RECONFIGURED; red="$red,$ctl"; inforce=$((inforce+1)); } ;;
+              *)
+                echo "::error title=Unregistered control_weakening class::$cls on input $n is not"
+                echo "a term in assurance-taxonomy.yaml. The posture record cannot be trusted."
+                badclass=1; return 0 ;;
+            esac
+            wk="$wk,{\"input\":\"$n\",\"class\":\"$cls\",\"control\":\"$ctl\",\"baseline\":\"$base\",\"value\":\"$val\",\"state\":\"$st\"}"
+          }
+
+          posture github_environment      NOT_A_CONTROL_SURFACE - -
+          posture acr_login_server        NOT_A_CONTROL_SURFACE - -
+          posture image_repository        NOT_A_CONTROL_SURFACE - -
+          posture dockerfile              NOT_A_CONTROL_SURFACE - -
+          posture image_tag               NOT_A_CONTROL_SURFACE - -
+          posture cloud                   NOT_A_CONTROL_SURFACE - -
+          posture context                 SCOPE_NARROWED      "."             image-scan         "$W_CONTEXT"
+          posture trivy_severity          SEVERITY_RAISED     "HIGH,CRITICAL" image-scan         "$W_TRIVY_SEVERITY"
+          # A build-only run publishes nothing, so there is nothing for the registry round trip
+          # to disagree with. Skipped, and deliberately NOT a weakening — the documented
+          # credential-free path is a supported shape, not a softened one.
+          posture push                    TARGET_NOT_SUPPLIED true            artifact-identity  "$W_PUSH"
+          posture weakening_reason        EXCEPTION_ATTRIBUTION - -
+          posture weakening_authority     EXCEPTION_ATTRIBUTION - -
+          posture weakening_exception_ref EXCEPTION_ATTRIBUTION - -
+          posture weakening_expires       EXCEPTION_ATTRIBUTION - -
+          # Whether the PLAN offers attestations on a private repository. Not a strength choice:
+          # false on Pro is the platform, and a public repository attests regardless.
+          posture attestations_available  NOT_A_CONTROL_SURFACE - -
+
+          # The SBOM is always required; whether it is evidence OF anything depends on identity.
+          req="$req,image-sbom"; exe="$exe,image-sbom"
+
+          # UNAVAILABLE IS NOT CLEAN. IDENTITY_UNVERIFIED and NOT_ESTABLISHED both mean the link
+          # between the scanned image and the published digest was not established — so the scan
+          # result describes an artifact nobody can name, and an SBOM under that name is a triage
+          # artefact rather than provenance.
+          unav=""
+          case "${IDENTITY_CLASS:-NOT_ESTABLISHED}" in
+            REGISTRY_IDENTITY_PROVEN|LOCAL_BUILD_ONLY) ;;
+            *) unav="$unav,artifact-identity,image-sbom" ;;
+          esac
+          # THE PUSH'S REVERSAL PATH IS A CONTROL (DCR gap 10). Required whenever a push was
+          # attempted: executed when rollback_capability was established before the point of
+          # no return, unavailable when the registry could not be read and the push was refused.
+          # Skipped is a build-only run or a gate that refused first -- not required, not clean.
+          case "${CAPABILITY_OUTCOME:-}" in
+            success) req="$req,push-reversal"; exe="$exe,push-reversal" ;;
+            failure) req="$req,push-reversal"; unav="$unav,push-reversal" ;;
+            *) ;;
+          esac
+
+          dedupe() {
+            printf '%s' "${1#,}" | tr ',' '\n' | sed '/^$/d' | sort -u | tr '\n' ',' | sed 's/,$//'
+          }
+          REQ="$(dedupe "$req")"; EXE="$(dedupe "$exe")"
+          SKP="$(dedupe "$skp")"; RED="$(dedupe "$red")"; UNAV="$(dedupe "$unav")"
+          for c in $(printf '%s' "$SKP" | tr ',' ' '); do
+            EXE="$(printf '%s' "$EXE" | tr ',' '\n' | grep -vx "$c" | tr '\n' ',' | sed 's/,$//')"
+          done
+
+          auth=WEAKENING_AT_BASELINE
+          if [ "$inforce" -gt 0 ]; then
+            if [ -n "$W_WEAKENING_REASON" ] && [ -n "$W_WEAKENING_AUTHORITY" ]; then
+              auth=WEAKENING_ATTRIBUTED
+              # AN EXPIRY NOBODY CAN READ HAS NOT "NOT ARRIVED". Dates compare as strings below, which
+              # is correct only for a real YYYY-MM-DD: `never` or `31/12/1999` sorted after every ISO
+              # date and read as unexpired forever. Anything that is not a valid calendar date reverts
+              # to owing a decision, and says why. tests/prove_gate_routing.py, expiry_* scenarios.
+              if [ -n "$W_WEAKENING_EXPIRES" ]; then
+                if ! printf '%s' "$W_WEAKENING_EXPIRES" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' ||
+                   [ "$(date -u -d "$W_WEAKENING_EXPIRES" +%Y-%m-%d 2>/dev/null)" != "$W_WEAKENING_EXPIRES" ]; then
+                  echo "::warning title=Unreadable weakening expiry::'$W_WEAKENING_EXPIRES' is not a"
+                  echo "YYYY-MM-DD calendar date, so the exception cannot be shown to be in force."
+                  auth=WEAKENING_EXCEPTION_EXPIRED
+                elif [ "$(date -u +%Y-%m-%d)" ">" "$W_WEAKENING_EXPIRES" ]; then
+                  auth=WEAKENING_EXCEPTION_EXPIRED
+                fi
+              fi
+            else
+              auth=WEAKENING_UNATTRIBUTED
+            fi
+          fi
+
+          # A REFUSAL MUST BE OBSERVED, NOT INFERRED. While any control is unavailable this job
+          # cannot separate "the gate said no" from "the evidence never arrived", so it declines
+          # to claim the stronger reading.
+          #
+          # EXCEPT WHEN THE REFUSAL WAS OBSERVED. A Trivy gate that failed DID look and DID say no;
+          # the SBOM and the round trip are then missing BECAUSE of that refusal, not instead of
+          # evidence. Routing it EVIDENCE_UNTRUSTED told the reader "nothing arrived" when the
+          # gate had in fact refused the image (ledger L85). BLOCKED outranks everything.
+          route=PROCEED
+          if [ "${TRIVY_OUTCOME:-}" = "failure" ]; then
+            route=BLOCKED
+          elif [ -n "$UNAV" ] || [ "$badclass" = "1" ]; then
+            route=EVIDENCE_UNTRUSTED
+          elif [ "${JOB_STATUS:-success}" = "failure" ]; then
+            route=BLOCKED
+          elif [ "$auth" = "WEAKENING_UNATTRIBUTED" ] || [ "$auth" = "WEAKENING_EXCEPTION_EXPIRED" ]; then
+            route=DECISION_REQUIRED
+          elif [ "$inforce" -gt 0 ]; then
+            route=PROCEED_WITH_ADVISORY
+          fi
+
+          emit() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
+          emit routing_result "$route"
+          emit controls_required "$REQ"
+          emit controls_executed "$EXE"
+          emit controls_unavailable "$UNAV"
+          emit controls_reduced "$RED"
+          emit controls_skipped "$SKP"
+          emit weakenings "[${wk#,}]"
+          emit weakening_attribution "$auth"
+          emit weakening_record "{\"reason\":\"$W_WEAKENING_REASON\",\"authority\":\"$W_WEAKENING_AUTHORITY\",\"exception_ref\":\"$W_WEAKENING_EXCEPTION_REF\",\"expires\":\"$W_WEAKENING_EXPIRES\"}"
+
+          {
+            echo "### Control posture — Docker build + scan"
+            echo ""
+            echo "| Row | Value |"
+            echo "|---|---|"
+            echo "| controls required | \`${REQ:-none}\` |"
+            echo "| controls executed | \`${EXE:-none}\` |"
+            echo "| controls unavailable | \`${UNAV:-none}\` — evidence not collected; NOT the same as clean |"
+            echo "| controls reduced | \`${RED:-none}\` |"
+            echo "| controls skipped | \`${SKP:-none}\` |"
+            echo "| reason | ${W_WEAKENING_REASON:-_(none recorded)_} |"
+            echo "| authority | ${W_WEAKENING_AUTHORITY:-_(none recorded)_} |"
+            echo "| exception / deferral id | ${W_WEAKENING_EXCEPTION_REF:-_(none recorded)_} |"
+            echo "| expiry | ${W_WEAKENING_EXPIRES:-_(no expiry set)_} |"
+            echo "| attribution | \`$auth\` |"
+            echo "| **routing result** | **\`$route\`** |"
+            echo ""
+            if [ -n "$dead" ]; then
+              echo "> **Dead input(s) set:** \`${dead#,}\` — declared and read by nothing."
+              echo ""
+            fi
+            if [ "$route" = "DECISION_REQUIRED" ]; then
+              echo "> **A weakening is in force and nobody has said why.** Record"
+              echo "> \`weakening_reason\` and \`weakening_authority\`, or restore the baseline."
+              echo ""
+            fi
+            if [ "$route" = "EVIDENCE_UNTRUSTED" ]; then
+              echo "> **This result cannot be relied on.** The scan and the SBOM describe an"
+              echo "> artifact whose identity was not established against the registry."
+              echo ""
+            fi
+            echo "Vocabulary: \`assurance-taxonomy.yaml\` :: \`control_weakening\`, \`routing_result\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          printf 'routing_result=%s attribution=%s in_force=%s\n' "$route" "$auth" "$inforce"
+
+  # ── ATTEST: the ONLY job that may hold attestations: write (PROVENANCE_AND_ATTESTATION.md §8.2)
+  #
+  # File-level permissions are the CEILING for every job in a reusable workflow, so signing
+  # authority declared there would reach the build job -- the one that runs a caller-supplied
+  # Dockerfile with an Azure identity. It is declared HERE, at job level, and never promoted. This
+  # job does nothing else: no checkout, no Azure login, no registry login, no build, no caller
+  # script. `subject-digest` + `subject-name` need no image locally (§4.2), so nothing is pulled.
+  #
+  # It signs ONLY a digest the registry round trip proved. On a private repository it runs only
+  # when the caller declares the plan offers attestations; on Free/Pro/Team it cannot (§5), and a
+  # job wired to fail there forever is training, not a control (§6.4).
+  #
+  # NOT PROVEN HERE: that the signature is produced on GitHub, and whether artifact-metadata: write
+  # is required (§4.4, §11.3 -- the primary sources disagree; add it here only if a run shows it is).
+  attest:
+    needs: [build]
+    if: >-
+      inputs.push &&
+      needs.build.outputs.artifact_identity == 'REGISTRY_IDENTITY_PROVEN' &&
+      (github.event.repository.visibility == 'public' || inputs.attestations_available)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:          # JOB level. Never promoted to file level.
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      attestation_url: ${{ steps.sign.outputs.attestation-url }}
+    steps:
+      # The guard is belt-and-braces with the job `if:`, and it is the part a local proof can run
+      # (tests/prove_attest_job_isolated.py): an unproven identity or a malformed digest is never
+      # handed to the signer, and caller-supplied names arrive as data.
+      - name: Refuse to sign an unproven or malformed subject
+        id: subject
+        env:
+          IDENTITY: ${{ needs.build.outputs.artifact_identity }}
+          DIGEST: ${{ needs.build.outputs.image_digest }}
+          ACR_LOGIN_SERVER: ${{ inputs.acr_login_server }}
+          IMAGE_REPOSITORY: ${{ inputs.image_repository }}
+        run: |
+          set -euo pipefail
+          if [ "$IDENTITY" != REGISTRY_IDENTITY_PROVEN ]; then
+            echo "::error title=Refusing to sign::artifact_identity is '${IDENTITY:-absent}'. Only a digest the registry round trip proved may be attested."
+            exit 1
+          fi
+          if ! printf '%s' "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error title=Refusing to sign::image_digest '$DIGEST' is not sha256:<64 hex>."
+            exit 1
+          fi
+          {
+            echo "digest=$DIGEST"
+            echo "name=$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance (SLSA, signed by this workflow's identity)
+        id: sign
+        uses: actions/attest@v4
+        with:
+          subject-name: ${{ steps.subject.outputs.name }}
+          subject-digest: ${{ steps.subject.outputs.digest }}
+          # NOT pushed to ACR: push-to-registry against ACR is unestablished (§11.1) and could
+          # interact with the build's own identity assertion (§11.9). The attestation lives in the
+          # GitHub attestations API, which is where V1 verification reads it.
+          push-to-registry: false

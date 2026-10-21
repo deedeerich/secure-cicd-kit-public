@@ -43,47 +43,103 @@ def grab(path, rx, what):
     return m.group(1).strip()
 
 
-def check_order():
-    """Every job that uploads an artifact must redact FIRST.
+def is_upload(step):
+    """A step that publishes what is on disk: an artifact, the Security tab, or CodeQL's analyze,
+    which uploads by itself unless told `upload: never`. Missing the third is how CodeQL's SARIF
+    reached the Security tab before any redactor ran (N24)."""
+    uses = str(step.get('uses') or '')
+    if 'upload-artifact' in uses or 'upload-sarif' in uses:
+        return True
+    if 'codeql-action/analyze' in uses:
+        return str((step.get('with') or {}).get('upload', 'always')).lower() != 'never'
+    return False
 
-    Order is the entire control. The per-job status block is appended at the END of a job, which
-    is right for printing a count and useless for redaction -- by then the artifact exists. A
-    redactor placed after the upload protects nothing while looking exactly like protection.
 
-    Also fails a job that uploads with no redaction step at all, which is the state thirteen of
-    them were in: gitleaks stripped its snippets, and every other scanner shipped raw SARIF.
+def is_redaction(step):
+    return 'Redact credential' in str(step.get('name') or '')
+
+
+def order_problems(job, steps):
+    """EVERY upload must be clean, not only the first.
+
+    Walk the job. A redaction step cleans the workspace; any other step that is not itself an
+    upload may write new output, and so TAINTS it again. An upload over a tainted workspace
+    publishes whatever was written since the last redaction. The old rule -- "redact before the
+    FIRST upload" -- passed jobs that produced a second report after redacting and then uploaded
+    it raw (Trivy IaC, flawfinder: N24/WP19).
     """
+    problems = []
+    tainted = True
+    seen_redaction = False
+    for i, s in enumerate(steps):
+        if is_redaction(s):
+            tainted = False
+            seen_redaction = True
+        elif is_upload(s):
+            if tainted:
+                what = str(s.get('name') or s.get('uses'))
+                if not seen_redaction:
+                    problems.append('%s step %d (%s) publishes before ANY redaction' % (job, i, what))
+                else:
+                    problems.append('%s step %d (%s) publishes output written AFTER the last '
+                                    'redaction' % (job, i, what))
+        else:
+            tainted = True
+    return problems
+
+
+def order_self_test():
+    """The rule must fail each shape it claims to catch, or it proves nothing."""
+    R = {'name': 'Redact credential material before upload'}
+    U = {'uses': 'actions/upload-artifact@v7'}
+    S = {'uses': 'github/codeql-action/upload-sarif@v4'}
+    W = {'run': 'scanner > out.sarif'}
+    good = [W, R, U, S]
+    cases = [
+        ('upload with no redaction', [W, U]),
+        ('second report after redaction, uploaded raw', [W, R, U, W, S]),
+        ('codeql analyze uploads by default', [W, {'uses': 'github/codeql-action/analyze@v4'}, R, U]),
+        ('codeql analyze with upload: always', [W, {'uses': 'github/codeql-action/analyze@v4',
+                                                     'with': {'upload': 'always'}}, R, U]),
+    ]
+    if order_problems('control', good):
+        return 'the control failed'
+    if order_problems('codeql-never', [W, {'uses': 'github/codeql-action/analyze@v4',
+                                           'with': {'upload': 'never'}}, R, U]):
+        return 'analyze with upload: never was flagged'
+    for label, steps in cases:
+        if not order_problems('case', steps):
+            return 'did not catch: %s' % label
+    return None
+
+
+def check_order():
+    """Every upload in every job must be preceded by a redaction with nothing written in between."""
     import yaml
+    err = order_self_test()
+    if err:
+        print('::error title=Redaction order::self-test failed: %s' % err)
+        return False
     wf = os.path.join(ROOT, '.github', 'workflows', 'reusable-security.yml')
     doc = yaml.safe_load(io.open(wf, encoding='utf-8'))
-    problems, checked = [], 0
+    problems, checked, uploads = [], 0, 0
     for job, v in (doc.get('jobs') or {}).items():
         steps = v.get('steps') or []
-        # BOTH publication paths. The artifact is downloadable by anyone with repo read; the
-        # Security tab is narrower but still a publication, and gitleaks was stripped before both
-        # from the start. Checking only upload-artifact would have left ten upload-sarif steps
-        # unguarded while the gate reported clean -- a denominator quietly missing a modality.
-        ups = [i for i, s in enumerate(steps)
-               if 'upload-artifact' in str(s.get('uses') or '')
-               or 'upload-sarif' in str(s.get('uses') or '')]
-        if not ups:
+        n = sum(1 for s in steps if is_upload(s))
+        if not n:
             continue
-        reds = [i for i, s in enumerate(steps)
-                if 'Redact credential' in str(s.get('name') or '')]
-        if not reds:
-            problems.append('%s publishes scanner output (artifact or Security tab) and never '
-                            'redacts it' % job)
-        elif min(reds) > min(ups):
-            problems.append('%s redacts at step %d, AFTER uploading at step %d -- the artifact '
-                            'is already published' % (job, min(reds), min(ups)))
+        uploads += n
+        p = order_problems(job, steps)
+        if p:
+            problems.extend(p)
         else:
             checked += 1
     if problems:
         for p in problems:
             print('::error title=Redaction order::%s' % p)
         return False
-    print('  %-18s %d job(s) publish scanner output, all redact first'
-          % ('upload ordering', checked))
+    print('  %-18s %d upload step(s) in %d job(s), every one over a freshly redacted workspace'
+          % ('upload ordering', uploads, checked))
     return True
 
 

@@ -4,7 +4,8 @@
 #   ./scripts/pin-actions.sh            # dry run — show the rewrites
 #   ./scripts/pin-actions.sh --apply    # rewrite files in place
 #
-# Skips ./-relative references, docker:// references, already-pinned SHAs, and any owner
+# Searches all of .github, composites included. Skips ./-relative and $/ self-repository
+# references, docker:// references, already-pinned SHAs, and any owner
 # listed in TRUSTED_ORGS. Requires: curl, jq, and GITHUB_TOKEN (public repo read is enough).
 set -euo pipefail
 
@@ -52,7 +53,9 @@ for file in "${files[@]}"; do
                       | sed -E 's/.*uses:[[:space:]]*//' | sort -u)
   for uses in "${refs[@]}"; do
     case "$uses" in
-      ./*|docker://*) continue ;;
+      # `$/` resolves to this repository at the commit the CALLER pinned (decomposition plan §7
+      # step 8, measured cross-repo). It is pinned by construction, like `./`.
+      ./*|'$/'*|docker://*) continue ;;
     esac
     [[ "$uses" != *"@"* ]] && { echo "  !! $file: '$uses' has no ref at all — pin it manually"; failed=$((failed+1)); continue; }
 
