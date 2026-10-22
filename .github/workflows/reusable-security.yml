@@ -18,7 +18,7 @@ on:
         required: false
         default: "auto"
       paths:
-        description: "Path to scan (repo-relative)"
+        description: "Path to scan (repo-relative). Narrows every scanner EXCEPT the secret scan, which always covers the repository root (crawl is the floor, KDEC-018)."
         type: string
         required: false
         default: "."
@@ -406,6 +406,12 @@ on:
           protection rules and refuse a deploy the policy demands reviewers for and the
           environment does not have.
         value: ${{ jobs.security-gate.outputs.deploy_approval }}
+      max_exception_renewals:
+        description: >-
+          The authority's exception renewal cap (KDEC-018; numbers.max_exception_renewals, kit
+          default 2). Pass it to the deploy reusables' max_exception_renewals: a version-gap
+          exception renewed more often is refused (EXCEPTION_RENEWAL_LIMIT).
+        value: ${{ jobs.security-gate.outputs.max_exception_renewals }}
       assurance_result:
         description: >-
           The run record as compact JSON, valid against schemas/assurance-result.schema.json
@@ -1964,7 +1970,10 @@ jobs:
         id: scan
         uses: $/.github/actions/secret-scan
         with:
-          paths: ${{ inputs.paths }}
+          # CRAWL IS THE FLOOR (KDEC-018): the secret scan always covers the repository root.
+          # `paths` narrows the OTHER scanners; a secret outside it must still block.
+          # tests/prove_crawl_floor.py K1.
+          paths: "."
           scan_git_history: ${{ inputs.scan_git_history }}
           test_only_seed_artifact: ${{ inputs.test_only_seed_artifact }}
           checkout_fetch_depth: ${{ inputs.scan_git_history && '0' || '1' }}
@@ -5012,6 +5021,7 @@ jobs:
       team_pattern: ${{ steps.posture.outputs.team_pattern }}
       unvalidated_human_workflow_paths: ${{ steps.posture.outputs.unvalidated_human_workflow_paths }}
       deploy_approval: ${{ steps.posture.outputs.deploy_approval }}
+      max_exception_renewals: ${{ steps.policy.outputs.policy_max_exception_renewals }}
       run_record: ${{ steps.record.outputs.run_record }}
       assurance_result: ${{ steps.record.outputs.assurance_result }}
     # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
@@ -5395,7 +5405,7 @@ jobs:
           # An image secret and a known-malicious package are not exceptable here.
           secret_excepted=0; sx_used=""; sx_uncovered=""
           words_have() { case " $(printf '%s' "$1" | tr '\r\n' '  ') " in *" $2 "*) return 0 ;; esac; return 1; }
-          case "${P_STATE:-}" in POLICY_RESOLVED|POLICY_DECISION_EXPIRED) sx_policy=1 ;; *) sx_policy=0 ;; esac
+          case "${P_STATE:-}" in POLICY_RESOLVED|POLICY_DECISION_EXPIRED|EXCEPTION_RENEWAL_LIMIT) sx_policy=1 ;; *) sx_policy=0 ;; esac
           if [ "${G_FS_SECRET_SCAN:-}" = "FINDINGS" ] && words_have "$secret_cause" secret-scan; then
             sx_in_force=""
             if [ "$sx_policy" = "1" ]; then
@@ -5433,11 +5443,11 @@ jobs:
               echo ""
               echo "### Secret exceptions applied (ticketed, attributed, unexpired)"
               echo ""
-              echo "| finding (fp) | ticket | approver | expires | register entry |"
-              echo "|---|---|---|---|---|"
-              printf '%s' "$sx_applied_json" | jq -r '.[] | "| `\(.finding)` | \(.ticket) | \(.approver) | \(.expires) | \(.entry) |"' 2>/dev/null
+              echo "| finding (fp) | ticket | approver | expires | register entry | history (KDEC-018) |"
+              echo "|---|---|---|---|---|---|"
+              printf '%s' "$sx_applied_json" | jq -r '.[] | "| `\(.finding)` | \(.ticket) | \(.approver) | \(.expires) | \(.entry) | \(.history // "first exception") |"' 2>/dev/null
               echo ""
-              echo "> **An excepted secret is not a clean result.** Rotate it; the exception expires."
+              echo "> **An excepted secret is not a clean result.** Rotate it; the exception expires, and renewals are capped."
               echo ""
             fi
             sx_refused=$(printf '%s' "${P_SECRET_EXCEPTION_REFUSALS:-[]}" | jq -r 'length' 2>/dev/null) || sx_refused=0
@@ -5445,9 +5455,9 @@ jobs:
               echo ""
               echo "### Secret exceptions REFUSED by the register (never in force)"
               echo ""
-              echo "| finding | ticket | refusal | register entry |"
-              echo "|---|---|---|---|"
-              printf '%s' "${P_SECRET_EXCEPTION_REFUSALS:-[]}" | jq -r '.[] | "| `\(.finding)` | \(.ticket) | \(.code) | \(.entry) |"' 2>/dev/null
+              echo "| finding | ticket | refusal | register entry | history |"
+              echo "|---|---|---|---|---|"
+              printf '%s' "${P_SECRET_EXCEPTION_REFUSALS:-[]}" | jq -r '.[] | "| `\(.finding)` | \(.ticket) | \(.code) | \(.entry) | \(.history // "") |"' 2>/dev/null
               echo ""
             fi
           } >> "$GITHUB_STEP_SUMMARY"
@@ -5693,7 +5703,7 @@ jobs:
           # POLICY IS NOT CRAWL: an empty or refused policy leaves the gate strict, as it was.
           # tests/prove_gate_policy_enforcement.py.
           policy_on=0
-          case "${P_STATE:-}" in POLICY_RESOLVED|POLICY_DECISION_EXPIRED) policy_on=1 ;; esac
+          case "${P_STATE:-}" in POLICY_RESOLVED|POLICY_DECISION_EXPIRED|EXCEPTION_RENEWAL_LIMIT) policy_on=1 ;; esac
           route_rank() { case "$1" in BLOCKED) echo 5;; EVIDENCE_UNTRUSTED) echo 4;; DECISION_REQUIRED) echo 3;; PROCEED_WITH_ADVISORY) echo 2;; PROCEED) echo 1;; *) echo 0;; esac; }
           policy_findings_route=""
           if [ "$policy_on" = "1" ]; then
@@ -6054,6 +6064,7 @@ jobs:
           posture enforce_lint              GATE_SOFTENED         "ordeeper:false"    code-quality       "$W_ENFORCE_LINT"
           # Discovery decides applicability; `language` can only EXCLUDE ecosystems it found.
           posture language                  SCOPE_NARROWED        "oneof:auto,multi"  all-languages      "$W_LANGUAGE"
+          # Narrows every scanner but the secret scan, which always covers the root (KDEC-018).
           posture paths                     SCOPE_NARROWED        "."                 all-scanners       "$W_PATHS"
           posture iac_mode                  CONTROL_DISABLED      "not:disabled"      iac-scan           "$W_IAC_MODE"
           posture enable_iac                CONTROL_SURFACE_DEAD  "false"             iac-scan           "$W_ENABLE_IAC"
@@ -6314,6 +6325,10 @@ jobs:
             echo "| policy_mode (derived) | \`${P_POLICY_MODE:-}\` |"
             echo "| effective minimum per control | \`${P_EFFECTIVE_MINIMUM:-}\` |"
             echo "| findings route under the policy | \`${G_POLICY_FINDINGS_ROUTE:-no findings}\` |"
+            # KDEC-018 item 4: every register exception in force shows that it was excepted before.
+            if [ -n "${P_WEAKENINGS:-}" ] && [ "${P_WEAKENINGS}" != "[]" ]; then
+              printf '%s' "$P_WEAKENINGS" | jq -r '.[] | "| exception: \(.input) (\(.control)) | by \(.authority), expires \(.expires); \(.history // "first exception") |"' 2>/dev/null
+            fi
             [ -n "${P_UNVALIDATED:-}" ] && echo "| unvalidated human-workflow paths | \`${P_UNVALIDATED}\` -- reported, never passing |"
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
@@ -6334,8 +6349,10 @@ jobs:
           report-result: ${{ needs.report.result }}
           blocking-findings: ${{ needs.report.outputs.blocking_findings }}
           evidence-artifact: ${{ steps.gate.outputs.evidence_artifact }}
-          # Every applied secret exception: finding, ticket, approver, expiry, entry (lane L-S).
+          # Every applied secret exception: finding, ticket, approver, expiry, entry (lane L-S), and
+          # its history (KDEC-018 item 4); and every register softening in force, with its history.
           secret-exceptions: ${{ steps.gate.outputs.secret_exceptions_applied }}
+          policy-exceptions: ${{ steps.policy.outputs.policy_weakenings }}
 
       - name: Exit on the verdict
         id: verdict
@@ -6359,7 +6376,8 @@ jobs:
           resolved=0
           if [ -z "${RESOLUTION:-}" ]; then
             echo "::warning title=No policy resolution::the policy step emitted nothing"
-          elif [ "$RESOLUTION" = "POLICY_RESOLVED" ] || [ "$RESOLUTION" = "POLICY_DECISION_EXPIRED" ]; then
+          elif [ "$RESOLUTION" = "POLICY_RESOLVED" ] || [ "$RESOLUTION" = "POLICY_DECISION_EXPIRED" ] ||
+               [ "$RESOLUTION" = "EXCEPTION_RENEWAL_LIMIT" ]; then
             resolved=1
           fi
           case "${ROUTE:-}" in

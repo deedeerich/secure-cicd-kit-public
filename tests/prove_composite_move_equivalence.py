@@ -77,8 +77,14 @@ STATUS_STEP = 'Result summary'
 # every tier unless each is excepted. The step-level diff against 5b06ccb was the job `outputs` key
 # and `id` + `run` on the Enforce step only. The L-H pin was 12d86c1c...51f5.
 MOVES = {
+    # RE-PINNED 2026-10-22, lane L-FX, `--repin secret-scan`. Reason: KDEC-018 (owner, 2026-10-22:
+    # "You can't drop below crawl ever") -- the secret scan always covers the repository root, so
+    # the job hands the composite `paths: "."` instead of the caller's `paths`, which narrowed the
+    # secret scan below crawl (tests/prove_crawl_floor.py K1). The step-level diff against 109cff8
+    # was IN_PATHS on the seeds, gitleaks and detect-secrets steps only ('${{ inputs.paths }}' ->
+    # '.'). The L-S pin was 32f72944...1ff6.
     'secret-scan': ('secret-scan', '11d1d56',
-                    '32f729447980e974328964a15f32a503095bc2c2df3093ffe018934ab67c1ff6'),
+                    'dbd82bc7328f722bf5037f62b9914bbb6612b6adcc774f768fb3c2ba7121fc8f'),
     'sast-cpp': ('sast-cpp', '11d1d56',
                  '2763b67bc90b5eda80dbef2ba0343179cb72a4edd9d86e419271398e7a51eeeb'),
     'iac-scan': ('iac-scan', '11d1d56',

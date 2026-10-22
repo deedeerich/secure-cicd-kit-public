@@ -79,8 +79,10 @@ scan, a bootstrap failure) — `EVIDENCE_UNTRUSTED` at every tier — while a co
 advisory (`VERSION_GAP` / `COVERAGE_PARTIAL`). At `walk` findings route `DECISION_REQUIRED`; at `run`, or
 where a registered control is `BLOCKED`, they route `BLOCKED`. The policy can only raise the route.
 A refused policy is folded in by the same precedence: a defect (conflict, unattributed decision,
-supplied `policy_mode`) `BLOCKED`, an unreadable register `EVIDENCE_UNTRUSTED`, an expired decision
-`DECISION_REQUIRED`. The gate job then exits on the verdict: `BLOCKED` and `EVIDENCE_UNTRUSTED`
+supplied `policy_mode`, a narrower scope below the authority's floor — `POLICY_BELOW_AUTHORITY_FLOOR`,
+KDEC-018) `BLOCKED`, an unreadable register `EVIDENCE_UNTRUSTED`, an expired decision or a softening
+renewed past its cap (`EXCEPTION_RENEWAL_LIMIT`) `DECISION_REQUIRED`. A secret exception renewed past
+the cap is refused by the same name and the secret blocks (part 05). The gate job then exits on the verdict: `BLOCKED` and `EVIDENCE_UNTRUSTED`
 fail it at every tier; the rest pass the gate and the deploy refuses `DECISION_REQUIRED`. With no policy step at all the gate is strict, never crawl.
 
 **The gate is the single enforcement point (lane L-S, owner ruling O-24; VERIFIED locally:

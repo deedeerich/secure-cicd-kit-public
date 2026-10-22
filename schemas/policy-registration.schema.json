@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://secure-cicd-kit/schemas/policy-registration.schema.json",
   "title": "Policy Register (schema_version 2)",
-  "description": "Who decided how hard each control bites, per org, team, product, repository and environment tier. One format, two places: the CENTRAL register (policy/policy-registration.json in the kit, delivered by $/; holds org/team/product/repository scopes and the repository map) and a REPOSITORY's own registration (.security/policy-registration.json on its protected default branch; scopes name only environment_tier; tighten-only). Neither present = the kit default, crawl: only secrets block. Precedence, most specific wins: kit default < org < org+team < org+product < org+team+product < repository; within a level a scope with environment_tier ranks above one without. This schema is the shape; scripts/policy_registration.py --validate also refuses what a schema cannot say: duplicate keys and scopes (POLICY_REGISTER_CONFLICT), uat/prod departures without environment_reviewers (POLICY_DECISION_UNATTRIBUTED), non-monotone tiers, expired decisions.",
+  "description": "Who decided how hard each control bites, per enterprise, org, team, product, repository and environment tier. One format, two places: the CENTRAL register (policy/policy-registration.json in the kit, delivered by $/; holds enterprise/org/team/product/repository scopes, the orgs map and the repository map) and a REPOSITORY's own registration (.security/policy-registration.json on its protected default branch; scopes name only environment_tier; tighten-only). Neither present = the kit default, crawl: only secrets block. Precedence, most specific wins: kit default < enterprise < org < org+team < org+product < org+team+product < repository; within a level a scope with environment_tier ranks above one without. THE AUTHORITY FLOOR (KDEC-018): a narrower entry may only tighten; one that leaves the rung, a control or a registered deploy approval weaker than what is registered above it is POLICY_BELOW_AUTHORITY_FLOOR (BLOCKED), with or without a decision, and only the authority (enterprise or org scope) may soften the kit default deploy approval. Per-finding exceptions (secret_exceptions) are not rung changes and are unaffected. This schema is the shape; scripts/policy_registration.py --validate also refuses what a schema cannot say: duplicate keys and scopes (POLICY_REGISTER_CONFLICT), uat/prod departures without environment_reviewers (POLICY_DECISION_UNATTRIBUTED), below-floor entries, non-monotone tiers, expired decisions.",
   "type": "object",
   "required": ["schema_version", "register_id", "sign_off", "policies"],
   "additionalProperties": false,
@@ -24,6 +24,11 @@
       "type": "object", "description": "GitHub environment name -> environment_tier, for target_environment values that are not tier names.",
       "additionalProperties": {"$ref": "#/$defs/tier"}
     },
+    "orgs": {
+      "type": "object", "description": "CENTRAL ONLY. org -> the enterprise it belongs to (KDEC-018). An enterprise scope binds every repository of every org mapped to it; an org this map does not name belongs to no enterprise. Org names compare case-insensitively.",
+      "propertyNames": {"pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
+      "additionalProperties": {"type": "string", "minLength": 1}
+    },
     "repositories": {
       "type": "object", "description": "CENTRAL ONLY. owner/name -> the team and product it belongs to. The org is the owner.",
       "propertyNames": {"pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+$"},
@@ -32,13 +37,29 @@
         "properties": {"team": {"type": "string", "minLength": 1}, "product": {"type": "string", "minLength": 1}}
       }
     },
-    "numbers": {"type": "object", "description": "Owner-configured numbers (SLA periods and the like); nothing in the kit defaults any of them."},
+    "numbers": {"type": "object", "description": "Owner-configured numbers (SLA periods and the like); nothing in the kit defaults any of them -- except max_exception_renewals, whose kit default is 2.",
+      "properties": {
+        "max_exception_renewals": {"type": "integer", "minimum": 0, "maximum": 5, "description": "KDEC-018: how many times one exception (a secret exception, a softening decision, a deploy's version-gap exception) may be renewed -- the number of prior grants in its `renews`. CENTRAL ONLY (the authority's scope). Kit default 2. Never unlimited: 0 means no renewal, 5 bounds one exception at six grants. Over it: EXCEPTION_RENEWAL_LIMIT."}
+      }},
     "policies": {"type": "array", "items": {"$ref": "#/$defs/entry"}}
   },
   "$defs": {
     "tier": {"enum": ["sandbox", "dev", "test", "uat", "prod"]},
     "route": {"enum": ["PROCEED_WITH_ADVISORY", "DECISION_REQUIRED", "EVIDENCE_UNTRUSTED", "BLOCKED"], "description": "PROCEED is not settable: a finding must never read as a pass."},
     "date": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+    "renews": {
+      "type": "array",
+      "description": "KDEC-018 item 4: this exception's PRIOR grants -- its history. Empty or absent is a first exception. Shown wherever the exception is applied or resurfaced ('previously excepted N time(s) since <date>, tickets ..., approvers ...'); more prior grants than numbers.max_exception_renewals refuse it (EXCEPTION_RENEWAL_LIMIT). scripts/exception_history.py.",
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["ticket", "approver", "from", "expires"],
+        "properties": {
+          "ticket": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*-[0-9]+$"},
+          "approver": {"type": "string", "minLength": 1},
+          "from": {"$ref": "#/$defs/date"},
+          "expires": {"$ref": "#/$defs/date"}
+        }
+      }
+    },
     "entry": {
       "type": "object", "additionalProperties": false, "required": ["id", "scope", "decision"],
       "properties": {
@@ -46,7 +67,9 @@
         "notes": {"type": "string"},
         "scope": {
           "type": "object", "additionalProperties": false,
+          "description": "An enterprise scope names only enterprise (and optionally environment_tier); every other central scope names an org or a repository.",
           "properties": {
+            "enterprise": {"type": "string", "minLength": 1, "description": "CENTRAL ONLY. An enterprise named by the orgs map: the top authority (KDEC-018)."},
             "org": {"type": "string", "minLength": 1},
             "team": {"type": "string", "minLength": 1},
             "product": {"type": "string", "minLength": 1},
@@ -71,7 +94,8 @@
               "explanation": {"type": "string"},
               "approver": {"type": "string"},
               "expires": {"type": "string"},
-              "environment_reviewers": {"type": "array", "items": {"type": "string", "minLength": 1}}
+              "environment_reviewers": {"type": "array", "items": {"type": "string", "minLength": 1}},
+              "renews": {"$ref": "#/$defs/renews"}
             }
           }
         },
@@ -97,7 +121,8 @@
             "expires": {"$ref": "#/$defs/date"},
             "exception_ref": {"type": "string"},
             "environment_reviewers": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Required for an entry that changes enforcement at uat or prod (a uat/prod tier, or no tier)."},
-            "evidence_refs": {"type": "array", "items": {"type": "string"}}
+            "evidence_refs": {"type": "array", "items": {"type": "string"}},
+            "renews": {"$ref": "#/$defs/renews"}
           }
         }
       }

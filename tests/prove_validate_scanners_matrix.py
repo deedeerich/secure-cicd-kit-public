@@ -78,6 +78,12 @@ WHAT IT PROVES
         key reaches the tool as ONE argument. FAILS ON 09a22a8: `wait "$pid"; rc=$?` ended the step
         under `bash -e` the moment the update exited non-zero (run 39701225219: "exit code 124"
         right after the last heartbeat), so no evidence was ever printed or recorded.
+    M11 the two semgrep container legs (semgrep-php, semgrep-container), RUN AS SHIPPED with a
+        shimmed `docker`: when the registry refuses the image, the leg still ends COLLECTION_FAILED
+        AND the refusal reaches the log; when one pull is refused and the next succeeds, the scan
+        runs and detects. FAILS ON 109cff8: Release 3 candidate run 39801652917 -- the semgrep-php
+        docker run ended in under 0.3 s (the sibling leg on the same image took 17 s) with no
+        report, and `>/dev/null 2>&1` had discarded the only evidence of why.
 
 EXIT  0 all hold   1 any does not   2 could not be checked
 """
@@ -513,6 +519,76 @@ def check_m10():
     return bad, None
 
 
+M11_REFUSAL = 'm11-shim: toomanyrequests: You have reached your pull rate limit'
+M11_OUT = ('{"results": [' + ', '.join(
+    '{"path": "fixture/php/%s.php", "extra": {"severity": "ERROR"}}' % n
+    for n in ('sqli', 'xss', 'cmd')) + '], "errors": []}')
+
+
+def check_m11():
+    """Run the Probe step's two semgrep container legs as shipped with `docker` shimmed;
+    -> (failures, could_not_run_reason)."""
+    sys.path.insert(0, HERE)
+    import _step_harness as H
+    bash, why = H.usable_bash()
+    if not bash:
+        return [], 'no usable bash (%s)' % why
+    probe = H.step(os.path.relpath(VALIDATE, ROOT), 'scanners', 'probe')
+    if probe is None:
+        return ['M11 no probe step to run'], None
+    # The leg is selected by the step's own env (the one key it declares), so this proof names no
+    # vocabulary of its own.
+    id_vars = [k for k, v in (probe.get('env') or {}).items() if 'matrix.probe.id' in str(v)]
+    if len(id_vars) != 1:
+        return ['M11 the probe step does not take the probe id from one env value: %s' % id_vars], None
+    bad = []
+    tmp = tempfile.mkdtemp(prefix='vs-m11-')
+    try:
+        # refused: every pull and run is refused the way a registry refuses (fast, on stderr).
+        # flaky:   the first pull is refused, the second succeeds, and the scan writes a report.
+        for pid in ('semgrep-php', 'semgrep-container'):
+            for name, fail_pulls in (('refused', 99), ('flaky', 1)):
+                ws = os.path.join(tmp, pid + '-' + name)
+                shims = os.path.join(ws, '.shims')
+                os.makedirs(ws)
+                H.shim(shims, 'docker', '\n'.join((
+                    'n=$(cat "$M11_COUNT" 2>/dev/null || echo 0)',
+                    'if [ "$1" = pull ]; then',
+                    '  n=$((n + 1)); echo "$n" > "$M11_COUNT"',
+                    '  if [ "$n" -le "$M11_FAIL_PULLS" ]; then echo "$M11_REFUSAL" >&2; exit 1; fi',
+                    '  echo pulled; exit 0',
+                    'fi',
+                    'if [ "$n" -le "$M11_FAIL_PULLS" ]; then echo "$M11_REFUSAL" >&2; exit 125; fi',
+                    'cat "$M11_OUT" > out.json; echo "scan ran"; exit 1')))
+                # The pull backoff is real time on a runner; here it is a no-op.
+                H.shim(shims, 'sleep', 'exit 0')
+                io.open(os.path.join(ws, 'report.json'), 'w', encoding='utf-8',
+                        newline='\n').write(M11_OUT)
+                r = H.run(bash, probe, {'matrix.probe.id': pid}, ws, shims, {
+                    id_vars[0]: pid, 'M11_FAIL_PULLS': str(fail_pulls),
+                    'M11_COUNT': os.path.join(ws, 'count.txt'),
+                    'M11_OUT': os.path.join(ws, 'report.json'), 'M11_REFUSAL': M11_REFUSAL})
+                out = r['outputs']
+                print('  M11 %-17s %-7s rc=%d exec=%s detect=%s collection=%s'
+                      % (pid, name, r['rc'], out.get('exec'), out.get('detect'),
+                         out.get('collection', '')))
+                if name == 'refused':
+                    if r['rc'] == 0 or out.get('collection') != 'COLLECTION_FAILED':
+                        bad.append('M11 %s refused: an image that never arrived did not end as '
+                                   'COLLECTION_FAILED (rc=%d)' % (pid, r['rc']))
+                    if 'toomanyrequests' not in r['log']:
+                        bad.append("M11 %s refused: the registry's refusal never reached the log -- "
+                                   'the step discarded the only evidence of why no report was '
+                                   'produced (run 39801652917)' % pid)
+                elif r['rc'] != 0 or out.get('detect') != 'ok':
+                    bad.append('M11 %s flaky: one refused pull, then a good one, did not reach a '
+                               'detecting scan (rc=%d detect=%s):\n%s'
+                               % (pid, r['rc'], out.get('detect'), r['log'][-400:]))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return bad, None
+
+
 def main():
     try:
         import yaml
@@ -572,6 +648,11 @@ def main():
         print('UNKNOWN: M10 could not run the update step: %s' % m10_why)
         return 2
     bad.extend(m10)
+    m11, m11_why = check_m11()
+    if m11_why:
+        print('UNKNOWN: M11 could not run the probe step: %s' % m11_why)
+        return 2
+    bad.extend(m11)
 
     flagship = _shipped(FLAGSHIP)
     # A tag or a digest: since lane L-SG the job pins semgrep/semgrep@sha256:..., and a pattern

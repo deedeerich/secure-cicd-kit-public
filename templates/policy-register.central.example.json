@@ -1,16 +1,24 @@
 {
   "schema_version": 2,
   "register_id": "example-central-register",
-  "notes": "EXAMPLE of the CENTRAL register: copy to policy/policy-registration.json in YOUR copy of the kit (it is delivered to every caller by $/ at the kit commit the caller pins, so a change reaches a repository when it moves its pin). Names below are placeholders. Precedence, most specific wins: kit default < org < org+team < org+product < org+team+product < repository; a scope with environment_tier ranks above the same scope without one. Every entry is a decision; uat/prod departures name the environment's required reviewers. A harness may PROPOSE a register (proposed_by); a person signs it off (sign_off). Validate with: python3 scripts/policy_registration.py --validate <file> --origin central",
+  "notes": "EXAMPLE of the CENTRAL register: copy to policy/policy-registration.json in YOUR copy of the kit (it is delivered to every caller by $/ at the kit commit the caller pins, so a change reaches a repository when it moves its pin). Names below are placeholders. Precedence, most specific wins: kit default < enterprise < org < org+team < org+product < org+team+product < repository; a scope with environment_tier ranks above the same scope without one. THE AUTHORITY FLOOR (KDEC-018): the enterprise entry (the orgs map says which orgs it binds) is the floor for every org, and each org's entries the floor for its teams, products and repositories -- a narrower entry may only TIGHTEN; leaving anything weaker is POLICY_BELOW_AUTHORITY_FLOOR (BLOCKED), with or without a decision. Per-finding secret_exceptions are not rung changes. Every entry is a decision; uat/prod departures name the environment's required reviewers. A harness may PROPOSE a register (proposed_by); a person signs it off (sign_off). Validate with: python3 scripts/policy_registration.py --validate <file> --origin central",
   "sign_off": {"by": "Dana Example", "role": "security-lead", "date": "2026-10-22", "reference": "REG-0001"},
   "proposed_by": "team-type analysis harness (example), run <reference>",
   "environment_names": {"development": "dev", "qa": "test", "staging": "uat", "production": "prod"},
+  "orgs": {"example-org-a": "example-enterprise", "example-org-b": "example-enterprise"},
   "repositories": {
     "example-org-a/payments-api": {"team": "payments", "product": "ledger"},
     "example-org-a/payments-web": {"team": "payments", "product": "checkout"},
     "example-org-b/field-tool": {"team": "solo-tools", "product": "field-tool"}
   },
   "policies": [
+    {
+      "id": "enterprise-crawl",
+      "scope": {"enterprise": "example-enterprise"},
+      "rung": "crawl",
+      "notes": "The top authority's rung: the floor for every org mapped to this enterprise. Raise it to walk and every org, team, product and repository beneath it runs at walk or above.",
+      "decision": {"authority": "Dana Example", "approver_role": "security-lead", "reason": "crawl phase across the enterprise: only secrets and a scan the kit could not run or trust block", "decided_on": "2026-10-22", "expires": "2027-01-31", "environment_reviewers": ["platform-approvers"]}
+    },
     {
       "id": "org-a-crawl",
       "scope": {"org": "example-org-a"},

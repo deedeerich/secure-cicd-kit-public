@@ -89,15 +89,26 @@ The caller's inputs are one source of weakenings. The other is the **policy regi
 (`docs/adoption/POLICY_REGISTER.md`; `schemas/policy-registration.schema.json`, `schema_version 2`):
 entries per org, team, product, repository and environment tier, in the kit's central copy and the
 repository's own file on its protected default branch, applied most specific last
-(`kit default < org < org+team < org+product < org+team+product < repository`, tier-qualified above
-untiered). Nothing registered is the kit default: crawl, only secrets block.
+(`kit default < enterprise < org < org+team < org+product < org+team+product < repository`,
+tier-qualified above untiered; the central `orgs` map places each org in an enterprise). Nothing
+registered is the kit default: crawl, only secrets block. **Nothing is ever below crawl** (KDEC-018):
+every weakening input still blocks a secret and a scan the kit could not run or trust, and the
+secret scan always covers the repository root (`prove_crawl_floor.py`).
 
 - **Every entry is a decision**: `authority` (a named person), `reason`, `decided_on`, `expires`, and
   for a uat/prod change the environment's `environment_reviewers` — the same shape as the weakening
   record and KDEC-014's exception. The register itself carries a `sign_off`.
-- **A softening** (anything left weaker than the scope inherited) joins this record as an attributed
-  weakening row and routes `PROCEED_WITH_ADVISORY` (`WEAKENING_ATTRIBUTED`). The repository's own file
-  may only tighten. Secrets never soften as a class, and no control may be `PROCEED`.
+- **The authority's rung is the floor** (KDEC-018): a narrower entry that leaves anything weaker than
+  what is registered above it is `POLICY_BELOW_AUTHORITY_FLOOR` (`BLOCKED`), decision or not. The one
+  softening left — the authority (enterprise/org) softening the kit default deploy approval — joins
+  this record as an attributed weakening row (`WEAKENING_ATTRIBUTED`) and the deploy never honours
+  it. The repository's own file may only tighten. Secrets never soften as a class; nothing is `PROCEED`.
+- **Every exception carries its history** (KDEC-018): `renews` lists its prior grants; the gate
+  summary, run record and deploy show "first exception" or "previously excepted N time(s) since …,
+  tickets …, approvers …"; more renewals than `numbers.max_exception_renewals` (default 2, 0..5) is
+  `EXCEPTION_RENEWAL_LIMIT`. A weekly job (`reusable-exception-due.yml`) raises each exception coming
+  due or expired on its Jira ticket, saying it was excepted before (`prove_exception_lifecycle.py`,
+  `prove_exception_due.py`).
 - **A secret exception is one finding, ticketed** (owner ruling 2026-10-22; lane L-S): an entry's
   `secret_exceptions` item names the finding's fingerprint, a `<PROJECT>-<digits>` ticket, an
   explanation, a named approver, an expiry, and reviewers at uat/prod — in the central register or

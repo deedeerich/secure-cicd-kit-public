@@ -1,9 +1,10 @@
 # The policy register: who decided how hard each control bites
 
-> For an administrator registering policy per **org, team (dev group), product, repository and
-> environment tier**, and for a tool that proposes registrations. Code:
+> For an administrator registering policy per **enterprise, org, team (dev group), product,
+> repository and environment tier**, and for a tool that proposes registrations. Code:
 > `scripts/policy_registration.py`. Schema: `schemas/policy-registration.schema.json`
 > (`schema_version: 2`). Proofs: `tests/prove_policy_registration.py`,
+> `tests/prove_authority_floor.py`, `tests/prove_crawl_floor.py`,
 > `tests/prove_gate_policy_enforcement.py`, `tests/prove_gate_reads_rung.py`,
 > `tests/prove_deploy_environment_protection.py`.
 
@@ -19,8 +20,12 @@ With **no registration anywhere**, every run is at the kit default (`policy_sour
 | a coverage gap (a version no carried scanner reads, e.g. PHP 8.5) | `PROCEED_WITH_ADVISORY` (`VERSION_GAP` / `COVERAGE_PARTIAL`) — not untrusted evidence; KDEC-014 still applies at uat/prod deploys |
 | uat / prod deploy | one required reviewer on the GitHub environment, self-review prevented |
 
-Anything **stronger** than that (walk, run, a control that blocks) and anything **weaker** than what a
-scope would otherwise inherit is a decision a named person makes in the register.
+Anything **stronger** than that (walk, run, a control that blocks) is a decision a named person makes
+in the register. **Nothing is ever weaker than crawl** (KDEC-018: *"You can't drop below crawl ever …
+Only up."*): no rung sits below it, secrets never soften, and no run input — `advisory_mode`,
+`soft_fail_sast`, `paths`, `language`, … — lets a secret or a scan the kit could not run or trust
+through (`tests/prove_crawl_floor.py` drives every weakening input, attributed, through the gate).
+`paths` narrows every scanner **except the secret scan**, which always covers the repository root.
 
 ## Where the register lives
 
@@ -28,7 +33,7 @@ One format, two places. A pull request can write neither.
 
 | copy | path | holds | read from |
 |---|---|---|---|
-| **central** | `policy/policy-registration.json` in **your copy of the kit** | every org, team, product and repository scope, and the repository → team/product map | the kit delivered by `$/`, at the kit commit the caller pins — a change reaches a repository when it moves its pin |
+| **central** | `policy/policy-registration.json` in **your copy of the kit** | every enterprise, org, team, product and repository scope, the org → enterprise map (`orgs`) and the repository → team/product map | the kit delivered by `$/`, at the kit commit the caller pins — a change reaches a repository when it moves its pin |
 | **repository** | `.security/policy-registration.json` in the calling repository (put it under CODEOWNERS) | that repository's own entries; scopes name only `environment_tier` | the repository's **protected default branch**, fetched by ref — never the run's checkout |
 
 The repository file may only **tighten** what the central register gives it
@@ -39,14 +44,43 @@ repository uses only its own file. Unreadable, unparseable or schema-violating i
 ## Precedence (most specific wins)
 
 ```
-kit default  <  org  <  org+team  <  org+product  <  org+team+product  <  repository
+kit default  <  enterprise  <  org  <  org+team  <  org+product  <  org+team+product  <  repository
 ```
 
 At each level a scope **with** `environment_tier` ranks above the same scope without one. Every
 matching entry is applied in that order on top of what the run inherited. Two entries with the same
 scope are a conflict, refused by name (`POLICY_REGISTER_CONFLICT`), never resolved by file order.
 The org is the repository's owner (case-insensitive); team and product come from the central
-`repositories` map — an unmapped repository gets its org's entries only.
+`repositories` map — an unmapped repository gets its org's entries only. The **enterprise** is the
+org's value in the central `orgs` map (`{"org-a": "my-enterprise", "org-b": "my-enterprise"}`); an
+enterprise scope names only `enterprise` (and optionally `environment_tier`) and binds every
+repository of every org mapped to it. An org the map does not name belongs to no enterprise — so map
+every org when you add one.
+
+## The authority floor: narrower scopes only tighten
+
+KDEC-018 (owner, 2026-10-22): *"whatever is allocated at the org or enterprise (if there is a higher
+authority) must be the level we run at across the entire enterprise. So if they say walk everyone is
+at walk."*
+
+- The rung and every control's routing set by the **highest authority** that applies (the enterprise
+  entry when there is one, else the org's) is the **floor** for everything beneath it.
+- An entry that leaves the rung, a control, or a deploy approval a registered entry set **weaker**
+  than what it inherited is refused: **`POLICY_BELOW_AUTHORITY_FLOOR`** (`BLOCKED`) — with an
+  unexpired decision or without one. That covers an org under its enterprise; every team, product,
+  team+product and repository entry; and a tier-qualified entry beneath the tier-less entry of its
+  own scope (an org at `walk` cannot put `dev` at `crawl` — register `crawl` tier-less and raise the
+  higher tiers instead). Its tightening, if any, is applied, so the floor holds in the record.
+- Raising the rung is a tightening even where the ladder routes one class differently (at `run`,
+  pre-existing findings on a tracked SLA are advisory).
+- The rung and the controls cannot be softer than crawl at all, so the **only softening left** is of
+  the kit default's uat/prod deploy approval, and only the authority (an enterprise or org scope) may
+  make it, with its decision — recorded as a weakening and never honoured by the deploy (below).
+- Teams still differ where it is not a rung: team size (`team_pattern`), deploy approval
+  (tightening), which controls they raise.
+- **Per-finding exceptions are unaffected**: a `secret_exceptions` item makes ONE finding advisory and
+  is not a rung change, so any scope may carry one (below). `--validate` names every below-floor
+  entry for every repository and org it would reach.
 
 The tiers must stay ordered for every repository: `sandbox ≤ dev ≤ test ≤ uat = prod`
 (`CELLS_NOT_MONOTONE` otherwise) — register uat and prod together.
@@ -77,9 +111,10 @@ The tiers must stay ordered for every repository: `sandbox ≤ dev ≤ test ≤ 
 | `deploy_approval` | what the deploy verifies on its GitHub environment (below). `ai_review` is `advisory` or `none`: an AI review comments on pull requests and is **never** a gate or an approval |
 | `decision` | **required on every entry**: `authority` (a named person), `reason`, `decided_on`, `expires`. An entry that changes enforcement at uat or prod (a uat/prod tier, or no tier) must also name `environment_reviewers` |
 
-**Tightening** (walk, run, a control raised) and **softening** (anything left weaker than inherited)
-are both attributed decisions. A softening in force is an attributed weakening row in the posture
-record and routes `PROCEED_WITH_ADVISORY` (cause `WEAKENING_ATTRIBUTED`). An **expired** decision
+**Tightening** (walk, run, a control raised) is an attributed decision. A **softening** below the
+floor is refused (above); the authority's softening of the kit default deploy approval in force is an
+attributed weakening row in the posture record and routes `PROCEED_WITH_ADVISORY` (cause
+`WEAKENING_ATTRIBUTED`). An **expired** decision
 never softens anything: its tightening stays in force, its softening reverts, and the run routes
 `DECISION_REQUIRED` (`POLICY_DECISION_EXPIRED`) until someone re-decides it. A missing field is
 `POLICY_DECISION_UNATTRIBUTED` (`BLOCKED`).
@@ -122,6 +157,64 @@ exceptable. `--validate` reports every refused exception. Proven locally:
 `tests/prove_gate_policy_enforcement.py` (`sx_*`), `tests/prove_gate_run_record.py`,
 `tests/prove_report_counts_findings.py`.
 
+## Exception history and the renewal cap
+
+KDEC-018 item 4 (owner, 2026-10-22): *"when they resurface it needs to be clear they were exempted
+previously and shown. Because endless exemptions/exceptions are not a thing."* Every dated exception
+the kit honours may carry **`renews`** — its PRIOR grants, one object each:
+
+```json
+"renews": [{"ticket": "SEC-1200", "approver": "Named Person", "from": "2026-01-10", "expires": "2026-04-10"},
+           {"ticket": "SEC-1311", "approver": "Other Person", "from": "2026-04-10", "expires": "2026-07-10"}]
+```
+
+| exception | where `renews` goes |
+|---|---|
+| a secret exception | the `secret_exceptions` item |
+| a register softening (the authority's softening of the kit default deploy approval — the only one left) | the entry's `decision` |
+| the deploy's version-gap exception at uat/prod (KDEC-014) | the deploy input `weakening_renews` (JSON), beside `weakening_expires` |
+
+- **Shown wherever it applies**: the gate summary, the gate's `secret_exceptions_applied`, the
+  posture summary, the run record (`secret_exceptions[].history`, `policy_exceptions[]`), the
+  deploy summary and `outcome.json` — *"previously excepted 2 time(s) since 2026-01-10, tickets
+  SEC-1200, SEC-1311, approvers Named Person, Other Person"*, or *"first exception"*.
+- **Capped**: `numbers.max_exception_renewals` in the **central** register (the authority's; a
+  repository file may not set it), kit default **2**, an integer **0–5** — never unlimited (0 = no
+  renewal; 5 bounds one exception at six grants, about eighteen months at quarterly expiries; past
+  that a recurring exception is a standing policy, or for a secret, a secret to remove). More prior
+  grants than the cap: **`EXCEPTION_RENEWAL_LIMIT`** — the secret BLOCKS, the softening reverts
+  (`DECISION_REQUIRED`), the version-gap deploy is `VERSION_GAP_REFUSED`. The deploy takes the
+  gate's `max_exception_renewals` output and holds the stronger of it and the kit default.
+- A history the kit cannot read is not "no history": the exception is refused as unattributed.
+- The history is declared in the register, under CODEOWNERS review; a reviewer checks it against the
+  ticket trail. `scripts/exception_due.py` (below) resurfaces every exception as it comes due.
+
+Proven locally: `tests/prove_exception_lifecycle.py`.
+
+### Resurfacing: exceptions come back onto their ticket when they come due
+
+`scripts/exception_due.py` lists every exception due within N days (default 14) and every expired
+one — register secret exceptions, register decisions (central and the repository's file), and the
+literal `weakening_expires` records in the caller's workflows (the deploy's version-gap exception) —
+each with its full history, renewal count and cap: deterministic JSON plus a human summary. An
+unreadable register or workflow exits 3 (`REGISTRATION_UNAVAILABLE`), never "nothing due".
+
+`.github/workflows/reusable-exception-due.yml`, called weekly by `templates/exception-due.yml`:
+
+- the **list** job (no credential, `contents: read`) writes the list to the job summary and an
+  artifact, and fails on an unreadable source;
+- the **resurface** job, armed only on a schedule or dispatch on the default branch and only when
+  something is due, takes the Jira credential from the protected environment (**Jira only**, KDEC-017
+  item 5; the same settings as the ticket reconciler) and, with `apply: true`, reopens a closed
+  ticket and comments on it — or creates ONE issue for an unticketed exception, found by its stamp
+  next time. Every comment says plainly that it was excepted before (history, count, approvers,
+  expiry) or that it is a first exception, and that it is now due. No Jira credential:
+  `NOT_CONFIGURED`, and the list job's summary and artifact stand.
+
+A `weakening_expires` written as an expression cannot be read from the file and is named in the
+summary, not guessed. Proven locally with a recording fake Jira: `tests/prove_exception_due.py`.
+Owed: a hosted scheduled run, and a run against a personal Jira.
+
 ## The register document
 
 ```json
@@ -129,6 +222,7 @@ exceptable. `--validate` reports every refused exception. Proven locally:
  "sign_off": {"by": "Named Person", "role": "security-lead", "date": "2026-10-22", "reference": "REG-1"},
  "proposed_by": "optional: the tool and run that proposed it",
  "environment_names": {"production": "prod", "staging": "uat"},
+ "orgs": {"org-a": "my-enterprise", "org-b": "my-enterprise"},
  "repositories": {"org-a/payments-api": {"team": "payments", "product": "ledger"}},
  "policies": [ ...entries... ]}
 ```
@@ -164,8 +258,9 @@ by the deploy. If the API cannot be read, uat/prod refuse (`ENVIRONMENT_PROTECTI
 ## What a work administrator creates
 
 1. In the private kit repository: `policy/policy-registration.json` (copy
-   `templates/policy-register.central.example.json`), with the two orgs, each team and product,
-   the `repositories` map (from the harness proposal), and CODEOWNERS on `policy/`.
+   `templates/policy-register.central.example.json`), with the `orgs` map placing both orgs in
+   the enterprise, the enterprise entry (the floor for both), each team and product, the
+   `repositories` map (from the harness proposal), and CODEOWNERS on `policy/`.
 2. A pull-request check on the kit repository running `--validate` on it.
 3. For each repository that needs its own tightening: `.security/policy-registration.json` on its
    default branch (copy `templates/policy-registration.example.json`), under CODEOWNERS.

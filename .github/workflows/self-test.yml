@@ -62,6 +62,10 @@ jobs:
             indentation: {spaces: consistent, indent-sequences: whatever}
           EOF
           yamllint -c .yamllint.kit.yml .github/ profiles/
+      - name: yamllint as the local battery runs it (same config, read from the step above)
+        # Release 3 went red here with 27 errors no local gate could see: the config existed only
+        # in the heredoc above. tests/check_yamllint.py extracts that heredoc, so the two cannot drift.
+        run: python3 tests/check_yamllint.py
 
   actionlint:
     name: actionlint
@@ -921,6 +925,18 @@ jobs:
           # it says; a refused or unreadable policy is never the default.
           python3 tests/prove_gate_reads_rung.py
           python3 tests/prove_gate_policy_enforcement.py
+          # KDEC-018 (lane L-FX): the highest authority's rung is the floor -- narrower scopes only
+          # tighten (POLICY_BELOW_AUTHORITY_FLOOR) -- and crawl is the absolute floor: no input,
+          # weakening or entry lets a secret or an untrusted scan through, the secret scan included.
+          python3 tests/prove_authority_floor.py
+          python3 tests/prove_crawl_floor.py
+          # KDEC-018 item 4: every exception shows its history and renewals are capped -- secret
+          # exceptions, register softenings, and the deploy's version-gap exception.
+          python3 scripts/exception_history.py --self-test
+          python3 tests/prove_exception_lifecycle.py
+          # ... and every exception resurfaces as it comes due, onto its Jira ticket (a recording
+          # fake here; no real Jira), saying plainly it was excepted before.
+          python3 tests/prove_exception_due.py
           # L36: the gate emits the run record, schema-valid, and refuses to emit an invalid one.
           python3 tests/prove_gate_run_record.py
           python3 scripts/policy_registration.py --validate templates/policy-register.central.example.json --origin central
@@ -1088,6 +1104,25 @@ jobs:
           # L107 / KDEC-008 OD-10: no overlay passes, every overlay and ledger is checked, and an
           # overlay calls the kit owner/repo/...@<sha>, never ./ -- against constructed trees.
           python3 tests/prove_custody_overlays.py
+
+      - name: Every overlay this copy carries proves itself
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet PyYAML
+          # An overlay's own proofs ran nowhere: its Jira caller and its crawl behaviour were a
+          # reading of the YAML. Each overlay ships its proofs under overlays/<name>/tests/; every
+          # one is run here, by glob, so this file names no overlay. A neutral copy carries none,
+          # and says so rather than passing silently.
+          shopt -s nullglob
+          n=0
+          for t in overlays/*/tests/*.py; do
+            case "$(basename "$t")" in _*) continue ;; esac
+            echo "::group::$t"
+            python3 "$t"
+            echo "::endgroup::"
+            n=$((n+1))
+          done
+          echo "overlay proofs run: $n (zero means this copy carries no overlay)"
 
       - name: Generated registers are current, and the capability census can tell a name from a call
         run: |
@@ -1794,6 +1829,21 @@ jobs:
     with:
       tracker_host: jira.example.net
       project_key: WORK
+
+  exception-due-lists-on-push:
+    name: Exception check lists without a credential (hosted control)
+    # KDEC-018 item 4 (lane L-FX). On push and dispatch the list job must START and read the kit's own
+    # workflows; an unreadable source turns it red. The resurface job is never armed here (not a
+    # schedule or dispatch on the default branch, and no environment), so no credential is requested.
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/reusable-exception-due.yml
+    with:
+      kit_repository: ${{ github.repository }}
+      kit_ref: ${{ github.sha }}
+      default_branch: main
+      apply: false
 
   ticket-reference-outcome-asserted:
     name: Ticket reference gate's outcome off a pull request is NOT_A_PULL_REQUEST

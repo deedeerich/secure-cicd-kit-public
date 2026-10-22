@@ -5,6 +5,18 @@ Commit ids are on the build trunk `fix/normalization-and-discovery`. Versions 1.
 `10b-CHANGE-LOG-EARLIER.md`. A reader whose last copy was v1.10 (`a907dc8`) reads
 `12-CHANGES-SINCE-A907DC8.md` first: it groups every change since by what an integrator must do.
 
+## Unreleased — crawl is the floor; the authority binds; exceptions resurface (lane L-FX, 2026-10-22)
+
+KDEC-018 (owner, 2026-10-22). Proven locally, each proof failed first; no hosted run.
+
+| change | parts affected |
+|---|---|
+| **Enterprise scope and the authority floor**: the central `orgs` map places each org in an enterprise; precedence kit default < enterprise < org < ... < repository. A narrower entry (org under its enterprise, team, product, repository, a tier beneath its tier-less entry) that leaves anything weaker is `POLICY_BELOW_AUTHORITY_FLOOR` (`BLOCKED`), decision or not; only the authority may soften the kit default deploy approval. Per-finding exceptions are unaffected | 03, 05 |
+| **Crawl is absolute**: the secret scan always covers the repository root (`paths` narrowed it below crawl); every weakening input, attributed, still blocks a secret and a scan the kit could not run or trust (`tests/prove_crawl_floor.py`) | 02, 05 |
+| **Exception history and the renewal cap**: `renews` (prior grants) on secret exceptions, register decisions and the deploy's version-gap exception (`weakening_renews`); shown as "first exception" or "previously excepted N time(s) since ..." in the gate summary, the run record (`policy_exceptions` new), the deploy summary and `outcome.json`; over `numbers.max_exception_renewals` (central only, default 2, 0..5) → `EXCEPTION_RENEWAL_LIMIT`. New outputs/inputs: security `max_exception_renewals` → deploy `max_exception_renewals` | 03, 05, 07 |
+| **Resurfacing**: `scripts/exception_due.py` + `reusable-exception-due.yml` + `templates/exception-due.yml` (weekly): every exception due within 14 days or expired is listed with its history, and raised on its Jira ticket (reopen, comment, or one new issue), saying it was excepted before and is now due; `NOT_CONFIGURED` without Jira credentials; an unreadable register is never "nothing due" | 05, 06 |
+| **Ticket keys end where their number ends**: `ticket_reference.py` refuses `WORK-123abc`, `WORK-1234_`, `WORK-0123` (after lane L-W's G10), so a malformed key never excepts a secret | 06 |
+
 ## Unreleased — the gate is the single enforcement point (lane `lane/L-S`, 2026-10-22)
 
 Owner ruling O-24 ("only secrets block at this time"). Proven locally; the proof failed first on

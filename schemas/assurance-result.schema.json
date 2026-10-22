@@ -31,7 +31,7 @@
 
     "secret_exceptions": {
       "type": "array",
-      "description": "Every secret exception applied in this run (owner ruling 2026-10-22): the finding's fingerprint (a hash, never the secret), the ticket key, the named approver, the expiry and the register entry. Present only when secret_gate is EXCEPTED.",
+      "description": "Every secret exception applied in this run (owner ruling 2026-10-22): the finding's fingerprint (a hash, never the secret), the ticket key, the named approver, the expiry and the register entry -- and (KDEC-018 item 4) how many times it was renewed and its history ('first exception', or 'previously excepted N time(s) since <date>, tickets ..., approvers ...'). Present only when secret_gate is EXCEPTED.",
       "items": {
         "type": "object",
         "required": ["finding", "ticket", "approver", "expires"],
@@ -41,7 +41,28 @@
           "ticket": { "type": "string" },
           "approver": { "type": "string" },
           "expires": { "type": "string" },
-          "entry": { "type": "string" }
+          "entry": { "type": "string" },
+          "renewals": { "type": "integer", "minimum": 0 },
+          "history": { "type": "string" }
+        }
+      }
+    },
+
+    "policy_exceptions": {
+      "type": "array",
+      "description": "Every policy-register softening in force in this run (KDEC-018: only the authority's softening of the kit default deploy approval remains possible), with its renewals and history. Absent when there is none.",
+      "items": {
+        "type": "object",
+        "required": ["entry", "control", "authority", "expires", "renewals", "history"],
+        "additionalProperties": false,
+        "properties": {
+          "entry": { "type": "string" },
+          "control": { "type": "string" },
+          "authority": { "type": "string" },
+          "expires": { "type": "string" },
+          "exception_ref": { "type": "string" },
+          "renewals": { "type": "integer", "minimum": 0 },
+          "history": { "type": "string" }
         }
       }
     },

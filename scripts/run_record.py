@@ -39,6 +39,16 @@ BLOCKING_FINDINGS = 'BLOCKING_FINDINGS'
 SECRET_GATE = 'SECRET_GATE'
 EVIDENCE_ARTIFACT = 'EVIDENCE_ARTIFACT'
 SECRET_EXCEPTIONS = 'SECRET_EXCEPTIONS'
+POLICY_EXCEPTIONS = 'POLICY_EXCEPTIONS'
+
+
+def _renewals(v):
+    """A renewal count as the integer it is; anything unreadable is None (never 0)."""
+    try:
+        n = int(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 0 else None
 
 
 def _e(name):
@@ -83,9 +93,41 @@ def build():
     if not isinstance(sx, list):
         sx, problems = [], problems + ['SECRET_EXCEPTIONS is not a JSON list']
     if sx:
-        rec['secret_exceptions'] = [dict((k, str((x or {}).get(k, ''))) for k in
-                                         ('finding', 'ticket', 'approver', 'expires', 'entry'))
-                                    for x in sx]
+        rec['secret_exceptions'] = []
+        for x in sx:
+            row = dict((k, str((x or {}).get(k, ''))) for k in ('finding', 'ticket', 'approver', 'expires', 'entry'))
+            # KDEC-018 item 4: whether it was excepted before, how often, since when, on which tickets.
+            n = _renewals((x or {}).get('renewals', 0))
+            if n is None:
+                problems.append('a secret exception\'s renewal count is unreadable')
+                n = 0
+            row['renewals'] = n
+            row['history'] = str((x or {}).get('history') or 'first exception')
+            rec['secret_exceptions'].append(row)
+    # EVERY REGISTER SOFTENING IN FORCE, with its history (KDEC-018 item 4): the policy step's
+    # weakening rows that came from a register entry ("policy entry <id>").
+    pe_text = _e('POLICY_EXCEPTIONS') or '[]'
+    try:
+        pe = json.loads(pe_text)
+    except ValueError:
+        pe, problems = [], problems + ['POLICY_EXCEPTIONS is not JSON']
+    if not isinstance(pe, list):
+        pe, problems = [], problems + ['POLICY_EXCEPTIONS is not a JSON list']
+    rows = []
+    for x in pe:
+        inp = str((x or {}).get('input') or '') if isinstance(x, dict) else ''
+        if not inp.startswith('policy entry '):
+            continue
+        n = _renewals(x.get('renewals', 0))
+        if n is None:
+            problems.append('a policy exception\'s renewal count is unreadable')
+            n = 0
+        rows.append({'entry': inp[len('policy entry '):], 'control': str(x.get('control') or ''),
+                     'authority': str(x.get('authority') or ''), 'expires': str(x.get('expires') or ''),
+                     'exception_ref': str(x.get('exception_ref') or ''), 'renewals': n,
+                     'history': str(x.get('history') or 'first exception')})
+    if rows:
+        rec['policy_exceptions'] = rows
     if count.isdigit():
         # The gate knows the blocking count, not its split by severity: it is recorded as the
         # count it is (high = blocking-severity), never spread across levels it did not measure.

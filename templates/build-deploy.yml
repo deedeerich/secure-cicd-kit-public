@@ -253,6 +253,9 @@ jobs:
       # prevented). The deploy reads the environment's protection rules back and, at uat/prod,
       # refuses before login when they fall short; empty still demands one reviewer there.
       deploy_approval: ${{ needs.security.outputs.deploy_approval }}
+      # KDEC-018: the authority's renewal cap. A version-gap exception carries its prior grants in
+      # weakening_renews ([{ticket, approver, from, expires}]); renewed more often, it is refused.
+      max_exception_renewals: ${{ needs.security.outputs.max_exception_renewals }}
       resource_group: ${{ vars.KIT_RESOURCE_GROUP }}
       containerapp_name: ${{ vars.KIT_APP_NAME }}
       acr_login_server: ${{ vars.KIT_ACR_LOGIN_SERVER }}

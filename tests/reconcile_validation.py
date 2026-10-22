@@ -48,6 +48,10 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # KDEC-013 (2026-10-16): the pull-request Jira reference gate, moved from one consumer's overlay
     # into the core with NO default issue-number range. Reads the PR description; writes nothing.
     "reusable-ticket-reference.yml": ["ticket-reference"],
+    # KDEC-018 item 4 (lane L-FX, 2026-10-22): exceptions resurface when they come due, onto their
+    # Jira ticket, with their history. Lists without a credential; resurfaces from the protected
+    # environment on a schedule. Self-test calls it on push (list only; the resurface job is not armed).
+    "reusable-exception-due.yml": ["exception-resurfacing"],
     # FUTURE_WORK section 6, owner 2026-10-22: Dependabot PRs auto-merge (`--auto --squash`, so
     # branch protection still decides) only when every section 6 criterion the kit can establish
     # holds; the rest go to a human with the reason, and excluded fixture paths are closed.
@@ -446,6 +450,12 @@ VALIDATION_REGISTRY: dict[str, dict] = {
     # in every decision as NOT_ESTABLISHED.
     "dependabot-triage": {"probe": "tests/prove_dependabot_triage.py", "state": "observed",
                           "level": "tool"},
+    # OBSERVED 2026-10-22, locally (lane L-FX): scripts/exception_due.py against fixture registers and
+    # caller workflows, its Jira path against a RECORDING FAKE (comment, reopen, create once, refuse a
+    # non-Jira tracker, NOT_CONFIGURED without credentials), and the workflow's own list step run as
+    # shipped: tests/prove_exception_due.py (E1..E11). Level `tool`: no hosted run, no real Jira.
+    "exception-resurfacing": {"probe": "tests/prove_exception_due.py", "state": "observed",
+                              "level": "tool"},
     "version-metadata-wired": {"probe": "tests/prove_build_push_round_trip.py",
                                "state": "observed", "level": "tool"},
     }

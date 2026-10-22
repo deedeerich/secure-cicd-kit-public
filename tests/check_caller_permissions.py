@@ -126,8 +126,12 @@ def main():
         print('SELF-TEST FAILED: an insufficient grant was not detected')
         return 2
 
+    # OVERLAY WORKFLOWS ARE CALLERS TOO. They ship in a consumer's copy and call the core by
+    # owner/repo/...@sha; a grant short of what the core asks is the same startup_failure there,
+    # and no workflow in this repository runs them to find out. A neutral copy has no overlays/.
     files = sorted(glob.glob(os.path.join(ROOT, '.github', 'workflows', '*.yml')) +
-                   glob.glob(os.path.join(ROOT, 'templates', '*.yml')))
+                   glob.glob(os.path.join(ROOT, 'templates', '*.yml')) +
+                   glob.glob(os.path.join(ROOT, 'overlays', '*', 'workflows', '*.yml')))
     if not files:
         print('UNKNOWN: no workflows found.')
         return 2

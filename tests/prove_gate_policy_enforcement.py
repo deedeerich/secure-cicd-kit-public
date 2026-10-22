@@ -20,7 +20,10 @@ SCENARIOS (policy -> seeded result -> gate exit / enforcement, routing_result, c
     crawl_pick_other     the same register, a bandit finding        -> PROCEED_WITH_ADVISORY
     walk_finding         org at walk, a finding              -> DECISION_REQUIRED (owes a decision)
     run_finding          org at run, a finding               -> BLOCKED
-    softening            team softens org walk to crawl, attributed -> PROCEED_WITH_ADVISORY
+    softening            team softens org walk to crawl, attributed -> BLOCKED (KDEC-018,
+                                                               POLICY_BELOW_AUTHORITY_FLOOR), verdict 1
+    softening_authority_deploy_approval  the org softens the kit default deploy approval at prod,
+                                                               attributed -> PROCEED_WITH_ADVISORY
                                                                (WEAKENING_ATTRIBUTED)
     expired              an expired tightening                -> DECISION_REQUIRED, walk kept
     conflict             two entries for one scope            -> BLOCKED, verdict 1
@@ -381,6 +384,9 @@ def sx_scenarios(work):
         ('sx_ticket_outside_range', policy_outputs(work, sx_central([sx_item(ticket='SEC-12')], numbers={
             'ticket_min_digits': 3, 'ticket_max_digits': 4})), secret_seed([fp_a]),
          'BLOCKED', 'SECRET_EXCEPTION_UNTICKETED', False),
+        # A malformed key is not a ticket (lane L-FX, after lane L-W's G10): a leading zero.
+        ('sx_ticket_leading_zero', policy_outputs(work, sx_central([sx_item(ticket='SEC-0123')])),
+         secret_seed([fp_a]), 'BLOCKED', 'SECRET_EXCEPTION_UNTICKETED', False),
         ('sx_no_explanation', policy_outputs(work, sx_central([sx_item(explanation=None)])), secret_seed([fp_a]),
          'BLOCKED', 'SECRET_EXCEPTION_UNATTRIBUTED', False),
         ('sx_no_approver', policy_outputs(work, sx_central([sx_item(approver=None)])), secret_seed([fp_a]),
@@ -548,9 +554,17 @@ def main():
              (True, 'ADVISORY'), 'DECISION_REQUIRED', None, True),
             ('run_finding', policy_outputs(work, central([{'id': 'r', 'scope': {'org': 'acme'}, 'rung': 'run'}])),
              scanners('sast-semgrep'), (False, 'BLOCKED'), 'BLOCKED', None, False),
+            # KDEC-018 (owner, 2026-10-22): the org's rung is the floor. A team entry softening it,
+            # even with an unexpired decision, is POLICY_BELOW_AUTHORITY_FLOOR -- BLOCKED (lane L-FX).
             ('softening', policy_outputs(work, central([
                 {'id': 'w', 'scope': {'org': 'acme'}, 'rung': 'walk'},
                 {'id': 's', 'scope': {'org': 'acme', 'team': 'payments'}, 'rung': 'crawl'}])),
+             scanners(), (True, 'ALLOWED'), 'BLOCKED', None, False),
+            # The one softening left: the AUTHORITY (org scope) softening the kit default's deploy
+            # approval, attributed -- recorded as a weakening, and never honoured by the deploy.
+            ('softening_authority_deploy_approval', policy_outputs(work, central([
+                {'id': 'da', 'scope': {'org': 'acme', 'environment_tier': 'prod'},
+                 'deploy_approval': {'self_review_prevented': 'not_required'}}])),
              scanners(), (True, 'ALLOWED'), 'PROCEED_WITH_ADVISORY', 'WEAKENING_ATTRIBUTED', True),
             ('expired', policy_outputs(work, central([{'id': 'w', 'scope': {'org': 'acme'}, 'rung': 'walk',
                                                         'decision': decision(expires='2026-01-01')}])),
@@ -654,7 +668,8 @@ def main():
         return 1
     print('PASS: with no register only secrets block and a non-secret finding is PROCEED_WITH_ADVISORY '
           '(FINDINGS_NOT_BLOCKED); a registered cherry-pick blocks exactly its control; walk owes a '
-          'decision and run blocks; an attributed softening is advisory with its cause; an expired, '
+          'decision and run blocks; a narrower scope softening the authority floor is BLOCKED while the '
+          'authority\'s attributed softening of the kit default is advisory with its cause; an expired, '
           'conflicting or unreadable policy is refused; no policy step leaves the gate strict; a scan the '
           'kit could not run or trust blocks at every tier (O-24) while a coverage gap stays advisory; '
           'and, with the scanner jobs\' own enforce steps run, a scanner job reports its findings and '

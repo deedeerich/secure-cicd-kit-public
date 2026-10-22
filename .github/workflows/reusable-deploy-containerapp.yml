@@ -158,6 +158,23 @@ on:
         type: string
         required: false
         default: ""
+      weakening_renews:
+        description: >-
+          KDEC-018: this exception's history -- a JSON list of its PRIOR grants, each {ticket,
+          approver, from, expires}. Empty is a first exception. Shown with the version-gap exception;
+          more renewals than the cap refuse it (EXCEPTION_RENEWAL_LIMIT), and an unreadable list
+          refuses it too. Endless exceptions are not a thing.
+        type: string
+        required: false
+        default: ""
+      max_exception_renewals:
+        description: >-
+          The security gate's max_exception_renewals output (the authority's renewal cap). The
+          deploy holds the stronger of this and the kit default (2): a lower cap binds, a higher
+          one does not.
+        type: string
+        required: false
+        default: ""
       deploy_approval:
         description: >-
           The security gate's deploy_approval output (JSON per tier: approver_groups,
@@ -296,6 +313,8 @@ jobs:
       WEAKENING_AUTHORITY: ${{ inputs.weakening_authority }}
       WEAKENING_EXCEPTION_REF: ${{ inputs.weakening_exception_ref }}
       WEAKENING_EXPIRES: ${{ inputs.weakening_expires }}
+      WEAKENING_RENEWS: ${{ inputs.weakening_renews }}
+      MAX_EXCEPTION_RENEWALS: ${{ inputs.max_exception_renewals }}
       DEPLOY_ENVIRONMENT: ${{ inputs.github_environment }}
       ROLLBACK_ON_FAILURE: ${{ inputs.rollback_on_failure }}
       ENVIRONMENT_TIER: ${{ inputs.environment_tier }}
@@ -1694,7 +1713,11 @@ jobs:
               # gap was ruled on, so a refused exception is on the record too.
               ruling = env('version_gap_ruling')
               exc = {'accepted_by': env('weakening_authority'), 'reason': env('weakening_reason'),
-                     'exception_ref': env('weakening_exception_ref'), 'expires': env('weakening_expires')}
+                     'exception_ref': env('weakening_exception_ref'), 'expires': env('weakening_expires'),
+                     # KDEC-018 item 4: how often it was renewed, and its history, as the verdict step read them.
+                     'renewals': (int(env('exception_renewals')) if env('exception_renewals').isdigit()
+                                  else env('exception_renewals') or None),
+                     'history': env('exception_history') or None}
               exc = exc if ruling in ('VERSION_GAP_EXCEPTION_ACCEPTED', 'VERSION_GAP_REFUSED') else None
               outcome, why = derive_outcome(adapter, live)
               report = {'deployment_outcome': outcome, 'why': why,
@@ -2534,12 +2557,35 @@ jobs:
             elif [ "$(date -u +%Y-%m-%d)" ">" "$exp" ]; then
               why="${why:+$why; }an exception that expired on $exp"
             fi
+            # KDEC-018 item 4: THE EXCEPTION'S HISTORY AND THE RENEWAL CAP. weakening_renews lists this
+            # acceptance's PRIOR grants {ticket, approver, from, expires}; more of them than the cap --
+            # the stronger of max_exception_renewals and the kit default 2 -- is EXCEPTION_RENEWAL_LIMIT,
+            # and a history that cannot be read is not "no history". scripts/exception_history.py holds
+            # the same rules; tests/prove_exception_lifecycle.py H6.
+            cap=2
+            case "${MAX_EXCEPTION_RENEWALS:-}" in 0|1) cap="$MAX_EXCEPTION_RENEWALS" ;; esac
+            renewals=0; history="first exception"
+            if [ -n "$(printf '%s' "${WEAKENING_RENEWS:-}" | tr -d '[:space:]')" ]; then
+              if renewals=$(printf '%s' "$WEAKENING_RENEWS" | jq -e 'if type == "array" and all(.[]; type == "object" and ((keys - ["ticket","approver","from","expires"]) | length) == 0 and ((.ticket // "") | test("^[A-Z][A-Z0-9_]*-[0-9]+$")) and ((.approver // "") | test("[^ ]")) and ((.from // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")) and ((.expires // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$"))) then length else error("unreadable") end' 2>/dev/null); then
+                if [ "$renewals" -gt 0 ]; then
+                  history=$(printf '%s' "$WEAKENING_RENEWS" | jq -r 'sort_by(.from) | "previously excepted \(length) time(s) since \(.[0].from), tickets \(map(.ticket) | join(", ")), approvers \(reduce (map(.approver))[] as $a ([]; if index([$a]) then . else . + [$a] end) | join(", "))"')
+                fi
+                if [ "$renewals" -gt "$cap" ]; then
+                  why="${why:+$why; }EXCEPTION_RENEWAL_LIMIT: renewed ${renewals} time(s) and the cap is ${cap} -- endless exceptions are not a thing; close the scanner gap"
+                fi
+              else
+                renewals=unreadable; history=unreadable
+                why="${why:+$why; }a renewal history (weakening_renews) that is not a list of prior grants {ticket, approver, from, expires}"
+              fi
+            fi
+            { echo "exception_renewals=${renewals}"; echo "exception_history=${history}"; } >> "$GITHUB_OUTPUT"
             if [ -n "$why" ]; then
               ruling VERSION_GAP_REFUSED
-              refuse "KDEC-014: the gate verdict is PROCEED_WITH_ADVISORY caused by a VERSION_GAP (no carried scanner can read the target version, established by READ ranges), and ${ENVIRONMENT_TIER} is a production tier. Close the scanner gap, or record an attributed exception in the weakening record: ${why}."
+              refuse "KDEC-014: the gate verdict is PROCEED_WITH_ADVISORY caused by a VERSION_GAP (no carried scanner can read the target version, established by READ ranges), and ${ENVIRONMENT_TIER} is a production tier. Close the scanner gap, or record an attributed exception in the weakening record: ${why}. Exception history: ${history}."
             fi
             ruling VERSION_GAP_EXCEPTION_ACCEPTED
-            echo "::warning title=Version gap accepted by attributed exception (KDEC-014)::Proceeding at ${ENVIRONMENT_TIER} on a named person's exception (the weakening record), expiring ${exp}, in a GitHub environment whose required reviewers approved this job. The record is in the posture summary and outcome.json."
+            echo "::warning title=Version gap accepted by attributed exception (KDEC-014)::Proceeding at ${ENVIRONMENT_TIER} on a named person's exception (the weakening record), expiring ${exp}, in a GitHub environment whose required reviewers approved this job. Exception history: ${history}. The record is in the posture summary and outcome.json."
+            echo "Version-gap exception accepted at ${ENVIRONMENT_TIER}, expiring ${exp}. Exception history: ${history}." >> "$GITHUB_STEP_SUMMARY"
           }
           case "$ROUTING_RESULT" in
             PROCEED)
@@ -2799,6 +2845,8 @@ jobs:
           SERVING_OUTCOME: ${{ steps.serving.outcome }}
           CANCELLED: ${{ job.status == 'cancelled' }}   # cancelled() is not allowed in env: (actionlint)
           VERSION_GAP_RULING: ${{ steps.verdict.outputs.version_gap_ruling }}
+          EXCEPTION_RENEWALS: ${{ steps.verdict.outputs.exception_renewals }}
+          EXCEPTION_HISTORY: ${{ steps.verdict.outputs.exception_history }}
         # Exit 0 only for DEPLOY_HEALTHY: this step's outcome IS the job's verdict (DCR gap 8).
         run: python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" report --adapter containerapp
 
@@ -2830,6 +2878,8 @@ jobs:
           W_WEAKENING_AUTHORITY: ${{ inputs.weakening_authority }}
           W_WEAKENING_EXCEPTION_REF: ${{ inputs.weakening_exception_ref }}
           W_WEAKENING_EXPIRES: ${{ inputs.weakening_expires }}
+          W_WEAKENING_RENEWS: ${{ inputs.weakening_renews }}
+          W_MAX_EXCEPTION_RENEWALS: ${{ inputs.max_exception_renewals }}
           W_ADVISORY_CAUSES: ${{ inputs.advisory_causes }}
           W_GITHUB_ENVIRONMENT: ${{ inputs.github_environment }}
           W_ATTESTATION_RUNG: ${{ inputs.attestation_rung }}
@@ -2934,6 +2984,8 @@ jobs:
           posture weakening_authority     EXCEPTION_ATTRIBUTION - -
           posture weakening_exception_ref EXCEPTION_ATTRIBUTION - -
           posture weakening_expires       EXCEPTION_ATTRIBUTION - -
+          posture weakening_renews        EXCEPTION_ATTRIBUTION - -
+          posture max_exception_renewals  EXCEPTION_ATTRIBUTION - -
           # V1 (P-02). The signer and the plan flag say WHAT is verified and WHETHER the plan can;
           # the rung is how hard an absent attestation is refused -- run is the baseline, any other
           # rung is a change from it that someone must own.

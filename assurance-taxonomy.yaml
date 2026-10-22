@@ -2866,6 +2866,79 @@ namespaces:
           environment reviewers.
       SECRET_EXCEPTION_EXPIRED:
         definition: Its expiry, or its entry's decision, has passed. Silence never renews it.
+      EXCEPTION_RENEWAL_LIMIT:
+        definition: The exception was renewed more often than the authority's cap.
+        reuses: exception_lifecycle.EXCEPTION_RENEWAL_LIMIT
+
+  # ─────────────────────────────────────────────────────────────────────────
+  exception_lifecycle:
+    description: >-
+      KDEC-018 item 4 (owner, 2026-10-22): "We still need to make sure we are dealing with
+      exceptions … and have a timing mechanism to resurface the tickets when those come due. And
+      when they resurface it needs to be clear they were exempted previously and shown. Because
+      endless exemptions/exceptions are not a thing." Every dated exception the kit honours -- a
+      register secret_exceptions item, a register decision (the authority's softening), the deploy's
+      version-gap exception (KDEC-014's weakening record) -- may carry `renews`, its PRIOR grants
+      {ticket, approver, from, expires}; the count is capped. scripts/exception_history.py.
+    consumers: [scripts/exception_history.py, scripts/policy_registration.py, security-gate,
+                reusable-deploy-appservice, reusable-deploy-containerapp, scripts/run_record.py,
+                tests/prove_exception_lifecycle.py]
+    rule: >-
+      A history the kit cannot read is not "no history": the exception is refused as unattributed.
+      The cap is numbers.max_exception_renewals in the CENTRAL register (kit default 2), an integer
+      from 0 to 5 -- never unlimited. The deploy holds the stronger of the cap it is passed and the
+      kit default.
+    values:
+      EXCEPTION_RENEWAL_LIMIT:
+        definition: >-
+          An exception's history holds more prior grants than the cap: it was renewed more often
+          than the authority allows.
+        rule: >-
+          Refused by name and never in force; the finding reverts to its normal routing -- a secret
+          BLOCKS, a register softening reverts (the run routes DECISION_REQUIRED), a version-gap
+          deploy at uat/prod is VERSION_GAP_REFUSED. Fix the cause, or the authority raises the cap
+          (at most 5).
+
+  # ─────────────────────────────────────────────────────────────────────────
+  exception_resurfacing:
+    description: >-
+      What the scheduled exception check found and did (KDEC-018 item 4; scripts/exception_due.py,
+      .github/workflows/reusable-exception-due.yml, templates/exception-due.yml). It reads the central
+      register, the repository's register and the caller's workflows, lists every exception coming
+      due or expired with its full history, and raises each on its Jira ticket (Jira only, KDEC-017
+      item 5).
+    consumers: [scripts/exception_due.py, reusable-exception-due, tests/prove_exception_due.py]
+    rule: >-
+      A register or workflow that could not be read is REGISTRATION_UNAVAILABLE (policy_resolution),
+      never NOTHING_DUE. No Jira credential is NOT_CONFIGURED -- the list still stands -- never a
+      silent pass.
+    values:
+      EXCEPTION_DUE_SOON:
+        definition: An exception expires within the window (default 14 days).
+      EXCEPTION_OVERDUE:
+        definition: An exception has expired, or its expiry cannot be read.
+        rule: An expiry nobody can read has not "not arrived".
+      EXCEPTIONS_DUE:
+        definition: The listing found at least one exception due or overdue.
+      NOTHING_DUE:
+        definition: Every source was read and no exception is due or overdue within the window.
+      NOT_REQUESTED:
+        definition: Only the listing was asked for; nothing was to be resurfaced.
+      NOTHING_TO_RESURFACE:
+        definition: Resurfacing was asked for and nothing is due.
+      NOT_ATTEMPTED:
+        definition: Resurfacing was asked for and not attempted, because a source could not be read.
+      PLANNED:
+        definition: Plan only (apply off) -- the actions are named and nothing was written.
+      NOT_CONFIGURED:
+        definition: No Jira credential is configured; the due list is emitted and nothing is written.
+        rule: Never read as "nothing due" -- the list beside it says what is.
+      RESURFACED:
+        definition: Every due exception was raised on its Jira ticket (reopened if closed, commented, or created once).
+      RESURFACE_FAILED:
+        definition: >-
+          A tracker other than Jira was configured, the Jira configuration was refused, or a write
+          failed. Named per exception; the job fails.
 
   # ─────────────────────────────────────────────────────────────────────────
   version_gap_ruling:
@@ -3070,8 +3143,33 @@ namespaces:
           The repository's own registration left a control, the rung or the deploy approval weaker
           than the central register gave that repository.
         rule: >-
-          BLOCKED, and the softening is not applied. A repository may tighten its own policy; only
-          the central register, signed off above it, may loosen what it inherits.
+          BLOCKED, and the softening is not applied. A repository may tighten its own policy; it
+          may never loosen what it inherits.
+      POLICY_BELOW_AUTHORITY_FLOOR:
+        definition: >-
+          A central register entry left the rung, a control's routing or a deploy approval weaker
+          than what a registered entry above it in precedence set -- an org beneath its
+          enterprise, a team, product, team+product or repository entry beneath its org, or a
+          tier-qualified entry beneath the tier-less entry of its own scope -- or a scope narrower
+          than the authority (enterprise or org) softened the kit default's deploy approval.
+          KDEC-018 (owner, 2026-10-22): "whatever is allocated at the org or enterprise ... must be
+          the level we run at across the entire enterprise. So if they say walk everyone is at
+          walk."
+        rule: >-
+          BLOCKED, WITH OR WITHOUT A DECISION, and the softening is not applied: the entry's
+          tightening (if any) stays and the floor holds in the record. Narrower scopes may only
+          tighten. Raising the rung is a tightening even where the ladder routes one class
+          differently. Per-finding exceptions (secret_exceptions) are not rung changes and are not
+          this. Crawl itself is the absolute floor: no rung is below it and secrets never soften
+          (CHERRY_PICK_BELOW_FLOOR).
+      EXCEPTION_RENEWAL_LIMIT:
+        definition: >-
+          A register entry SOFTENS (the authority's softening of the kit default deploy approval)
+          on a decision whose `renews` history exceeds the renewal cap (KDEC-018 item 4).
+        reuses: exception_lifecycle.EXCEPTION_RENEWAL_LIMIT
+        rule: >-
+          Routes DECISION_REQUIRED, like an expired decision: the softening does not apply, any
+          tightening stays, and someone must fix the cause rather than renew again.
       POLICY_MODE_SUPPLIED:
         definition: The run received policy_mode as an input, in any spelling, with any value.
         rule: >-

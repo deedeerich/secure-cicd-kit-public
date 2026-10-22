@@ -489,8 +489,10 @@ def prove_job(bad):
         if o.get('deployment_outcome') != 'DEPLOY_HEALTHY':
             bad.append('%s job: an accepted exception at uat did not deploy (%r)\n%s'
                        % (name, o.get('deployment_outcome'), res['log'][-600:]))
+        # KDEC-018 item 4 (lane L-FX): the exception's renewal count and history are recorded too.
         want_exc = {'accepted_by': VALID['weakening_authority'], 'reason': VALID['weakening_reason'],
-                    'exception_ref': VALID['weakening_exception_ref'], 'expires': FUTURE}
+                    'exception_ref': VALID['weakening_exception_ref'], 'expires': FUTURE,
+                    'renewals': 0, 'history': 'first exception'}
         if g.get('version_gap_ruling') != 'VERSION_GAP_EXCEPTION_ACCEPTED' or \
                 g.get('version_gap_exception') != want_exc or g.get('advisory_causes') != ['VERSION_GAP'] \
                 or g.get('github_environment') != 'uat-env':

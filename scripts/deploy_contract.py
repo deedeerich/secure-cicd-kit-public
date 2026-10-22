@@ -1376,7 +1376,11 @@ def cmd_report(a):
     # gap was ruled on, so a refused exception is on the record too.
     ruling = env('version_gap_ruling')
     exc = {'accepted_by': env('weakening_authority'), 'reason': env('weakening_reason'),
-           'exception_ref': env('weakening_exception_ref'), 'expires': env('weakening_expires')}
+           'exception_ref': env('weakening_exception_ref'), 'expires': env('weakening_expires'),
+           # KDEC-018 item 4: how often it was renewed, and its history, as the verdict step read them.
+           'renewals': (int(env('exception_renewals')) if env('exception_renewals').isdigit()
+                        else env('exception_renewals') or None),
+           'history': env('exception_history') or None}
     exc = exc if ruling in ('VERSION_GAP_EXCEPTION_ACCEPTED', 'VERSION_GAP_REFUSED') else None
     outcome, why = derive_outcome(adapter, live)
     report = {'deployment_outcome': outcome, 'why': why,

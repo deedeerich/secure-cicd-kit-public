@@ -4,17 +4,18 @@ description: >-
   and validates it against the schema before emitting it. An invalid record is not emitted.
   scripts/run_record.py; tests/prove_gate_run_record.py (ledger L36).
 inputs:
-  assurance-state:   {description: gate assurance_state, required: true}
+  assurance-state: {description: gate assurance_state, required: true}
   enforcement-state: {description: gate enforcement_state, required: true}
-  secret-gate:       {description: gate secret_gate, required: false, default: ''}
-  discovery-state:   {description: discovery state, required: false, default: ''}
-  scanner-states:    {description: gate scanner_states JSON, required: false, default: '{}'}
-  report-result:     {description: needs.report.result, required: false, default: ''}
+  secret-gate: {description: gate secret_gate, required: false, default: ''}
+  discovery-state: {description: discovery state, required: false, default: ''}
+  scanner-states: {description: gate scanner_states JSON, required: false, default: '{}'}
+  report-result: {description: needs.report.result, required: false, default: ''}
   blocking-findings: {description: the report's blocking_findings count, required: false, default: ''}
   evidence-artifact: {description: gate evidence_artifact, required: false, default: ''}
-  secret-exceptions: {description: gate secret_exceptions_applied JSON (finding ticket approver expires entry), required: false, default: '[]'}
+  secret-exceptions: {description: gate secret_exceptions_applied JSON (finding ticket approver expires entry renewals history), required: false, default: '[]'}
+  policy-exceptions: {description: the policy step's policy_weakenings JSON (register softenings in force, with renewals and history; KDEC-018), required: false, default: '[]'}
 outputs:
-  run_record:       {description: valid or invalid, value: "${{ steps.r.outputs.run_record }}"}
+  run_record: {description: valid or invalid, value: "${{ steps.r.outputs.run_record }}"}
   assurance_result: {description: the record as compact JSON (empty when invalid), value: "${{ steps.r.outputs.assurance_result }}"}
 runs:
   using: composite
@@ -33,6 +34,7 @@ runs:
         BLOCKING_FINDINGS: ${{ inputs.blocking-findings }}
         EVIDENCE_ARTIFACT: ${{ inputs.evidence-artifact }}
         SECRET_EXCEPTIONS: ${{ inputs.secret-exceptions }}
+        POLICY_EXCEPTIONS: ${{ inputs.policy-exceptions }}
         REPOSITORY: ${{ github.repository }}
         REPOSITORY_ID: ${{ github.repository_id }}
         COMMIT_SHA: ${{ github.sha }}

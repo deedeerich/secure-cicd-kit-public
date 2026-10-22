@@ -400,6 +400,22 @@ jobs:
           exec 2>&1
           ID="$PROBE_ID"
           EXEC=fail; DETECT=fail; ARTIFACT=fail; NOTE=""
+          # A container image, pulled with its output KEPT: three attempts, a backoff between them.
+          # Release 3 candidate run 39801652917: the semgrep-php leg's docker run ended in under
+          # 0.3 s with no report, its output sent to /dev/null, so WHY could not be named. A refused
+          # pull is the one cause that fits 0.3 s (the sibling leg on the same image took 17 s); it
+          # is not proven. An image that never arrives still ends the leg COLLECTION_FAILED on its
+          # absent report -- a retry cannot turn a missing image into a pass
+          # (tests/prove_validate_scanners_matrix.py M11).
+          pull_image() {
+            for attempt in 1 2 3; do
+              if docker pull --quiet "$1" > pull.log 2>&1; then return 0; fi
+              echo "::warning title=Image pull refused::attempt $attempt of 3 for $1"
+              tail -5 pull.log
+              if [ "$attempt" -lt 3 ]; then sleep $((attempt * 15)); fi
+            done
+            return 1
+          }
 
           case "$ID" in
             bandit)
@@ -470,12 +486,14 @@ jobs:
               # preserved_by: the absent-report and parse checks below
               # --user 0 and HOME=/tmp so the report can be written into the mounted workspace
               # whatever the image's default user is.
+              pull_image semgrep/semgrep@sha256:32e459968daabe7ab86968184a29109b9564aa00392401156f9788452b42786b || echo "the image did not arrive in 3 attempts; the scan below will have no report"
               docker run --rm --user 0 -e HOME=/tmp -v "$PWD":/src -w /src semgrep/semgrep@sha256:32e459968daabe7ab86968184a29109b9564aa00392401156f9788452b42786b semgrep scan \
                 --config p/default --config p/owasp-top-ten --config p/xss --metrics=off \
-                --json --output /src/out.json fixture >/dev/null 2>&1 || true
+                --json --output /src/out.json fixture > semgrep.log 2>&1 || true
               EXEC=ok
               if [ ! -s out.json ]; then
                 echo "::error title=COLLECTION_FAILED::out.json was not produced."
+                echo "--- the scan's own output, last lines ---"; tail -20 semgrep.log || true
                 echo "An ABSENT report is not zero findings. Posture cannot be established from this run."
                 echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
                 exit 1
@@ -496,11 +514,13 @@ jobs:
               # injection, XSS, command injection -- measured locally on this image 2026-10-21.
               # suppression: EXPECTED_NEGATIVE_RESULT -- semgrep exits 1 on findings
               # preserved_by: the absent-report and parse checks below
+              pull_image semgrep/semgrep@sha256:32e459968daabe7ab86968184a29109b9564aa00392401156f9788452b42786b || echo "the image did not arrive in 3 attempts; the scan below will have no report"
               docker run --rm --user 0 -e HOME=/tmp -v "$PWD":/src -w /src semgrep/semgrep@sha256:32e459968daabe7ab86968184a29109b9564aa00392401156f9788452b42786b semgrep scan \
-                --config p/php --metrics=off --json --output /src/out.json fixture/php >/dev/null 2>&1 || true
+                --config p/php --metrics=off --json --output /src/out.json fixture/php > semgrep.log 2>&1 || true
               EXEC=ok
               if [ ! -s out.json ]; then
                 echo "::error title=COLLECTION_FAILED::out.json was not produced."
+                echo "--- the scan's own output, last lines ---"; tail -20 semgrep.log || true
                 echo "An ABSENT report is not zero findings. Posture cannot be established from this run."
                 echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
                 exit 1

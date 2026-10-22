@@ -20,9 +20,9 @@ WHERE IT LIVES (two copies of ONE format; neither is ever read from the pull req
 THE FORMAT (schemas/policy-registration.schema.json; templates/policy-register.central.example.json)
 
     {schema_version: 2, register_id, sign_off: {by, role, date, [reference]}, [proposed_by],
-     [notes], [environment_names: {name: tier}], [repositories: {"owner/name": {[team], [product]}}],
-     [numbers], policies: [
-       {id, scope: {[org], [team], [product], [repository], [environment_tier]},
+     [notes], [environment_names: {name: tier}], [orgs: {org: enterprise}],
+     [repositories: {"owner/name": {[team], [product]}}], [numbers], policies: [
+       {id, scope: {[enterprise] | [org], [team], [product], [repository], [environment_tier]},
         [rung], [controls: {control: routing_result}], [team_pattern], [merge_reaches_tier],
         [deploy_approval: {[approver_groups], [approvers_required], [self_review_prevented],
                            [ai_review]}],
@@ -38,12 +38,26 @@ THE FORMAT (schemas/policy-registration.schema.json; templates/policy-register.c
 
 PRECEDENCE (most specific wins; deterministic; ties are conflicts)
 
-    kit default < org < org+team < org+product < org+team+product < repository
+    kit default < enterprise < org < org+team < org+product < org+team+product < repository
     and, at each level, the scope without environment_tier < the same scope with it.
-    Each matching entry is applied in that order on top of what the run inherited. An entry that
-    leaves a control WEAKER than it inherited is a softening: in force only with its unexpired
-    decision, recorded as an attributed weakening row (routes PROCEED_WITH_ADVISORY). An entry
-    that makes one STRONGER is a tightening. Every entry carries a decision either way.
+    The ENTERPRISE of a repository is its org's value in the central `orgs` map ({org: enterprise});
+    an org the map does not name belongs to no enterprise. An enterprise scope names only
+    `enterprise` (and optionally environment_tier).
+
+THE AUTHORITY FLOOR (KDEC-018, owner 2026-10-22: "if they say walk everyone is at walk")
+
+    Each matching entry is applied in precedence order on top of what the run inherited. An entry
+    that makes anything STRONGER is a tightening. An entry that leaves the rung or any control
+    WEAKER than what a registered entry before it set is REFUSED -- POLICY_BELOW_AUTHORITY_FLOOR,
+    BLOCKED, with or without a decision -- and only its non-weakening part is applied, so the floor
+    holds in the record. That covers an org under its enterprise, every team, product,
+    team+product and repository entry, and a tier-qualified entry beneath its tier-less one. The
+    rung and the controls cannot be softer than crawl at all (crawl is the absolute floor), so the
+    only softening left is of the KIT DEFAULT's deploy approval at uat/prod, and only the
+    AUTHORITY (an enterprise or org scope) may make it: in force with its unexpired decision,
+    recorded as an attributed weakening row (routes PROCEED_WITH_ADVISORY), and never honoured by
+    the deploy (which holds the stronger of it and the kit default). Per-finding exceptions
+    (secret_exceptions) are not rung changes and are unaffected. Every entry carries a decision.
 
 WHAT RESOLUTION REFUSES, BY NAME (policy_resolution in assurance-taxonomy.yaml)
 
@@ -58,7 +72,9 @@ WHAT RESOLUTION REFUSES, BY NAME (policy_resolution in assurance-taxonomy.yaml)
     CHERRY_PICK_BELOW_FLOOR       BLOCKED   a secret-class control below BLOCKED, or any control
                                             set to PROCEED (findings must never PASS-wash)
     REPOSITORY_FILE_SOFTENING     BLOCKED   the repository's own file softened what it inherited
-    CELLS_NOT_MONOTONE            BLOCKED   sandbox <= dev <= test <= uat = prod violated
+    POLICY_BELOW_AUTHORITY_FLOOR  BLOCKED   a central entry left something weaker than the
+                                            authority floor above it (THE AUTHORITY FLOOR)
+    CELLS_NOT_MONOTONE           BLOCKED   sandbox <= dev <= test <= uat = prod violated
     POLICY_DECISION_EXPIRED       DECISION_REQUIRED  an applied decision expired; its tightening
                                             stays in force and its softening reverts
     REGISTRATION_UNAVAILABLE      EVIDENCE_UNTRUSTED unreadable, unparseable, schema violation
@@ -84,6 +100,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import enforcement_axes as ax  # noqa: E402
+import exception_history as eh  # noqa: E402
 import rung_ladder as rl  # noqa: E402
 
 SCHEMA_VERSION = 2
@@ -103,6 +120,14 @@ POLICY_REGISTER_CONFLICT = 'POLICY_REGISTER_CONFLICT'
 POLICY_DECISION_UNATTRIBUTED = 'POLICY_DECISION_UNATTRIBUTED'
 POLICY_DECISION_EXPIRED = 'POLICY_DECISION_EXPIRED'
 REPOSITORY_FILE_SOFTENING = 'REPOSITORY_FILE_SOFTENING'
+POLICY_BELOW_AUTHORITY_FLOOR = 'POLICY_BELOW_AUTHORITY_FLOOR'
+# An exception renewed more often than the authority's cap (KDEC-018 item 4; scripts/exception_history.py).
+EXCEPTION_RENEWAL_LIMIT = eh.EXCEPTION_RENEWAL_LIMIT
+# Precedence levels. The AUTHORITY is the enterprise and the org: only they may soften the kit
+# default (deploy approval), and nothing beneath a registered entry may soften it (KDEC-018).
+LEVEL_ENTERPRISE = 0
+LEVEL_ORG = 1
+AUTHORITY_LEVELS = (LEVEL_ENTERPRISE, LEVEL_ORG)
 # policy_source
 KIT_DEFAULT = 'KIT_DEFAULT'
 REGISTER = 'REGISTER'
@@ -110,14 +135,17 @@ REGISTER = 'REGISTER'
 ROUTE_OF = {
     rl.POLICY_MODE_SUPPLIED: 'BLOCKED', POLICY_REGISTER_CONFLICT: 'BLOCKED',
     POLICY_DECISION_UNATTRIBUTED: 'BLOCKED', rl.CHERRY_PICK_BELOW_FLOOR: 'BLOCKED',
-    REPOSITORY_FILE_SOFTENING: 'BLOCKED', rl.CELLS_NOT_MONOTONE: 'BLOCKED',
+    REPOSITORY_FILE_SOFTENING: 'BLOCKED', POLICY_BELOW_AUTHORITY_FLOOR: 'BLOCKED',
+    rl.CELLS_NOT_MONOTONE: 'BLOCKED',
     rl.REGISTRATION_UNAVAILABLE: 'EVIDENCE_UNTRUSTED', rl.CELL_NOT_REGISTERED: 'EVIDENCE_UNTRUSTED',
-    POLICY_DECISION_EXPIRED: 'DECISION_REQUIRED',
+    POLICY_DECISION_EXPIRED: 'DECISION_REQUIRED', EXCEPTION_RENEWAL_LIMIT: 'DECISION_REQUIRED',
 }
 # When several refusals apply, the record names the first of these that fired.
 REFUSAL_ORDER = (rl.POLICY_MODE_SUPPLIED, POLICY_REGISTER_CONFLICT, POLICY_DECISION_UNATTRIBUTED,
-                 rl.CHERRY_PICK_BELOW_FLOOR, REPOSITORY_FILE_SOFTENING, rl.CELLS_NOT_MONOTONE,
-                 rl.REGISTRATION_UNAVAILABLE, rl.CELL_NOT_REGISTERED, POLICY_DECISION_EXPIRED)
+                 rl.CHERRY_PICK_BELOW_FLOOR, REPOSITORY_FILE_SOFTENING, POLICY_BELOW_AUTHORITY_FLOOR,
+                 rl.CELLS_NOT_MONOTONE,
+                 rl.REGISTRATION_UNAVAILABLE, rl.CELL_NOT_REGISTERED, EXCEPTION_RENEWAL_LIMIT,
+                 POLICY_DECISION_EXPIRED)
 
 # The flagship's scanner jobs: the named controls a register may set. secret-scan and
 # malicious-deps are the secret class -- they block in every mode and never soften.
@@ -132,7 +160,8 @@ CONTROL_KEYS = rl.control_classes + JOBS
 JOB_DEFAULT_CLASS = 'new_critical_high'
 
 TOP_KEYS = ('schema_version', 'register_id', 'sign_off', 'proposed_by', 'notes', 'environment_names',
-            'repositories', 'numbers', 'policies')
+            'orgs', 'repositories', 'numbers', 'policies')
+ORG_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
 ENTRY_KEYS = ('id', 'scope', 'rung', 'controls', 'team_pattern', 'merge_reaches_tier', 'deploy_approval',
               'decision', 'notes', 'secret_exceptions')
 
@@ -152,22 +181,29 @@ ENTRY_KEYS = ('id', 'scope', 'rung', 'controls', 'team_pattern', 'merge_reaches_
 #   explanation, approver  why, and the named person who approved it
 #   expires                YYYY-MM-DD, not past
 #   environment_reviewers  (on the item or the entry's decision) when it applies at uat/prod
+#   renews                 (KDEC-018 item 4) the PRIOR grants of this exception, each {ticket,
+#                          approver, from, expires} (scripts/exception_history.py). Shown wherever
+#                          the exception is applied; renewed more than numbers.max_exception_renewals
+#                          (central only; kit default 2, 0..5) -> EXCEPTION_RENEWAL_LIMIT; an
+#                          unreadable history -> SECRET_EXCEPTION_UNATTRIBUTED. A decision may carry
+#                          `renews` the same way; the cap binds a SOFTENING decision.
 # Any element missing refuses THAT exception by name and the secret still BLOCKS; nothing else about
 # the register changes. It lives only in the register (central, or the repository's file on its
 # protected default branch) -- never a run input.
-SECRET_EXCEPTION_KEYS = ('finding', 'ticket', 'explanation', 'approver', 'expires', 'environment_reviewers')
+SECRET_EXCEPTION_KEYS = ('finding', 'ticket', 'explanation', 'approver', 'expires', 'environment_reviewers',
+                         'renews')
 SECRET_EXCEPTION_NOT_FINDING_SCOPED = 'SECRET_EXCEPTION_NOT_FINDING_SCOPED'
 SECRET_EXCEPTION_UNTICKETED = 'SECRET_EXCEPTION_UNTICKETED'
 SECRET_EXCEPTION_UNATTRIBUTED = 'SECRET_EXCEPTION_UNATTRIBUTED'
 SECRET_EXCEPTION_EXPIRED = 'SECRET_EXCEPTION_EXPIRED'
 SECRET_EXCEPTION_REFUSALS = (SECRET_EXCEPTION_NOT_FINDING_SCOPED, SECRET_EXCEPTION_UNTICKETED,
-                             SECRET_EXCEPTION_UNATTRIBUTED, SECRET_EXCEPTION_EXPIRED)
+                             SECRET_EXCEPTION_UNATTRIBUTED, EXCEPTION_RENEWAL_LIMIT, SECRET_EXCEPTION_EXPIRED)
 FINGERPRINT_RE = re.compile(r'^[0-9a-f]{12}$')
 TICKET_RE = re.compile(r'^([A-Z][A-Z0-9_]*)-([0-9]+)$')
-SCOPE_KEYS = ('org', 'team', 'product', 'repository', 'environment_tier')
+SCOPE_KEYS = ('enterprise', 'org', 'team', 'product', 'repository', 'environment_tier')
 DECISION_REQUIRED_FIELDS = ('authority', 'reason', 'decided_on', 'expires')
 DECISION_KEYS = DECISION_REQUIRED_FIELDS + ('approver_role', 'exception_ref', 'environment_reviewers',
-                                            'evidence_refs')
+                                            'evidence_refs', 'renews')
 SIGN_OFF_KEYS = ('by', 'role', 'date', 'reference')
 APPROVAL_KEYS = ('approver_groups', 'approvers_required', 'self_review_prevented', 'ai_review')
 SELF_REVIEW = ('required', 'not_required')
@@ -273,6 +309,18 @@ def check_document(doc, origin):
         for n, t in names.items():
             if not _s(n) or t not in rl.tier_order:
                 bad('environment_names[%r] = %r is not a registered environment_tier' % (n, t))
+    orgs = doc.get('orgs', {})
+    if origin == ORIGIN_REPOSITORY and 'orgs' in doc:
+        bad('orgs belongs to the central register; a repository does not place its org in an enterprise')
+    if not isinstance(orgs, dict):
+        bad('orgs is not an object ({org: enterprise})')
+        orgs = {}
+    for oname, ent in orgs.items():
+        if not ORG_RE.match(oname or ''):
+            bad('orgs key %r is not an org name' % oname)
+        if not _s(ent):
+            bad('orgs[%r] must name its enterprise (a non-empty string)' % oname)
+    enterprises = set(_s(v) for v in orgs.values() if _s(v))
     repos = doc.get('repositories', {})
     if origin == ORIGIN_REPOSITORY and 'repositories' in doc:
         bad('repositories belongs to the central register; a repository does not map itself to a team')
@@ -287,6 +335,14 @@ def check_document(doc, origin):
                 bad('repositories[%r] must be {team, product} strings' % rname)
     if 'numbers' in doc and not isinstance(doc['numbers'], dict):
         bad('numbers is not an object')
+    elif eh.number_key in (doc.get('numbers') or {}):
+        # The renewal cap is the AUTHORITY's to set (KDEC-018 item 4), never a repository's.
+        if origin == ORIGIN_REPOSITORY:
+            bad('numbers.%s belongs to the central register: the renewal cap is set at the authority\'s '
+                'scope' % eh.number_key)
+        _cap, why = eh.cap_from_numbers(doc['numbers'])
+        if why:
+            bad(why)
     pols = doc.get('policies')
     if not isinstance(pols, list):
         bad('policies is missing or not a list')
@@ -313,7 +369,7 @@ def check_document(doc, origin):
             sc = {}
         for k in sc:
             if k not in SCOPE_KEYS:
-                bad('%s scope carries unknown dimension %r (org, team, product, repository, '
+                bad('%s scope carries unknown dimension %r (enterprise, org, team, product, repository, '
                     'environment_tier)' % (where, k))
             elif not _s(sc[k]):
                 bad('%s scope.%s is empty' % (where, k))
@@ -324,9 +380,19 @@ def check_document(doc, origin):
             if any(k != 'environment_tier' for k in sc):
                 bad('%s: a repository file is the repository level; its scope names only '
                     'environment_tier' % where)
+        elif sc.get('enterprise'):
+            # THE ENTERPRISE IS THE TOP AUTHORITY (KDEC-018). It names nothing narrower: which orgs
+            # it binds is the `orgs` map's to say, never an entry's.
+            if any(k not in ('enterprise', 'environment_tier') for k in sc):
+                bad('%s scope names an enterprise together with %s; an enterprise scope names only the '
+                    'enterprise (and optionally environment_tier), and the orgs map says which orgs are in it'
+                    % (where, ', '.join(sorted(k for k in sc if k not in ('enterprise', 'environment_tier')))))
+            if _s(sc['enterprise']) not in enterprises:
+                bad('%s scope.enterprise %r is not the enterprise of any org in the orgs map, so it would '
+                    'bind nobody' % (where, sc['enterprise']))
         else:
             if not sc.get('org') and not sc.get('repository'):
-                bad('%s scope names neither org nor repository' % where)
+                bad('%s scope names neither enterprise, org nor repository' % where)
             if (sc.get('team') or sc.get('product')) and not sc.get('org'):
                 bad('%s scope names a team or product without its org' % where)
             if sc.get('repository') and (sc.get('team') or sc.get('product')):
@@ -418,6 +484,11 @@ def check_document(doc, origin):
         rv = dec.get('environment_reviewers')
         if rv is not None and (not isinstance(rv, list) or any(not _s(x) for x in rv)):
             bad('%s decision.environment_reviewers must be a list of reviewer names' % where)
+        if 'renews' in dec:
+            _g, why = eh.parse_renews(dec.get('renews'))
+            if why:
+                unattributed('%s decision.%s: a history the kit cannot read cannot be shown to be under the '
+                             'renewal cap' % (where, why))
         departs = any(k in e for k in ('rung', 'controls', 'deploy_approval'))
         if departs and tier in (None,) + PRODUCTION_TIERS and not rv:
             unattributed('%s applies at uat/prod and changes enforcement there, so its decision must name '
@@ -427,17 +498,23 @@ def check_document(doc, origin):
 
 def scope_key(sc, origin):
     lower = lambda v: v.lower() if isinstance(v, str) else v  # noqa: E731
-    return (origin == ORIGIN_REPOSITORY, lower(sc.get('org')), sc.get('team'), sc.get('product'),
-            lower(sc.get('repository')), sc.get('environment_tier'))
+    return (origin == ORIGIN_REPOSITORY, sc.get('enterprise'), lower(sc.get('org')), sc.get('team'),
+            sc.get('product'), lower(sc.get('repository')), sc.get('environment_tier'))
 
 
 def _scope_text(sc):
     return '{%s}' % ', '.join('%s=%s' % (k, sc[k]) for k in SCOPE_KEYS if k in sc)
 
 
-def secret_exception_verdict(item, entry, today, numbers=None):
+def renewal_cap(central):
+    """The authority's renewal cap: the central register's numbers, else the kit default."""
+    return eh.cap_from_numbers((central or {}).get('numbers'))[0]
+
+
+def secret_exception_verdict(item, entry, today, numbers=None, cap=eh.kit_default_max_renewals):
     """-> (refusal code or None, why) for ONE secret_exceptions item, in the order a reader fixes
-    them: what it covers, its ticket, who decided and why, whether it is still in force."""
+    them: what it covers, its ticket, who decided and why, how often it was renewed, whether it is
+    still in force."""
     finding = _s(item.get('finding'))
     if not FINGERPRINT_RE.match(finding):
         return (SECRET_EXCEPTION_NOT_FINDING_SCOPED,
@@ -471,6 +548,13 @@ def secret_exception_verdict(item, entry, today, numbers=None):
     if tier in (None,) + PRODUCTION_TIERS and not reviewers:
         return (SECRET_EXCEPTION_UNATTRIBUTED, 'the exception for %s applies at uat/prod, so it must name the '
                 'environment\'s required reviewers (environment_reviewers)' % finding)
+    grants, why = eh.parse_renews(item.get('renews'))
+    if grants is None:
+        return (SECRET_EXCEPTION_UNATTRIBUTED, 'the exception for %s has a history the kit cannot read (%s), so '
+                'it cannot be shown to be under the renewal cap' % (finding, why))
+    code, why = eh.verdict(grants, cap)
+    if code:
+        return (code, 'the exception for %s (%s) was %s' % (finding, ticket, why))
     if exp < datetime.date.fromisoformat(today):
         return (SECRET_EXCEPTION_EXPIRED, 'the exception for %s (%s) expired on %s; the secret blocks again '
                 'until someone re-decides it' % (finding, ticket, exp.isoformat()))
@@ -493,20 +577,30 @@ def validate(doc, origin, today):
             problems.append((POLICY_DECISION_EXPIRED, 'entry %r expired on %s; renew or remove it'
                              % (e.get('id'), exp.isoformat())))
         for item in e.get('secret_exceptions') or []:
-            code, why = secret_exception_verdict(item, e, today, doc.get('numbers'))
+            code, why = secret_exception_verdict(item, e, today, doc.get('numbers'),
+                                                 renewal_cap(doc if origin == ORIGIN_CENTRAL else None))
             if code:
                 problems.append((code, 'entry %r: %s' % (e.get('id'), why)))
     if origin == ORIGIN_CENTRAL:
-        # Every mapped repository, and each org with its unmapped repositories.
-        idents = [('%s (unmapped repositories)' % o, {'org': o, 'repository': '', 'team': None, 'product': None})
-                  for o in sorted(set(_s((e.get('scope') or {}).get('org')).lower()
-                                      for e in doc.get('policies') or [] if (e.get('scope') or {}).get('org')))]
+        # Every mapped repository, and each org (named by an entry or the orgs map) with its
+        # unmapped repositories.
+        orgs = set(_s((e.get('scope') or {}).get('org')).lower()
+                   for e in doc.get('policies') or [] if (e.get('scope') or {}).get('org'))
+        orgs |= set(_s(o).lower() for o in (doc.get('orgs') or {}))
+        idents = [('%s (unmapped repositories)' % o, _identity(doc, '%s/' % o)) for o in sorted(orgs)]
         idents += [(r, _identity(doc, r)) for r in sorted(doc.get('repositories') or {})]
+        seen = set()
         for t, ident in idents:
             folds = {tier: _fold(doc, None, ident, tier, today) for tier in rl.tier_order}
             for d in rl.check_cells_monotone(dict((tier, {'tier': tier, 'rung': f['rung']})
                                                   for tier, f in folds.items())):
                 problems.append((rl.CELLS_NOT_MONOTONE, '%s: %s' % (t, d)))
+            # THE AUTHORITY FLOOR, for every repository and org it would reach (KDEC-018).
+            for tier, f in sorted(folds.items()):
+                for code, d in zip(f['refusals'], f['defects']):
+                    if code in (POLICY_BELOW_AUTHORITY_FLOOR, EXCEPTION_RENEWAL_LIMIT) and (t, d) not in seen:
+                        seen.add((t, d))
+                        problems.append((code, '%s at %s: %s' % (t, tier, d)))
     return problems
 
 
@@ -518,8 +612,13 @@ def _identity(doc, repository):
     for rname, mapping in ((doc or {}).get('repositories') or {}).items():
         if rname.lower() == (repository or '').lower():
             m = mapping
+    # The org's enterprise, from the central orgs map (org names compare case-insensitively).
+    ent = None
+    for oname, e in ((doc or {}).get('orgs') or {}).items():
+        if isinstance(oname, str) and oname.lower() == owner.lower():
+            ent = _s(e) or None
     return {'org': owner.lower(), 'repository': (repository or '').lower(),
-            'team': m.get('team'), 'product': m.get('product')}
+            'team': m.get('team'), 'product': m.get('product'), 'enterprise': ent}
 
 
 def _level(sc, origin):
@@ -531,7 +630,9 @@ def _level(sc, origin):
         return 3
     if sc.get('team'):
         return 2
-    return 1
+    if sc.get('enterprise'):
+        return LEVEL_ENTERPRISE
+    return LEVEL_ORG
 
 
 def _matches(sc, ident, origin, tier):
@@ -539,6 +640,8 @@ def _matches(sc, ident, origin, tier):
         return False
     if origin == ORIGIN_REPOSITORY:
         return True
+    if sc.get('enterprise'):
+        return bool(ident.get('enterprise')) and sc['enterprise'] == ident.get('enterprise')
     if sc.get('repository'):
         return sc['repository'].lower() == ident['repository']
     if _s(sc.get('org')).lower() != ident['org']:
@@ -582,6 +685,11 @@ def _fold(central, repo_doc, ident, tier, today):
     ranks = {}
     sx_applied, sx_refused = {}, []
     nums = dict((central or {}).get('numbers') or {}, **((repo_doc or {}).get('numbers') or {}))
+    cap = renewal_cap(central)
+    # The deploy-approval fields a REGISTERED entry has set at this tier. The rung and the controls
+    # cannot be softer than crawl's (the kit default), so any softening of them is a softening of
+    # something registered; deploy approval is the one value the kit default sets above its weakest.
+    da_registered = set()
     for key, origin, e in chain:
         if key in ranks:
             refusals.append(POLICY_REGISTER_CONFLICT)
@@ -592,25 +700,52 @@ def _fold(central, repo_doc, ident, tier, today):
         dec = e.get('decision') or {}
         exp = _date(dec.get('expires'))
         expired = exp is None or exp < datetime.date.fromisoformat(today)
-        may_soften = not expired and origin == ORIGIN_CENTRAL
         before = _effective(rung, over)
         new_rung = e.get('rung', rung)
         new_over = dict(over)
         new_over.update(e.get('controls') or {})
         after = _effective(new_rung, new_over)
-        softer = [c for c in sorted(after) if _rank(after[c]) < _rank(before[c])]
         rung_softer = rl.rung_index(new_rung) < rl.rung_index(rung)
+        # RAISING THE RUNG IS A TIGHTENING, even where the ladder routes one class differently
+        # (run's pre_existing_on_track is advisory: those findings are on a tracked SLA). A control
+        # is softened by THIS entry only when it ends weaker than what it inherited AND weaker than
+        # the entry's own rung gives it with the inherited overrides -- i.e. by an explicit control.
+        by_rung = before if rung_softer else _effective(new_rung, over)
+        softer = [c for c in sorted(after)
+                  if _rank(after[c]) < _rank(before[c]) and _rank(after[c]) < _rank(by_rung[c])]
         new_da = dict(da)
         new_da.update(e.get('deploy_approval') or {})
         new_da['approver_groups'] = sorted(new_da.get('approver_groups') or [])
-        da_softer = any(a < b for a, b in zip(_approval_strength(new_da), _approval_strength(da)))
+        da_soft_keys = [k for k, a, b in zip(('approvers_required', 'self_review_prevented'),
+                                             _approval_strength(new_da), _approval_strength(da)) if a < b]
+        da_softer = bool(da_soft_keys)
         any_softer = softer or rung_softer or da_softer
+        softened = ', '.join(softer + (['rung'] if rung_softer else []) + (['deploy-approval'] if da_softer else []))
         if any_softer and origin == ORIGIN_REPOSITORY:
             refusals.append(REPOSITORY_FILE_SOFTENING)
             defects.append('the repository file entry %r softens what the repository inherited (%s); a '
-                           'repository may tighten its own policy, never loosen it'
-                           % (e.get('id'), ', '.join(softer + (['rung'] if rung_softer else [])
-                                                     + (['deploy-approval'] if da_softer else []))))
+                           'repository may tighten its own policy, never loosen it' % (e.get('id'), softened))
+        # THE AUTHORITY FLOOR (KDEC-018). Below a registered value: refused at every scope, decision
+        # or not. Below the kit default's deploy approval: only the authority (enterprise, org).
+        authority = key[0] in AUTHORITY_LEVELS
+        floor_breach = origin == ORIGIN_CENTRAL and (
+            softer or rung_softer or (da_softer and (not authority or da_registered & set(da_soft_keys))))
+        if floor_breach:
+            refusals.append(POLICY_BELOW_AUTHORITY_FLOOR)
+            defects.append('entry %r leaves %s weaker than the floor above it (%s); the highest authority\'s '
+                           'rung and routing bind every narrower scope, which may only tighten -- with a '
+                           'decision or without one (KDEC-018). Its tightening, if any, is applied; its '
+                           'softening is not' % (e.get('id'), softened, ', '.join(applied) or 'the kit default'))
+        may_soften = not expired and origin == ORIGIN_CENTRAL and not floor_breach
+        # A SOFTENING decision is an exception: its renewals are counted and capped (KDEC-018 item 4).
+        grants = eh.parse_renews(dec.get('renews'))[0] or []
+        renew_code, renew_why = eh.verdict(grants, cap)
+        if any_softer and may_soften and renew_code:
+            refusals.append(renew_code)
+            defects.append('entry %r softens %s on a decision %s; the softening does not apply'
+                           % (e.get('id'), softened, renew_why))
+            may_soften = False
+        hist = eh.summary(grants)
         if expired:
             refusals.append(POLICY_DECISION_EXPIRED)
             defects.append('entry %r: its decision expired on %s. Its tightening stays in force and its '
@@ -643,7 +778,8 @@ def _fold(central, repo_doc, ident, tier, today):
                 'baseline': base, 'value': value, 'state': rl.WEAKENING_IN_FORCE,
                 'attribution': rl.WEAKENING_ATTRIBUTED, 'routes_to': rl.PROCEED_WITH_ADVISORY,
                 'reason': _s(dec.get('reason')), 'authority': _s(dec.get('authority')),
-                'expires': _s(dec.get('expires')), 'exception_ref': _s(dec.get('exception_ref'))})
+                'expires': _s(dec.get('expires')), 'exception_ref': _s(dec.get('exception_ref')),
+                'renewals': hist['renewals'], 'history': hist['history']})
             if rung_softer:
                 row('rung', prev_rung, new_rung)
             for c in softer:
@@ -653,6 +789,8 @@ def _fold(central, repo_doc, ident, tier, today):
                     % (prev_da['approvers_required'], prev_da['self_review_prevented']),
                     'approvers_required=%s self_review_prevented=%s'
                     % (new_da['approvers_required'], new_da['self_review_prevented']))
+        da_registered |= set(k for k in (e.get('deploy_approval') or {})
+                             if k in ('approvers_required', 'self_review_prevented'))
         if 'team_pattern' in e:
             team = e['team_pattern']
         applied.append(e.get('id'))
@@ -660,9 +798,10 @@ def _fold(central, repo_doc, ident, tier, today):
         # the secret still blocks; an applied one is keyed by its finding, the most specific entry
         # winning. The repository's own file may carry them (the owner's ruling names it).
         for item in e.get('secret_exceptions') or []:
-            code, why = secret_exception_verdict(item, e, today, nums)
+            code, why = secret_exception_verdict(item, e, today, nums, cap)
+            ih = eh.summary(eh.parse_renews(item.get('renews'))[0] or [])
             rec = {'finding': _s(item.get('finding')), 'ticket': _s(item.get('ticket')),
-                   'entry': e.get('id'), 'origin': origin}
+                   'entry': e.get('id'), 'origin': origin, 'renewals': ih['renewals'], 'history': ih['history']}
             if code:
                 sx_refused.append(dict(rec, code=code, why=why))
             else:
@@ -692,7 +831,7 @@ def _blank(state, why, notes=None, defects=None, **extra):
            'job_minimums': {}, 'divergences': [], 'weakenings': [], 'human_controls': {},
            'unvalidated_human_workflow_paths': [], 'breach_authority': {},
            'tier_behaviour': {'stops_on_evidence_untrusted': True}, 'deploy_approval': {},
-           'numbers': {}, 'registration_ref': None,
+           'numbers': {}, 'registration_ref': None, 'max_exception_renewals': None,
            'secret_exceptions': [], 'secret_exception_refusals': []}
     out.update(extra)
     return out
@@ -786,6 +925,7 @@ def resolve(central, repo_doc, repository, environment, event, supplied_inputs, 
         breach_authority=ax.breach_authority(team or 'solo_dev'), tier_behaviour=ax.tier_behaviour(tier),
         deploy_approval=dict((t, folds[t]['deploy_approval']) for t in rl.tier_order),
         secret_exceptions=f['secret_exceptions'], secret_exception_refusals=f['secret_exception_refusals'],
+        max_exception_renewals=renewal_cap(central),
         numbers=dict((central or {}).get('numbers') or {}, **((repo_doc or {}).get('numbers') or {})))
 
 
@@ -875,12 +1015,16 @@ def github_output_lines(r):
     out.append('policy_registration_ref=%s' % v(r.get('registration_ref')))
     # The secret exceptions in force and the ones refused, by finding (owner ruling 2026-10-22).
     # Compact JSON of plain fields; the gate matches `finding` against the report's secret findings.
-    keep = ('finding', 'ticket', 'approver', 'expires', 'entry')
+    # Each carries its history (KDEC-018 item 4): renewals and the "previously excepted ..." line.
+    keep = ('finding', 'ticket', 'approver', 'expires', 'entry', 'renewals', 'history')
     out.append('policy_secret_exceptions=%s' % json.dumps(
         [dict((k, x.get(k, '')) for k in keep) for x in r.get('secret_exceptions') or []], sort_keys=True))
     out.append('policy_secret_exception_refusals=%s' % json.dumps(
-        [dict((k, x.get(k, '')) for k in ('finding', 'ticket', 'entry', 'code'))
+        [dict((k, x.get(k, '')) for k in ('finding', 'ticket', 'entry', 'code', 'history'))
          for x in r.get('secret_exception_refusals') or []], sort_keys=True))
+    # The authority's renewal cap, for the deploy's version-gap exception (it holds the stronger of
+    # this and the kit default).
+    out.append('policy_max_exception_renewals=%s' % v(r.get('max_exception_renewals')))
     return [line.replace('\n', ' ').replace('\r', ' ') for line in out]
 
 

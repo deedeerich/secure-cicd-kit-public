@@ -17,7 +17,7 @@ WHY THIS EXISTS (owner requirements 2026-10-22, relayed by the coordinator; ETFB
          own registration is evaluated at the protected branch's.
       3  UNREADABLE IS NOT THE DEFAULT. An unresolvable ref, or a file that does not parse, is
          REGISTRATION_UNAVAILABLE (EVIDENCE_UNTRUSTED) and carries no rung.
-      4  PRECEDENCE, most specific wins: kit default < org < org+team < org+product <
+      4  PRECEDENCE, most specific wins: kit default < enterprise < org < org+team < org+product <
          org+team+product < repository; at each level an entry without environment_tier ranks
          below the same scope with one. The repository's own file is the repository level.
       5  CONFLICTS ARE REFUSED BY NAME (POLICY_REGISTER_CONFLICT, BLOCKED): two entries with one
@@ -28,8 +28,11 @@ WHY THIS EXISTS (owner requirements 2026-10-22, relayed by the coordinator; ETFB
          POLICY_DECISION_UNATTRIBUTED (BLOCKED). The register itself names who signed it off.
       7  AN EXPIRED DECISION NEVER SOFTENS ANYTHING: an expired tightening stays in force, an
          expired softening reverts, and the run routes DECISION_REQUIRED (POLICY_DECISION_EXPIRED).
-      8  A SOFTENING IN FORCE IS A WEAKENING ROW, attributed, routing PROCEED_WITH_ADVISORY. The
-         repository's own file may only tighten (REPOSITORY_FILE_SOFTENING, BLOCKED).
+      8  NARROWER SCOPES ONLY TIGHTEN (KDEC-018): a central entry softening what a registered
+         entry above it set is POLICY_BELOW_AUTHORITY_FLOOR (BLOCKED), decision or not
+         (tests/prove_authority_floor.py proves every scope). The authority's softening of the kit
+         default deploy approval is a weakening row (rule 13). The repository's own file may only
+         tighten (REPOSITORY_FILE_SOFTENING, BLOCKED).
       9  SECRETS NEVER SOFTEN and no control is set to PROCEED (CHERRY_PICK_BELOW_FLOOR).
      10  SCHEMA VIOLATIONS REFUSE THE WHOLE REGISTER (REGISTRATION_UNAVAILABLE), naming the field.
      11  policy_mode SUPPLIED IS BLOCKED; non-monotone tiers are CELLS_NOT_MONOTONE.
@@ -106,13 +109,15 @@ def central(policies, **over):
 
 
 def precedence_register():
+    # Tighten-only, as KDEC-018 requires: each narrower or tier-qualified entry raises what it
+    # inherits (prove_authority_floor.py proves the refusal of anything that does not).
     return central([
         entry('org', {'org': 'acme'}, rung='crawl'),
-        entry('team', {'org': 'acme', 'team': 'payments'}, rung='walk'),
-        entry('team-sandbox', {'org': 'acme', 'team': 'payments', 'environment_tier': 'sandbox'},
-              rung='crawl'),
+        entry('team', {'org': 'acme', 'team': 'payments'}, team_pattern='small_team'),
         entry('team-dev', {'org': 'acme', 'team': 'payments', 'environment_tier': 'dev'},
               rung='crawl'),
+        entry('team-test', {'org': 'acme', 'team': 'payments', 'environment_tier': 'test'},
+              rung='walk'),
         entry('product-uat', {'org': 'acme', 'product': 'ledger', 'environment_tier': 'uat'},
               rung='run'),
         entry('product-prod', {'org': 'acme', 'product': 'ledger', 'environment_tier': 'prod'},
@@ -183,13 +188,17 @@ def main():
         check(r['policy_source'] == 'REGISTER', 'rule 4: a registered run is not policy_source REGISTER')
     r = res(reg, environment='test')
     check(r['job_minimums'].get('deps-scan') == 'BLOCKED', 'rule 4: the repository cherry-pick was not applied')
-    check(r['chain'] == ['org', 'team', 'repo-test'], 'rule 4: chain order %r' % r.get('chain'))
-    # dev: the team's crawl at dev softens the team's walk -> an attributed weakening row.
-    r = res(reg, environment='dev')
-    check(any(w['attribution'] == rl.WEAKENING_ATTRIBUTED for w in r['weakenings'])
-          and r['routes_to'] == 'PROCEED_WITH_ADVISORY',
-          'rule 8: an attributed softening was not a weakening routing PROCEED_WITH_ADVISORY: %r / %r'
-          % (r.get('weakenings'), r.get('routes_to')))
+    check(r['chain'] == ['org', 'team', 'team-test', 'repo-test'], 'rule 4: chain order %r' % r.get('chain'))
+    # KDEC-018: a narrower entry softening what a registered entry set is refused -- the team's
+    # crawl at dev beneath the team's walk is POLICY_BELOW_AUTHORITY_FLOOR, decision or not.
+    floor_reg = central([entry('org', {'org': 'acme'}, rung='walk'),
+                         entry('team-dev', {'org': 'acme', 'team': 'payments', 'environment_tier': 'dev'},
+                               rung='crawl')])
+    r = res(floor_reg, environment='dev')
+    check(r['state'] == 'POLICY_BELOW_AUTHORITY_FLOOR' and r['routes_to'] == 'BLOCKED'
+          and r['rung_effective'] == 'walk' and not r['weakenings'],
+          'rule 8: a narrower softening with a decision was not refused below the floor: %r / %r / %r'
+          % (r['state'], r.get('routes_to'), r.get('weakenings')))
     # Another repository in the org inherits the org; another org gets the kit default.
     r = res(reg, repository='acme/other', environment='prod')
     check(r['rung_effective'] == 'crawl' and r['chain'] == ['org'] and r['scope'].get('team') == 'web',
@@ -257,12 +266,15 @@ def main():
     check(r['state'] == 'POLICY_DECISION_EXPIRED' and r['routes_to'] == 'DECISION_REQUIRED',
           'rule 7: an expired tightening resolved %r / %r' % (r['state'], r.get('routes_to')))
     check(r['rung_effective'] == 'walk', 'rule 7: an expired tightening lapsed to %r' % r.get('rung_effective'))
-    exp_soft = central([entry('t', {'org': 'acme'}, rung='walk'),
-                        entry('s', {'org': 'acme', 'team': 'payments'}, rung='crawl',
+    # The only softening left (KDEC-018) is the authority's of the kit default deploy approval.
+    exp_soft = central([entry('s', {'org': 'acme', 'environment_tier': 'prod'},
+                              deploy_approval={'self_review_prevented': 'not_required'},
                               decision=prod_decision(expires='2026-10-01'))])
     r = res(exp_soft)
-    check(r['state'] == 'POLICY_DECISION_EXPIRED' and r['rung_effective'] == 'walk' and not r['weakenings'],
-          'rule 7: an expired softening stayed in force: %r %r' % (r.get('rung_effective'), r.get('weakenings')))
+    check(r['state'] == 'POLICY_DECISION_EXPIRED' and not r['weakenings']
+          and r['deploy_approval']['prod']['self_review_prevented'] == 'required',
+          'rule 7: an expired softening stayed in force: %r %r' % (r.get('deploy_approval', {}).get('prod'),
+                                                                 r.get('weakenings')))
     for bad in ('never', '31/12/2099', '2099-13-45'):
         r = res(central([entry('t', {'org': 'acme'}, rung='walk', decision=prod_decision(expires=bad))]))
         check(r['state'] != rl.POLICY_RESOLVED, 'rule 7: an expiry %r read as unexpired' % bad)
