@@ -18,6 +18,7 @@ templates to this rule.
 | `reusable-deploy-appservice.yml` | App Service deploy by digest, verdict-gated, slot-staged (or direct below uat), reversible | OIDC | `contents: read`, `id-token: write` |
 | `reusable-propose-ledger.yml` | Proposes baseline-ledger changes as a pull request (protected default branch only) | none | `contents: write`, `pull-requests: write` |
 | `reusable-ticket-reconcile.yml` | Findings → Jira or Azure DevOps tickets, post-merge or scheduled | tracker | `contents: read` |
+| `reusable-dependabot-triage.yml` | Dependabot PRs: `--auto --squash` only when nothing can change behaviour (FUTURE_WORK §6); otherwise label, comment why and ask a human; excluded fixture paths closed. Call from `pull_request_target` ([DEPENDABOT_TRIAGE.md](DEPENDABOT_TRIAGE.md)) | none (optional `METADATA_TOKEN`) | `contents: write`, `pull-requests: write`, `issues: write` |
 | `verify-azure-oidc.yml` | Zero-resource check of the OIDC subject, the session context and the authorization boundary | OIDC | `contents: read`, `id-token: write` |
 
 **Composite actions** (`.github/actions/*` — for repos that build inside their own workflows):
@@ -38,9 +39,9 @@ the run rather than to a repository, so a cross-repo consumer's runner receives 
 kit's own runner receives. Per-call-site inlining is what took that file to 608.8 KB, past GitHub's
 size ceiling, after which it did not fail — it never started.
 
-**Templates** (`templates/`): `security.yml`, `policy.yml`, `build-deploy.yml`, `nvd-cve.yml` and
-`policy-registration.example.json` — copy into a calling repo's `.github/workflows/`, replace
-the placeholder organisation, and pin the kit by commit SHA.
+**Templates** (`templates/`): `security.yml`, `policy.yml`, `build-deploy.yml`, `nvd-cve.yml`,
+`dependabot-triage.yml` — copy into `.github/workflows/`, replace the org, pin the kit by SHA.
+Policy: [`POLICY_REGISTER.md`](POLICY_REGISTER.md).
 
 **Profiles** (`profiles/`): declarative statements of what a class of repo gets. They are intent
 records validated by `profiles/profile.schema.json` — the reusable workflows are the implementation.
@@ -166,7 +167,7 @@ seeded fixture that a green job failed to detect.
 | .NET / Java SAST | `.cs` / `.java` sources under `paths` | job reports "no sources", skips, and says so |
 | Python SAST | `.py` sources under `paths` | skipped with a notice |
 | **PHP dependency scan** (since Release 3, next) | **`composer.lock`** beside each `composer.json`. Trivy reads only the lock: a `composer.json` alone produced no result at all (measured, trivy 0.71.2) | each `composer.json` without its lock is a named, counted `COVERAGE_GAP` (`PHPDependenciesUnlocked`) — never a dependency scan that passed |
-| PHP SAST (Semgrep; since Release 3, next) | `.php` sources under `paths`. `p/php` is added to your `semgrep_config` automatically whenever discovery finds PHP, so narrowing the rulesets cannot drop it | a PHP scan that examined no PHP file, or loaded no PHP rule, is `COLLECTION_FAILED`. **The shipped Semgrep container (1.178.0, pinned by digest) reads PHP 5.6–8.4** (measured in that image). **PHP 8.5 is measured and not read**: a file using the `(void)` cast or `final` promoted properties makes Semgrep exit 3 under `--strict`, which is `COLLECTION_FAILED` for the whole Semgrep job (the newest Semgrep, 1.182.0, is the same), and a PHP 8.5 target is a proven `VERSION_GAP` (`PARTIAL` at dev/test; refused at uat/prod without a named acceptance, KDEC-014). Kit versions before lane L-SG ran Semgrep 1.90.0, which read PHP only to 7.2 |
+| PHP SAST (Semgrep; since Release 3, next) | `.php` sources under `paths`. `p/php` is added to your `semgrep_config` automatically whenever discovery finds PHP, so narrowing the rulesets cannot drop it | a PHP scan that examined no PHP file, or loaded no PHP rule, is `COLLECTION_FAILED`. **The shipped Semgrep container (1.178.0, pinned by digest) reads PHP 5.6–8.4** (measured in that image). **PHP 8.5: scan what parses, flag the rest** (owner, 2026-10-22): Semgrep (1.178.0, 1.182.0) cannot parse the `(void)` cast or `final` promoted properties. Every other file is still scanned and its findings kept (they block as usual); the files it could not fully parse are **named** in the summaries, and the scan is `PARTIAL` (`PARSE_PARTIAL_PHP_SYNTAX`), never `PASS`: `PROCEED_WITH_ADVISORY`, cause `COVERAGE_PARTIAL`, not refused at uat/prod (not a version gap). Any other Semgrep error stays `COLLECTION_FAILED`. Above 8.5 is still a `VERSION_GAP`. Kit versions before lane L-SG ran Semgrep 1.90.0, which read PHP only to 7.2 |
 | PHP target version | `.php-version`, or `config.platform.php` / `require.php` in `composer.json` (a constraint such as `^8.1` is recorded as a constraint, never a version) | no version declared: the PHP capability is `VERSION_GAP` (recorded, not enforced), so Semgrep's PASS reads `PARTIAL` |
 | IaC | Terraform, Bicep, ARM, Kubernetes, Helm or a Dockerfile under `paths`; `iac_mode` (default `auto`) not `disabled` | `NOT_APPLICABLE` with the path searched. `iac_mode: required` makes absence a finding; `disabled` is a recorded weakening. (`enable_iac` is deprecated and ignored — the run says so) |
 | Container image | `image_ref` (prefer a digest) | `NOT_APPLICABLE`, never a clean result |

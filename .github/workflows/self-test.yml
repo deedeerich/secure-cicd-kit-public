@@ -37,8 +37,8 @@ jobs:
     # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: yamllint
@@ -73,7 +73,7 @@ jobs:
     # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Run actionlint
         run: |
           set -uo pipefail
@@ -136,8 +136,8 @@ jobs:
     # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Validate reusable/action contracts
@@ -214,8 +214,8 @@ jobs:
     # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Validate profiles against schema
@@ -252,7 +252,7 @@ jobs:
     # time; if it needs more, split the job rather than raise it again.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Inlined normalizer must match the canonical source
         run: |
           set -euo pipefail
@@ -295,6 +295,10 @@ jobs:
           # Decomposition Phase 2 moves scanner steps, and the images they pin, into composites.
           # A pin checker that reads only workflows would lose every one of them in the move.
           python3 tests/prove_pin_scope_covers_composites.py
+          # The resolver writes the EXACT release beside each SHA and pins every owner by default,
+          # so its output passes check_action_pins.py (offline: a local API stand-in).
+          python3 -m pip install --quiet PyYAML
+          python3 tests/prove_pin_actions_names_release.py
 
       - name: Every pinned image and action ref must resolve
         env:
@@ -313,6 +317,18 @@ jobs:
           # The pin checker's own scope proof: v-prefixed tags and third-party action refs are in
           # it; ./, $/, docker:// and comments are not. Existed and ran nowhere (ledger G-03).
           python3 tests/prove_pin_check_sees_v_tags_and_action_refs.py
+
+      - name: Every remote uses is a commit SHA naming its exact release (L82)
+        env:
+          # --online resolves the tag each comment names; a rate limit is UNKNOWN, a red step.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The kit's own tree carried 161 remote `uses:` by tag until the L-H sweep. Workflows,
+          # job-level reusable calls, composites and templates; no owner exempt; the `# vX.Y.Z`
+          # comment must be the release that SHA is. A Dependabot bump moves both together.
+          python3 -m pip install --quiet PyYAML
+          python3 tests/check_action_pins.py --online
 
       - name: A bootstrap failure must not read as thirteen inapplicable scanners
         run: |
@@ -890,15 +906,25 @@ jobs:
         run: |
           set -euo pipefail
           # L32 / ETFB sections 1-4, 10, 13; SINGLE_PIPELINE_TARGET.md stage 1, section 8.3. The
-          # derivation table is ETFB 1.1 cell for cell; a cherry-pick strengthens or is a named
-          # policy defect; a run that received policy_mode as an input is refused whatever the
-          # value; against a real git repository a PR's own demotion is never read; an
-          # unreadable registration is EVIDENCE_UNTRUSTED, never crawl; every number is read
-          # from the registration and a missing one refuses.
+          # derivation table is ETFB 1.1 cell for cell; the policy register (schema_version 2)
+          # resolves per org, team, product, repository and tier by a stated precedence; a run
+          # that received policy_mode as an input is refused whatever the value; against a real
+          # git repository a PR's own registration is never read; no register is the kit default
+          # (crawl, only secrets block) and an unreadable one is EVIDENCE_UNTRUSTED, never the
+          # default; conflicts, unattributed and expired decisions are refused by name.
           python3 scripts/rung_ladder.py --self-test
           python3 scripts/policy_registration.py --self-test
           python3 tests/prove_rung_ladder.py
           python3 tests/prove_policy_registration.py
+          # The register is wired into the gate (wiring/gate-rung.patch.md) and enforced: with no
+          # register only secrets block; a registered tightening or softening changes exactly what
+          # it says; a refused or unreadable policy is never the default.
+          python3 tests/prove_gate_reads_rung.py
+          python3 tests/prove_gate_policy_enforcement.py
+          # L36: the gate emits the run record, schema-valid, and refuses to emit an invalid one.
+          python3 tests/prove_gate_run_record.py
+          python3 scripts/policy_registration.py --validate templates/policy-register.central.example.json --origin central
+          python3 scripts/policy_registration.py --validate templates/policy-registration.example.json --origin repository
 
       - name: A pre-existing finding gets a schedule, not amnesty, and nothing extends a deadline
         run: |
@@ -997,6 +1023,16 @@ jobs:
           # event NOT ASSESSED rather than passed.
           python3 -m pip install --quiet PyYAML
           python3 tests/prove_ticket_reference_gate.py
+
+      - name: Dependabot triage, run as shipped, auto-merges only what cannot change behaviour
+        run: |
+          set -euo pipefail
+          # FUTURE_WORK section 6 (owner, 2026-10-22). The evidence, decision and action steps are
+          # EXTRACTED from reusable-dependabot-triage.yml and run under bash with a gh shim: patch and
+          # minor merge with --auto --squash; majors, protected packages, lockfile drift, breaking
+          # signals and an unguarded base branch go to a human; excluded paths are closed.
+          python3 -m pip install --quiet PyYAML
+          python3 tests/prove_dependabot_triage.py
 
       - name: A cluster is one obligation to coordinate and several to discharge
         run: |
@@ -1236,6 +1272,9 @@ jobs:
           # B-11: the architecture and assurance documents, the roadmap and the continuity record are
           # in scope; claims are code predicates; a known-stale entry holds only until its date.
           python3 tests/prove_doc_currency_scope.py
+          # Every FUTURE_WORK section is cited by a completion-ledger row, or exempted with a reason:
+          # section 6 (auto-merge) was designed, asked for and never planned (lane L-FWA).
+          python3 tests/check_future_work_traceability.py
 
       - name: A documented credential-free path must not authenticate
         run: |
@@ -1300,6 +1339,11 @@ jobs:
           # live acceptance passes version metadata and the rollback setting (DCR-3/9 enablers).
           python3 tests/prove_deploy_template.py
           python3 tests/prove_deploy_environment_binding.py
+          # Owner 2026-10-22: a uat/prod deploy reads back the environment's required reviewers
+          # (self-review prevented, named groups) and refuses before login when they are absent
+          # or cannot be read.
+          python3 scripts/environment_protection.py --self-test
+          python3 tests/prove_deploy_environment_protection.py
           python3 tests/prove_deploy_attestation.py
           python3 tests/prove_deploy_now_serving.py
           python3 tests/prove_deploy_ownership_stamp.py
@@ -1673,8 +1717,8 @@ jobs:
     # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Reconcile implementation / capability / validation registries
@@ -1786,23 +1830,13 @@ jobs:
 
   dogfood-policy:
     name: Policy gate (dogfood)
-    # The kit runs its own governance gate against itself. Pinning is reported rather
-    # than enforced here until the third-party actions carry real SHA pins — see docs/assurance/PINNING.md.
-    #
-    # AND THE WEAKENING IS NOW ATTRIBUTED, because the kit does not get to exempt itself from
-    # the rule it just shipped. Two controls are weakened here: action-pinning is disabled and
-    # workflow-policy is softened to reporting. Before this, both were silent and this job was
-    # reported exactly like one that passed the full gate. With the attribution recorded the
-    # run routes PROCEED_WITH_ADVISORY instead of DECISION_REQUIRED — and when the expiry
-    # passes it routes back to DECISION_REQUIRED, because silence must never renew a weakening.
+    # The kit runs its own governance gate against itself, AT BASELINE: pinning enforced, the
+    # gate blocking. Until 2026-10-22 this ran `require_sha_pinning: false` / `soft_fail: true`
+    # under an attributed weakening dated to expire 2026-10-31. The pin sweep (lane L-H, ledger
+    # L82, owner decision O-23) SHA-pinned every remote `uses:` instead of re-dating it, and the
+    # weakening record was removed with it -- docs/assurance/PINNING.md.
+    # tests/prove_workflow_policy_rules.py (DOGFOOD) refuses this job carrying a weakening again.
     uses: ./.github/workflows/workflow-policy-check.yml
     with:
-      require_sha_pinning: false
-      soft_fail: true
-      weakening_reason: >-
-        The kit's own third-party actions carry tag refs rather than full SHA pins, so enforcing
-        the pinning rule against itself would block every run before the pins exist. Reported
-        rather than enforced while that migration is outstanding.
-      weakening_authority: kit-maintainer
-      weakening_exception_ref: docs/assurance/PINNING.md
-      weakening_expires: "2026-10-31"
+      require_sha_pinning: true
+      soft_fail: false

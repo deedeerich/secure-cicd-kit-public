@@ -2817,7 +2817,13 @@ namespaces:
       COVERAGE_PARTIAL:
         definition: >-
           A claim is unestablished at PARTIAL for a reason the gate did not record as a version
-          gap. Unreachable from a hosted job result today; named so it can never be read as one.
+          gap. Reached by a job that publishes its own PARTIAL state: sast-semgrep's scan_state
+          PARTIAL (scan_partial_reason.PARSE_PARTIAL_PHP_SYNTAX -- PHP files Semgrep could not
+          fully parse, named; everything else scanned and its findings kept; KDEC-016 amended
+          2026-10-22).
+        rule: >-
+          Not a version gap, so not refused at uat/prod by KDEC-014: the deploy records it
+          (version_gap_ruling.VERSION_GAP_NOT_ENGAGED). It is advisory in every enforcement mode.
       WEAKENING_ATTRIBUTED:
         definition: A weakening is in force, with a reason and a named authority, unexpired.
         reuses: control_weakening.WEAKENING_ATTRIBUTED
@@ -2825,6 +2831,41 @@ namespaces:
         definition: >-
           Findings were established and the gate did not block them (enforcement ADVISORY, or a
           job that succeeded with findings on record).
+      SECRET_EXCEPTION_ATTRIBUTED:
+        definition: >-
+          The secret scan found secrets and EVERY one is excepted by a policy-register entry's
+          secret_exceptions item in force: one finding by its fingerprint, a work-item ticket, an
+          explanation, a named approver, an unexpired date, and environment reviewers at uat/prod
+          (owner ruling 2026-10-22; lane L-S). The gate's secret_gate is EXCEPTED, and the run
+          record lists each exception.
+        rule: >-
+          Never a clean secret scan. Not a version gap, so not refused at uat/prod by KDEC-014; the
+          deploy records it. Any secret not covered, or any exception refused, and the run is
+          BLOCKED.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  secret_exception_refusal:
+    description: >-
+      Why the policy register refused ONE secret exception (owner ruling 2026-10-22: exceptions
+      "must be requested and logged with tickets that have explanations"). A refused exception was
+      never in force: the secret it named still blocks. The rest of the register resolves.
+    consumers: [scripts/policy_registration.py, security-gate, tests/prove_gate_policy_enforcement.py]
+    rule: >-
+      A class-wide or scanner-wide softening of secrets is not an exception at all: it stays
+      CHERRY_PICK_BELOW_FLOOR (policy_resolution), refusing the register.
+    values:
+      SECRET_EXCEPTION_NOT_FINDING_SCOPED:
+        definition: The item names no single finding fingerprint (12 lowercase hex, the report's fp).
+      SECRET_EXCEPTION_UNTICKETED:
+        definition: >-
+          No ticket, or one that is not a <PROJECT>-<digits> work-item key within the register's
+          numbers.ticket_min_digits..ticket_max_digits (scripts/ticket_reference.py, KDEC-013).
+      SECRET_EXCEPTION_UNATTRIBUTED:
+        definition: >-
+          No explanation, approver or readable expiry; or it applies at uat/prod and names no
+          environment reviewers.
+      SECRET_EXCEPTION_EXPIRED:
+        definition: Its expiry, or its entry's decision, has passed. Silence never renews it.
 
   # ─────────────────────────────────────────────────────────────────────────
   version_gap_ruling:
@@ -2987,27 +3028,64 @@ namespaces:
     consumers: [scripts/policy_registration.py, tests/prove_policy_registration.py,
                 security-gate (wiring owed), the posture record]
     rule: >-
-      NOTHING RESOLVES TO crawl BECAUSE IT COULD NOT READ THE FILE. An unregistered repository is
-      not a repository at the bottom rung; it is a run whose input to enforcement is missing, and
-      it routes EVIDENCE_UNTRUSTED. A policy DEFECT observed by this check -- a supplied
-      policy_mode, a cherry-pick below the floor, non-monotone cells -- is an observed refusal and
-      routes BLOCKED. Both stop a gate; the difference tells a person which problem they have.
+      NOTHING RESOLVES TO THE DEFAULT BECAUSE IT COULD NOT READ A FILE. An unreadable,
+      unparseable or schema-violating register, or a protected ref that cannot be fetched, is a run
+      whose input to enforcement is missing, and it routes EVIDENCE_UNTRUSTED. Only a register that
+      is genuinely ABSENT -- read successfully, nothing there -- resolves to the documented kit
+      default (crawl: only secrets block), recorded as policy_source KIT_DEFAULT on every run (owner
+      requirement 2026-10-22, the crawl phase; this supersedes the O-03 recommendation that uat
+      and prod refuse). A policy DEFECT observed by this check -- a supplied policy_mode, a
+      conflict, an unattributed decision, a softened secret, a repository file that softens,
+      non-monotone tiers -- is an observed refusal and routes BLOCKED. Both stop a gate; the
+      difference tells a person which problem they have.
     values:
       POLICY_RESOLVED:
         definition: >-
-          The rung, tier, team pattern and cherry-picks were read from the registration on the
-          protected branch; the effective minimum per control was computed; policy_mode was derived.
+          The register (central and repository, read from places a pull request cannot write) was
+          valid; every matching entry was applied in precedence order; the effective minimum per
+          control was computed; policy_mode was derived. Also the state of the kit default.
+      POLICY_REGISTER_CONFLICT:
+        definition: >-
+          Two registrations say different things about one thing: two entries with one scope, an
+          entry id or a JSON key that appears twice, one environment name mapped to two tiers, or
+          the repository file and the central register both registering one repository tier.
+        rule: >-
+          A POLICY DEFECT, BLOCKED, naming both. Which one governs must never be an accident of
+          file order -- the reader that keeps "the last one" has silently chosen for the owner.
+      POLICY_DECISION_UNATTRIBUTED:
+        definition: >-
+          A register nobody signed off, or an entry whose decision lacks authority, reason,
+          decided_on or expires, or a uat/prod departure whose decision does not name the
+          environment's required reviewers.
+        rule: >-
+          BLOCKED. Every registration is a decision a named person made; a tightening or a
+          softening with no name on it is a decision nobody made.
+      POLICY_DECISION_EXPIRED:
+        definition: An entry applied to this run carries a decision whose expiry has passed.
+        rule: >-
+          Routes DECISION_REQUIRED. AN EXPIRY NEVER SOFTENS ANYTHING: the entry's tightening stays
+          in force and its softening reverts to what the scope inherited. Silence never renews it.
+      REPOSITORY_FILE_SOFTENING:
+        definition: >-
+          The repository's own registration left a control, the rung or the deploy approval weaker
+          than the central register gave that repository.
+        rule: >-
+          BLOCKED, and the softening is not applied. A repository may tighten its own policy; only
+          the central register, signed off above it, may loosen what it inherits.
       POLICY_MODE_SUPPLIED:
         definition: The run received policy_mode as an input, in any spelling, with any value.
         rule: >-
           REFUSED EVEN WHEN THE VALUE IS THE ONE THE DERIVATION WOULD PRODUCE. A derived value a
           caller can still override is not derived.
       CHERRY_PICK_BELOW_FLOOR:
-        definition: A registered cherry-pick asks for a weaker result than the rung's floor for that control.
+        definition: >-
+          A registered control asks for less than the kit permits at all: a secret-class control
+          (secrets, secret-scan, malicious-deps) below BLOCKED, or any control set to PROCEED.
         rule: >-
           A POLICY DEFECT, named. Not applied-then-overridden and not silently dropped: a
           silently-dropped override reads as applied to everyone who wrote it. The effective set
-          never contains the defective value.
+          never contains the defective value. (A control below the RUNG's floor, with an
+          attributed decision, is a softening and a weakening row -- not this.)
       CELLS_NOT_MONOTONE:
         definition: >-
           rung(sandbox) <= rung(dev) <= rung(test) <= rung(uat) = rung(prod) is violated, or two
@@ -3022,12 +3100,12 @@ namespaces:
         rule: Routes EVIDENCE_UNTRUSTED. An unregistered cell has no floor to apply.
       REGISTRATION_UNAVAILABLE:
         definition: >-
-          The registration is absent at the protected ref, unparseable, malformed, or the ref
-          cannot be resolved.
+          A register is unparseable, violates the schema (schema_version 2), cannot be read, or
+          the protected ref cannot be resolved. NOT an absent one: absent is the kit default.
         rule: >-
-          Routes EVIDENCE_UNTRUSTED, with the reason. Unreadable is not crawl, and the working tree
-          is never consulted as a fallback -- a registration read from the PR under evaluation is
-          a self-signed demotion.
+          Routes EVIDENCE_UNTRUSTED, with the reason. Unreadable is not the default, and the
+          working tree is never consulted as a fallback -- a registration read from the PR under
+          evaluation is a self-signed demotion.
       POLICY_NUMBER_NOT_CONFIGURED:
         definition: >-
           A number the mechanism needs -- a promotion run count, an SLA period, a grace period --
@@ -3044,6 +3122,58 @@ namespaces:
           NOT A REFUSAL. The record carries both values and the gate obeys the effective one --
           never the reverse, and never a single number that hides which it is. A dashboard
           showing run over an estate running at crawl is the most expensive artefact in the design.
+
+  environment_protection:
+    description: >-
+      What a deploy read back about the GitHub environment it runs in: whether its required
+      reviewers give what the policy demands at this tier (one approver, from the named groups,
+      self-review prevented). Emitted by the deploy reusables' `protection` step, before login.
+    consumers: [scripts/environment_protection.py, reusable-deploy-appservice.yml,
+                reusable-deploy-containerapp.yml, tests/prove_deploy_environment_protection.py]
+    rule: >-
+      AT uat AND prod ONLY VERIFIED AND NOT_REQUIRED PROCEED. The kit cannot set an environment's
+      reviewers; it can read them, so an unprotected production environment is a refusal, not a
+      hand-off note. A rule that could not be read is not a rule that was satisfied. Below uat every
+      outcome is recorded and warned, never refused. The demand is the stronger of the gate's
+      deploy_approval and the kit default: a value handed to the deploy can tighten, never weaken.
+    values:
+      ENVIRONMENT_PROTECTION_VERIFIED:
+        definition: The environment's required reviewers satisfy the demand.
+      ENVIRONMENT_PROTECTION_NOT_REQUIRED:
+        definition: Nothing is demanded at this tier (below uat, by default); the rules were not consulted.
+      ENVIRONMENT_REVIEWERS_ABSENT:
+        definition: No required-reviewer rule, or one with no reviewers -- anyone who can run the workflow deploys.
+      ENVIRONMENT_SELF_REVIEW_ALLOWED:
+        definition: Self-review must be prevented and the environment lets the deployer approve their own deploy.
+      ENVIRONMENT_APPROVER_GROUP_MISSING:
+        definition: >-
+          Named approver groups are demanded and a reviewer outside them could approve, or none of
+          the reviewers is one of them.
+      ENVIRONMENT_PROTECTION_NOT_ESTABLISHED:
+        definition: >-
+          The environment API could not be read, the demand could not be read, or the tier is not
+          a registered one.
+        rule: Refused at uat and prod. Unknown is not protected.
+
+  policy_source:
+    description: >-
+      Where this run's enforcement policy came from: a registered decision, or the kit's documented
+      default. Emitted by the security gate beside policy_resolution.
+    consumers: [scripts/policy_registration.py, security-gate (policy step and posture record)]
+    rule: >-
+      THE DEFAULT IS NAMED, NEVER IMPLIED. A run at crawl because nobody registered anything and
+      a run at crawl because a person decided crawl read the same on the floor table and differ in
+      who answers for them; the record says which.
+    values:
+      KIT_DEFAULT:
+        definition: >-
+          No central register entry and no repository registration matched this run (each was
+          read successfully and held nothing for it). The kit default applies: crawl at every
+          tier, only secrets block, every other control PROCEED_WITH_ADVISORY; uat and prod
+          deploys need one environment reviewer with self-review prevented.
+        rule: Never the result of a read that failed -- that is REGISTRATION_UNAVAILABLE.
+      REGISTER:
+        definition: At least one signed-off register entry matched this run and was applied.
 
   human_control_availability:
     description: >-
@@ -3229,6 +3359,31 @@ namespaces:
   # produces a job that truthfully declares COMPLETE over a run that read nothing.
   #
   # Folding this into execution_state would mean asking the caller whether the caller was right.
+  scan_partial_reason:
+    description: >-
+      WHY a scanner job that ran and kept its findings published scan_state PARTIAL rather than a
+      complete scan. The job names the reason beside the state (`scan_reason`) and the evidence
+      (for Semgrep, `parse_partial_files`); the gate reads the state as scanner_state.PARTIAL and
+      the posture names the advisory cause COVERAGE_PARTIAL.
+    consumers: [sast-semgrep, security-gate, tests/prove_semgrep_php.py,
+                tests/prove_version_gap_production.py]
+    rule: >-
+      A REGISTERED REASON OR NOTHING. A partial scan with a reason nobody registered is not a
+      partial scan: it is the strict refusal (COLLECTION_FAILED). PARTIAL is never PASS.
+    values:
+      PARSE_PARTIAL_PHP_SYNTAX:
+        definition: >-
+          Semgrep exited 3 under --strict and its own JSON names ONLY parse errors (error_type
+          PartialParsing, Syntax error, Lexical error, Other syntax error, AST builder error) on
+          .php files, having examined files. Everything else was scanned and the parsed rest of
+          those files too; the findings are kept; the files are named with the lines Semgrep
+          reported. PHP 8.5's `(void)` cast and `final` promoted constructor properties are the
+          measured case (Semgrep 1.178.0 and 1.182.0).
+        rule: >-
+          Owner, 2026-10-22: "scan what parses, flag the rest" (KDEC-016 amended). Any OTHER
+          error class -- a non-PHP file that did not parse, a rule that did not load, a timeout,
+          a crash, nothing examined -- stays COLLECTION_FAILED.
+
   scan_examination:
     description: >-
       WHETHER THE SCAN ACTUALLY READ ANYTHING, derived from the SARIF rather than declared by the

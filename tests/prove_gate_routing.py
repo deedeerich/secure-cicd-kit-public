@@ -65,7 +65,7 @@ DEFAULTS = {
     'enable_sbom': 'true', 'enable_malicious_pkg_scan': 'true', 'advisory_mode': 'false',
     'scan_git_history': 'false', 'soft_fail_sast': 'true', 'enforce_lint': 'false',
     'weakening_reason': '', 'weakening_authority': '', 'weakening_exception_ref': '',
-    'weakening_expires': '', 'environment': '',
+    'weakening_expires': '', 'environment': '', 'target_environment': '',
 }
 BASELINE = dict(DEFAULTS, language='multi', soft_fail_sast='false')
 CLEAN_GATE = {'assurance_state': 'PASS', 'enforcement_state': 'ALLOWED', 'secret_gate': 'PASS',
@@ -147,6 +147,33 @@ SCENARIOS = [
       lambda o: (o.get('controls_unavailable') == 'iac-scan',
                  'controls_unavailable=%r, expected the capped capability by name'
                  % o.get('controls_unavailable'))),
+    # K-01 (KDEC-014), the gate half: every advisory names its cause, and the deploy reads it.
+    S('cause_version_gap', BASELINE,
+      dict(CLEAN_GATE, assurance_state='PARTIAL', enforcement_state='ALLOWED',
+           unestablished='iac-scan(PARTIAL)', version_gapped='iac-scan'),
+      'PROCEED_WITH_ADVISORY',
+      lambda o: (o.get('advisory_causes') == 'VERSION_GAP',
+                 'advisory_causes=%r, expected VERSION_GAP (a gap READ ranges establish)' % o.get('advisory_causes'))),
+    S('cause_version_gap_unverified', BASELINE,
+      dict(CLEAN_GATE, assurance_state='PARTIAL', enforcement_state='ALLOWED',
+           unestablished='iac-scan(PARTIAL)', version_gapped_unverified='iac-scan'),
+      'PROCEED_WITH_ADVISORY',
+      lambda o: (o.get('advisory_causes') == 'VERSION_GAP_UNVERIFIED',
+                 'advisory_causes=%r, expected VERSION_GAP_UNVERIFIED' % o.get('advisory_causes'))),
+    S('cause_coverage_partial', BASELINE,
+      dict(CLEAN_GATE, assurance_state='PARTIAL', enforcement_state='ALLOWED',
+           unestablished='iac-scan(PARTIAL)'),
+      'PROCEED_WITH_ADVISORY',
+      lambda o: (o.get('advisory_causes') == 'COVERAGE_PARTIAL',
+                 'advisory_causes=%r, expected COVERAGE_PARTIAL' % o.get('advisory_causes'))),
+    S('cause_mixed', dict(BASELINE, advisory_mode='true', **ATTRIB),
+      dict(CLEAN_GATE, assurance_state='PARTIAL', enforcement_state='ADVISORY',
+           unestablished='iac-scan(PARTIAL) sast-semgrep(PARTIAL)', version_gapped='iac-scan'),
+      'PROCEED_WITH_ADVISORY',
+      lambda o: (o.get('advisory_causes') == 'COVERAGE_PARTIAL,FINDINGS_NOT_BLOCKED,VERSION_GAP,WEAKENING_ATTRIBUTED',
+                 'advisory_causes=%r, expected every cause, sorted' % o.get('advisory_causes'))),
+    S('cause_none_when_proceed', BASELINE, CLEAN_GATE, 'PROCEED',
+      lambda o: (o.get('advisory_causes') == '', 'a PROCEED carries causes %r' % o.get('advisory_causes'))),
     S('version_gap_partial_unattributed', DEFAULTS,
       dict(CLEAN_GATE, assurance_state='PARTIAL', enforcement_state='ALLOWED',
            unestablished='iac-scan(PARTIAL)'),
@@ -176,7 +203,27 @@ def posture_step():
     return None
 
 
-def resolve_env(env_map, inputs, gate):
+# THE POLICY STEP'S OUTPUTS WHEN NOTHING IS REGISTERED: the kit default, crawl (only secrets
+# block). The scenarios above are routed under it, and it routes nothing of its own, so each
+# expectation is the posture step's own. tests/prove_gate_policy_enforcement.py runs the real
+# resolver for the registered cases; a caller here may pass its own `policy` mapping.
+KIT_DEFAULT_POLICY = {
+    'policy_state': 'POLICY_RESOLVED', 'policy_routes_to': '', 'policy_source': 'KIT_DEFAULT',
+    'policy_rung_declared': 'crawl', 'policy_rung_effective': 'crawl', 'policy_rung_divergence': '',
+    'policy_policy_mode': 'adoption', 'policy_policy_mode_source': 'derived', 'policy_environment': '',
+    'policy_environment_tier': 'prod', 'policy_team_pattern': '', 'policy_effective_minimum': '{}',
+    'policy_divergences': '[]', 'policy_weakenings': '[]', 'policy_chain': '', 'policy_refusals': '',
+    'policy_unvalidated_human_workflow_paths': '', 'policy_stops_on_evidence_untrusted': 'true',
+    'policy_deploy_approval': '{}', 'policy_job_minimums': '', 'policy_registration_ref': '',
+}
+
+
+def resolve_env(env_map, inputs, gate, policy=None):
+    """`policy`: the policy step's outputs, by bare name or as `steps.policy.outputs.<name>` keys;
+    None = the kit default."""
+    pol = {}
+    for k, v in (KIT_DEFAULT_POLICY if policy is None else policy).items():
+        pol[k[len('steps.policy.outputs.'):] if k.startswith('steps.policy.outputs.') else k] = v
     out, unknown = {}, []
     for k, v in (env_map or {}).items():
         def sub(m):
@@ -188,6 +235,8 @@ def resolve_env(env_map, inputs, gate):
                 return inputs.get(name, '')
             if key.startswith('steps.gate.outputs.'):
                 return gate.get(key[len('steps.gate.outputs.'):], '')
+            if key.startswith('steps.policy.outputs.'):
+                return pol.get(key[len('steps.policy.outputs.'):], '')
             unknown.append(key)
             return ''
         out[k] = EXPR.sub(sub, str(v))

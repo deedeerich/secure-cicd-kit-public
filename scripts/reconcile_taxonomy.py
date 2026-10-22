@@ -58,6 +58,9 @@ SKIP_DIRS = {os.path.join("docs", "architecture", "prototypes")}
 # taxonomy term would defeat the whole check.
 NOT_VOCABULARY = {
     "GITHUB_OUTPUT", "GITHUB_ENV", "GITHUB_STEP_SUMMARY", "GITHUB_PATH", "GITHUB_TOKEN",
+    # The runner's REST API base URL, read by scripts/environment_protection.py to read an
+    # environment's protection rules back. A platform environment variable, same class as above.
+    "GITHUB_API_URL",
     # The runner's per-job temp directory -- a platform environment variable of the same class
     # as GITHUB_OUTPUT, named as a string by the deploy-step harness that stands it in locally.
     "RUNNER_TEMP",
@@ -160,6 +163,10 @@ NOT_VOCABULARY = {
     "SCAN_STATUS_SH", "REDACT_SARIF", "REDACT_SARIF_PY", "PR_BODY", "TICKET_HOST",
     "TICKET_PROJECT", "ENFORCE_DIGIT_RANGE", "MIN_DIGITS", "MAX_DIGITS", "IN_PATHS",
     "IN_LANGUAGE", "IN_IAC_MODE", "REDACTED_MARK", "DECLARED_KEYS", "DECLARED_LABEL",
+    # The optional SECRET name of .github/workflows/reusable-dependabot-triage.yml (a credential
+    # for fetch-metadata's lookups) and the template's suggested repository secret. Names of
+    # settings, not states; the triage's own states are lowercase rule ids.
+    "METADATA_TOKEN", "DEPENDABOT_METADATA_TOKEN",
     # Env-var NAMES of .github/workflows/reusable-ticket-reference.yml's step (KDEC-013): a Jira
     # site host and a project key, carried as DATA. Each names a SETTING; nothing branches on its
     # value being one of a fixed set. The gate's states are ticket_reference_outcome.
@@ -254,6 +261,12 @@ NOT_VOCABULARY = {
     # (tests/prove_sarif_effective_level.py, same class as CKV_SECRET_6), and the constant that
     # holds a seeded apk database (tests/prove_image_scan_enforces.py).
     "KIT_OWNER", "KIT_REPO", "CKV_PROBE_1", "APK_INSTALLED",
+    # The same class: the owner placeholder in templates/ `uses:` paths, which
+    # tests/check_action_pins.py accepts (in templates only) beside forty zeros. A path, never a state.
+    "YOUR_ORG",
+    # SETTINGS, never states: scripts/pin-actions.sh's API base (set to a local stand-in by
+    # tests/prove_pin_actions_names_release.py) and the directories it walks (docs/assurance/PINNING.md).
+    "GITHUB_API_URL", "SEARCH_PATHS",
     # Python CONSTANT NAMES in the assurance scripts -- the class the export-tooling note above
     # left to its owner, classified here on the owner's instruction. Every one is a CONTAINER OF
     # REGISTERED VALUES or a literal: BY_SCANNER maps scanner names to finding_subject values;

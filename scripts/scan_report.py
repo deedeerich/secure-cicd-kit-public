@@ -1725,6 +1725,7 @@ def batch(state_dir, disp_path, max_detail, run_url, expect=(), summary=None, fi
     # evidence: the blocking total over ESTABLISHED rows only, and which JOBS established any.
     # A row that established nothing contributes nothing -- it is not a zero.
     by_job = {}
+    secret_fps = []
     present = set(st.get('scanner') for st in states)
     for name in expect:
         if name and name not in present:
@@ -1802,6 +1803,12 @@ def batch(state_dir, disp_path, max_detail, run_url, expect=(), summary=None, fi
         job = st.get('job') or ''
         if established and job:
             by_job[job] = by_job.get(job, 0) + len(blk)
+        # THE SECRET FINDINGS, BY FINGERPRINT, FOR THE GATE (owner ruling 2026-10-22, lane L-S). A
+        # secret exception in the policy register names ONE finding by this `fp`; the gate excepts
+        # a secret only when every one the secret scan reported is named, one exception each.
+        # Secrets carry no durable identity (section 5.7), so `fp` is the key -- a hash, never text.
+        if established and job == 'secret-scan':
+            secret_fps.extend(f['fp'] for f in blk)
         held = len([f for f in findings if is_suppressed(f, disp, today)])
         legacy_closed += len([f for f in findings
                               if disposition_for(f, disp, today)[1] == 'legacy-closed'])
@@ -1945,6 +1952,7 @@ def batch(state_dir, disp_path, max_detail, run_url, expect=(), summary=None, fi
     if summary is not None:
         summary['blocking_findings'] = sum(by_job.values())
         summary['jobs_with_findings'] = sorted(j for j, n in by_job.items() if n > 0)
+        summary['secret_findings'] = sorted(secret_fps)
         summary['findings'] = findings_out
         summary['identity_routing'] = identity_routing
         summary['baseline_state'] = baseline_state or ''
@@ -2456,6 +2464,8 @@ def main():
                 fh.write('jobs_with_findings=%s\n'
                          % ' '.join(summary.get('jobs_with_findings', [])))
                 fh.write('findings=%s\n' % summary.get('findings', ''))
+                # One fingerprint per secret finding, repeated when two share one (lane L-S).
+                fh.write('secret_findings=%s\n' % ' '.join(summary.get('secret_findings', [])))
                 # THE IDENTITY CLAIM, beside the block and never inside it (L44/L45).
                 fh.write('identity_routing=%s\n' % summary.get('identity_routing', ''))
                 fh.write('baseline_state=%s\n' % summary.get('baseline_state', ''))

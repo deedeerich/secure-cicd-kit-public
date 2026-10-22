@@ -17,7 +17,8 @@ WHY THIS EXISTS
     reports shaped exactly that way, plus the Semgrep step against the real tool.
 
 SCENARIOS
-    semgrep_real_error    real semgrep, an ERROR-severity rule that matches -> count 1, enforce FAILS
+    semgrep_real_error    real semgrep, an ERROR-severity rule that matches -> count 1, enforce hands
+                          it to the gate (findings_state=FINDINGS; lane L-S, O-24)
     semgrep_real_warning  real semgrep, a WARNING-severity rule that matches -> count 0, enforce passes
     checkov_rule_level    SARIF: result without level, rule default error   -> count 1
     checkov_result_level  SARIF: result level "error" (result overrides)    -> count 1
@@ -140,17 +141,24 @@ def main():
                 rc, log, o = run(bash, sem_scan, ws, ctx)
                 ectx = dict(ctx, **{'steps.semgrep.outputs.count': o.get('count', ''),
                                     'steps.semgrep.outputs.collection': o.get('collection', '')})
-                erc, _, _ = run(bash, sem_enf, ws, ectx)
-                print('  %-22s count=%s enforce exit=%d' % (name, o.get('count'), erc))
+                erc, _, eo = run(bash, sem_enf, ws, ectx)
+                handed = eo.get('findings_state', '')
+                print('  %-22s count=%s enforce exit=%d findings_state=%s'
+                      % (name, o.get('count'), erc, handed or '-'))
                 if o.get('count') != want:
                     bad.append('%s: counted %r, expected %s. %s' % (
                         name, o.get('count'), want,
                         'An ERROR-severity finding counted as zero can never block.'
                         if want == '1' else ''))
-                if enforce_fails and erc == 0:
-                    bad.append('%s: enforce passed an ERROR finding with soft_fail_sast off' % name)
-                if not enforce_fails and erc != 0:
-                    bad.append('%s: enforce failed on a WARNING finding' % name)
+                # The enforce step HANDS an ERROR finding to the security gate (findings_state),
+                # the single enforcement point (lane L-S, O-24); it never fails on a finding.
+                if erc != 0:
+                    bad.append('%s: enforce failed (exit %d) -- findings go to the gate' % (name, erc))
+                if enforce_fails and handed != 'FINDINGS':
+                    bad.append('%s: an ERROR finding with soft_fail_sast off was not handed to the '
+                               'gate (findings_state=%r)' % (name, handed))
+                if not enforce_fails and handed:
+                    bad.append('%s: a WARNING finding was handed to the gate' % name)
         else:
             print('  (semgrep not installed: the real-tool scenarios are skipped; the SARIF-shape '
                   'scenarios below still decide the count rule)')

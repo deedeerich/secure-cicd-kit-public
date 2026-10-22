@@ -21,7 +21,8 @@ WHAT IT PROVES (deps-scan's Trivy step reproduced as trivy-action@v0.36.0 runs i
 reproduction tests/prove_trivy_threshold.py established -- and the count and enforce steps as
 shipped; the discovery survey as shipped)
     C1  composer.lock with phpmailer/phpmailer v5.2.18 -> a result on composer.lock at CRITICAL or
-        HIGH, a count >= 1 at the default threshold, and the job FAILS
+        HIGH, a count >= 1 at the default threshold, and the job hands it to the security gate
+        (findings_state=FINDINGS; the job succeeds -- lane L-S, O-24: the gate enforces)
     C2  CONTROL: composer.lock with a package carrying no advisory -> count 0, the job PASSES
     C3  composer.json alone (the same vulnerable package) -> Trivy reports nothing for it (the
         measured limit, re-measured every run so a Trivy that learns to read manifests is seen)
@@ -127,20 +128,26 @@ def main():
             crc, clog, cout, unk = sb.run(bash, steps[CFG['count']], vals, ws)
             v2 = dict(vals, **{'steps.%s.outputs.%s' % (CFG['count_id'], k): cout.get(k, '')
                                for k in ('count', 'collection')})
-            erc, elog, _o, _u = sb.run(bash, steps[CFG['enforce']], v2, ws)
+            erc, elog, eout, _u = sb.run(bash, steps[CFG['enforce']], v2, ws)
             failed = trc != 0 or erc != 0
-            print('  %-20s trivy=%d lock=%s json=%s count=%s job %s'
+            handed = eout.get('findings_state', '')
+            print('  %-20s trivy=%d lock=%s json=%s count=%s job %s%s'
                   % (name, trc, ','.join(on_lock) or '-', ','.join(on_json) or '-',
-                     cout.get('count', '-'), 'FAILS' if failed else 'passes'))
+                     cout.get('count', '-'), 'FAILS' if failed else 'passes',
+                     ', hands the gate %s' % handed if handed else ''))
             if name.startswith('C1'):
                 if not ({'CRITICAL', 'HIGH'} & set(on_lock)):
                     bad.append('C1 no CRITICAL/HIGH result on composer.lock for %s %s'
                                % VULN_PKG)
-                if not failed:
-                    bad.append('C1 the vulnerable Composer package did not block the job')
-            if name.startswith('C2') and failed:
-                bad.append('C2 CONTROL: a lock with no advisory failed the job (count %s)'
-                           % cout.get('count'))
+                # Handed to the security gate, the single enforcement point (lane L-S, O-24):
+                # the job succeeds and the gate enforces it by the resolved policy.
+                if failed or handed != 'FINDINGS':
+                    bad.append('C1 the vulnerable Composer package was not handed to the gate '
+                               '(job %s, findings_state %r)'
+                               % ('failed' if failed else 'passed', handed))
+            if name.startswith('C2') and (failed or handed):
+                bad.append('C2 CONTROL: a lock with no advisory failed the job or was handed to '
+                           'the gate (count %s)' % cout.get('count'))
             if name.startswith('C3') and on_json:
                 bad.append('C3 Trivy now reports composer.json alone (%s): the measured limit has '
                            'changed -- re-examine PHPDependenciesUnlocked' % on_json)

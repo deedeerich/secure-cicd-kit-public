@@ -230,6 +230,29 @@ INERT_ONLY: dict[str, dict] = {
         'max_digits': 'an optional upper bound on the issue number; it can only reject more '
                       'references, and half a range fails the gate as misconfigured',
     },
+    # FUTURE_WORK section 6, 2026-10-22. Every policy input can only send MORE pull requests to a
+    # human or to closure: protected lists and exclusions are ADDED to the kit's baseline, the update
+    # types and the lockfile threshold are refused above the baseline ceiling (patch,minor; 400), and
+    # an empty required_checks sends everything to a human. tests/prove_dependabot_triage.py D4.
+    'reusable-dependabot-triage.yml': {
+        'critical_packages': 'adds protected packages to the built-in list; it cannot remove one, '
+                             'so it only sends more updates to a human',
+        'critical_ecosystems': 'adds protected ecosystems to the built-in list; it cannot remove '
+                               'one, so it only sends more updates to a human',
+        'auto_merge_update_types': 'may name patch, minor or neither; anything above the patch,minor '
+                                   'ceiling is refused as a misconfigured policy and every update '
+                                   'goes to a human',
+        'lockfile_line_threshold': 'may be lowered from the 400 ceiling; a higher value is refused '
+                                   'as a misconfigured policy and every update goes to a human',
+        'excluded_paths': 'adds paths whose updates are closed; it cannot remove the built-in one, '
+                          'and a closed update is never merged',
+        'required_checks': 'names checks that must be required on the base branch before anything '
+                           'merges; empty sends every update to a human',
+        'min_compatibility_score': 'an optional floor; set, a lower or missing score goes to a human',
+        'review_team': 'names who is asked to review; it decides nothing',
+        'review_label': 'names the label a human-review update receives; it decides nothing',
+        'urgent_label': 'names the label an urgent update receives; it decides nothing',
+    },
     'reusable-propose-ledger.yml': {
         'environment': 'names the baseline-ledger environment the proposal is for; it selects which '
                        'ledger is read, and no value of it softens, skips or narrows a control',

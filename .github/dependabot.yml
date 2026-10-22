@@ -32,8 +32,16 @@
 version: 2
 
 updates:
+  # SHA PINS STAY CURRENT HERE (ledger L82). Every remote `uses:` is `owner/repo@<sha> # vX.Y.Z`;
+  # Dependabot moves the SHA and the version comment together. `/` reads .github/workflows and a
+  # root action.yml only, so the composites are listed by glob (`directories` supports `*`;
+  # `directory` does not). templates/ holds placeholders a consumer pins, and is not read.
+  # overlays/ is deliberately not read either: an overlay ships into its consumer's own copy and is
+  # maintained there, by that consumer's Dependabot (tests/check_action_pins.py P5 holds both).
   - package-ecosystem: github-actions
-    directory: /
+    directories:
+      - "/"
+      - "/.github/actions/*"
     exclude-paths:
       - "tests/consumer-fixture/**"
     schedule:

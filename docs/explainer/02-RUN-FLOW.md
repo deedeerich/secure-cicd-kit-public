@@ -80,10 +80,29 @@ Each scanner job follows the same shape (part 04 lists every job):
 ```
 install the tool (pinned) → run it, never letting its exit code decide anything
   → COUNT: report present? parseable? how many blocking findings? (absent/unparseable = COLLECTION_FAILED)
-  → ENFORCE: separate step; blocks only per the configured enforcement
+  → ENFORCE: separate step; HANDS findings over its threshold to the gate (findings_state=FINDINGS)
+             and fails only when the count could not be established
   → redact → keep the SARIF as an artifact → publish to the Security tab where available
   → say plainly if publication degraded (publication never decides pass/fail)
 ```
+
+**The security gate is the single enforcement point** (lane L-S, owner ruling O-24; VERIFIED locally
+by `tests/prove_gate_policy_enforcement.py`, `sep_*` scenarios, which run the shipped enforce steps and
+then the gate). A scanner job **reports**: it succeeds with findings and publishes them as the job
+output `findings_state=FINDINGS`; it **fails only when it could not scan or could not trust its own
+result** — a tool crash, `COLLECTION_FAILED`, a hollow or unparseable report, a bootstrap failure. The
+gate then enforces by the resolved policy, so the workflow's conclusion **is** the verdict: at crawl an
+ordinary finding leaves every job green and routes `PROCEED_WITH_ADVISORY`; a broken scan is red
+(`EVIDENCE_UNTRUSTED`); at `run` the same finding is red at the gate (`BLOCKED`) while the scanner job
+stays green. **Secrets go to the gate as well** (owner ruling 2026-10-22): the secret scan hands its
+secrets over with their count, and the gate **blocks them at every tier** unless the policy register
+excepts each one — one finding by its fingerprint, a ticket, an explanation, a named approver, an
+expiry (part 03; `docs/adoption/POLICY_REGISTER.md`). Only the gate holds the policy, so only the gate
+can honour an exception. An image's secrets step and a known-malicious package, which no register
+excepts, still fail their own job. `advisory_mode` and
+`soft_fail_sast` still soften what a job hands over — recorded as weakenings in the posture record —
+but they are no longer what keeps a scanner job green. A non-secret scanner job that **fails beside
+findings on record** could not finish its scan, and the gate reads it as untrusted, not as findings.
 
 A run that skipped part of its input is not a clean run: every `semgrep scan` runs with `--strict`, so
 a file Semgrep cannot parse is exit 3 and `COLLECTION_FAILED`, not a warning and a zero; a CodeQL
@@ -118,8 +137,10 @@ Step `gate` answers two separate questions and never collapses them:
 | `enforcement_state` | what did the gate DO? `BLOCKED`, `ADVISORY`, `ALLOWED` |
 
 Then step `posture` (runs even when the gate blocked) enumerates every input, records each weakening
-and who decided it, and emits the **verdict**: `routing_result`. Deploy reads that. Part 03 has the
-exact rules.
+and who decided it, and emits the **verdict**: `routing_result`. Deploy reads that. The job ends on a
+`verdict` step that fails it on `BLOCKED` and `EVIDENCE_UNTRUSTED`, so a caller's `needs: security`
+skips on exactly those (`templates/build-deploy.yml` then refuses any deploy below
+`PROCEED_WITH_ADVISORY` from `routing_result`). Part 03 has the exact rules.
 
 ## What crosses the run boundary
 

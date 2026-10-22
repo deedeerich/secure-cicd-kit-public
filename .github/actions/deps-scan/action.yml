@@ -21,6 +21,13 @@ inputs:
     description: The workflow's `paths` input (string), passed through unchanged.
     required: true
 
+# What the security gate enforces (lane L-S, O-24): FINDINGS when the threshold fired and
+# advisory_mode did not soften it, '' otherwise. The job reads it through the call's id.
+outputs:
+  findings_state:
+    description: FINDINGS when this scan's own threshold fired unsoftened; '' otherwise.
+    value: ${{ steps.trivy_deps_enforce.outputs.findings_state }}
+
 runs:
   using: composite
   steps:
@@ -29,7 +36,7 @@ runs:
       # A RUN-SCOPED ARTIFACT, NOT `uses: ./` and NOT a copy per call site. Why, at
       # length, in the `kit-scripts` job at the top of .github/workflows/reusable-security.yml.
       if: always()
-      uses: actions/download-artifact@v8
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
         name: kit-scripts-${{ github.run_attempt }}
         path: /tmp
@@ -44,9 +51,9 @@ runs:
         echo "77747346d57de23c8a301758499db36f89f41e3850a2495497d2983a6cb3916a  kit-scripts.sha256" | sha256sum -c -
         sha256sum -c kit-scripts.sha256
     # END FETCH_KIT_SCRIPTS
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     - name: Trivy filesystem (vuln + secret)
-      uses: aquasecurity/trivy-action@v0.36.0
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
       with:
         scan-type: fs
         scan-ref: ${{ inputs.paths }}
@@ -138,6 +145,7 @@ runs:
         echo "count=$n" >> "$GITHUB_OUTPUT"
         echo "Trivy findings at ${FAIL_ON}: $n of $(jq '[.runs[].results[]] | length' "$REPORT") reported"
     - name: Trivy (deps) — enforce
+      id: trivy_deps_enforce
       if: always()
       env:
         N: ${{ steps.trivy_deps_count.outputs.count }}
@@ -150,9 +158,13 @@ runs:
           echo "::error title=COLLECTION_FAILED::No Trivy count. An ABSENT measurement is not a measurement of zero."
           exit 1
         fi
+        # THE GATE IS THE SINGLE ENFORCEMENT POINT (lane L-S, O-24): findings are handed to it as
+        # findings_state=FINDINGS and enforced there by the resolved policy. This step fails only
+        # when the count could not be established (above).
         if [ "$N" -gt 0 ] && [ "$ADVISORY_MODE" != "true" ]; then
-          echo "::error title=Trivy (deps)::${N} finding(s) at ${FAIL_ON}. GATE=FAIL"
-          exit 1
+          echo "findings_state=FINDINGS" >> "$GITHUB_OUTPUT"
+          echo "::warning title=Trivy (deps)::${N} finding(s) at ${FAIL_ON} -- handed to the security gate, which decides by the resolved policy."
+          exit 0
         fi
         echo "Trivy (deps): ${N} finding(s) at ${FAIL_ON} (advisory=${ADVISORY_MODE})"
 
@@ -194,7 +206,7 @@ runs:
     # END REDACT_STEP
     - name: Trivy (deps) — keep SARIF as an artifact
       if: always() && steps.sarif_trivy_deps.outputs.exists == 'true'
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: sarif-trivy-deps-${{ github.run_attempt }}
         path: trivy-deps.sarif
@@ -204,7 +216,7 @@ runs:
       id: cs_trivy_deps
       if: always() && steps.sarif_trivy_deps.outputs.exists == 'true'
       continue-on-error: true
-      uses: github/codeql-action/upload-sarif@v4
+      uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
       with:
         sarif_file: trivy-deps.sarif
         category: trivy-deps

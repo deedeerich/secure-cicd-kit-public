@@ -7,10 +7,57 @@ trunk commit that brought the change.
 
 ## Release 3
 
-Built on `release/main-candidate-3` from Release 2 (`b634cff`) and the trunk through `2cd078e`
-(first cut at `09a22a8`, re-cut to carry the NVD fix). `overlays/` stays removed, as in Releases 1
-and 2. Both merges had no conflicts; the release tree equals the trunk at `2cd078e` apart from
-`overlays/` and this file.
+Built on `release/main-candidate-3` from Release 2 (`b634cff`) and the trunk through `883f328`
+(first cut at `09a22a8`, re-cut at `2cd078e` to carry the NVD fix, re-cut again at `883f328` to
+carry the policy register, crawl, SHA pinning, Dependabot triage and PHP 8.5 partial scanning).
+`overlays/` stays removed, as in Releases 1 and 2; the third merge's only conflict was a file under
+`overlays/` that the trunk had changed, resolved by keeping it removed. The release tree equals the
+trunk at `883f328` apart from `overlays/` and this file.
+
+### Policy per scope, and crawl (KDEC-017)
+
+- **A policy register per org, team, product and environment tier.** A central register
+  (`policy/policy-registration.json`) and a repository's own file (`.security/policy-registration.json`,
+  read from the protected branch) set the enforcement rung; precedence runs kit default < org <
+  org+team < org+product < org+team+product < repository, with the environment tier above. The gate
+  resolves the register first; an unreadable register fails closed. (`20ba090`, merged in `7515088`)
+- **Crawl is the default everywhere** (owner ruling O-24): only a secret, or the kit being unable to
+  run or trust its own scan, blocks; every other finding is advisory and routes
+  `PROCEED_WITH_ADVISORY`. (`20ba090`)
+- **The gate is the single enforcement point.** Scanner jobs now report their findings to the gate
+  and fail only when they could not scan or cannot trust the result (a crash, `COLLECTION_FAILED`, no
+  count); so at crawl an ordinary finding leaves every job green and `templates/build-deploy.yml`
+  builds, while at `run` and above the same finding turns the gate red. A non-secret job that failed
+  is now read as untrusted evidence, never as "the control fired", and `advisory_mode` no longer
+  keeps a crashed job green. Image secrets and malicious dependencies still fail their own jobs.
+  (`5b06ccb`, merged in `883f328`)
+- **A secret may be excepted, one finding at a time, only by ticket.** A `secret_exceptions` item in
+  the register names the finding's report fingerprint, a ticket reference (validated by the ticket
+  reference gate), an explanation, a named approver, an unexpired date and, at uat and prod, the
+  environment's reviewers. A missing element is refused by name (`SECRET_EXCEPTION_UNTICKETED`,
+  `_UNATTRIBUTED`, `_EXPIRED`, `_NOT_FINDING_SCOPED`) and the secret still blocks; an expired
+  exception blocks again; a class-wide softening of secrets stays `CHERRY_PICK_BELOW_FLOOR`. Only when
+  every secret found is covered does the gate route `PROCEED_WITH_ADVISORY` with cause
+  `SECRET_EXCEPTION_ATTRIBUTED`, and each applied exception is written to the gate summary and the
+  run record. (`e4b0810`)
+- **Deploy approval never falls below the default.** At uat and prod the deploy reads the
+  environment's required reviewers and "prevent self-review" back and refuses without them, so a
+  single-developer repository deploys on a non-self approver. (`20ba090`)
+- **The gate emits the run record**, schema-valid, and refuses an invalid one (ledger L36).
+  (`0cd48de`)
+
+### Supply chain
+
+- **Every remote action is pinned by commit SHA** with an exact-release comment (166 references);
+  `tests/check_action_pins.py` refuses any `uses:` that is not `owner/repo@<40 hex> # vX.Y.Z`. The
+  kit's own dogfood now requires pinning and the self-use weakening is removed (O-23). Dependabot
+  reads the composite actions. (`4dfd858`, `db404f7`, merged in `8bf4913`)
+- **Dependabot triage** (FUTURE_WORK §6): an update is auto-merged, through branch protection, only
+  when the evidence shows it cannot change behaviour; anything material (a major version, a runtime
+  or security-critical package, an action) goes to a human. (`4435750`, `c260892`, merged in
+  `517eb79`)
+- **Every FUTURE_WORK section traces to a completion-ledger row**, and
+  `tests/check_future_work_traceability.py` fails when one does not. (`0b505d8`, merged in `7b4fea1`)
 
 ### PHP, a supported ecosystem (KDEC-016)
 
@@ -29,20 +76,22 @@ and 2. Both merges had no conflicts; the release tree equals the trunk at `2cd07
   `deps-scan`; a clean lock passes. Dependabot's composer entry excludes the deliberately vulnerable
   fixtures. (`f880b80`)
 - **The consumer path carries PHP.** The full fixture has 24 seeded signals (was 20), four of them
-  PHP; a new PHP-only negative run (`consumer-path-negative.yml` with `scope=php`) must fail with
-  discovery succeeding and the Semgrep job, the dependency scan and the gate each failing.
-  (`f880b80`)
+  PHP; a new PHP-only run (`consumer-path-negative.yml` with `scope=php`) asserts the gate's
+  verdict on the PHP findings. The test repository registers no policy, so it runs at crawl: the
+  verdict must be `PROCEED_WITH_ADVISORY` and green; above crawl, `BLOCKED` and red. (`f880b80`,
+  verdict assertion `5b06ccb`)
 - **The PHP range Semgrep reads is measured, not assumed.** A seeded PHP corpus holds one family per
   PHP release that added syntax (5.6, 7.0 to 7.4, 8.0 to 8.5), each checked with `php -l` under that
   release's official image and the release before, and an unparseable control.
   `tests/corpora/probe_php_corpus.py` reads Semgrep's result for each family, and a weekly hosted
   corpus job measures the job's own image. Shipped row: **READ 5.6 to 8.4**. (`8c4854b`, `a928010`)
-- **PHP 8.5 goes through the existing per-application exception (KDEC-014).** Semgrep 1.178.0 and
-  the newest release measured, 1.182.0, both fail to parse 8.5's `(void)` cast and `final` promoted
-  properties (the pipe operator parses). A PHP 8.5 target is therefore a proven version gap: at dev
-  and test the run proceeds with the gap recorded; at uat and prod a deploy needs the attributed
-  exception (a named accepter, a reason, an unexpired date and the environment's reviewers). No kit
-  change until a Semgrep release reads 8.5. (`a928010`, `09a22a8`)
+- **PHP 8.5: scan what parses, flag the rest** (KDEC-016 as amended). Semgrep 1.178.0 and the
+  newest release measured, 1.182.0, both fail to parse 8.5's `(void)` cast and `final` promoted
+  properties (the pipe operator parses). Instead of refusing an 8.5 target, the kit keeps every
+  finding from the files that parsed, names each file that did not
+  (`PARSE_PARTIAL_PHP_SYNTAX`), and routes `COVERAGE_PARTIAL`, which is advisory. 8.5 is served by
+  parse evidence (`parse_evidence_max`); a PHP release beyond it is still a proven version gap.
+  (`e082419`, merged in `4831258`; `099e6cf`)
 
 ### One Semgrep release
 
@@ -131,8 +180,13 @@ and 2. Both merges had no conflicts; the release tree equals the trunk at `2cd07
 
 ### Known limits
 
-- **PHP 8.5** is a proven version gap until a Semgrep release reads it (above); a file using the
-  `(void)` cast or `final` promoted properties makes the Semgrep job `COLLECTION_FAILED`.
+- **PHP 8.5 is partially scanned** (above): a file using the `(void)` cast or `final` promoted
+  properties is named, not scanned, until a Semgrep release reads it.
+- **Not yet run on GitHub** (Actions minutes for the private repository ran out): the self-test,
+  validate-scanners and the consumer path on the trunk from `4a787c7` on; a crawl run with an
+  ordinary finding that builds; a run with a register secret exception; a uat/prod deploy against
+  protected and unprotected environments; the first Dependabot github-actions update. Every lane
+  passed its own failing-first proofs and the full local sweep.
 - **Dependency-Check does not read a bare `pom.xml`.** The database now builds (cold, from the
   mirror, in 2 minutes on a hosted runner) and the scan runs, but the Dependency-Check CLI reads no
   dependencies declared only in a standalone `pom.xml` with no JAR, so the probe's seeded Maven
@@ -147,8 +201,8 @@ and 2. Both merges had no conflicts; the release tree equals the trunk at `2cd07
 - **Seeded corpora exist only for PHP, Checkov and Trivy-config**; the other scanner version ranges
   stay `UNVERIFIED` and are never selected (ledger V-02).
 - Unchanged from Release 2: a real gate verdict feeding a deploy in one pipeline, a hosted
-  establish-then-propose ledger run, Azure DevOps ticketing live, SHA-pinned actions (the self-use
-  weakening expires 2026-10-31), the rung ladder in the gate, and the dated deferrals for attestation
+  establish-then-propose ledger run, Azure DevOps ticketing live, the rung ladder in the gate, and
+  container images still referenced by tag (gosec, gitleaks), and the dated deferrals for attestation
   signing, change detection and the Terraform toolchain (2026-12-31).
 - **Documentation lag**: a few documents still describe the NVD workflow's CVSS threshold as it was
   before Release 2; the shipped default is 9.0. `tests/check_doc_currency.py` lists each such line

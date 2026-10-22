@@ -138,6 +138,22 @@ def prove_resolve(bad):
                            label, row.get('gap_ranges'), r.get('proven_gap_jobs'), want_ranges,
                            want_proven))
         got.append(r.get('proven_gap_jobs') or '')
+    # PHP 8.5 IS NO LONGER A VERSION GAP BY DECLARATION (owner, 2026-10-22; KDEC-016 amended):
+    # the shipped row's measured parse evidence reaches 8.5, so resolve serves it and the job's
+    # own parse evidence decides (PARTIAL -> COVERAGE_PARTIAL, never refused at uat/prod as a
+    # gap). KDEC-014 is untouched beyond it: PHP 9.0 is still a proven gap. FAILS ON 2cd078e:
+    # PHP 8.5 named sast-semgrep in proven_gap_jobs.
+    for label, target, want_capped, want_proven in (('php 8.5 (parse evidence)', '8.5', False, False),
+                                                    ('php 9.0 (above it)', '9.0', True, True)):
+        r = R.run_case(shell, {'.php-version': target + '\n', 'index.php': '<?php\n'},
+                       discover={'php': 'true'})
+        row = R.sel(r, capability='php-sast', root='.')
+        capped = 'sast-semgrep' in (r.get('capped_jobs') or '').split()
+        proven = 'sast-semgrep' in (r.get('proven_gap_jobs') or '').split()
+        print('  resolve %-24s state=%s capped=%s proven=%s' % (label, row.get('state'), capped, proven))
+        if (capped, proven) != (want_capped, want_proven):
+            bad.append('resolve %s: capped=%s proven=%s, want %s/%s (row=%r)'
+                       % (label, capped, proven, want_capped, want_proven, row.get('state')))
     return got
 
 
@@ -166,6 +182,49 @@ def prove_gate(bash, bad):
                 causes_set(out.get('advisory_causes')) != {want}:
             bad.append('gate chain %s: want PROCEED_WITH_ADVISORY with advisory_causes=%s; got %r / %r'
                        % (label, want, out.get('routing_result'), out.get('advisory_causes')))
+    # PHP 8.5, SCAN WHAT PARSES, FLAG THE REST (owner, 2026-10-22; KDEC-016 amended). The
+    # sast-semgrep job SUCCEEDED and published scan_state PARTIAL (PHP files Semgrep could not fully
+    # parse) -- the gate must read that typed state, never project the green job into PASS, and the
+    # cause is COVERAGE_PARTIAL (not a version gap: resolve capped nothing), in crawl
+    # (advisory_mode) and in strict alike. Findings beside it stay findings and route as findings.
+    # FAILS ON 2cd078e: the gate read only the job result, so the run routed PROCEED.
+    for label, advisory, scanner_res, findings, want_route, want in (
+            ('php85_partial', 'false', 'success', '', 'PROCEED_WITH_ADVISORY', {'COVERAGE_PARTIAL'}),
+            ('php85_partial_crawl', 'true', 'success', '', 'PROCEED_WITH_ADVISORY',
+             {'COVERAGE_PARTIAL'}),
+            # The job SUCCEEDS and hands its findings to the gate (findings_state; lane L-S).
+            ('php85_partial_findings', 'false', 'success', 'sast-semgrep', 'BLOCKED', set())):
+        values = pbf.ctx(advisory=advisory)
+        values['needs.sast-semgrep.result'] = scanner_res
+        if findings:
+            values['needs.sast-semgrep.outputs.findings_state'] = 'FINDINGS'
+        values['needs.sast-semgrep.outputs.scan_state'] = 'PARTIAL'
+        values['needs.sast-semgrep.outputs.parse_partial_files'] = '["web/new85.php"]'
+        if findings:
+            values['needs.report.outputs.blocking_findings'] = '3'
+            values['needs.report.outputs.jobs_with_findings'] = findings
+        body, _seen = pbf.substitute(gate, values)
+        rc, emitted, log, summ = pbf.run(bash, body, pbf.gate_env(values))
+        inputs = dict(G.BASELINE, advisory_mode=advisory, **(G.ATTRIB if advisory == 'true' else {}))
+        env, unknown = G.resolve_env(step.get('env'), inputs, emitted)
+        rc2, log2, out = G.run(bash, step.get('run') or '', env)
+        got = causes_set(out.get('advisory_causes'))
+        if advisory == 'true':
+            got.discard('WEAKENING_ATTRIBUTED')   # advisory_mode itself is an attributed weakening
+        states = emitted.get('scanner_states') or ''
+        print('  gate   chain %-22s sast-semgrep=%s -> %s advisory_causes=%r'
+              % (label, (json.loads(states or '{}') if states.startswith('{') else {}).get('sast-semgrep'),
+                 out.get('routing_result'), out.get('advisory_causes')))
+        if out.get('routing_result') != want_route or got != want:
+            bad.append('gate chain %s: want %s with advisory_causes=%s; got %r / %r'
+                       % (label, want_route, sorted(want), out.get('routing_result'),
+                          out.get('advisory_causes')))
+        if not findings and '"sast-semgrep":"PARTIAL"' not in states:
+            bad.append('gate chain %s: scanner_states %r -- a green sast-semgrep job that published '
+                       'scan_state PARTIAL must read PARTIAL, never PASS' % (label, states))
+        if 'web/new85.php' not in summ:
+            bad.append('gate chain %s: the gate summary does not name the PHP file Semgrep could not '
+                       'fully parse' % label)
     partial = dict(CLEAN_GATE, assurance_state='PARTIAL', unestablished='iac-scan(PARTIAL)')
     cases = [
         ('proven_gap_only', G.BASELINE, dict(partial, version_gapped='iac-scan'),

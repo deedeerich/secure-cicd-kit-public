@@ -21,7 +21,8 @@ WHY THIS EXISTS (validation-registry gap `image-scan`: "NO validation probe -- a
       clean        an empty filesystem holding one text file
 
 SCENARIOS
-    vuln_enforce     vulnerable image, advisory off  -> Trivy exits non-zero, CVE results
+    vuln_enforce     vulnerable image, advisory off  -> CVE results; the job SUCCEEDS and hands them
+                     to the security gate (findings_state=FINDINGS; lane L-S, O-24)
     vuln_advisory    vulnerable image, advisory on   -> exit 0, findings still in the SARIF
     secret_advisory  secret in the image, advisory on -> exit NON-ZERO. Secrets block in every mode
                      (START-HERE, ENFORCEMENT_TIERS section 1.1): advisory softens inherited
@@ -172,14 +173,18 @@ def main():
         for name, files in imgs.items():
             image(os.path.join(tmp, name + '.tar'), files, 'probe/%s:1' % name)
 
+        # expect: 'handed' -- the job SUCCEEDS and hands the CVEs to the security gate as
+        # findings_state=FINDINGS (lane L-S, O-24: the gate is the single enforcement point);
+        # 'fail' -- the job fails (a secret, every mode); 'pass' -- succeeds, nothing handed.
         scenarios = [
-            ('vuln_enforce', 'vulnerable', False, 'fail', 'cve'),
+            ('vuln_enforce', 'vulnerable', False, 'handed', 'cve'),
             ('vuln_advisory', 'vulnerable', True, 'pass', 'cve'),
             ('secret_advisory', 'secret', True, 'fail', 'secret'),
             ('clean', 'clean', False, 'pass', None),
         ]
         for name, img, advisory, expect, finds in scenarios:
             all_rules, rcs = [], []
+            del HANDED[:]
             # Every trivy-action step the job ships runs; the job fails if any of them fails.
             for i, s in enumerate(trivy_steps(), 1):
                 w = s.get('with') or {}
@@ -231,13 +236,18 @@ def main():
                 bad.append('%s: the credential in the image was not reported' % name)
             if finds is None and all_rules:
                 bad.append('%s: the clean image produced results: %s' % (name, all_rules))
+            handed = 'FINDINGS' if 'FINDINGS' in HANDED else ''
             if expect == 'fail' and not job_failed:
-                bad.append('%s: the job would PASS. %s' % (
-                    name, 'A credential baked into an image is live exposure; advisory_mode '
-                          'must never soften it.' if finds == 'secret'
-                    else 'Findings at the configured severity must fail with advisory off.'))
-            if expect == 'pass' and job_failed:
-                bad.append('%s: the job would FAIL (exits %s) where it must pass' % (name, rcs))
+                bad.append('%s: the job would PASS. A credential baked into an image is live '
+                           'exposure; advisory_mode must never soften it.' % name)
+            if expect in ('pass', 'handed') and job_failed:
+                bad.append('%s: the job would FAIL (exits %s) where it must pass -- findings go to '
+                           'the gate, never a failed job' % (name, rcs))
+            if expect == 'handed' and handed != 'FINDINGS':
+                bad.append('%s: nothing handed to the gate (findings_state=%r). Findings at the '
+                           'configured severity with advisory off must reach it.' % (name, handed))
+            if expect == 'pass' and handed:
+                bad.append('%s: findings_state=%r where nothing is enforced' % (name, handed))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -245,10 +255,14 @@ def main():
         for b in bad:
             print('FAIL: %s' % b)
         return 1
-    print('PASS: the shipped image-scan configuration fails on CVEs at the configured severity with '
-          'advisory off, reports them with it on, fails on a credential in every mode, and passes a '
-          'clean image.')
+    print('PASS: the shipped image-scan configuration hands CVEs at the configured severity to the '
+          'gate with advisory off (the job succeeds), reports them with it on, fails on a credential '
+          'in every mode, and passes a clean image.')
     return 0
+
+
+# What each run of the enforce step handed the gate (findings_state), in order.
+HANDED = []
 
 
 def enforce_steps(report, advisory):
@@ -273,7 +287,8 @@ def enforce_steps(report, advisory):
         _rc, _log, out, _u = sb.run(bash, steps[cnt], vals, ws)
         vals.update({'steps.trivy_image_count.outputs.%s' % k: out.get(k, '')
                      for k in ('count', 'collection')})
-        erc, _log, _o, _u = sb.run(bash, steps[enf], vals, ws)
+        erc, _log, eout, _u = sb.run(bash, steps[enf], vals, ws)
+        HANDED.append(eout.get('findings_state', ''))
         return [erc]
     finally:
         sb.close()

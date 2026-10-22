@@ -82,7 +82,7 @@ from the `routing_result` output, never from the job's colour.
 | `reusable-ticket-reconcile.yml` | reconciler proven live on a personal Jira; the armed workflow itself has no hosted run; Azure DevOps against stubs only |
 | `reusable-nvd-cve.yml` | Trivy and Dependency-Check detection proven locally with the real tools; a keyed hosted run against the live NVD feed is owed. `fail_on_cvss` defaults to 11 (never blocks) |
 | attestation signing and verification | built; held — needs a public repository or Enterprise Cloud |
-| SHA-pinning of the kit's own third-party actions | **not done** — the dogfood policy check runs with `require_sha_pinning: false` under a weakening that expires 2026-10-31 ([docs/assurance/PINNING.md](docs/assurance/PINNING.md)) |
+| SHA-pinning of the kit's own third-party actions | **pinned locally**: all 166 remote `uses:` (workflows, composites and the overlay) carry a commit SHA and its exact release; the dogfood policy check runs `require_sha_pinning: true`, `soft_fail: false`, no weakening. A hosted self-test run on the pinned tree is owed ([docs/assurance/PINNING.md](docs/assurance/PINNING.md)) |
 
 Every row, its run or proof and its scope: [docs/assurance/RELEASE_1_EVIDENCE_MANIFEST.md](docs/assurance/RELEASE_1_EVIDENCE_MANIFEST.md).
 What the kit still lacks: [docs/assurance/COMPLETION_LEDGER.md](docs/assurance/COMPLETION_LEDGER.md).
@@ -103,9 +103,12 @@ provider to execute or validate it.
                        live-deploy-acceptance · validate-scanners · nvd-cve
 .github/actions/       composites: setup-python/node/terraform, azure-login-oidc, docker-build-push,
                        render-version-metadata, determine-changes, verify-attestation, and the
-                       flagship's own discover, resolve, scan-report, propose-ledger (called via $/)
+                       flagship's own discover, resolve, resolve-policy, scan-report, propose-ledger
+                       (called via $/)
 templates/             consumer starters: security.yml · policy.yml · build-deploy.yml · nvd-cve.yml
-                       · policy-registration.example.json
+                       · policy-registration.example.json (a repository's own policy) ·
+                       policy-register.central.example.json (org/team/product policy; see
+                       docs/adoption/POLICY_REGISTER.md)
 profiles/              repo-class intent records + profile.schema.json (inert: nothing reads them yet)
 schemas/               JSON schemas (dispositions, policy registration, expected signals, run record)
 assurance-taxonomy.yaml  every state word the workflows emit

@@ -54,7 +54,7 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: docker/setup-buildx-action@v4
+    - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
     - name: ACR login
       shell: bash
       env:
@@ -62,7 +62,7 @@ runs:
       run: az acr login --name "${ACR_LOGIN_SERVER%%.*}"
     - name: Build (once — this is the only image that will exist)
       id: build
-      uses: docker/build-push-action@v7
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
       with:
         context: ${{ inputs.context }}
         file: ${{ inputs.dockerfile }}
@@ -86,7 +86,7 @@ runs:
         fi
         echo "config_digest=$CONFIG_DIGEST" >> "$GITHUB_OUTPUT"
     - name: Trivy image scan (gate before push)
-      uses: aquasecurity/trivy-action@v0.36.0
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
       env:
         TRIVY_IMAGE_SRC: docker   # the daemon's image, never a same-tagged registry image
       with:
@@ -164,7 +164,7 @@ runs:
         echo "artifact identity: $CLASS"
     - name: Upload SBOM artifact
       if: always() && steps.classify.outputs.class != 'NOT_ESTABLISHED'
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         # Named by evidence class, so an unverified SBOM cannot be cited as a proven one.
         name: sbom-${{ steps.classify.outputs.class }}-${{ inputs.image-tag }}

@@ -247,7 +247,8 @@ def fetch_step(pad_n=6, where="the top of this file"):
         pad + "  # A RUN-SCOPED ARTIFACT, NOT `uses: ./` and NOT a copy per call site. Why, at",
         pad + "  # length, in the `kit-scripts` job at %s." % where,
         pad + "  if: always()",
-        pad + "  uses: actions/download-artifact@v8",
+        # SHA-pinned like every remote `uses:` in the kit (ledger L82; tests/check_action_pins.py).
+        pad + "  uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2",
         pad + "  with:",
         pad + "    name: " + ARTIFACT,
         pad + "    path: /tmp",

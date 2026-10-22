@@ -275,6 +275,24 @@ add("php/cmd.php", PHP_HEAD + textwrap.dedent("""
     system("ping -c 1 " . $_GET['host']);
     """).lstrip("\n"), "sast:php-command-injection", tool="semgrep")
 
+# PHP 8.5 THAT SEMGREP CANNOT FULLY PARSE (owner, 2026-10-22: "scan what parses, flag the rest";
+# KDEC-016 amended). The `final` promoted property and the `(void)` cast draw PartialParsing on
+# Semgrep 1.178.0, so the sast-semgrep job reports this file PARTIAL (PARSE_PARTIAL_PHP_SYNTAX) and
+# keeps every finding -- the three seeds above still BLOCK under the negative's own policy
+# (soft_fail_sast false), so the PHP-only negative still fails as designed. NO expectation of its
+# own: the request input below reached system() and Semgrep reported it anyway when measured
+# (2026-10-22, the job's image), but a finding inside a file the tool could not fully parse is a
+# recovery, not a contract -- the contract is that the file is NAMED, which
+# tests/prove_semgrep_php.py S8 proves.
+add("php/php85.php", PHP_HEAD + textwrap.dedent("""
+    // PHP 8.5: final promoted property and the (void) cast -- Semgrep PartialParsing (PARTIAL)
+    final class Box {
+        public function __construct(final public int $size) {}
+    }
+    (void) strlen("ignored");
+    system("ping -c 1 " . $_GET['host']);
+    """).lstrip("\n"), None)
+
 # ------------------------------------------------- second roots (monorepo shape)
 # A single root cannot prove multi-root discovery. The workflow used to take the FIRST
 # match and report success, so a fixture with one Node project and one Go module would

@@ -44,6 +44,12 @@ WHAT IS PROVED
         target on it is measured rather than a VERSION_GAP by omission. FAILS ON 5569274: PHP 8.5
         is in production use (php.net ChangeLog-8 lists 8.5.12 as a fixed release in the
         php2shell advisory) and the corpus stopped at 8.4.
+    P11 KDEC-016 amended 2026-10-22 (owner: "scan what parses, flag the rest"): the probe measures
+        a parse-evidence ceiling -- the newest family in the contiguous run of PARSE_ERROR families
+        directly above the read ceiling (a file Semgrep NAMES as not fully parsed, which the job
+        flags PARTIAL); a silent drop (MISSED) never extends it; --check compares it; the shipped
+        row carries 8.5 and says so in its basis. FAILS ON 2cd078e: no parse_evidence_max, so PHP
+        8.5 was a proven VERSION_GAP refused at uat/prod.
 
 EXIT 0 all hold; 1 one does not; 2 could not be checked.
 """
@@ -69,6 +75,10 @@ NEWEST_PHP = '8.5'
 # 2026-10-21. A row below it is a regression. 8.5 was measured PARSE_ERROR on 1.178.0 (the (void)
 # cast and final promoted properties draw PartialParsing; the pipe operator parses), and on 1.182.0.
 KDEC016_FLOOR = '8.4'
+# The newest family the job's Semgrep NAMES per file when it cannot fully parse it (PARSE_ERROR,
+# never MISSED): PHP 8.5, measured 2026-10-21/22. Up to it the job's parse evidence decides coverage
+# (owner, 2026-10-22: "scan what parses, flag the rest"; KDEC-016 amended).
+PARSE_EVIDENCE_85 = '8.5'
 
 
 def stub_cmd():
@@ -130,19 +140,27 @@ def main():
     print('  P2 nothing under tests/corpora is a PHP file: %s' % ('held' if not committed else committed))
 
     # P3 the outcomes and the contiguous range
+    # The last field: parse_evidence_max (P11) -- the newest family in the CONTIGUOUS run of
+    # PARSE_ERROR families directly above the read ceiling. A silent drop (MISSED) never extends
+    # it: only a file Semgrep NAMES as not fully parsed can be flagged by the job's parse evidence.
     cases = [
         ('silent drop at 8.1', {'stub_unreadable': 'enum Suit'}, '8.0', '8.1', 'MISSED',
-         names[names.index('8.1') + 1:]),
+         names[names.index('8.1') + 1:], None),
         ('partial parse at 7.3', {'stub_partial': '[$first, &$second]'}, '7.2', '7.3', 'PARSE_ERROR',
-         names[names.index('7.3') + 1:]),
-        ('reads every family', {}, names[-1], None, None, []),
+         names[names.index('7.3') + 1:], '7.3'),
+        ('partial 8.1, drop 8.2', {'stub_partial': 'readonly', 'stub_unreadable': ')|null'},
+         '8.0', '8.1', 'PARSE_ERROR', names[names.index('8.3'):], '8.1'),
+        ('reads every family', {}, names[-1], None, None, [], None),
     ]
-    for label, env, want_max, want_first, want_state, want_above in cases:
+    for label, env, want_max, want_first, want_state, want_above, want_pe in cases:
         r = run_measure(P, **env)
         got = (r.get('min'), r.get('max'), r.get('first_unread'), r.get('read_above_ceiling'))
         if 'refused' in r or got != (names[0], want_max, want_first, want_above):
             bad.append('P3 %s: got %r (refused=%r), want min %s max %s first_unread %s above %s'
                        % (label, got, r.get('refused'), names[0], want_max, want_first, want_above))
+        pe = P.parse_evidence_max(r) if hasattr(P, 'parse_evidence_max') else 'NO FUNCTION'
+        if pe != want_pe:
+            bad.append('P11 %s: parse_evidence_max %r, want %r' % (label, pe, want_pe))
         states = {p['family']: p['state'] for p in r['families']}
         if want_first and states.get(want_first) != want_state:
             bad.append('P3 %s: %s is %s, want %s' % (label, want_first, states.get(want_first), want_state))
@@ -172,6 +190,18 @@ def main():
         bad.append('P5 a READ row against a refused measurement passed --check')
     if not P.compare(dict(measured, max='8.4'), dict(row, corpus=None)):
         bad.append('P5 a row that does not name its corpus passed --check')
+    # P11 the parse-evidence ceiling is a measurement too: a row claiming one nobody measured, or
+    # omitting one that was, fails --check.
+    fams = [{'family': f, 'state': 'READ'} for f in names[:names.index('8.4') + 1]] + \
+        [{'family': '8.5', 'state': 'PARSE_ERROR'}]
+    m85 = dict(measured, max='8.4', families=fams)
+    if P.compare(m85, dict(row, parse_evidence_max='8.5')):
+        bad.append('P11 a row whose parse_evidence_max equals the measured one failed --check')
+    if not P.compare(m85, row):
+        bad.append('P11 a row omitting the measured parse_evidence_max 8.5 passed --check')
+    if not P.compare(dict(m85, families=fams[:-1] + [{'family': '8.5', 'state': 'MISSED'}]),
+                     dict(row, parse_evidence_max='8.5')):
+        bad.append('P11 a row claiming parse evidence over a SILENTLY dropped family passed --check')
 
     # P6 the shipped row, and the tool it was measured on
     reg = yaml.safe_load(io.open(os.path.join(ROOT, 'scanner-registry.yaml'), encoding='utf-8'))
@@ -206,6 +236,19 @@ def main():
                        'record %s as measured unread' % (e.get('max'), names[-1], nxt))
     print('  P9 KDEC-016: image digest-pinned=%s, row max %s (floor %s), corpus newest %s'
           % (pin_problem is None, e.get('max'), KDEC016_FLOOR, names[-1]))
+
+    # P11 KDEC-016 amended 2026-10-22 (owner): PHP 8.5 is "scan what parses, flag the rest". The
+    # shipped row carries the MEASURED parse-evidence ceiling (8.5 was PARSE_ERROR on the job's
+    # Semgrep -- named per file, never silent), and its basis says the job's parse evidence
+    # handles it. FAILS ON 2cd078e: the row had no parse_evidence_max, so 8.5 was a proven gap.
+    if str(e.get('parse_evidence_max')) != PARSE_EVIDENCE_85 \
+            or 'parse evidence' not in (e.get('basis') or '') \
+            or not re.search(r'%s was PARSE_ERROR' % re.escape(PARSE_EVIDENCE_85), e.get('basis') or ''):
+        bad.append('P11 the shipped row does not carry the measured parse-evidence ceiling %s with a '
+                   'basis saying the job\'s parse evidence handles it: parse_evidence_max=%r'
+                   % (PARSE_EVIDENCE_85, e.get('parse_evidence_max')))
+    print('  P11 parse evidence: row parse_evidence_max %s (8.5 measured PARSE_ERROR, named per file)'
+          % e.get('parse_evidence_max'))
 
     # P10 the corpus reaches the newest PHP line in production use
     if names[-1] != NEWEST_PHP:

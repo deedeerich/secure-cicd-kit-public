@@ -14,7 +14,8 @@ WHY THIS EXISTS (validation deferral `sast-java`, expired 2026-09-30)
     back from its GITHUB_OUTPUT and fed to the enforce step, exactly as the runner would.
 
 SCENARIOS
-    seeded_enforce   SQL built by concatenation, soft_fail_sast off -> >=1 SQL finding, enforce FAILS
+    seeded_enforce   SQL built by concatenation, soft_fail_sast off -> >=1 SQL finding, handed to the
+                     gate (findings_state=FINDINGS; the step succeeds -- lane L-S, O-24)
     seeded_soft      the same, soft_fail_sast on (a weakening) -> finding counted, enforce passes
     clean            no flaw                                        -> 0 findings, enforce passes
     no_java          no .java files                                  -> scan step skips, exit 0
@@ -138,8 +139,10 @@ def main():
               '#!/usr/bin/env bash\nexec "%s" "$@"\n' % sys.executable.replace('\\', '/'))
         os.chmod(os.path.join(shim, 'python3'), 0o755)
 
+        # expect: 'handed' -- the enforce step succeeds and hands the finding to the security gate
+        # (findings_state=FINDINGS; lane L-S, O-24: the gate is the single enforcement point).
         scenarios = [
-            ('seeded_enforce', SEEDED, 'false', 'fail', True),
+            ('seeded_enforce', SEEDED, 'false', 'handed', True),
             ('seeded_soft', SEEDED, 'true', 'pass', True),
             ('clean', CLEAN, 'false', 'pass', False),
             ('no_java', None, 'false', 'skip', False),
@@ -178,7 +181,8 @@ def main():
             ectx['steps.java_semgrep.outputs.count'] = out.get('count', '')
             ectx['steps.java_semgrep.outputs.collection'] = out.get('collection', '')
             ebody, _ = pbf.substitute(enforce, ectx)
-            erc, elog, _ = run(bash, ebody, ws, shim, pbf.env_for_run(enforce, ectx))
+            erc, elog, eout = run(bash, ebody, ws, shim, pbf.env_for_run(enforce, ectx))
+            handed = eout.get('findings_state', '')
             print('  %-15s findings=%d enforce exit=%d %s' % (name, n, erc, ','.join(rules)))
             if must_find:
                 if n < 1:
@@ -188,11 +192,14 @@ def main():
                                % (name, rules, EXPECTED_CLASS))
             elif n != 0:
                 bad.append('%s: the clean fixture produced %d finding(s): %s' % (name, n, rules))
-            if expect == 'fail' and erc == 0:
-                bad.append('%s: enforce passed a seeded finding with soft_fail_sast off' % name)
-            if expect == 'pass' and erc != 0:
-                bad.append('%s: enforce failed (exit %d) where it must pass\n%s'
-                           % (name, erc, elog[-400:]))
+            if erc != 0:
+                bad.append('%s: enforce failed (exit %d) where it must pass -- findings go to the '
+                           'gate, never a failed job\n%s' % (name, erc, elog[-400:]))
+            if expect == 'handed' and handed != 'FINDINGS':
+                bad.append('%s: findings_state=%r -- a seeded finding with soft_fail_sast off must be '
+                           'handed to the gate' % (name, handed))
+            if expect == 'pass' and handed:
+                bad.append('%s: findings_state=%r where nothing is enforced' % (name, handed))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -201,7 +208,7 @@ def main():
             print('FAIL: %s' % b)
         return 1
     print('PASS: the shipped sast-java steps find the seeded SQL-injection class, count it, and '
-          'enforce on it when soft_fail_sast is off; clean Java yields zero; no Java skips.')
+          'hand it to the gate when soft_fail_sast is off; clean Java yields zero; no Java skips.')
     return 0
 
 

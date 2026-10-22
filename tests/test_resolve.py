@@ -986,6 +986,28 @@ def php_checks(doc, shell):
                     and s.get("established") is True
                     and "sast-semgrep" in (r.get("proven_gap_jobs") or "").split(),
                     "sel=%s proven=%r" % (s, r.get("proven_gap_jobs")))
+        # PHP 8.5: SCAN WHAT PARSES, FLAG THE REST (owner, 2026-10-22; KDEC-016 amended). Above
+        # the read ceiling and up to the row's MEASURED parse_evidence_max, Semgrep reports what it
+        # cannot parse per file (PartialParsing), so the job's parse evidence decides coverage:
+        # SERVED here, never a VERSION_GAP by declaration alone, and never proven at uat/prod. Above
+        # parse_evidence_max (9.0, checked above) KDEC-014 stands. FAILS ON 2cd078e: 8.5 was a
+        # proven VERSION_GAP refused at uat/prod.
+        pe = str(row.get("parse_evidence_max") or "")
+        ok &= check("PHP registry: the row's parse_evidence_max is above its read ceiling %s (8.5 "
+                    "is handled by parse evidence)" % hi,
+                    bool(pe) and tuple(int(x) for x in pe.split(".")) > tuple(int(x) for x in hi.split("."))
+                    and "parse evidence" in (row.get("basis") or ""), "row=%s" % row)
+        for target in ("8.5", "8.5.12"):
+            r = run_case(shell, {".php-version": target + "\n", "index.php": "<?php\n"}, discover=ph)
+            s = sel(r, capability="php-sast", root=".")
+            st = cap_state(r, "sast-semgrep", "semgrep", **{"class": "php"})
+            ok &= check("PHP %s above the read ceiling %s, inside parse evidence %s -> SERVED, not "
+                        "capped, not proven (the job's parse evidence decides)" % (target, hi, pe),
+                        s.get("state") == "SERVED" and st == "SCANNER_SUPPORTS"
+                        and "sast-semgrep" not in (r.get("capped_jobs") or "").split()
+                        and "sast-semgrep" not in (r.get("proven_gap_jobs") or "").split()
+                        and "parse evidence" in json.dumps(s),
+                        "sel=%s state=%s capped=%r" % (s, st, r.get("capped_jobs")))
         r = run_case(shell, {"composer.json": '{"require": {"php": ">=%s"}}\n' % lo,
                              "index.php": "<?php\n"}, discover=ph)
         s = sel(r, capability="php-sast", root=".")

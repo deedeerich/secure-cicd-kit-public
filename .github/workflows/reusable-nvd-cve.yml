@@ -316,10 +316,10 @@ jobs:
       OUTDIR: nvd-scan-results
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ inputs.python_version }}
 
@@ -331,7 +331,7 @@ jobs:
       - name: Trivy filesystem scan (SARIF)
         id: trivy_fs
         if: inputs.enable_trivy
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: "."
@@ -361,14 +361,14 @@ jobs:
       - name: Upload Trivy SARIF
         if: always() && inputs.enable_trivy && steps.pub_trivy.outputs.publish == 'true'
         continue-on-error: true          # PUBLICATION=DEGRADED, never ANALYSIS=FAILED
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: nvd-scan-results/trivy-nvd.sarif
           category: trivy-nvd
 
       - name: Trivy gate
         if: inputs.enable_trivy && inputs.trivy_fail_severities != ''
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: "."
@@ -387,7 +387,7 @@ jobs:
       - name: Restore NVD data cache
         if: inputs.enable_dependency_check
         id: nvd_cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/nvd-data
           # NOTE: keyed on run_id, so the PRIMARY key never hits by design -- every restore comes
@@ -569,7 +569,7 @@ jobs:
       # the same contagion shape as a publication failure cancelling detection, one layer over.
       - name: Save NVD data cache (complete)
         if: always() && inputs.enable_dependency_check && steps.nvd_update.outputs.complete == 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/nvd-data
           key: nvd-data-good-${{ runner.os }}-${{ github.run_id }}
@@ -586,7 +586,7 @@ jobs:
       # can never produce a "no known vulnerabilities" verdict.
       - name: Save NVD data cache (partial — resume base only)
         if: always() && inputs.enable_dependency_check && steps.nvd_update.outputs.complete != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/nvd-data
           key: nvd-data-partial-${{ runner.os }}-${{ github.run_id }}
@@ -642,7 +642,7 @@ jobs:
       - name: Upload Dependency-Check SARIF
         if: always() && inputs.enable_dependency_check && steps.pub_dc.outputs.publish == 'true'
         continue-on-error: true          # PUBLICATION=DEGRADED, never ANALYSIS=FAILED
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: nvd-scan-results/dependency-check/dependency-check-report.sarif
           category: owasp-dependency-check
@@ -770,7 +770,7 @@ jobs:
 
       - name: Upload scan artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nvd-scan-results
           path: nvd-scan-results/

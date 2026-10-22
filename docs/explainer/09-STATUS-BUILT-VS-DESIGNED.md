@@ -91,9 +91,11 @@ person-only cases (duplicate, close, reopen). `main` is at Release 1 (`ef4b15d`,
 - **PHP 8.x on a runner**: lane L-SG moved the `sast-semgrep` job to the Semgrep 1.178.0 image,
   pinned by digest, which reads PHP 5.6–8.4 (measured locally in that image). No hosted run of the
   job on that image exists yet.
-- **PHP 8.5**: measured, Semgrep cannot fully parse it (the `(void)` cast and `final` promoted
-  properties; 1.178.0 and the newest, 1.182.0). A file using them is exit 3, `COLLECTION_FAILED`
-  for the whole Semgrep job, and a PHP 8.5 target is a proven `VERSION_GAP` (Release 3, below).
+- **PHP 8.5 on a runner**: Semgrep cannot fully parse the `(void)` cast or `final` promoted
+  properties (1.178.0 and the newest, 1.182.0). Since lane L-P85 (owner, 2026-10-22: scan what
+  parses, flag the rest) such a file makes the Semgrep scan `PARTIAL` with the file named and every
+  other finding kept, routed `COVERAGE_PARTIAL` -- proven locally, including in the job's image; no
+  hosted run yet.
 - **The NVD workflow blocking anything**: `fail_on_cvss` defaults to 11.
 - **SHA-pinned actions**: the kit's own third-party actions are referenced by tag.
 - **The kit as a landing-zone deploy engine** — there is no plan/apply/destroy/vend pipeline.
@@ -117,7 +119,8 @@ negative, self-test, validate-scanners, the corpus probe):
 | PHP target versions (`.php-version`, `config.platform.php`, `require.php`, the lock, `FROM php:`) | PROVEN LOCALLY (`test_resolve.py`) |
 | SAST: `p/php` a floor in `sast-semgrep`; SQL injection, XSS, command injection detected; a hollow PHP scan is `COLLECTION_FAILED` | PROVEN LOCALLY (`prove_semgrep_php.py`) |
 | dependencies: a vulnerable `composer.lock` blocks `deps-scan`; a lock-less `composer.json` is a named gap | PROVEN LOCALLY (`prove_deps_scan_composer.py`) |
-| the PHP range Semgrep reads, MEASURED on the job's image | **READ 5.6–8.4** on the job's 1.178.0 image, pinned by digest (lane L-SG; re-measured locally in that image 2026-10-21; `prove_php_corpus.py`). The weekly corpus probe and the validate-scanners `semgrep-php` probe run the same digest; their hosted runs are owed. **8.5 measured unread** on 1.178.0 and 1.182.0, so an 8.5 target is a proven `VERSION_GAP`. Before L-SG: READ 5.6–7.2 on the 1.90.0 container |
+| the PHP range Semgrep reads, MEASURED on the job's image | **READ 5.6–8.4** on the job's 1.178.0 image, pinned by digest (lane L-SG; re-measured locally in that image 2026-10-21; `prove_php_corpus.py`). The weekly corpus probe and the validate-scanners `semgrep-php` probe run the same digest; their hosted runs are owed. **8.5 measured not fully read** on 1.178.0 and 1.182.0, and measured as parse evidence (`parse_evidence_max` 8.5, lane L-P85): an 8.5 target is not a `VERSION_GAP` -- the job's parse evidence decides. Before L-SG: READ 5.6–7.2 on the 1.90.0 container |
+| PHP 8.5: scan what parses, flag the rest (owner, 2026-10-22; KDEC-016 amended) | PROVEN LOCALLY (`prove_semgrep_php.py` S7-S10, `prove_version_gap_production.py`, `test_resolve.py`, `prove_php_corpus.py` P11): an 8.5 file Semgrep partly parses is `PARTIAL` (`PARSE_PARTIAL_PHP_SYNTAX`), named, every other finding kept; the gate routes `PROCEED_WITH_ADVISORY` / `COVERAGE_PARTIAL`; a non-PHP parse failure is still `COLLECTION_FAILED`. Hosted owed |
 | one Semgrep release (ledger L03) | the job's image, the C# and Java jobs and self-test all at 1.178.0; the local Semgrep proofs fail if the release they run is not the job's | PROVEN LOCALLY (`prove_semgrep_strict.py` P4, `prove_semgrep_php.py` S6) |
 
 ## Open owner decisions

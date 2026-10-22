@@ -30,7 +30,10 @@ Written into the application repository's **GitHub environment** (`dev`, `test`,
 Plus: environment protection (required reviewers, protected-branch-only) on uat and prod, and the
 federated credential subject `repo:<owner>/<repo>:environment:<env>`. The required reviewers on
 uat and prod are **required**, not optional: they are the approval half of a version-gap exception
-(KDEC-014, section 4). The kit cannot set or read them; the deploy records which environment it ran in.
+(KDEC-014, section 4). The kit cannot set them, but since lane L-A it READS them back: at uat and
+prod the deploy refuses before login unless they exist with **self-review prevented** (and, when the
+policy names approver groups, every reviewer is one of them); it records which environment it ran
+in and `environment_protection` (`docs/adoption/POLICY_REGISTER.md`).
 
 **Deploy identity — least privilege, that application only:** App Service → `Website Contributor` on the
 web app; Container Apps → `Container Apps Contributor` on the container app; `Reader` on the resource

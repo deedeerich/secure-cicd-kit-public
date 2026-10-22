@@ -181,9 +181,10 @@ version_support:
         max_from_input: null
         unbounded: false
         compare: version
-        basis: "MEASURED by the seeded PHP corpus (tests/corpora/php_corpus.py; D-VF-4): semgrep 1.178.0 read the seed, with no parse error, in every family 5.6..8.4 (families: 5.6, 7.0, 7.1, 7.2, 7.3, 7.4, 8.0, 8.1, 8.2, 8.3, 8.4, 8.5); 8.5 was PARSE_ERROR, so the ceiling is the family below it. Releases with no new syntax are claimed through their neighbours. Measured 2026-10-21 (locally, in the semgrep/semgrep 1.178.0 image the sast-semgrep job runs, pulled by the digest it pins (sha256:32e459968daa); families 5.6..8.4 php -l-checked under their own release and the one before by lane L-PHP, 8.5 under 8.5.12 and 8.4.27 by lane L-SG) by tests/corpora/probe_php_corpus.py."
+        basis: "MEASURED by the seeded PHP corpus (tests/corpora/php_corpus.py; D-VF-4): semgrep 1.178.0 read the seed, with no parse error, in every family 5.6..8.4 (families: 5.6, 7.0, 7.1, 7.2, 7.3, 7.4, 8.0, 8.1, 8.2, 8.3, 8.4, 8.5); 8.5 was PARSE_ERROR, so the ceiling is the family below it. Above it, through 8.5 (parse_evidence_max), Semgrep names each file it cannot fully parse, so a target there is handled by parse evidence, not as a version gap: the sast-semgrep job scans what parses, keeps its findings and flags the named files PARTIAL (PARSE_PARTIAL_PHP_SYNTAX, COVERAGE_PARTIAL; KDEC-016 amended 2026-10-22). Releases with no new syntax are claimed through their neighbours. Measured 2026-10-22 (locally, in the semgrep/semgrep 1.178.0 image the sast-semgrep job runs, pulled by the digest it pins (sha256:32e459968daa); families 5.6..8.4 php -l-checked under their own release and the one before by lane L-PHP, 8.5 under 8.5.12 and 8.4.27 by lane L-SG; re-measured with the parse-evidence ceiling by lane L-P85) by tests/corpora/probe_php_corpus.py."
         verified: READ
         corpus: tests/corpora/php_corpus.py
+        parse_evidence_max: "8.5"
   sast-dotnet:
     dotnet:
       - tool: dotnet-sdk

@@ -20,6 +20,13 @@ inputs:
     description: The workflow's `advisory_mode` input, rendered as 'true' or 'false'.
     required: true
 
+# What the security gate enforces (lane L-S, O-24): FINDINGS when cppcheck's or flawfinder's
+# threshold fired and no caller input softened it, '' otherwise. Read through the call's id.
+outputs:
+  findings_state:
+    description: FINDINGS when this scan's own threshold fired unsoftened; '' otherwise.
+    value: ${{ steps.cppcheck_enforce.outputs.findings_state || steps.flawfinder_enforce.outputs.findings_state }}
+
 runs:
   using: composite
   steps:
@@ -28,7 +35,7 @@ runs:
       # A RUN-SCOPED ARTIFACT, NOT `uses: ./` and NOT a copy per call site. Why, at
       # length, in the `kit-scripts` job at the top of .github/workflows/reusable-security.yml.
       if: always()
-      uses: actions/download-artifact@v8
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
         name: kit-scripts-${{ github.run_attempt }}
         path: /tmp
@@ -43,7 +50,7 @@ runs:
         echo "77747346d57de23c8a301758499db36f89f41e3850a2495497d2983a6cb3916a  kit-scripts.sha256" | sha256sum -c -
         sha256sum -c kit-scripts.sha256
     # END FETCH_KIT_SCRIPTS
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     # THIS STEP HUNG FOR THREE HOURS on 2026-08-18 with ZERO output and billed ~193 minutes
     # before anything stopped it. A slow mirror still prints "Get:" lines; silence means apt is
     # BLOCKING ON THE DPKG LOCK, which GitHub's Ubuntu images hold at boot via
@@ -186,6 +193,7 @@ runs:
         print(f"cppcheck findings converted to SARIF: {len(rows)} ({n} at severity error)")
         CC_PY
     - name: cppcheck — enforce
+      id: cppcheck_enforce
       if: always()
       env:
         N: ${{ steps.cppcheck.outputs.count }}
@@ -198,9 +206,11 @@ runs:
           echo "::error title=COLLECTION_FAILED::No cppcheck count. An ABSENT measurement is not a measurement of zero."
           exit 1
         fi
+        # Findings go to the gate (findings_state), which enforces by the resolved policy (O-24).
         if [ "$N" -gt 0 ] && [ "$SOFT_FAIL_SAST" != "true" ] && [ "$ADVISORY_MODE" != "true" ]; then
-          echo "::error title=cppcheck::${N} error-severity finding(s). ANALYSIS=COMPLETE GATE=FAIL"
-          exit 1
+          echo "findings_state=FINDINGS" >> "$GITHUB_OUTPUT"
+          echo "::warning title=cppcheck::${N} error-severity finding(s). ANALYSIS=COMPLETE -- handed to the security gate, which decides by the resolved policy."
+          exit 0
         fi
         echo "cppcheck: ${COLLECTION}, ${N} error-severity finding(s) (soft_fail=${SOFT_FAIL_SAST})"
 
@@ -230,7 +240,7 @@ runs:
     - name: cppcheck — keep SARIF as an artifact
       # Only a SARIF the converter actually wrote. On COLLECTION_FAILED there is none, by design.
       if: always() && steps.cppcheck.outputs.sarif == 'true'
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: sarif-cppcheck-${{ github.run_attempt }}
         path: cppcheck.sarif
@@ -240,7 +250,7 @@ runs:
       id: cs_cppcheck
       if: always() && steps.cppcheck.outputs.sarif == 'true'
       continue-on-error: true
-      uses: github/codeql-action/upload-sarif@v4
+      uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
       with:
         sarif_file: cppcheck.sarif
         category: cppcheck
@@ -409,6 +419,7 @@ runs:
         echo "flawfinder findings: $n"
 
     - name: flawfinder — enforce
+      id: flawfinder_enforce
       if: always()
       env:
         # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (ledger L38).
@@ -435,8 +446,10 @@ runs:
           echo "An ABSENT measurement is not a measurement of zero."
           exit 1
         fi
+        # Findings go to the gate (findings_state), which enforces by the resolved policy (O-24).
         if [ "${n:-0}" -gt 0 ] && [ "${IN_SOFT_FAIL_SAST}" != "true" ] && [ "${IN_ADVISORY_MODE}" != "true" ]; then
-          echo "::error title=flawfinder::${n} finding(s). ANALYSIS=COMPLETE GATE=FAIL"; exit 1
+          echo "findings_state=FINDINGS" >> "$GITHUB_OUTPUT"
+          echo "::warning title=flawfinder::${n} finding(s). ANALYSIS=COMPLETE -- handed to the security gate, which decides by the resolved policy."; exit 0
         fi
         echo "ANALYSIS=COMPLETE GATE=PASS (${n:-0} finding(s))"
 
@@ -478,7 +491,7 @@ runs:
     # END REDACT_STEP
     - name: flawfinder — keep SARIF as an artifact
       if: always() && steps.sarif_flawfinder.outputs.exists == 'true'
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: sarif-flawfinder-${{ github.run_attempt }}
         path: flawfinder.sarif
@@ -488,7 +501,7 @@ runs:
       id: cs_flawfinder
       if: always() && steps.sarif_flawfinder.outputs.exists == 'true'
       continue-on-error: true
-      uses: github/codeql-action/upload-sarif@v4
+      uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
       with:
         sarif_file: flawfinder.sarif
         category: flawfinder

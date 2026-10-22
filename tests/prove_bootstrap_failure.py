@@ -77,6 +77,9 @@ EXPR = re.compile(r'\$\{\{\s*(.*?)\s*\}\}')
 SCANNERS = ['secret-scan', 'code-quality', 'sast-semgrep', 'sast-bandit', 'sast-dotnet',
             'sast-java', 'sast-go', 'sast-cpp', 'deps-scan', 'iac-scan', 'malicious-deps',
             'sbom', 'codeql', 'image-scan']
+# The scanner jobs that hand the gate a findings_state output (lane L-S).
+FINDINGS_STATE_JOBS = ['code-quality', 'sast-semgrep', 'sast-bandit', 'sast-dotnet', 'sast-java',
+                       'sast-go', 'sast-cpp', 'deps-scan', 'iac-scan', 'image-scan']
 
 
 def _expand(doc):
@@ -135,7 +138,15 @@ def ctx(scanner='success', kit='success', report='success', advisory='false',
          # The sbom job's licence verdict (PASS | FINDINGS | NOT_APPLICABLE | COLLECTION_FAILED)
          # and denied count. '' when the job did not run.
          'needs.sbom.outputs.licence_state': '',
-         'needs.sbom.outputs.licence_denied': ''}
+         'needs.sbom.outputs.licence_denied': '',
+         # The sast-semgrep job's scan state (COMPLETE | PARTIAL, KDEC-016 2026-10-22) and the PHP
+         # files Semgrep could not fully parse. '' when the job did not run.
+         'needs.sast-semgrep.outputs.scan_state': '',
+         'needs.sast-semgrep.outputs.parse_partial_files': ''}
+    # What each scanner job HANDS the gate (lane L-S, O-24: the gate is the single enforcement
+    # point): FINDINGS when its own threshold fired unsoftened, '' otherwise -- '' here, nothing.
+    for s in FINDINGS_STATE_JOBS:
+        d['needs.%s.outputs.findings_state' % s] = ''
     for s in SCANNERS:
         d['needs.%s.result' % s] = scanner
     return d

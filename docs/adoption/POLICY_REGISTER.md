@@ -1,0 +1,206 @@
+# The policy register: who decided how hard each control bites
+
+> For an administrator registering policy per **org, team (dev group), product, repository and
+> environment tier**, and for a tool that proposes registrations. Code:
+> `scripts/policy_registration.py`. Schema: `schemas/policy-registration.schema.json`
+> (`schema_version: 2`). Proofs: `tests/prove_policy_registration.py`,
+> `tests/prove_gate_policy_enforcement.py`, `tests/prove_gate_reads_rung.py`,
+> `tests/prove_deploy_environment_protection.py`.
+
+## The default: crawl — only secrets block
+
+With **no registration anywhere**, every run is at the kit default (`policy_source: KIT_DEFAULT`):
+
+| control | what it contributes to `routing_result` |
+|---|---|
+| secrets (`secret-scan`, a secret in an image, a known-malicious package) | `BLOCKED`, at every tier — unless that ONE secret-scan finding is excepted, ticketed and attributed ([Secret exceptions](#secret-exceptions-one-finding-ticketed-logged)) |
+| every other scanner's findings | `PROCEED_WITH_ADVISORY`, cause `FINDINGS_NOT_BLOCKED` — recorded, never `PROCEED` |
+| the kit could not run or trust its own scan (a crash, `COLLECTION_FAILED`, a hollow or unreadable scan, a bootstrap failure) | `EVIDENCE_UNTRUSTED` — the gate **stops at every tier** (owner ruling O-24: a pipeline that silently did not scan cannot count as "scanned, advisory") |
+| a coverage gap (a version no carried scanner reads, e.g. PHP 8.5) | `PROCEED_WITH_ADVISORY` (`VERSION_GAP` / `COVERAGE_PARTIAL`) — not untrusted evidence; KDEC-014 still applies at uat/prod deploys |
+| uat / prod deploy | one required reviewer on the GitHub environment, self-review prevented |
+
+Anything **stronger** than that (walk, run, a control that blocks) and anything **weaker** than what a
+scope would otherwise inherit is a decision a named person makes in the register.
+
+## Where the register lives
+
+One format, two places. A pull request can write neither.
+
+| copy | path | holds | read from |
+|---|---|---|---|
+| **central** | `policy/policy-registration.json` in **your copy of the kit** | every org, team, product and repository scope, and the repository → team/product map | the kit delivered by `$/`, at the kit commit the caller pins — a change reaches a repository when it moves its pin |
+| **repository** | `.security/policy-registration.json` in the calling repository (put it under CODEOWNERS) | that repository's own entries; scopes name only `environment_tier` | the repository's **protected default branch**, fetched by ref — never the run's checkout |
+
+The repository file may only **tighten** what the central register gives it
+(`REPOSITORY_FILE_SOFTENING` otherwise). The neutral kit ships no central register; a single
+repository uses only its own file. Unreadable, unparseable or schema-violating is
+`REGISTRATION_UNAVAILABLE` (`EVIDENCE_UNTRUSTED`) — **never** the default.
+
+## Precedence (most specific wins)
+
+```
+kit default  <  org  <  org+team  <  org+product  <  org+team+product  <  repository
+```
+
+At each level a scope **with** `environment_tier` ranks above the same scope without one. Every
+matching entry is applied in that order on top of what the run inherited. Two entries with the same
+scope are a conflict, refused by name (`POLICY_REGISTER_CONFLICT`), never resolved by file order.
+The org is the repository's owner (case-insensitive); team and product come from the central
+`repositories` map — an unmapped repository gets its org's entries only.
+
+The tiers must stay ordered for every repository: `sandbox ≤ dev ≤ test ≤ uat = prod`
+(`CELLS_NOT_MONOTONE` otherwise) — register uat and prod together.
+
+## An entry
+
+```json
+{
+  "id": "org-a-payments-prod-walk",
+  "scope": {"org": "example-org-a", "team": "payments", "environment_tier": "prod"},
+  "rung": "walk",
+  "controls": {"deps-scan": "BLOCKED"},
+  "team_pattern": "small_team",
+  "deploy_approval": {"approver_groups": ["security", "platform"], "approvers_required": 1,
+                      "self_review_prevented": "required", "ai_review": "advisory"},
+  "decision": {"authority": "Named Person", "approver_role": "security-lead",
+               "reason": "why", "decided_on": "2026-10-22", "expires": "2027-01-31",
+               "exception_ref": "SEC-123", "environment_reviewers": ["payments-release-approvers"]}
+}
+```
+
+| field | meaning |
+|---|---|
+| `rung` | `crawl` (only secrets block) · `walk` (findings owe a decision: `DECISION_REQUIRED`) · `run` (findings block). The gate reads a job's findings at `new_critical_high` until per-finding classes reach it (ledger L44) |
+| `controls` | per control class or scanner job, the weakest route it may contribute. `secrets`, `secret-scan`, `malicious-deps` accept only `BLOCKED`; nothing may be `PROCEED` (`CHERRY_PICK_BELOW_FLOOR`) |
+| `secret_exceptions` | one secret finding each, ticketed and attributed (section below); never a class |
+| `merge_reaches_tier` | the tier a merge reaches without a human gate (tier-less entries only). Pull requests and unnamed runs are evaluated there; **prod when none is declared** |
+| `deploy_approval` | what the deploy verifies on its GitHub environment (below). `ai_review` is `advisory` or `none`: an AI review comments on pull requests and is **never** a gate or an approval |
+| `decision` | **required on every entry**: `authority` (a named person), `reason`, `decided_on`, `expires`. An entry that changes enforcement at uat or prod (a uat/prod tier, or no tier) must also name `environment_reviewers` |
+
+**Tightening** (walk, run, a control raised) and **softening** (anything left weaker than inherited)
+are both attributed decisions. A softening in force is an attributed weakening row in the posture
+record and routes `PROCEED_WITH_ADVISORY` (cause `WEAKENING_ATTRIBUTED`). An **expired** decision
+never softens anything: its tightening stays in force, its softening reverts, and the run routes
+`DECISION_REQUIRED` (`POLICY_DECISION_EXPIRED`) until someone re-decides it. A missing field is
+`POLICY_DECISION_UNATTRIBUTED` (`BLOCKED`).
+
+## Secret exceptions: one finding, ticketed, logged
+
+Owner ruling 2026-10-22: *"There must be the possibility of exceptions … but they must be requested
+and logged with tickets that have explanations."* A secret still blocks at every tier, and softening
+secrets as a class or a scanner (`controls: {"secret-scan": "PROCEED_WITH_ADVISORY"}`) is still
+refused, `CHERRY_PICK_BELOW_FLOOR`. What an entry may carry is a list of exceptions, each for **one
+finding**:
+
+```json
+"secret_exceptions": [
+  {"finding": "a1b2c3d4e5f6", "ticket": "SEC-1234",
+   "explanation": "test credential in a fixture; rotated, removal tracked on the ticket",
+   "approver": "Named Person", "expires": "2026-12-31",
+   "environment_reviewers": ["platform-approvers"]}
+]
+```
+
+| field | rule (refused by name when broken — the exception is then never in force and the secret BLOCKS) |
+|---|---|
+| `finding` | the finding's fingerprint as the security report computes it (`fp`, 12 lowercase hex; the report prints it as "Legacy fingerprint" under each blocking finding, and the `secret_findings` report output lists them). Secret findings carry no durable identity by design, so this is the key; a scanner or rule change orphans it and the secret blocks again (fail-safe). Anything else — `secrets`, a scanner, a wildcard — is `SECRET_EXCEPTION_NOT_FINDING_SCOPED` |
+| `ticket` | a work-item key `<PROJECT>-<digits>` (`scripts/ticket_reference.py`, KDEC-013), within `numbers.ticket_min_digits`..`ticket_max_digits` when the register sets them (the work overlay's range goes there). Missing or malformed: `SECRET_EXCEPTION_UNTICKETED` |
+| `explanation`, `approver` | why, and the named person who approved it. Missing: `SECRET_EXCEPTION_UNATTRIBUTED` |
+| `expires` | `YYYY-MM-DD`; unreadable is `SECRET_EXCEPTION_UNATTRIBUTED`, past is `SECRET_EXCEPTION_EXPIRED` (so is an expired entry decision). Silence never renews it |
+| `environment_reviewers` | here or on the entry's `decision`, required when the entry applies at uat/prod (a uat/prod tier, or no tier): `SECRET_EXCEPTION_UNATTRIBUTED` otherwise |
+
+It lives only in the register — the central copy, or the repository's own file on its protected
+default branch (the one softening a repository file may carry) — never in a run input. The gate
+excepts the secret scan's findings only when **every** secret it found is named by an exception in
+force, one exception per finding, and the report's fingerprints account for exactly the scan's count;
+a second secret, the same fingerprint twice, or a count the report cannot account for, and the run is
+`BLOCKED`. Excepted, the run routes `PROCEED_WITH_ADVISORY` with cause `SECRET_EXCEPTION_ATTRIBUTED`,
+`secret_gate` is `EXCEPTED` (never `PASS`), and each exception — fingerprint, ticket, approver, expiry,
+entry — is written to the gate summary and the run record (`secret_exceptions`); refused exceptions
+are listed in the summary with their refusal. An image secret and a known-malicious package are not
+exceptable. `--validate` reports every refused exception. Proven locally:
+`tests/prove_gate_policy_enforcement.py` (`sx_*`), `tests/prove_gate_run_record.py`,
+`tests/prove_report_counts_findings.py`.
+
+## The register document
+
+```json
+{"schema_version": 2, "register_id": "...",
+ "sign_off": {"by": "Named Person", "role": "security-lead", "date": "2026-10-22", "reference": "REG-1"},
+ "proposed_by": "optional: the tool and run that proposed it",
+ "environment_names": {"production": "prod", "staging": "uat"},
+ "repositories": {"org-a/payments-api": {"team": "payments", "product": "ledger"}},
+ "policies": [ ...entries... ]}
+```
+
+`sign_off` is required: a register nobody signed off is a proposal (`POLICY_DECISION_UNATTRIBUTED`).
+A harness that analyses team types **proposes** a document in exactly this format and sets
+`proposed_by`; a person reviews it and adds `sign_off`. Unknown fields anywhere are refused (the
+reader is an allowlist), and so is `schema_version: 1` (the retired per-repository cell format).
+
+Validate before merging — wire this into the register's own pull-request check:
+
+```
+python3 scripts/policy_registration.py --validate policy/policy-registration.json --origin central
+python3 scripts/policy_registration.py --validate .security/policy-registration.json --origin repository
+```
+
+It refuses everything resolution would refuse anywhere: schema, conflicts, attribution, expired
+decisions and non-monotone tiers for every mapped repository and every org.
+
+## Deploy approval: read back from the environment
+
+At uat and prod both deploy reusables read the GitHub environment they run in
+(`GET /repos/{owner}/{repo}/environments/{name}`, read-only) before login and refuse unless its
+required reviewers satisfy the demand: at least one reviewer, **self-review prevented**, and — when
+`approver_groups` is set — every reviewer one of those teams (so the approver is from the group and
+is not the deploying developer). Outcomes: `environment_protection` in `assurance-taxonomy.yaml`.
+Pass the security gate's `deploy_approval` output to the deploy's `deploy_approval` input
+(`templates/build-deploy.yml` does). The deploy holds the **stronger** of that value and the kit
+default, because it cannot tell a value the gate emitted from one a caller typed: a register
+softening of deploy approval below the uat/prod default is recorded by the gate and **not** honoured
+by the deploy. If the API cannot be read, uat/prod refuse (`ENVIRONMENT_PROTECTION_NOT_ESTABLISHED`).
+
+## What a work administrator creates
+
+1. In the private kit repository: `policy/policy-registration.json` (copy
+   `templates/policy-register.central.example.json`), with the two orgs, each team and product,
+   the `repositories` map (from the harness proposal), and CODEOWNERS on `policy/`.
+2. A pull-request check on the kit repository running `--validate` on it.
+3. For each repository that needs its own tightening: `.security/policy-registration.json` on its
+   default branch (copy `templates/policy-registration.example.json`), under CODEOWNERS.
+4. On every uat and prod GitHub environment: required reviewers (the approver teams), **prevent
+   self-review** on. The deploy refuses without them.
+5. Callers pass `target_environment` to the security workflow when a run is for a named
+   environment, and `deploy_approval` from the security workflow to the deploy.
+
+## What the gate emits
+
+`policy_resolution`, `policy_source`, `policy_chain` (entry ids applied), `rung_declared`,
+`rung_effective`, `policy_mode` (derived; no `policy_mode` or `rung` input exists, and a supplied
+one is `POLICY_MODE_SUPPLIED`, `BLOCKED`), `effective_minimum`, `policy_divergences`,
+`environment_tier`, `team_pattern`, `unvalidated_human_workflow_paths`, `deploy_approval` — beside
+`routing_result` and `advisory_causes`. The security-gate job ends on a `verdict` step: `BLOCKED`
+and `EVIDENCE_UNTRUSTED` fail it at every tier (O-24); `DECISION_REQUIRED` and the advisories pass the gate and are refused by the deploy.
+
+**The gate is the single enforcement point** (lane L-S, 2026-10-22; VERIFIED locally by
+`tests/prove_gate_policy_enforcement.py`, `sep_*`). Scanner jobs report: each hands findings over its
+own threshold to the gate as the job output `findings_state=FINDINGS` and fails only when it could not
+scan or trust its result (a crash, `COLLECTION_FAILED`, a hollow or unparseable report). The secret
+scan hands its secrets over too, and the gate blocks them at every tier unless each is excepted
+(below); an image's secrets step and a known-malicious package still fail their own job. The workflow therefore
+concludes as its verdict: at crawl an ordinary finding is green with `PROCEED_WITH_ADVISORY`, and a
+caller's `needs: security` (as in `templates/build-deploy.yml`) builds; a secret or a broken scan is
+red. `advisory_mode` and `soft_fail_sast` still soften what a job hands over, as recorded weakenings;
+they no longer keep a scanner job green, because nothing turns it red on a finding.
+
+## Not yet
+
+- ~~Scanner jobs still read `advisory_mode` / `soft_fail_sast`, not the derived policy: under crawl a
+  scanner job with findings still ends red.~~ **Closed by lane L-S (2026-10-22):** scanner jobs no
+  longer fail on findings; the gate enforces the resolved policy alone (above). Still open: the scanner
+  half proper (`resolve` consuming the policy to choose depth and scope; EP-1) — enforcement no longer
+  depends on it.
+- Per-finding classes (new vs pre-existing on a track) are not in the gate (ledger L44): a job's
+  findings are read at `new_critical_high`, the strictest non-secret class.
+- Hosted runs: none of this has run on GitHub yet (Actions minutes are blocked); every proof is local.

@@ -281,7 +281,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # CONDITIONAL, because the contract says build-only needs no Azure auth and the
       # implementation did not. Both logins ran unconditionally, so the documented
@@ -289,7 +289,7 @@ jobs:
       # credentials for. Static inspection was enough to see it; nothing had looked.
       - name: Azure login (OIDC)
         if: inputs.push
-        uses: azure/login@v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -303,7 +303,7 @@ jobs:
           ACR_LOGIN_SERVER: ${{ inputs.acr_login_server }}
         run: az acr login --name "$(echo "$ACR_LOGIN_SERVER" | cut -d. -f1)"
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # ── ONE BUILD, AND ONLY ONE ──────────────────────────────────────────────────────────
       # This step used to have a twin: a second `docker/build-push-action` with `push: true`
@@ -325,7 +325,7 @@ jobs:
       # holding and refuse to return a digest the registry does not confirm.
       - name: Build (once — this is the only image that will exist)
         id: build
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ inputs.context }}
           file: ${{ inputs.dockerfile }}
@@ -358,7 +358,7 @@ jobs:
       # just built is not a gate, it is a coincidence.
       - name: Trivy image scan (gate before push)
         id: trivy
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         env:
           TRIVY_IMAGE_SRC: docker
         with:
@@ -648,7 +648,7 @@ jobs:
 
       - name: Upload SBOM
         if: always() && steps.provenance.outputs.name != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.provenance.outputs.name }}
           path: sbom.spdx.json
@@ -660,7 +660,7 @@ jobs:
         # run does not finish"). Uploaded on every pushing path, including a refusal before the
         # push, so it does not die with the runner.
         if: always() && inputs.push
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: build-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/build-evidence
@@ -947,7 +947,7 @@ jobs:
 
       - name: Attest build provenance (SLSA, signed by this workflow's identity)
         id: sign
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ steps.subject.outputs.name }}
           subject-digest: ${{ steps.subject.outputs.digest }}

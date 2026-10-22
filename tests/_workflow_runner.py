@@ -242,11 +242,25 @@ def appservice_state(prior=GOOD, **faults):
     return s
 
 
-def run_world(path, inputs, state, cancel_after=None):
+# What the fake GitHub API answers for the deploy's environment: required reviewers, self-review
+# prevented -- a protected environment, so the deploy's protection step (owner, 2026-10-22) passes
+# and each proof exercises what it is about. tests/prove_deploy_environment_protection.py proves the
+# refusals; a caller here may pass its own answer, or None for an environment that cannot be read.
+PROTECTED_ENVIRONMENT = {'protection_rules': [
+    {'type': 'required_reviewers', 'prevent_self_review': True,
+     'reviewers': [{'type': 'Team', 'reviewer': {'slug': 'release-approvers', 'name': 'Release approvers'}}]}]}
+
+
+def run_world(path, inputs, state, cancel_after=None, environment_answer=PROTECTED_ENVIRONMENT):
     """Run the job against a fresh fake cloud. -> (result, final_state, az_calls)."""
     import json
     work = tempfile.mkdtemp(prefix='fake-world-')
     try:
+        api = os.path.join(work, 'api', 'repos', 'o', 'r', 'environments')
+        os.makedirs(api)
+        if environment_answer is not None and inputs.get('github_environment'):
+            io.open(os.path.join(api, str(inputs['github_environment'])), 'w', encoding='utf-8').write(
+                json.dumps(environment_answer))
         state_path = os.path.join(work, 'state.json')
         log_path = os.path.join(work, 'calls.jsonl')
         io.open(state_path, 'w', encoding='utf-8').write(json.dumps(state))
@@ -258,7 +272,9 @@ def run_world(path, inputs, state, cancel_after=None):
             # runner has. Excluding every variable from that conversion keeps values byte-exact.
             env = {'MSYS2_ENV_CONV_EXCL': '*', 'MSYS_NO_PATHCONV': '1',
                    'fake_az_state': state_path, 'fake_az_log': log_path,
-                   'AZURE_CONFIG_DIR': os.path.join(work, 'no-azure-config')}
+                   'AZURE_CONFIG_DIR': os.path.join(work, 'no-azure-config'),
+                   'GITHUB_REPOSITORY': 'o/r',
+                   'GITHUB_API_URL': 'file:///' + os.path.join(work, 'api').replace('\\', '/').lstrip('/')}
             rt = os.path.join(work, 'runner-temp')
             os.makedirs(rt)
             res = run_job(path, inputs, path_prepend=bin_dir, extra_env=env,

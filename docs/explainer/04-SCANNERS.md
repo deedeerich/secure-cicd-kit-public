@@ -5,7 +5,11 @@ Every job follows the shape in part 02: run the tool without letting its exit co
 when publication degraded. Columns:
 
 - **Runs when** — the discovery output (or input) that starts it.
-- **Blocks on** — what fails the job when enforcement is on.
+- **Blocks on** — what the job hands the security gate as `findings_state=FINDINGS` when its
+  threshold fires unsoftened; the gate blocks on it by the resolved policy (at crawl it is advisory).
+  Since lane L-S the job itself fails only when it could not scan or trust its count — the secret
+  scan included, whose secrets the gate blocks at every tier unless each one is excepted in the
+  register — except an image secret and a known-malicious package, which still fail their own job.
 - **Mode rule** — how `soft_fail_sast` / `advisory_mode` apply.
 - **Proof** — the local proof that runs the shipped step with the real tool (part 08), or the
   tool-level probe in `validate-scanners.yml`.
@@ -38,7 +42,8 @@ PHP is scanned by two existing jobs, each proven on seeds (measured 2026-10-21, 
 | PHP source (SAST) | `sast-semgrep` adds `p/php`; seeded SQL injection, XSS and command injection reported at ERROR on Semgrep 1.90.0 and 1.178.0 (the job's image since lane L-SG, measured in it), even under a narrowed `semgrep_config` | PROVEN LOCALLY (`prove_semgrep_php.py`); the weekly `semgrep-php` probe runs the job's image over the seeds; hosted owed |
 | PHP dependencies | `deps-scan` (Trivy) reads `composer.lock`: phpmailer/phpmailer v5.2.18 gives CVE-2016-10045 CRITICAL and blocks | PROVEN LOCALLY (`prove_deps_scan_composer.py`); hosted owed |
 | a `composer.json` with no lock | read by no scanner (Trivy produced no result) | declared `COVERAGE_GAP` `PHPDependenciesUnlocked` |
-| PHP release Semgrep can read | `version_support` sast-semgrep/php, MEASURED by `tests/corpora/php_corpus.py` on the job's own image | **READ 5.6–8.4** on the job's 1.178.0 image (lane L-SG re-measured it there, 2026-10-21, locally; the weekly corpus probe repeats it on the same digest). **PHP 8.5 is measured and NOT read**: its `(void)` cast and `final` promoted properties draw PartialParsing (exit 3 under `--strict`, `COLLECTION_FAILED`) on 1.178.0 and on 1.182.0, the newest Semgrep; the pipe operator parses. A PHP 8.5 target is a proven `VERSION_GAP` (refused at uat/prod without a named acceptance). Before L-SG the job's 1.90.0 container read only 5.6–7.2: 7.3+ syntax was exit 3 under `--strict` (`COLLECTION_FAILED`) |
+| PHP 8.5 Semgrep cannot fully parse | **scan what parses, flag the rest** (owner, 2026-10-22; KDEC-016 amended). `sast-semgrep` reads Semgrep's own JSON: when every error is a parse error (`errors[].type` `["PartialParsing", [spans]]`, level `warn`) on a `.php` file, the exit 3 is not discarded -- findings kept (and block as usual), the files and lines named, `scan_state` `PARTIAL` (`PARSE_PARTIAL_PHP_SYNTAX`). The gate reads it as `PARTIAL`, routing `PROCEED_WITH_ADVISORY` / `COVERAGE_PARTIAL`. Any other error (a non-PHP parse failure, a rule load failure, nothing examined) stays `COLLECTION_FAILED` | PROVEN LOCALLY (`prove_semgrep_php.py` S7-S10, in the job's image too); hosted owed |
+| PHP release Semgrep can read | `version_support` sast-semgrep/php, MEASURED by `tests/corpora/php_corpus.py` on the job's own image | **READ 5.6–8.4** on the job's 1.178.0 image (lane L-SG re-measured it there, 2026-10-21, locally; the weekly corpus probe repeats it on the same digest). **PHP 8.5 is measured and NOT fully read**: its `(void)` cast and `final` promoted properties draw PartialParsing on 1.178.0 and on 1.182.0, the newest Semgrep; the pipe operator parses. The row's measured `parse_evidence_max: "8.5"` says Semgrep NAMES each such file, so an 8.5 target is not a `VERSION_GAP` (above 8.5 it still is). Before L-SG the job's 1.90.0 container read only 5.6–7.2: 7.3+ syntax was exit 3 under `--strict` (`COLLECTION_FAILED`) |
 
 ## The report's 25 rows
 

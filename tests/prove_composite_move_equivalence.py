@@ -51,19 +51,44 @@ WF = os.path.join(ROOT, *WF_REL.split('/'))
 STATUS_STEP = 'Result summary'
 
 # job -> (composite, base commit the move was made from, canonical digest of the job AT that base)
+#
+# RE-PINNED 2026-10-22, lane L-H (ledger L82, O-23), all six with `--repin <job>`. Reason: every
+# remote `uses:` in the job and its composite moved from a tag to the full commit SHA that tag
+# named that day, with its exact release in a trailing comment (tests/check_action_pins.py). The
+# step-level diff against 11d1d56 before the re-pin showed `uses:` values ONLY -- 35 of them, no
+# name, if, with, env, run, shell or job key changed. The digests the move itself established were:
+#   secret-scan 5c2dfb3f...2bab  sast-cpp 37f22a09...689ec  iac-scan c388f450...445d
+#   deps-scan e11eb98c...0c25    sast-dotnet 750fb3fb...f14d sast-java 14edcb1a...b767
+#
+# RE-PINNED 2026-10-22, lane L-S (owner ruling O-24: the security gate is the single enforcement
+# point), five jobs with `--repin <job>`: deps-scan, iac-scan, sast-cpp, sast-dotnet, sast-java.
+# Reason: each enforce step now HANDS findings to the gate as findings_state=FINDINGS and exits 0
+# instead of failing the job (an `id:` on each enforce step, the composite's `outputs:`, the job's
+# `outputs:`, and the run text); Checkov's COLLECTION_FAILED no longer passes under advisory_mode.
+# The step-level diff against 7515088 before the re-pin showed exactly that and nothing else: job
+# key `outputs` added, and `id` + `run` on the enforce step(s) only. The L-H pins were:
+#   sast-cpp 98a596e2...3cfc  iac-scan 40a4ebe0...5f99  deps-scan 7503e7af...aa63d
+#   sast-dotnet b60fe634...21ff  sast-java c653d8c1...d381
+#
+# RE-PINNED 2026-10-22, lane L-S, secret-scan with `--repin secret-scan`. Reason: owner ruling of
+# 2026-10-22 -- a secret may be excepted by a ticketed, attributed, finding-scoped register entry,
+# and only the gate holds the policy -- so the Enforce step HANDS secrets to the gate
+# (findings_state, secret_count) and exits 0 instead of failing the job; the gate blocks them at
+# every tier unless each is excepted. The step-level diff against 5b06ccb was the job `outputs` key
+# and `id` + `run` on the Enforce step only. The L-H pin was 12d86c1c...51f5.
 MOVES = {
     'secret-scan': ('secret-scan', '11d1d56',
-                    '5c2dfb3f1d52683eb0c5107673e24b900620535b20241ee4be222174521a2bab'),
+                    '32f729447980e974328964a15f32a503095bc2c2df3093ffe018934ab67c1ff6'),
     'sast-cpp': ('sast-cpp', '11d1d56',
-                 '37f22a09af091fd8fe24d4f587181ef03359a5d11733265341c7bbf6440689ec'),
+                 '2763b67bc90b5eda80dbef2ba0343179cb72a4edd9d86e419271398e7a51eeeb'),
     'iac-scan': ('iac-scan', '11d1d56',
-                 'c388f450821c18611fb639c4caa2f64923672831589695e397c992a279ed445d'),
+                 'd66edea4441f3b2590f26dff5a6eae2178758890a5f37171773ba032f7dc0806'),
     'deps-scan': ('deps-scan', '11d1d56',
-                  'e11eb98c7da62eadc6e7d00526ce71307d0610633a1e937b6419dd008ba10c25'),
+                  'bb038edceba9f88a0bd25b96d9deb52b07aa6b80f4fea4bd28a35da37297905e'),
     'sast-dotnet': ('sast-dotnet', '11d1d56',
-                    '750fb3fb83422a11976bab9b9599dd80d0d5678453f53fcf79715af93cd2f14d'),
+                    '082914217be24f109b76545035e724fe63c0391508e765ff639ffd6a7cd8bdf4'),
     'sast-java': ('sast-java', '11d1d56',
-                  '14edcb1ab93452f69c453c7068b61c7351f288669a323b0071ae08802dabb767'),
+                  'cab930bb3f577b9f83b4ebf93fda768ffc11db20d2dd22e91598239f0059eea4'),
 }
 
 
@@ -77,8 +102,14 @@ def canonical(doc, job_name, root=ROOT):
     job = copy.deepcopy(((doc or {}).get('jobs') or {}).get(job_name))
     if job is None:
         return None, ['%s: no such job' % job_name]
-    steps, problems = ce.expand_steps(job.get('steps') or [], doc, root)
-    job['steps'] = [ce.normalise_shell(s) for s in steps]
+    # `reads`: a scanner composite called with an id hands the job its outputs (findings_state,
+    # lane L-S); the job's reads of them are rewritten to the composite's own expression, so the
+    # canonical job is the one the runner evaluates.
+    reads = {}
+    steps, problems = ce.expand_steps(job.get('steps') or [], doc, root, None, reads)
+    if reads and 'outputs' in job:
+        job['outputs'] = ce.rewrite_reads(job['outputs'], reads)
+    job['steps'] = [ce.normalise_shell(ce.rewrite_reads(s, reads)) for s in steps]
     return json.dumps(job, sort_keys=True, ensure_ascii=False, indent=1), problems
 
 

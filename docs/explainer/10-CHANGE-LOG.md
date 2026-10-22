@@ -5,6 +5,32 @@ Commit ids are on the build trunk `fix/normalization-and-discovery`. Versions 1.
 `10b-CHANGE-LOG-EARLIER.md`. A reader whose last copy was v1.10 (`a907dc8`) reads
 `12-CHANGES-SINCE-A907DC8.md` first: it groups every change since by what an integrator must do.
 
+## Unreleased — the gate is the single enforcement point (lane `lane/L-S`, 2026-10-22)
+
+Owner ruling O-24 ("only secrets block at this time"). Proven locally; the proof failed first on
+`7515088` (every scanner job failed on an ordinary finding at crawl, so the workflow was red and a
+caller's `needs: security` skipped build and deploy); no hosted run (Actions minutes blocked).
+
+| change | parts affected |
+|---|---|
+| **Scanner jobs report, the gate enforces**: each non-secret scanner job hands findings over its threshold to the gate as the job output `findings_state=FINDINGS` and fails only when it could not scan or trust its count; the gate enforces by the resolved policy, so the workflow concludes as its verdict. The secret scan hands its secrets over too (the gate blocks them at every tier unless excepted, below); an image's secrets step and a known-malicious package still fail their own job | 02, 03, 04 |
+| **Secret exceptions, one finding each** (owner ruling 2026-10-22: "requested and logged with tickets that have explanations"): a register entry's `secret_exceptions` item names the finding's fingerprint, a `<PROJECT>-<digits>` ticket, an explanation, a named approver, an expiry, and reviewers at uat/prod; anything missing is refused by name (`SECRET_EXCEPTION_NOT_FINDING_SCOPED`, `_UNTICKETED`, `_UNATTRIBUTED`, `_EXPIRED`) and the secret blocks; a class-wide softening stays `CHERRY_PICK_BELOW_FLOOR`. Every secret covered → `PROCEED_WITH_ADVISORY` (`SECRET_EXCEPTION_ATTRIBUTED`), `secret_gate` `EXCEPTED`, logged in the summary and the run record (`secret_exceptions`); the report publishes `secret_findings`; both deploys accept the new cause | 02, 03, 05 |
+| **A non-secret job that fails beside findings on record is untrusted** (`EVIDENCE_UNTRUSTED`), no longer "the control fired"; `advisory_mode` no longer softens a crash in the gate step, nor Checkov's `COLLECTION_FAILED` (it passed under advisory_mode at `7515088`) | 03 |
+| **ESLint under `bash -e`**: a lint finding no longer ends the step, enforce_lint on or off | 04 |
+| **Consumer path**: the full negative asserts the secret scan and the gate fail while Semgrep and Trivy succeed; the PHP-only leg asserts the verdict it records (crawl: `PROCEED_WITH_ADVISORY`, green; above crawl: `BLOCKED`) | 08 |
+
+## Unreleased — the policy register and crawl (lane `lane/L-A`, 2026-10-22)
+
+Owner requirements 2026-10-22 (relayed by the coordinator) and ruling O-24. Proven locally, each
+proof failed first on `2cd078e`; no hosted run (Actions minutes blocked).
+
+| change | parts affected |
+|---|---|
+| **The policy register** (`schema_version 2`): per org, team, product, repository and environment tier, signed off, every entry an attributed decision; precedence kit default < org < team < product < team+product < repository; conflicts, unattributed and expired decisions refused by name; the repository's own file only tightens. `docs/adoption/POLICY_REGISTER.md` | 03, 05, 11 |
+| **The gate resolves it first** (`resolve-policy`, rung patch applied): no register = crawl, only secrets block, other findings `PROCEED_WITH_ADVISORY` (`FINDINGS_NOT_BLOCKED`); walk owes a decision, run blocks; new outputs (`policy_resolution`, `rung_*`, `effective_minimum`, `deploy_approval`, ...); input `target_environment`; a `verdict` step | 03, 05 |
+| **O-24**: the kit unable to run or trust its own scan blocks at every tier, crawl included; a coverage gap stays advisory | 03 |
+| **Deploy reads the environment's reviewers back**: at uat/prod both deploys refuse before login unless required reviewers exist with self-review prevented (and from the named groups); new input `deploy_approval`, output `environment_protection` | 03, 07 |
+
 ## Unreleased — Release 3 (next): PHP (lane `lane/L-PHP`, 2026-10-21)
 
 Owner: "I need php and we need it now". Proven locally (each proof failed first on `75d935c`);

@@ -76,6 +76,12 @@ jobs:
   #     push: false                 # build + scan + SBOM only
   # Keep `push: true` on main only. Do NOT restrict this with a Branch-form federated credential —
   # use the Environment's deployment branch policy (see docs/adoption/SETUP.md §1.2).
+  #
+  # `needs: security` IS THE VERDICT, NOT A SCANNER'S MOOD. The security gate is the single
+  # enforcement point: scanner jobs report findings and fail only when they could not scan, so the
+  # security workflow fails exactly when its routing_result is BLOCKED or EVIDENCE_UNTRUSTED (a
+  # secret, a broken scan). At crawl, ordinary findings build here as PROCEED_WITH_ADVISORY; the
+  # verdict job below still refuses a deploy on DECISION_REQUIRED (which passes the gate) or worse.
   build:
     needs: [security, policy]
     if: github.event_name != 'pull_request'
@@ -243,6 +249,10 @@ jobs:
       # and this job's GitHub environment requires reviewers. A gap on an UNVERIFIED range is
       # recorded and proceeds until a seeded corpus proves the range.
       advisory_causes: ${{ needs.security.outputs.advisory_causes }}
+      # What the policy register demands of this environment's reviewers (named groups, self-review
+      # prevented). The deploy reads the environment's protection rules back and, at uat/prod,
+      # refuses before login when they fall short; empty still demands one reviewer there.
+      deploy_approval: ${{ needs.security.outputs.deploy_approval }}
       resource_group: ${{ vars.KIT_RESOURCE_GROUP }}
       containerapp_name: ${{ vars.KIT_APP_NAME }}
       acr_login_server: ${{ vars.KIT_ACR_LOGIN_SERVER }}

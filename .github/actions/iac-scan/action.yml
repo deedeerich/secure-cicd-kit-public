@@ -21,6 +21,13 @@ inputs:
     description: The workflow's `paths` input (string), passed through unchanged.
     required: true
 
+# What the security gate enforces (lane L-S, O-24): FINDINGS when Checkov's threshold fired and
+# advisory_mode did not soften it, '' otherwise. The job reads it through the call's id.
+outputs:
+  findings_state:
+    description: FINDINGS when this scan's own threshold fired unsoftened; '' otherwise.
+    value: ${{ steps.checkov_enforce.outputs.findings_state }}
+
 runs:
   using: composite
   steps:
@@ -29,7 +36,7 @@ runs:
       # A RUN-SCOPED ARTIFACT, NOT `uses: ./` and NOT a copy per call site. Why, at
       # length, in the `kit-scripts` job at the top of .github/workflows/reusable-security.yml.
       if: always()
-      uses: actions/download-artifact@v8
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
         name: kit-scripts-${{ github.run_attempt }}
         path: /tmp
@@ -44,7 +51,7 @@ runs:
         echo "77747346d57de23c8a301758499db36f89f41e3850a2495497d2983a6cb3916a  kit-scripts.sha256" | sha256sum -c -
         sha256sum -c kit-scripts.sha256
     # END FETCH_KIT_SCRIPTS
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     # DETECTION FIRST. `soft_fail: true` IS NOT LENIENCY AND DOES NOT LOSE A FINDING.
     #
     #   scanner exit / findings  ->  normalized result  ->  policy decision
@@ -57,7 +64,7 @@ runs:
     # elsewhere, by the policy layer, which is the only layer that knows what mode the caller
     # asked for. This is the same separation sast-semgrep and sast-bandit already use.
     - name: Checkov
-      uses: bridgecrewio/checkov-action@v12
+      uses: bridgecrewio/checkov-action@c3e106d5f8f4253a6de5110efb41a080f83db294 # v12.3135.0
       with:
         directory: ${{ inputs.paths }}
         output_format: sarif
@@ -120,6 +127,7 @@ runs:
     # whichever housekeeping step happened to fail. That is an enforcement decision taken by
     # accident, in the wrong layer, from the wrong signal.
     - name: Checkov — enforce
+      id: checkov_enforce
       if: always()
       shell: bash
       env:
@@ -132,22 +140,20 @@ runs:
         advisory="${IN_ADVISORY_MODE}"
         # COLLECTION_FAILED IS NOT ZERO FINDINGS -- AND THIS STEP RUNS ON always(). Without this
         # check ${n:-0} quietly supplies the very zero the counting step refused to invent.
+        #
+        # advisory_mode HAS NO AUTHORITY HERE (lane L-S; owner ruling O-24). It softened this to
+        # exit 0, so under advisory_mode a hollow Checkov run left a green job, no findings on
+        # record, and the gate read PASS -- a scan that did not happen, reported as a clean one.
         if [ "$collection" = "COLLECTION_FAILED" ] || [ -z "$collection" ]; then
           echo "::error title=COLLECTION_FAILED::IaC posture could NOT be established from this run."
           echo "This is not a clean result and it is not a finding -- it is an unknown."
-          if [ "$advisory" = "true" ]; then
-            echo "::warning title=IaC UNDETERMINED (advisory)::Not blocked, not established."
-            echo "ANALYSIS=INCOMPLETE GATE=ADVISORY"
-            exit 0
-          fi
-          echo "ANALYSIS=INCOMPLETE GATE=FAIL"
+          echo "ANALYSIS=INCOMPLETE GATE=FAIL (advisory_mode does not cover a scan that did not happen)"
           exit 1
         fi
         if [ -z "${n:-}" ]; then
           echo "::error title=COLLECTION_FAILED::No count was produced by the scan step."
           echo "An ABSENT measurement is not a measurement of zero."
-          [ "$advisory" = "true" ] || exit 1
-          exit 0
+          exit 1
         fi
         if [ "${n:-0}" -gt 0 ] && [ "$advisory" = "true" ]; then
           # ADVISORY: THE FINDING IS REAL, REPORTED AND PERSISTED. Only the block is withheld.
@@ -156,9 +162,12 @@ runs:
           echo "is on, so they do not block promotion. ANALYSIS=COMPLETE GATE=ADVISORY"
           exit 0
         fi
+        # THE GATE IS THE SINGLE ENFORCEMENT POINT (lane L-S, O-24): findings are handed to it as
+        # findings_state=FINDINGS and enforced there by the resolved policy.
         if [ "${n:-0}" -gt 0 ]; then
-          echo "::error title=Checkov::${n} ERROR-level IaC finding(s). ANALYSIS=COMPLETE GATE=FAIL"
-          exit 1
+          echo "findings_state=FINDINGS" >> "$GITHUB_OUTPUT"
+          echo "::warning title=Checkov::${n} ERROR-level IaC finding(s). ANALYSIS=COMPLETE -- handed to the security gate, which decides by the resolved policy."
+          exit 0
         fi
         echo "ANALYSIS=COMPLETE GATE=PASS (0 error-level finding(s), advisory_mode=$advisory)"
     # Findings must survive whether or not this repo has code scanning. Uploading to the
@@ -203,7 +212,7 @@ runs:
     # END REDACT_STEP
     - name: Checkov — keep SARIF as an artifact
       if: always() && steps.sarif_checkov.outputs.exists == 'true'
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: sarif-checkov-${{ github.run_attempt }}
         path: checkov.sarif/results_sarif.sarif
@@ -213,7 +222,7 @@ runs:
       id: cs_checkov
       if: always() && steps.sarif_checkov.outputs.exists == 'true'
       continue-on-error: true
-      uses: github/codeql-action/upload-sarif@v4
+      uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
       with:
         sarif_file: checkov.sarif/results_sarif.sarif
         category: checkov
@@ -235,7 +244,7 @@ runs:
     # decision is not a reason to stop looking.
     - name: Trivy IaC misconfig
       if: always()
-      uses: aquasecurity/trivy-action@v0.36.0
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
       with:
         scan-type: config
         scan-ref: ${{ inputs.paths }}
@@ -359,7 +368,7 @@ runs:
     # END REDACT_STEP
     - name: Trivy (IaC) — keep SARIF as an artifact
       if: always() && steps.sarif_trivy_iac.outputs.exists == 'true'
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: sarif-trivy-iac-${{ github.run_attempt }}
         path: trivy-iac.sarif
@@ -369,7 +378,7 @@ runs:
       id: cs_trivy_iac
       if: always() && steps.sarif_trivy_iac.outputs.exists == 'true'
       continue-on-error: true
-      uses: github/codeql-action/upload-sarif@v4
+      uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
       with:
         sarif_file: trivy-iac.sarif
         category: trivy-iac

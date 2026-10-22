@@ -34,6 +34,7 @@ The new `environment` input names the baseline-ledger environment; empty is TARG
 | `enforce_lint` | GATE_SOFTENED | `false`, or stronger | code-quality | lint is not a security control; ON only strengthens |
 | `python_version`, `node_version`, `dotnet_version`, `go_version`, `java_version` | NOT_A_CONTROL_SURFACE | — | toolchains | |
 | `environment` | TARGET_NOT_SUPPLIED | non-empty | the baseline ledger | names the ledger cell; empty grandfathers nothing and makes the identity claim EVIDENCE_UNTRUSTED, never changes what blocks |
+| `target_environment` | NOT_A_CONTROL_SURFACE | `""` | the policy cell | selects the register tier; a pull request is evaluated at the merge reach whatever is named (below) |
 | `test_only_seed_artifact` | NOT_A_CONTROL_SURFACE | `""` | — | TEST-ONLY (KDEC-011): can only ADD files to the scanned tree; overwrite, dotfiles, scanner config and traversal are refused; the secret-scan job warns when it is in force |
 | `weakening_reason`, `weakening_authority`, `weakening_exception_ref`, `weakening_expires` | EXCEPTION_ATTRIBUTION | — | the record itself | |
 
@@ -81,6 +82,36 @@ with:
 
 That run routes `PROCEED_WITH_ADVISORY` on an otherwise clean gate, shows the weakening in every summary,
 and reverts to `DECISION_REQUIRED` the day after the expiry unless someone re-decides it.
+
+## The policy register: weakenings and tightenings a person signed (lane L-A)
+
+The caller's inputs are one source of weakenings. The other is the **policy register**
+(`docs/adoption/POLICY_REGISTER.md`; `schemas/policy-registration.schema.json`, `schema_version 2`):
+entries per org, team, product, repository and environment tier, in the kit's central copy and the
+repository's own file on its protected default branch, applied most specific last
+(`kit default < org < org+team < org+product < org+team+product < repository`, tier-qualified above
+untiered). Nothing registered is the kit default: crawl, only secrets block.
+
+- **Every entry is a decision**: `authority` (a named person), `reason`, `decided_on`, `expires`, and
+  for a uat/prod change the environment's `environment_reviewers` — the same shape as the weakening
+  record and KDEC-014's exception. The register itself carries a `sign_off`.
+- **A softening** (anything left weaker than the scope inherited) joins this record as an attributed
+  weakening row and routes `PROCEED_WITH_ADVISORY` (`WEAKENING_ATTRIBUTED`). The repository's own file
+  may only tighten. Secrets never soften as a class, and no control may be `PROCEED`.
+- **A secret exception is one finding, ticketed** (owner ruling 2026-10-22; lane L-S): an entry's
+  `secret_exceptions` item names the finding's fingerprint, a `<PROJECT>-<digits>` ticket, an
+  explanation, a named approver, an expiry, and reviewers at uat/prod — in the central register or
+  the repository's own file. A defective item is refused by name (`SECRET_EXCEPTION_*`) and the secret
+  still blocks; when every secret found is covered the run routes `PROCEED_WITH_ADVISORY`
+  (`SECRET_EXCEPTION_ATTRIBUTED`), `secret_gate` reads `EXCEPTED`, and each exception is logged in
+  the gate summary and the run record.
+- **An expired decision never softens**: the tightening stays, the softening reverts, and the run
+  routes `DECISION_REQUIRED`. Conflicts and unattributed entries are `BLOCKED`; an unreadable or
+  schema-violating register is `EVIDENCE_UNTRUSTED` — never the default.
+- The rung is not an input: `policy_mode` is derived, and a supplied one is refused (`BLOCKED`).
+
+VERIFIED locally (not hosted): `prove_policy_registration.py`, `prove_gate_policy_enforcement.py`,
+`prove_gate_reads_rung.py`.
 
 ## The other reusable workflows
 

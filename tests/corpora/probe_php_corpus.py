@@ -16,6 +16,10 @@ THE MEASUREMENT (D-VF-4; tests/corpora/php_corpus.py says what a family is)
       COLLECTION_FAILED   no report it can be held to (a crash, an absent or unparseable JSON)
     The range is CONTIGUOUS FROM THE OLDEST FAMILY: min the oldest, max the newest family below the
     first one not READ. A family READ above a failure does not raise the ceiling.
+    PARSE EVIDENCE (KDEC-016 amended, owner 2026-10-22): the contiguous PARSE_ERROR families
+    directly above the ceiling are measured too, as parse_evidence_max -- Semgrep names each such
+    file, so the sast-semgrep job scans what parses and flags the rest PARTIAL. A MISSED family
+    ends the run: silence cannot be flagged.
 
     The probe REFUSES (exit 2, no range) when it cannot measure: the oldest family is not READ (the
     tool, the rule or the seed is broken, not the version), or the CONTROL drew no error -- then this
@@ -152,6 +156,29 @@ def summarise(per):
     return result
 
 
+def parse_evidence_max(result):
+    """-> the newest family in the CONTIGUOUS run of PARSE_ERROR families directly above the read
+    ceiling, or None (KDEC-016 amended, owner 2026-10-22: "scan what parses, flag the rest").
+
+    A PARSE_ERROR family is one Semgrep NAMES as not fully parsed, per file -- exactly what the
+    sast-semgrep job reads from errors[] to scan the rest and flag that file PARTIAL. Up to this
+    family the job's parse evidence, not the declared range, decides coverage. A MISSED family (no
+    seed, no error) breaks the run: a silent drop is not evidence the job could flag. Computed from
+    the per-family states, so a measurement written before this existed is read the same way."""
+    if 'refused' in result or not result.get('max'):
+        return None
+    fams = [p for p in result.get('families') or [] if p.get('family') != C.CONTROL]
+    names = [p['family'] for p in fams]
+    if result['max'] not in names:
+        return None
+    top = None
+    for p in fams[names.index(result['max']) + 1:]:
+        if p.get('state') != 'PARSE_ERROR':
+            break
+        top = p['family']
+    return top
+
+
 # ----------------------------------------------------------------------------- the registry row
 def basis(result, tool_version, date, where):
     if result['first_unread']:
@@ -163,6 +190,12 @@ def basis(result, tool_version, date, where):
     else:
         tail = ('every family in the corpus was read; no newer family is in it, so a newer release '
                 'is outside what was measured')
+    pe = parse_evidence_max(result)
+    if pe:
+        tail += ('. Above it, through %s (parse_evidence_max), Semgrep names each file it cannot '
+                 'fully parse, so a target there is handled by parse evidence, not as a version gap: '
+                 'the sast-semgrep job scans what parses, keeps its findings and flags the named files '
+                 'PARTIAL (PARSE_PARTIAL_PHP_SYNTAX, COVERAGE_PARTIAL; KDEC-016 amended 2026-10-22)' % pe)
     return ('MEASURED by the seeded PHP corpus (%s; D-VF-4): semgrep %s read the seed, with no '
             'parse error, in every family %s..%s (families: %s); %s. Releases with no new syntax '
             'are claimed through their neighbours. Measured %s (%s) by '
@@ -196,6 +229,11 @@ def compare(result, row):
             row.get('min'), row.get('max'), result['min'], result['max']))
     if row.get('corpus') != corpus_id:
         bad.append('the registry row does not name its corpus (%s)' % corpus_id)
+    pe, got = parse_evidence_max(result), row.get('parse_evidence_max')
+    if (str(got) if got is not None else None) != pe:
+        bad.append('the registry declares parse_evidence_max %s, the corpus measured %s (a run of '
+                   'PARSE_ERROR families above the read ceiling; a MISSED family never counts)'
+                   % (got, pe))
     return bad
 
 
@@ -238,8 +276,10 @@ def write_action_copy(text, table):
 
 def write(result, tool_version, date, where):
     import yaml
+    pe = parse_evidence_max(result)
     fields = {'min': yq(result['min']), 'max': yq(result['max']), 'verified': 'READ',
-              'basis': yq(basis(result, tool_version, date, where)), 'corpus': corpus_id}
+              'basis': yq(basis(result, tool_version, date, where)), 'corpus': corpus_id,
+              'parse_evidence_max': yq(pe) if pe else 'null'}
     raw = io.open(REG, 'rb').read().decode('utf-8')
     crlf = '\r\n' in raw
     text = write_registry(raw.replace('\r\n', '\n'), fields)
@@ -289,8 +329,9 @@ def main(argv=None):
                 print('FAIL: %s' % b)
             return 1 if bad else 2
         return 2
-    print('MEASURED: semgrep %s reads PHP %s..%s (first family not read: %s)'
-          % (version, result['min'], result['max'], result['first_unread'] or 'none'))
+    print('MEASURED: semgrep %s reads PHP %s..%s (first family not read: %s; parse evidence '
+          'through %s)' % (version, result['min'], result['max'], result['first_unread'] or 'none',
+                           parse_evidence_max(result) or 'none'))
     if a.check:
         bad = compare(result, registry_row())
         for b in bad:

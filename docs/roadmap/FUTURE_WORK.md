@@ -298,6 +298,16 @@ sensitive findings kept out of logs.
 > A real search with the wrong denominator, recorded as an absence — the same shape as every other
 > defect this week.
 
+> ### Built 2026-10-22 (lane L-DB), proven locally, not yet on GitHub
+>
+> `.github/workflows/reusable-dependabot-triage.yml` + `templates/dependabot-triage.yml`, to the
+> criteria below. Each criterion is mapped to the rule that enforces it, and the ones not
+> enforceable yet are named, in [`docs/adoption/DEPENDABOT_TRIAGE.md`](../adoption/DEPENDABOT_TRIAGE.md)
+> section 1. Not enforced: provenance/signature of the new version. Delegated to the security gate
+> as a required check: no new critical/high, no malicious package. Proof:
+> `tests/prove_dependabot_triage.py`; the hosted run is owed (registry `dependabot-merge-hosted`).
+> The text below is the design as it stood, kept.
+
 **Auto-merge itself is still genuinely absent.** No `gh pr merge`, `automerge` or auto-approve step
 exists in any workflow in any local repository. What the reference estate has is the *gate* half — an
 alert check, not the merge decision — and it is worth reading before rebuilding, because it already

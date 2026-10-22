@@ -164,9 +164,51 @@ def scanner_composites(root=ROOT):
             if (r or {}).get('class') == 'scanner' and (r or {}).get('composite')}
 
 
-def expand_steps(steps, doc=None, root=ROOT, names=None):
-    """`names`: expand only these composites (None = every `$/` composite)."""
+_WHOLE = re.compile(r'\s*\$\{\{\s*(.*?)\s*\}\}\s*', re.S)
+
+
+def output_map(step, act):
+    """-> ({'steps.<id>.outputs.<name>': inner expression}, [problem]) for a scanner composite
+    called with an id. Each composite output's `value:` must be ONE `${{ }}` over the composite's
+    own steps: after expansion the job reads that expression where it read the call's output."""
+    sid, out, problems = step.get('id'), {}, []
+    for name, spec in ((act or {}).get('outputs') or {}).items():
+        m = _WHOLE.fullmatch(str((spec or {}).get('value') or ''))
+        if not m:
+            problems.append('%s: output %r is not a single ${{ }} expression -- not expandable'
+                            % (composite_name(step), name))
+            continue
+        out['steps.%s.outputs.%s' % (sid, name)] = m.group(1)
+    return out, problems
+
+
+def rewrite_reads(value, mapping):
+    """Every read of a call's output (`steps.<id>.outputs.<name>`) replaced by the composite's own
+    expression: verbatim when it is the whole interpolation, parenthesised inside a larger one."""
+    if isinstance(value, dict):
+        return {k: rewrite_reads(v, mapping) for k, v in value.items()}
+    if isinstance(value, list):
+        return [rewrite_reads(v, mapping) for v in value]
+    if not isinstance(value, str) or not mapping:
+        return value
+    m = _WHOLE.fullmatch(value)
+    if m and m.group(1) in mapping:
+        return '${{ %s }}' % mapping[m.group(1)]
+
+    def inner(em):
+        e = em.group(1)
+        for k, v in mapping.items():
+            e = re.sub(r'(?<![\w.-])%s(?![\w-])' % re.escape(k), '(%s)' % v, e)
+        return '${{%s}}' % e
+    return _EXPR.sub(inner, value)
+
+
+def expand_steps(steps, doc=None, root=ROOT, names=None, reads=None):
+    """`names`: expand only these composites (None = every `$/` composite). `reads`: a dict that
+    collects, for every SCANNER composite called with an id, its outputs as the expressions the
+    job reads after expansion (expanded_job rewrites the job's own reads with it)."""
     out, problems = [], []
+    scanners = None
     for st in steps or []:
         n = composite_name(st)
         if n and names is not None and n not in names:
@@ -175,12 +217,22 @@ def expand_steps(steps, doc=None, root=ROOT, names=None):
         if n and st.get('id'):
             act = load_action(n, root) or {}
             if act.get('outputs'):
-                # The job reads the call's outputs through `steps.<id>.outputs`; replacing the
-                # call by its steps would orphan those reads. Not expanded, and said so.
-                problems.append('%s: called with id %r and declares outputs -- not expanded'
-                                % (n, st.get('id')))
-                out.append(st)
-                continue
+                if scanners is None:
+                    scanners = scanner_composites(root)
+                if n in scanners and reads is not None:
+                    # A SCANNER BODY that hands the gate its findings_state (lane L-S, O-24): its
+                    # steps are what proofs must run, so it is expanded and the job's reads of the
+                    # call's outputs are rewritten to the composite's own expression for them.
+                    m, p = output_map(st, act)
+                    reads.update(m)
+                    problems.extend(p)
+                else:
+                    # The job reads the call's outputs through `steps.<id>.outputs`; replacing the
+                    # call by its steps would orphan those reads. Not expanded, and said so.
+                    problems.append('%s: called with id %r and declares outputs -- not expanded'
+                                    % (n, st.get('id')))
+                    out.append(st)
+                    continue
         got, p = expand_step(st, doc, root)
         out.extend(got)
         problems.extend(p)
@@ -191,7 +243,13 @@ def expanded_job(doc, job_name, root=ROOT, names=None):
     """A deep copy of one job whose `$/` steps are replaced by the composite's steps."""
     job = copy.deepcopy(((doc or {}).get('jobs') or {}).get(job_name) or {})
     if job.get('steps'):
-        job['steps'], _p = expand_steps(job['steps'], doc, root, names)
+        reads = {}
+        job['steps'], _p = expand_steps(job['steps'], doc, root, names, reads)
+        if reads:
+            for key in ('outputs',):
+                if key in job:
+                    job[key] = rewrite_reads(job[key], reads)
+            job['steps'] = [rewrite_reads(s, reads) for s in job['steps']]
     return job
 
 

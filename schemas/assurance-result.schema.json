@@ -25,8 +25,25 @@
     },
 
     "secret_gate": {
-      "description": "Evaluated separately and NEVER suppressed by advisory mode. A consumer reading only enforcement_state would miss that secrets are unconditional.",
-      "enum": ["PASS", "FAIL", "NOT_APPLICABLE"]
+      "description": "Evaluated separately and NEVER suppressed by advisory mode. A consumer reading only enforcement_state would miss that secrets are unconditional. EXCEPTED: secrets were found and EVERY one is excepted by a ticketed, attributed, unexpired, finding-scoped policy-register exception (owner ruling 2026-10-22; listed in secret_exceptions) -- never a clean result.",
+      "enum": ["PASS", "FAIL", "NOT_APPLICABLE", "EXCEPTED"]
+    },
+
+    "secret_exceptions": {
+      "type": "array",
+      "description": "Every secret exception applied in this run (owner ruling 2026-10-22): the finding's fingerprint (a hash, never the secret), the ticket key, the named approver, the expiry and the register entry. Present only when secret_gate is EXCEPTED.",
+      "items": {
+        "type": "object",
+        "required": ["finding", "ticket", "approver", "expires"],
+        "additionalProperties": false,
+        "properties": {
+          "finding": { "type": "string" },
+          "ticket": { "type": "string" },
+          "approver": { "type": "string" },
+          "expires": { "type": "string" },
+          "entry": { "type": "string" }
+        }
+      }
     },
 
     "discovery_state": {

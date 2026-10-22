@@ -128,12 +128,6 @@ UNWIRED = {
         'owner': 'documentation lane (L-G)',
         'closes': 'L-G restates the context against the trunk; then wire it in self-test',
         'expires': '2026-11-15'},
-    'prove_gate_reads_rung.py': {
-        'reason': 'EXPECTED TO FAIL until the rung patch is applied (ledger S-01, wiring/'
-                  'gate-rung.patch.md); a proof of an unbuilt wiring cannot be green',
-        'owner': 'gate and policy lane (L-A)',
-        'closes': 'L-A applies the rung patch; prove_gate_reads_rung reports 0 failures; wire it',
-        'expires': '2026-12-31'},
 }
 # A line that RUNS it: not a comment (the lookahead anchors at the line start, so leading blanks
 # cannot be backtracked into satisfying it), naming python, then the path.

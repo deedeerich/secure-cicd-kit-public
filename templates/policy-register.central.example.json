@@ -1,0 +1,54 @@
+{
+  "schema_version": 2,
+  "register_id": "example-central-register",
+  "notes": "EXAMPLE of the CENTRAL register: copy to policy/policy-registration.json in YOUR copy of the kit (it is delivered to every caller by $/ at the kit commit the caller pins, so a change reaches a repository when it moves its pin). Names below are placeholders. Precedence, most specific wins: kit default < org < org+team < org+product < org+team+product < repository; a scope with environment_tier ranks above the same scope without one. Every entry is a decision; uat/prod departures name the environment's required reviewers. A harness may PROPOSE a register (proposed_by); a person signs it off (sign_off). Validate with: python3 scripts/policy_registration.py --validate <file> --origin central",
+  "sign_off": {"by": "Dana Example", "role": "security-lead", "date": "2026-10-22", "reference": "REG-0001"},
+  "proposed_by": "team-type analysis harness (example), run <reference>",
+  "environment_names": {"development": "dev", "qa": "test", "staging": "uat", "production": "prod"},
+  "repositories": {
+    "example-org-a/payments-api": {"team": "payments", "product": "ledger"},
+    "example-org-a/payments-web": {"team": "payments", "product": "checkout"},
+    "example-org-b/field-tool": {"team": "solo-tools", "product": "field-tool"}
+  },
+  "policies": [
+    {
+      "id": "org-a-crawl",
+      "scope": {"org": "example-org-a"},
+      "rung": "crawl",
+      "team_pattern": "small_team",
+      "merge_reaches_tier": "dev",
+      "decision": {"authority": "Dana Example", "approver_role": "security-lead", "reason": "crawl phase: only secrets block while teams adopt", "decided_on": "2026-10-22", "expires": "2027-01-31", "environment_reviewers": ["platform-approvers"]}
+    },
+    {
+      "id": "org-a-payments-uat-walk",
+      "scope": {"org": "example-org-a", "team": "payments", "environment_tier": "uat"},
+      "rung": "walk",
+      "decision": {"authority": "Dana Example", "approver_role": "security-lead", "reason": "payments handles card data: release findings need a disposition before uat", "decided_on": "2026-10-22", "expires": "2027-01-31", "environment_reviewers": ["payments-release-approvers"]}
+    },
+    {
+      "id": "org-a-payments-prod-walk",
+      "scope": {"org": "example-org-a", "team": "payments", "environment_tier": "prod"},
+      "rung": "walk",
+      "decision": {"authority": "Dana Example", "approver_role": "security-lead", "reason": "payments handles card data: release findings need a disposition before prod", "decided_on": "2026-10-22", "expires": "2027-01-31", "environment_reviewers": ["payments-release-approvers"]}
+    },
+    {
+      "id": "org-a-ledger-supply-chain",
+      "scope": {"org": "example-org-a", "product": "ledger", "environment_tier": "prod"},
+      "controls": {"deps-scan": "BLOCKED"},
+      "decision": {"authority": "Dana Example", "approver_role": "security-lead", "reason": "the ledger's exposure is its dependencies", "decided_on": "2026-10-22", "expires": "2027-01-31", "environment_reviewers": ["payments-release-approvers"]}
+    },
+    {
+      "id": "org-b-crawl",
+      "scope": {"org": "example-org-b"},
+      "rung": "crawl",
+      "decision": {"authority": "Dana Example", "approver_role": "security-lead", "reason": "crawl phase: only secrets block while teams adopt", "decided_on": "2026-10-22", "expires": "2027-01-31", "environment_reviewers": ["platform-approvers"]}
+    },
+    {
+      "id": "org-b-solo-field-tool",
+      "scope": {"org": "example-org-b", "product": "field-tool"},
+      "team_pattern": "solo_dev",
+      "deploy_approval": {"approver_groups": ["architects", "security", "platform"], "approvers_required": 1, "self_review_prevented": "required", "ai_review": "advisory"},
+      "decision": {"authority": "Dana Example", "approver_role": "security-lead", "reason": "one developer: uat and prod need one approver from architecture, security or platform who is not the developer; an AI review comments on pull requests, advisory only", "decided_on": "2026-10-22", "expires": "2027-01-31", "environment_reviewers": ["architects", "security", "platform"]}
+    }
+  ]
+}

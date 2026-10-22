@@ -29,10 +29,12 @@ HOW THE ACTION IS REPRODUCED
 
 SCENARIOS (per job: deps-scan over requirements.txt, image-scan over an Alpine 3.10 archive)
     default_threshold   CRITICAL,HIGH, advisory off -> SARIF keeps sub-threshold findings,
-                                                       count >= 1, the job FAILS
+                                                       count >= 1, the job PASSES and hands the gate
+                                                       findings_state=FINDINGS (lane L-S, O-24: the
+                                                       gate is the single enforcement point)
     critical_only       CRITICAL (deps: no CRITICAL present) -> sub-threshold findings kept,
-                                                       count 0, the job PASSES
-    advisory            CRITICAL,HIGH, advisory on  -> findings kept, the job PASSES
+                                                       count 0, the job PASSES, nothing handed
+    advisory            CRITICAL,HIGH, advisory on  -> findings kept, the job PASSES, nothing handed
     clean               nothing vulnerable          -> count 0, the job PASSES
     no_report           Trivy wrote nothing         -> COLLECTION_FAILED, the job FAILS
 
@@ -149,7 +151,9 @@ def main():
             if not prod:
                 print('UNKNOWN: %s has no trivy-action step writing %s' % (job, cfg['producer_output']))
                 return 2
-            scen = [('default_threshold', 'CRITICAL,HIGH', 'false', 'vuln', 'fail'),
+            # 'handed': the job SUCCEEDS and hands the count to the security gate as
+            # findings_state=FINDINGS (lane L-S, O-24: the gate is the single enforcement point).
+            scen = [('default_threshold', 'CRITICAL,HIGH', 'false', 'vuln', 'handed'),
                     ('critical_only', 'CRITICAL', 'false', 'vuln', 'pass'),
                     ('advisory', 'CRITICAL,HIGH', 'true', 'vuln', 'pass'),
                     ('clean', 'CRITICAL,HIGH', 'false', 'clean', 'pass'),
@@ -173,32 +177,42 @@ def main():
                 sarif = os.path.join(ws, cfg['producer_output'])
                 sev = sarif_levels(sarif) if os.path.isfile(sarif) else []
                 vals = {'inputs.%s' % k: v for k, v in inputs.items()}
-                erc, coll, n = trc, '', ''
+                erc, coll, n, handed = trc, '', '', ''
                 if not missing:
                     crc, clog, cout, unk = sb.run(bash, steps[cfg['count']], vals, ws)
                     if unk:
                         bad.append('%s/%s: count step reads unmodelled %s' % (job, name, unk))
                     vals.update({'steps.%s.outputs.%s' % (cfg['count_id'], k): cout.get(k, '')
                                  for k in ('count', 'collection')})
-                    erc2, elog, _o, unk = sb.run(bash, steps[cfg['enforce']], vals, ws)
+                    erc2, elog, eout, unk = sb.run(bash, steps[cfg['enforce']], vals, ws)
                     coll, n = cout.get('collection', ''), cout.get('count', '')
+                    handed = eout.get('findings_state', '')
                     failed = trc != 0 or erc2 != 0
                 else:
                     failed = trc != 0
                 below = [s for s in sev if s not in thr.split(',')]
-                print('  %-10s %-17s trivy=%d severities=%s count=%s collection=%s job %s'
+                print('  %-10s %-17s trivy=%d severities=%s count=%s collection=%s job %s%s'
                       % (job, name, trc, ','.join('%s:%d' % (k, sev.count(k))
                                                   for k in sorted(set(sev))) or '-',
-                         n or '-', coll or '-', 'FAILS' if failed else 'passes'))
+                         n or '-', coll or '-', 'FAILS' if failed else 'passes',
+                         ', hands the gate %s' % handed if handed else ''))
                 if tree == 'vuln' and not below:
                     bad.append('%s/%s: no finding below %s survived in the SARIF -- the reporting '
                                'filter dropped evidence' % (job, name, thr))
                 if expect == 'fail' and not failed:
                     bad.append('%s/%s: the job would PASS' % (job, name))
-                if expect == 'pass' and failed:
+                if expect in ('pass', 'handed') and failed:
                     bad.append('%s/%s: the job would FAIL -- %s' % (job, name, (
                         'the threshold %s was not honoured: Trivy blocked on a severity outside it'
-                        % thr) if name == 'critical_only' else 'it must pass'))
+                        % thr) if name == 'critical_only' else
+                        'findings go to the gate, never a failed job'))
+                if expect == 'handed' and handed != 'FINDINGS':
+                    bad.append('%s/%s: nothing handed to the gate (findings_state=%r) -- findings '
+                               'at %s with advisory off must reach it' % (job, name, handed, thr))
+                if expect == 'pass' and handed:
+                    bad.append('%s/%s: findings_state=%r -- %s' % (job, name, handed, (
+                        'the threshold %s was not honoured' % thr) if name == 'critical_only'
+                        else 'nothing is enforced here'))
             if missing:
                 bad.append('%s: no step(s) %s -- the blocking threshold is whatever trivy-action '
                            'does with `severity:` for a SARIF, which is to ignore it' % (job, missing))
@@ -208,8 +222,9 @@ def main():
         for b in bad:
             print('FAIL: %s' % b)
         return 1
-    print('PASS: Trivy reports every severity in both jobs; fail_on_severity alone decides the '
-          'block (a narrower threshold passes what it excludes, advisory passes, no report fails).')
+    print('PASS: Trivy reports every severity in both jobs; fail_on_severity alone decides what is '
+          'handed to the gate (a narrower threshold hands nothing it excludes, advisory hands '
+          'nothing, no report fails the job).')
     return 0
 
 

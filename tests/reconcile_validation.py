@@ -48,6 +48,13 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # KDEC-013 (2026-10-16): the pull-request Jira reference gate, moved from one consumer's overlay
     # into the core with NO default issue-number range. Reads the PR description; writes nothing.
     "reusable-ticket-reference.yml": ["ticket-reference"],
+    # FUTURE_WORK section 6, owner 2026-10-22: Dependabot PRs auto-merge (`--auto --squash`, so
+    # branch protection still decides) only when every section 6 criterion the kit can establish
+    # holds; the rest go to a human with the reason, and excluded fixture paths are closed.
+    # TWO CAPABILITIES, because the halves have different evidence: the DECISION (and the gh
+    # commands it issues) is proven locally; the GITHUB half -- the token scopes suffice, and
+    # branch protection really holds an armed auto-merge until the checks pass -- needs a hosted run.
+    "reusable-dependabot-triage.yml": ["dependabot-triage", "dependabot-merge-hosted"],
     "reusable-deploy-appservice.yml": ["deploy-appservice"],
     "reusable-deploy-containerapp.yml": ["deploy-containerapp"],
     "workflow-policy-check.yml": ["workflow-policy"],
@@ -83,6 +90,14 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # proof is tests/prove_report_runs_as_shipped.py, and its failure is read by the gate as
     # `needs.report.result`.
     "action:scan-report": [],
+    # STAGE 1 RESOLUTION, NOT AN ASSURANCE CLAIM. Same reasoning as scan-report: it reads the policy
+    # register and emits what it found; it establishes nothing about the code. Its proofs are
+    # tests/prove_gate_reads_rung.py (wiring), tests/prove_gate_policy_enforcement.py (behaviour)
+    # and tests/prove_policy_registration.py (the reader).
+    "action:resolve-policy": [],
+    # THE RUN RECORD (ledger L36): evidence assembly, not an assurance claim -- it restates what the
+    # gate established, validated against the schema. Proof: tests/prove_gate_run_record.py.
+    "action:run-record": [],
     # THE LEDGER'S WRITE PATH, NOT AN ASSURANCE CLAIM, by the same rule as scan-report: it
     # establishes nothing about the code. Its behaviour is proven by tests/prove_propose_ledger.py
     # (the payload) and tests/prove_propose_ledger_job_scope.py (the job can push one ref and
@@ -423,6 +438,14 @@ VALIDATION_REGISTRY: dict[str, dict] = {
     # dispatch, where it must answer NOT ASSESSED; a pull-request run on a consumer is the end-to-end.
     "ticket-reference": {"probe": "tests/prove_ticket_reference_gate.py", "state": "observed",
                          "level": "tool"},
+    # OBSERVED 2026-10-22, locally, by running the workflow's OWN evidence, decision and action steps
+    # extracted from .github/workflows/reusable-dependabot-triage.yml under bash with a gh shim:
+    # tests/prove_dependabot_triage.py (D1..D8, 42 decisions). Level `tool`: nothing here has run on
+    # a runner against a real Dependabot PR; the hosted plan is docs/adoption/DEPENDABOT_TRIAGE.md
+    # section 6. Provenance/signature checking (a section 6 criterion) is NOT built and is recorded
+    # in every decision as NOT_ESTABLISHED.
+    "dependabot-triage": {"probe": "tests/prove_dependabot_triage.py", "state": "observed",
+                          "level": "tool"},
     "version-metadata-wired": {"probe": "tests/prove_build_push_round_trip.py",
                                "state": "observed", "level": "tool"},
     }
@@ -605,6 +628,23 @@ DEFERRALS: dict[str, dict] = {
     # nor verify an attestation. The step's five-outcome classification and rung routing are proven
     # locally by tests/prove_attestation_verify.py against recorded gh answers; what no local run can
     # show is a real `gh attestation verify oci://<acr>/...@sha256` lookup (section 11.2).
+    # FUTURE_WORK section 6 (owner, 2026-10-22). Proven locally by running the shipped steps; nothing
+    # in this repository invokes it, by design: its caller must trigger on pull_request_target and
+    # grant write scopes, and the kit's self-test is no place for either. The proof that is owed is a
+    # hosted run on the owner's public test repository (Actions minutes there are free), planned in
+    # docs/adoption/DEPENDABOT_TRIAGE.md section 6.
+    "dependabot-merge-hosted": {"reason": "a hosted run needs a repository receiving Dependabot PRs, "
+                                      "with auto-merge allowed and required checks; Actions minutes "
+                                      "on the kit's own account are blocked by billing",
+                            "owner": "kit-maintainer",
+                            "proves": "on a public test repository: a patch dev update is armed with "
+                                      "--auto --squash and merges only after the required checks "
+                                      "pass; a major is labelled, commented and left open; an "
+                                      "excluded-path update is closed with its reason; a "
+                                      "pull_request caller is refused",
+                            "trigger": "the coordinator's hello-world run (DEPENDABOT_TRIAGE.md "
+                                       "section 6)",
+                            "expires": "2026-12-31"},
     "attestation-verify":  {"reason": "IMPLEMENTATION_HELD -- the owner's plan (Pro) offers no "
                                       "attestations on private repositories, so V1 cannot be armed "
                                       "there; classification and routing are proven locally only",
@@ -715,7 +755,12 @@ DEFERRALS: dict[str, dict] = {
 
 # Ratchet. Accepted debt may shrink, never grow. A new deferral must displace an old one or
 # raise this number deliberately, in a reviewable diff, with a reason in the commit message.
-MAX_ACCEPTED_DEBT = 3    # LOWERED 4 -> 3 on 2026-10-16: ticket-reconciliation observed live on Jira
+MAX_ACCEPTED_DEBT = 4    # RAISED 3 -> 4 on 2026-10-22 for dependabot-merge-hosted (FUTURE_WORK 6): a
+                         # NEW capability -- the GitHub half of the Dependabot triage (token scopes,
+                         # auto-merge held by branch protection) -- whose proof needs a hosted run on
+                         # a repository receiving Dependabot PRs. Nothing existing became provable in
+                         # this change, so nothing could be displaced. Ratchet it back when it closes.
+                         # LOWERED 4 -> 3 on 2026-10-16: ticket-reconciliation observed live on Jira
                          # (R-1, R-2 T-1/T-2, T-6, T-7, T-8).
                          # LOWERED 5 -> 4 on 2026-10-16: deploy-appservice observed live (runs
                          # 38878189985, 38886279650 and the rest cited in its entry).

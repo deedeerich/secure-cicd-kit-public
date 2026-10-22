@@ -244,6 +244,16 @@ on:
         type: string
         required: false
         default: ""
+      target_environment:
+        description: >-
+          The environment this run is evaluated for under the policy register (a tier name, or a
+          name the register maps to one). Empty for a pull request or a post-merge push: the run is
+          then evaluated at the tier a merge reaches without a human gate (prod when the register
+          declares none). A pull request is always evaluated there. It selects a register cell, and
+          never a weaker one than a merge already reaches; no rung or policy_mode input exists.
+        type: string
+        required: false
+        default: ""
       test_only_seed_artifact:
         description: >-
           TEST-ONLY. Empty (the default) changes nothing and is read by nothing. When set, it
@@ -323,8 +333,8 @@ on:
       advisory_causes:
         description: >-
           Comma list, set only when routing_result is PROCEED_WITH_ADVISORY: VERSION_GAP |
-          VERSION_GAP_UNVERIFIED | COVERAGE_PARTIAL | WEAKENING_ATTRIBUTED | FINDINGS_NOT_BLOCKED
-          (assurance-taxonomy.yaml advisory_cause). Pass it to the deploy reusables beside
+          VERSION_GAP_UNVERIFIED | COVERAGE_PARTIAL | WEAKENING_ATTRIBUTED | FINDINGS_NOT_BLOCKED |
+          SECRET_EXCEPTION_ATTRIBUTED (assurance-taxonomy.yaml advisory_cause). Pass it to the deploy reusables beside
           routing_result: at uat and prod they refuse a VERSION_GAP without an attributed
           exception, and record a VERSION_GAP_UNVERIFIED prominently (KDEC-014).
         value: ${{ jobs.security-gate.outputs.advisory_causes }}
@@ -352,6 +362,58 @@ on:
       weakening_record:
         description: "Reason, authority, exception reference and expiry as one JSON object."
         value: ${{ jobs.security-gate.outputs.weakening_record }}
+      # THE POLICY THE VERDICT WAS REACHED UNDER (stage 1; scripts/policy_registration.py).
+      policy_resolution:
+        description: "POLICY_RESOLVED, or the refusal by name (assurance-taxonomy.yaml policy_resolution)."
+        value: ${{ jobs.security-gate.outputs.policy_resolution }}
+      policy_source:
+        description: "KIT_DEFAULT (crawl: only secrets block) or REGISTER."
+        value: ${{ jobs.security-gate.outputs.policy_source }}
+      policy_chain:
+        description: "The register entry ids applied, least specific first."
+        value: ${{ jobs.security-gate.outputs.policy_chain }}
+      rung_declared:
+        description: "crawl | walk | run as registered for the evaluated tier."
+        value: ${{ jobs.security-gate.outputs.rung_declared }}
+      rung_effective:
+        description: "The rung the gate obeyed."
+        value: ${{ jobs.security-gate.outputs.rung_effective }}
+      rung_divergence:
+        description: "Empty when declared and effective agree."
+        value: ${{ jobs.security-gate.outputs.rung_divergence }}
+      policy_mode:
+        description: "adoption | strict, DERIVED from the rung, never supplied."
+        value: ${{ jobs.security-gate.outputs.policy_mode }}
+      effective_minimum:
+        description: "JSON: the weakest routing_result each control class may contribute."
+        value: ${{ jobs.security-gate.outputs.effective_minimum }}
+      policy_divergences:
+        description: "JSON: every control whose minimum differs from the rung's floor."
+        value: ${{ jobs.security-gate.outputs.policy_divergences }}
+      environment_tier:
+        description: "The tier this run was evaluated at."
+        value: ${{ jobs.security-gate.outputs.environment_tier }}
+      team_pattern:
+        description: "solo_dev | pair_devs | small_team | full_team, or empty when unregistered."
+        value: ${{ jobs.security-gate.outputs.team_pattern }}
+      unvalidated_human_workflow_paths:
+        description: "Human controls this team pattern cannot demonstrate -- reported, never passing."
+        value: ${{ jobs.security-gate.outputs.unvalidated_human_workflow_paths }}
+      deploy_approval:
+        description: >-
+          JSON per tier: approver_groups, approvers_required, self_review_prevented, ai_review.
+          Pass it to the deploy reusables: at uat and prod they read the GitHub environment's
+          protection rules and refuse a deploy the policy demands reviewers for and the
+          environment does not have.
+        value: ${{ jobs.security-gate.outputs.deploy_approval }}
+      assurance_result:
+        description: >-
+          The run record as compact JSON, valid against schemas/assurance-result.schema.json
+          (ledger L36). Empty when it did not validate -- then run_record is invalid.
+        value: ${{ jobs.security-gate.outputs.assurance_result }}
+      run_record:
+        description: "valid | invalid: whether the run record validated and was emitted."
+        value: ${{ jobs.security-gate.outputs.run_record }}
     secrets:
       SEMGREP_APP_TOKEN:
         description: "Optional Semgrep managed-rules/dashboard token"
@@ -1614,7 +1676,7 @@ jobs:
         # sha256 and compares it against a value pinned in THIS FILE, which GitHub resolved
         # from the ref before any job started. A manifest checked only against itself would
         # faithfully certify whatever arrived, which is an integrity check in name only.
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kit-scripts-${{ github.run_attempt }}
           path: |
@@ -1699,7 +1761,7 @@ jobs:
       visibility: ${{ steps.platform.outputs.visibility }}
       platform_source: ${{ steps.platform.outputs.platform_source }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # THE STEP BODIES RUN FROM THE KIT, NOT FROM THIS FILE. Inline, the survey and the platform
       # probe were 37 KB and held the flagship over the 475 KB fail line (check_workflow_size.py).
       # `$/` delivers the whole kit at the caller's pinned commit; the composite is invoked once
@@ -1829,7 +1891,7 @@ jobs:
       # never a person: the kit stays portable and the summary stays honest about who can act.
       platform_owners: ${{ steps.resolve.outputs.platform_owners }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # THE STEP BODIES RUN FROM THE KIT, NOT FROM THIS FILE. Inline, the resolver and the
       # platform consumers were 85 KB and took the flagship to 518 KB -- over the 500 KB ceiling
       # at which GitHub stops STARTING a workflow (tests/check_workflow_size.py). `$/` delivers
@@ -1879,6 +1941,12 @@ jobs:
     if: always()
     name: Secret scan (gitleaks + detect-secrets)
     runs-on: ubuntu-latest
+    outputs:
+      # FINDINGS and the count when gitleaks found secrets (owner ruling 2026-10-22, lane L-S). The
+      # job hands them to the gate, which blocks at every tier unless each one is excepted by
+      # fingerprint in the policy register; the job still fails when it could not scan.
+      findings_state: ${{ steps.scan.outputs.findings_state }}
+      secret_count: ${{ steps.scan.outputs.secret_count }}
     # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
     # converts a dependency failure into uncontrolled cost).
     # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
@@ -1893,6 +1961,7 @@ jobs:
       # tests/prove_composite_move_equivalence.py holds that; the Result summary stays here
       # because it reads `job.status`, which is the job's fact, not the composite's.
       - name: Secret scan (gitleaks + detect-secrets)
+        id: scan
         uses: $/.github/actions/secret-scan
         with:
           paths: ${{ inputs.paths }}
@@ -1932,6 +2001,10 @@ jobs:
     if: needs.discover.outputs.python == 'true' || needs.discover.outputs.node == 'true'
     name: Code quality
     runs-on: ubuntu-latest
+    outputs:
+      # FINDINGS when enforce_lint is on, advisory_mode off, and ESLint or Ruff found violations;
+      # '' otherwise. The job does not fail on it: the security gate enforces it (O-24).
+      findings_state: ${{ steps.eslint.outputs.findings_state || steps.ruff.outputs.findings_state }}
     # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
     # converts a dependency failure into uncontrolled cost).
     # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
@@ -1944,7 +2017,7 @@ jobs:
         # A RUN-SCOPED ARTIFACT, NOT `uses: ./` and NOT a copy per call site. Why, at
         # length, in the `kit-scripts` job at the top of this file.
         if: always()
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: kit-scripts-${{ github.run_attempt }}
           path: /tmp
@@ -1959,7 +2032,7 @@ jobs:
           echo "77747346d57de23c8a301758499db36f89f41e3850a2495497d2983a6cb3916a  kit-scripts.sha256" | sha256sum -c -
           sha256sum -c kit-scripts.sha256
       # END FETCH_KIT_SCRIPTS
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # NEVER ASSUME MANIFESTS LIVE AT THE REPOSITORY ROOT.
       # setup-node with `cache: npm` previously failed the whole job with "Dependencies lock
@@ -2035,7 +2108,7 @@ jobs:
 
       - name: Setup Node
         if: needs.discover.outputs.node == 'true' && steps.node.outputs.found == 'true'
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ inputs.node_version }}
           # Empty disables caching. A missing lockfile must degrade to "no cache", never to a
@@ -2044,6 +2117,7 @@ jobs:
           cache-dependency-path: ${{ steps.node.outputs.lock }}
 
       - name: ESLint
+        id: eslint
         if: needs.discover.outputs.node == 'true' && steps.node.outputs.found == 'true'
         env:
           # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (ledger L38).
@@ -2086,7 +2160,10 @@ jobs:
             echo "Reported rather than failed — whether to lint is a consumer choice."
             echo "::endgroup::"; cd "$GITHUB_WORKSPACE"; continue
           fi
-          node_modules/.bin/eslint .; rc=$?
+          # `|| rc=$?`, not `; rc=$?`: this step runs under `bash -e`, where a bare ESLint exit 1
+          # ended the step there -- red on any lint finding, enforce_lint on or off.
+          rc=0
+          node_modules/.bin/eslint . || rc=$?
           case "$rc" in
             0) echo "ESLint $dir: clean" ;;
             1) if [ "${IN_ENFORCE_LINT}" = "true" ] && [ "${IN_ADVISORY_MODE}" != "true" ]; then
@@ -2101,15 +2178,21 @@ jobs:
           echo "::endgroup::"
           cd "$GITHUB_WORKSPACE"
           done < "$GITHUB_WORKSPACE/.node-roots.txt"
-          exit "$fail"
+          # THE GATE IS THE SINGLE ENFORCEMENT POINT (lane L-S, O-24). Enforced lint findings are
+          # handed to it as findings_state=FINDINGS (this job writes no SARIF, so the report cannot
+          # see them; a job that failed with nothing on record read as a crash, EVIDENCE_UNTRUSTED).
+          # The step fails only when the tooling did: npm, or an unreadable root list.
+          [ "$fail" = "1" ] && echo "findings_state=FINDINGS" >> "$GITHUB_OUTPUT"
+          exit 0
 
       - name: Setup Python
         if: needs.discover.outputs.python == 'true'
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ inputs.python_version }}
 
       - name: Ruff + mypy
+        id: ruff
         if: needs.discover.outputs.python == 'true'
         env:
           # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (ledger L38).
@@ -2151,6 +2234,13 @@ jobs:
               " findings. Not blocking — set enforce_lint: true to gate on them."
           fi
           mypy "$scope" --ignore-missing-imports || true   # types advisory by default
+          # Ruff exits 1 on violations and 2 when it could not run. Violations are findings, handed
+          # to the gate (findings_state); anything else is the tool failing, and fails the step.
+          if [ "$ruff_rc" = "1" ]; then
+            echo "findings_state=FINDINGS" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Ruff findings (enforce_lint)::handed to the security gate, which decides by the resolved policy."
+            exit 0
+          fi
           exit "$ruff_rc"
 
   # ─── SAST ───────────────────────────────────────────────────
@@ -2182,6 +2272,16 @@ jobs:
     if: always()
     name: SAST (Semgrep)
     runs-on: ubuntu-latest
+    # THE SCAN'S OWN STATE, BESIDE THE JOB RESULT (KDEC-016, 2026-10-22). A job that succeeded
+    # over PHP Semgrep could only partly parse is PARTIAL, not PASS: the gate reads scan_state as
+    # the typed state, and the files are named for the summary. '' when the job did not run.
+    outputs:
+      scan_state: ${{ steps.semgrep.outputs.scan_state }}
+      scan_reason: ${{ steps.semgrep.outputs.scan_reason }}
+      parse_partial_files: ${{ steps.semgrep.outputs.parse_partial_files }}
+      # FINDINGS when this job's own threshold fired and no caller input softened it; '' otherwise.
+      # The job does not fail on it: the security gate enforces it by the resolved policy (O-24).
+      findings_state: ${{ steps.semgrep_enforce.outputs.findings_state }}
     # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
     # converts a dependency failure into uncontrolled cost).
     # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
@@ -2202,7 +2302,7 @@ jobs:
         # A RUN-SCOPED ARTIFACT, NOT `uses: ./` and NOT a copy per call site. Why, at
         # length, in the `kit-scripts` job at the top of this file.
         if: always()
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: kit-scripts-${{ github.run_attempt }}
           path: /tmp
@@ -2217,7 +2317,7 @@ jobs:
           echo "77747346d57de23c8a301758499db36f89f41e3850a2495497d2983a6cb3916a  kit-scripts.sha256" | sha256sum -c -
           sha256sum -c kit-scripts.sha256
       # END FETCH_KIT_SCRIPTS
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Semgrep scan
         id: semgrep
         env:
@@ -2265,13 +2365,57 @@ jobs:
           # --strict, with the SARIF still written. Other non-zero codes keep their old handling.
           # --json-output: the same run's JSON beside the SARIF, read ONLY for `paths.scanned` --
           # the files Semgrep says it examined (the PHP witness below). Never uploaded.
+          #
+          # PHP: SCAN WHAT PARSES, FLAG THE REST (owner, 2026-10-22; KDEC-016 amended). Exit 3 is
+          # NOT discarded when Semgrep's own JSON says every error is a PARSE error on a .php file
+          # and it examined files: PHP 8.5's `(void)` cast and `final` promoted properties are
+          # errors[].type ["PartialParsing", [spans]] (level "warn") naming the file, while every
+          # other file -- and the parsed rest of that one -- is scanned (measured in this job's
+          # image, by digest, 2026-10-22). The findings are kept, the files and lines are named,
+          # and the scan is PARTIAL (scan_partial_reason PARSE_PARTIAL_PHP_SYNTAX) -- never PASS,
+          # and never COLLECTION_FAILED for this case. ANY other error -- a non-PHP file that did
+          # not parse, a rule that did not load, a timeout, a crash, nothing examined, a JSON
+          # nobody can read -- keeps the strict refusal. The parse kinds are Semgrep's own
+          # error_type tags (semgrep_output_v1 in the image). tests/prove_semgrep_php.py S7-S9.
+          php_parse_only='["PartialParsing", "Syntax error", "Lexical error", "Other syntax error", "AST builder error"] as $kinds
+            | (.errors // []) as $e
+            | if ($e | length) == 0 or ((.paths.scanned // []) | length) == 0 then "no error named, or nothing examined"
+              elif all($e[]; ((.type | if type == "array" then .[0] else . end) as $t | $kinds | index([$t]) != null)
+                             and ((.path // "") | endswith(".php"))
+                             and all((.spans // [])[]; ((.file // .path // "") | endswith(".php"))))
+              then "php-parse-only" else "an error that is not a PHP parse error" end'
+          scan_state=COMPLETE
           sg_rc=0
           semgrep scan $cfg --strict --sarif --output semgrep.sarif --json-output=semgrep-paths.json --metrics=off \
             "${IN_PATHS}" || sg_rc=$?
           if [ "$sg_rc" = "3" ]; then
-            echo "::error title=COLLECTION_FAILED::semgrep could not parse at least one file in scope (exit 3 under --strict). What it skipped was not scanned, so a zero here is not clean."
-            echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
-            exit 1
+            # suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE -- empty is COLLECTION_FAILED
+            # discards: jq's stderr on an absent or unreadable JSON
+            # preserved_by: the empty verdict, which the refusal names
+            parse_only=$(jq -r "$php_parse_only" semgrep-paths.json 2>/dev/null || echo "")
+            if [ "$parse_only" != "php-parse-only" ]; then
+              echo "::error title=COLLECTION_FAILED::semgrep could not parse at least one file in scope (exit 3 under --strict), and not only PHP parse errors (${parse_only:-its JSON could not be read}). What it skipped was not scanned, so a zero here is not clean."
+              echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            scan_state=PARTIAL
+            partial_files=$(jq -c '[.errors[].path] | unique' semgrep-paths.json)
+            echo "scan_reason=PARSE_PARTIAL_PHP_SYNTAX" >> "$GITHUB_OUTPUT"
+            echo "parse_partial_files=${partial_files}" >> "$GITHUB_OUTPUT"
+            echo "::warning title=PARTIAL (PARSE_PARTIAL_PHP_SYNTAX)::Semgrep could not fully parse $(jq -r '[.errors[].path] | unique | length' semgrep-paths.json) PHP file(s): ${partial_files}. Everything else was scanned and its findings are kept; the unparsed parts of these files were NOT scanned. PARTIAL, never PASS."
+            {
+              echo "### Semgrep — PARTIAL: PHP files it could not fully parse"
+              echo ""
+              echo "| file | lines Semgrep reported | Semgrep said |"
+              echo "|---|---|---|"
+              jq -r '.errors[] | "| `\(.path)` | \([(.spans // [])[] | "\(.start.line)-\(.end.line)"] | join(", ")) | \((.message // (.type | if type == "array" then .[0] else . end)) | gsub("\n"; " ") | gsub("[|]"; "/")) |"' semgrep-paths.json
+              echo ""
+              echo "> **Scan what parses, flag the rest** (KDEC-016, 2026-10-22). Every other file was scanned and"
+              echo "> its findings stand. These FILES are partly unscanned -- Semgrep may report only the first"
+              echo "> construct it could not read in a file (measured: \`final\` promotion hid a later \`(void)\`),"
+              echo "> so a silence anywhere in them is not clean: the gate records COVERAGE_PARTIAL. A newer"
+              echo "> Semgrep that reads them closes it."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
           # A PARSE FAILURE IS NOT ZERO FINDINGS. Semgrep is the highest-yield scanner in the
@@ -2329,14 +2473,18 @@ jobs:
             fi
           fi
           echo "count=$n" >> "$GITHUB_OUTPUT"
-          echo "semgrep ERROR-level findings: $n"
+          # Written LAST: a scan refused above never publishes a state the gate could read.
+          echo "scan_state=${scan_state}" >> "$GITHUB_OUTPUT"
+          echo "semgrep ERROR-level findings: $n (scan ${scan_state})"
 
       - name: Semgrep — enforce
+        id: semgrep_enforce
         if: always()
         env:
           # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (ledger L38).
           IN_SOFT_FAIL_SAST: ${{ inputs.soft_fail_sast }}
           IN_ADVISORY_MODE: ${{ inputs.advisory_mode }}
+          IN_SCAN_STATE: ${{ steps.semgrep.outputs.scan_state }}
         run: |
           n='${{ steps.semgrep.outputs.count }}'
           # COLLECTION_FAILED IS NOT ZERO FINDINGS -- AND THIS STEP RUNS ON always().
@@ -2357,11 +2505,24 @@ jobs:
             echo "An ABSENT measurement is not a measurement of zero."
             exit 1
           fi
+          # PARTIAL (PHP files Semgrep could not fully parse) keeps its findings: they are handed to
+          # the gate exactly as a complete scan's are. What it cannot do is read as complete.
+          analysis=COMPLETE
+          [ "${IN_SCAN_STATE:-}" = "PARTIAL" ] && analysis=PARTIAL
+          # THE GATE IS THE SINGLE ENFORCEMENT POINT (lane L-S, O-24). Findings are REPORTED here
+          # and handed to the gate as findings_state=FINDINGS; the gate enforces them by the
+          # resolved policy. This job fails only when it could not scan or trust its own count
+          # (above). tests/prove_gate_policy_enforcement.py (sep_*).
           if [ "${n:-0}" -gt 0 ] && [ "${IN_SOFT_FAIL_SAST}" != "true" ] && [ "${IN_ADVISORY_MODE}" != "true" ]; then
-            echo "::error title=Semgrep::${n} ERROR-level finding(s). ANALYSIS=COMPLETE GATE=FAIL"
-            exit 1
+            echo "findings_state=FINDINGS" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Semgrep::${n} ERROR-level finding(s). ANALYSIS=${analysis} -- handed to the security gate, which decides by the resolved policy."
+            exit 0
           fi
-          echo "ANALYSIS=COMPLETE GATE=PASS (${n:-0} error-level finding(s), soft_fail=${IN_SOFT_FAIL_SAST})"
+          if [ "$analysis" = "PARTIAL" ]; then
+            echo "ANALYSIS=PARTIAL: this step does not block (${n:-0} error-level finding(s), soft_fail=${IN_SOFT_FAIL_SAST}), and the PHP Semgrep could not parse is NOT clean -- the gate records it."
+            exit 0
+          fi
+          echo "ANALYSIS=${analysis} GATE=PASS (${n:-0} error-level finding(s), soft_fail=${IN_SOFT_FAIL_SAST})"
       # Findings must survive whether or not this repo has code scanning. Uploading to the
       # Security tab is a PUBLICATION channel, not the finding itself — free on public repos,
       # otherwise Advanced Security. Treating it as mandatory turned successful scans into
@@ -2403,7 +2564,7 @@ jobs:
       # END REDACT_STEP
       - name: Semgrep — keep SARIF as an artifact
         if: always() && steps.sarif_semgrep.outputs.exists == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sarif-semgrep-${{ github.run_attempt }}
           path: semgrep.sarif
@@ -2413,7 +2574,7 @@ jobs:
         id: cs_semgrep
         if: always() && steps.sarif_semgrep.outputs.exists == 'true'
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: semgrep.sarif
           category: semgrep
@@ -2455,6 +2616,10 @@ jobs:
     if: needs.discover.outputs.python == 'true'
     name: SAST (Bandit, python)
     runs-on: ubuntu-latest
+    outputs:
+      # FINDINGS when this job's own threshold fired and no caller input softened it; '' otherwise.
+      # The job does not fail on it: the security gate enforces it by the resolved policy (O-24).
+      findings_state: ${{ steps.bandit_enforce.outputs.findings_state }}
     # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
     # converts a dependency failure into uncontrolled cost).
     # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
@@ -2467,7 +2632,7 @@ jobs:
         # A RUN-SCOPED ARTIFACT, NOT `uses: ./` and NOT a copy per call site. Why, at
         # length, in the `kit-scripts` job at the top of this file.
         if: always()
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: kit-scripts-${{ github.run_attempt }}
           path: /tmp
@@ -2482,8 +2647,8 @@ jobs:
           echo "77747346d57de23c8a301758499db36f89f41e3850a2495497d2983a6cb3916a  kit-scripts.sha256" | sha256sum -c -
           sha256sum -c kit-scripts.sha256
       # END FETCH_KIT_SCRIPTS
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ inputs.python_version }}
       - name: Bandit → SARIF
@@ -2542,6 +2707,7 @@ jobs:
           echo "count=$n" >> "$GITHUB_OUTPUT"
           echo "bandit ERROR-level (HIGH) findings: $n of $(jq '[.runs[].results[]] | length' bandit.sarif)"
       - name: Bandit — enforce
+        id: bandit_enforce
         if: always()
         env:
           N: ${{ steps.bandit_count.outputs.count }}
@@ -2553,9 +2719,11 @@ jobs:
             echo "::error title=COLLECTION_FAILED::No bandit count. An ABSENT measurement is not a measurement of zero."
             exit 1
           fi
+          # Findings go to the gate (findings_state), which enforces by the resolved policy (O-24).
           if [ "$N" -gt 0 ] && [ "$SOFT_FAIL_SAST" != "true" ] && [ "$ADVISORY_MODE" != "true" ]; then
-            echo "::error title=Bandit::${N} HIGH-severity finding(s). ANALYSIS=COMPLETE GATE=FAIL"
-            exit 1
+            echo "findings_state=FINDINGS" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Bandit::${N} HIGH-severity finding(s). ANALYSIS=COMPLETE -- handed to the security gate, which decides by the resolved policy."
+            exit 0
           fi
           echo "ANALYSIS=COMPLETE GATE=PASS (${N} HIGH-severity finding(s), soft_fail=${SOFT_FAIL_SAST})"
       # Findings must survive whether or not this repo has code scanning. Uploading to the
@@ -2599,7 +2767,7 @@ jobs:
       # END REDACT_STEP
       - name: Bandit — keep SARIF as an artifact
         if: always() && steps.sarif_bandit.outputs.exists == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sarif-bandit-${{ github.run_attempt }}
           path: bandit.sarif
@@ -2609,7 +2777,7 @@ jobs:
         id: cs_bandit
         if: always() && steps.sarif_bandit.outputs.exists == 'true'
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: bandit.sarif
           category: bandit
@@ -2684,7 +2852,7 @@ jobs:
         # A RUN-SCOPED ARTIFACT, NOT `uses: ./` and NOT a copy per call site. Why, at
         # length, in the `kit-scripts` job at the top of this file.
         if: always()
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: kit-scripts-${{ github.run_attempt }}
           path: /tmp
@@ -2699,7 +2867,7 @@ jobs:
           echo "77747346d57de23c8a301758499db36f89f41e3850a2495497d2983a6cb3916a  kit-scripts.sha256" | sha256sum -c -
           sha256sum -c kit-scripts.sha256
       # END FETCH_KIT_SCRIPTS
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: matrix.gate == 'true'
 
       # CodeQL requires GitHub Advanced Security on private repositories. It is free on public
@@ -2709,7 +2877,7 @@ jobs:
         id: cq_init
         if: matrix.gate == 'true'
         continue-on-error: true
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: ${{ matrix.lang }}
           # Without this, CodeQL runs its built-in `code-scanning` suite -- curated for
@@ -2721,13 +2889,13 @@ jobs:
         id: cq_build
         if: matrix.gate == 'true' && steps.cq_init.outcome == 'success'
         continue-on-error: true
-        uses: github/codeql-action/autobuild@v4
+        uses: github/codeql-action/autobuild@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
 
       - name: CodeQL — analyse
         id: cq_analyze
         if: matrix.gate == 'true' && steps.cq_init.outcome == 'success'
         continue-on-error: true
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           category: "/language:${{ matrix.lang }}"
           # NEVER, AND PUBLISHED BELOW AFTER REDACTION. `upload: always` sent the SARIF to the
@@ -2806,7 +2974,7 @@ jobs:
       # END REDACT_STEP
       - name: CodeQL — keep SARIF as an artifact
         if: always() && matrix.gate == 'true' && steps.cq_analyze.outcome == 'success'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sarif-codeql-${{ matrix.lang }}-${{ github.run_attempt }}
           path: codeql-results
@@ -2816,7 +2984,7 @@ jobs:
         id: cs_codeql
         if: always() && matrix.gate == 'true' && steps.cq_analyze.outcome == 'success'
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: codeql-results
           category: "/language:${{ matrix.lang }}"
@@ -2897,6 +3065,10 @@ jobs:
     if: always()
     name: Dependency scan (Trivy fs)
     runs-on: ubuntu-latest
+    outputs:
+      # FINDINGS when this job's own threshold fired and no caller input softened it; '' otherwise.
+      # The job does not fail on it: the security gate enforces it by the resolved policy (O-24).
+      findings_state: ${{ steps.scan.outputs.findings_state }}
     # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
     # converts a dependency failure into uncontrolled cost).
     # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
@@ -2910,6 +3082,7 @@ jobs:
       # and SARIF category is what it was inline (tests/prove_composite_move_equivalence.py).
       # The Result summary stays here: it reads `job.status`, the job's fact.
       - name: Dependency scan (Trivy fs)
+        id: scan
         uses: $/.github/actions/deps-scan
         with:
           advisory_mode: ${{ inputs.advisory_mode }}
@@ -2945,6 +3118,10 @@ jobs:
     if: needs.discover.outputs.iac == 'true'
     name: IaC scan (Checkov + Trivy config)
     runs-on: ubuntu-latest
+    outputs:
+      # FINDINGS when this job's own threshold fired and no caller input softened it; '' otherwise.
+      # The job does not fail on it: the security gate enforces it by the resolved policy (O-24).
+      findings_state: ${{ steps.scan.outputs.findings_state }}
     # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
     # converts a dependency failure into uncontrolled cost).
     # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
@@ -2958,6 +3135,7 @@ jobs:
       # and SARIF category is what it was inline (tests/prove_composite_move_equivalence.py).
       # The Result summary stays here: it reads `job.status`, the job's fact.
       - name: IaC scan (Checkov + Trivy config)
+        id: scan
         uses: $/.github/actions/iac-scan
         with:
           advisory_mode: ${{ inputs.advisory_mode }}
@@ -2996,6 +3174,10 @@ jobs:
     if: needs.discover.outputs.dotnet == 'true'
     name: SAST + deps (.NET)
     runs-on: ubuntu-latest
+    outputs:
+      # FINDINGS when this job's own threshold fired and no caller input softened it; '' otherwise.
+      # The job does not fail on it: the security gate enforces it by the resolved policy (O-24).
+      findings_state: ${{ steps.scan.outputs.findings_state }}
     # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
     # converts a dependency failure into uncontrolled cost).
     # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
@@ -3009,6 +3191,7 @@ jobs:
       # and SARIF category is what it was inline (tests/prove_composite_move_equivalence.py).
       # The Result summary stays here: it reads `job.status`, the job's fact.
       - name: SAST + deps (.NET)
+        id: scan
         uses: $/.github/actions/sast-dotnet
         with:
           advisory_mode: ${{ inputs.advisory_mode }}
@@ -3044,6 +3227,10 @@ jobs:
     if: needs.discover.outputs.java == 'true'
     name: SAST (Java)
     runs-on: ubuntu-latest
+    outputs:
+      # FINDINGS when this job's own threshold fired and no caller input softened it; '' otherwise.
+      # The job does not fail on it: the security gate enforces it by the resolved policy (O-24).
+      findings_state: ${{ steps.scan.outputs.findings_state }}
     # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
     # converts a dependency failure into uncontrolled cost).
     # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
@@ -3057,6 +3244,7 @@ jobs:
       # and SARIF category is what it was inline (tests/prove_composite_move_equivalence.py).
       # The Result summary stays here: it reads `job.status`, the job's fact.
       - name: SAST (Java)
+        id: scan
         uses: $/.github/actions/sast-java
         with:
           advisory_mode: ${{ inputs.advisory_mode }}
@@ -3092,6 +3280,10 @@ jobs:
     if: needs.discover.outputs.go == 'true'
     name: SAST (Go)
     runs-on: ubuntu-latest
+    outputs:
+      # FINDINGS when this job's own threshold fired and no caller input softened it; '' otherwise.
+      # The job does not fail on it: the security gate enforces it by the resolved policy (O-24).
+      findings_state: ${{ steps.gosec_enforce.outputs.findings_state }}
     # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
     # converts a dependency failure into uncontrolled cost).
     # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
@@ -3104,7 +3296,7 @@ jobs:
         # A RUN-SCOPED ARTIFACT, NOT `uses: ./` and NOT a copy per call site. Why, at
         # length, in the `kit-scripts` job at the top of this file.
         if: always()
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: kit-scripts-${{ github.run_attempt }}
           path: /tmp
@@ -3119,8 +3311,8 @@ jobs:
           echo "77747346d57de23c8a301758499db36f89f41e3850a2495497d2983a6cb3916a  kit-scripts.sha256" | sha256sum -c -
           sha256sum -c kit-scripts.sha256
       # END FETCH_KIT_SCRIPTS
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ inputs.go_version }}
       - name: gosec
@@ -3388,6 +3580,7 @@ jobs:
           echo "gosec findings: $n"
 
       - name: gosec — enforce
+        id: gosec_enforce
         if: always()
         env:
           # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (ledger L38).
@@ -3413,9 +3606,11 @@ jobs:
             echo "An ABSENT measurement is not a measurement of zero."
             exit 1
           fi
+          # Findings go to the gate (findings_state), which enforces by the resolved policy (O-24).
           if [ "${n:-0}" -gt 0 ] && [ "${IN_SOFT_FAIL_SAST}" != "true" ] && [ "${IN_ADVISORY_MODE}" != "true" ]; then
-            echo "::error title=gosec::${n} finding(s). ANALYSIS=COMPLETE GATE=FAIL"
-            exit 1
+            echo "findings_state=FINDINGS" >> "$GITHUB_OUTPUT"
+            echo "::warning title=gosec::${n} finding(s). ANALYSIS=COMPLETE -- handed to the security gate, which decides by the resolved policy."
+            exit 0
           fi
           echo "ANALYSIS=COMPLETE GATE=PASS (${n:-0} finding(s))"
       # Findings must survive whether or not this repo has code scanning. Uploading to the
@@ -3459,7 +3654,7 @@ jobs:
       # END REDACT_STEP
       - name: gosec — keep SARIF as an artifact
         if: always() && steps.sarif_gosec.outputs.exists == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sarif-gosec-${{ github.run_attempt }}
           path: gosec.sarif
@@ -3469,7 +3664,7 @@ jobs:
         id: cs_gosec
         if: always() && steps.sarif_gosec.outputs.exists == 'true'
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: gosec.sarif
           category: gosec
@@ -3511,6 +3706,10 @@ jobs:
     if: needs.discover.outputs.cpp == 'true'
     name: SAST (C / C++)
     runs-on: ubuntu-latest
+    outputs:
+      # FINDINGS when this job's own threshold fired and no caller input softened it; '' otherwise.
+      # The job does not fail on it: the security gate enforces it by the resolved policy (O-24).
+      findings_state: ${{ steps.scan.outputs.findings_state }}
     # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
     # converts a dependency failure into uncontrolled cost).
     # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
@@ -3525,6 +3724,7 @@ jobs:
       # tests/prove_composite_move_equivalence.py holds that; the Result summary stays here
       # because it reads `job.status`, which is the job's fact, not the composite's.
       - name: SAST (C / C++)
+        id: scan
         uses: $/.github/actions/sast-cpp
         with:
           paths: ${{ inputs.paths }}
@@ -3569,6 +3769,9 @@ jobs:
       # success / failure of the secrets step. The gate reads `failure` as a SECRET finding, which
       # advisory_mode never softens. Empty when the job did not run.
       secret_state: ${{ steps.img_secret.outcome }}
+      # FINDINGS when the vulnerability threshold fired and advisory_mode did not soften it; ''
+      # otherwise. The job does not fail on it: the security gate enforces it by the policy (O-24).
+      findings_state: ${{ steps.trivy_image_enforce.outputs.findings_state }}
     permissions:
       contents: read
       security-events: write
@@ -3578,7 +3781,7 @@ jobs:
         # A RUN-SCOPED ARTIFACT, NOT `uses: ./` and NOT a copy per call site. Why, at
         # length, in the `kit-scripts` job at the top of this file.
         if: always()
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: kit-scripts-${{ github.run_attempt }}
           path: /tmp
@@ -3593,7 +3796,7 @@ jobs:
           echo "77747346d57de23c8a301758499db36f89f41e3850a2495497d2983a6cb3916a  kit-scripts.sha256" | sha256sum -c -
           sha256sum -c kit-scripts.sha256
       # END FETCH_KIT_SCRIPTS
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # TWO STEPS, BECAUSE THE TWO FINDING CLASSES ARE ENFORCED DIFFERENTLY.
       # This was one step with `scanners: vuln,secret` and an exit code that advisory_mode set to
       # 0 -- so a credential baked into the image passed in advisory mode, against the kit's rule
@@ -3602,7 +3805,7 @@ jobs:
       # the gate reads the secrets outcome (job output `secret_state`) as a secret, not as an
       # ordinary failed scanner.
       - name: Trivy image (vulnerabilities)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
           image-ref: ${{ inputs.image_ref }}
@@ -3623,7 +3826,7 @@ jobs:
         # Runs even when the vulnerability step failed: a vulnerable image can also carry a
         # credential, and the second finding must not hide behind the first.
         if: always()
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
           image-ref: ${{ inputs.image_ref }}
@@ -3670,6 +3873,7 @@ jobs:
           echo "count=$n" >> "$GITHUB_OUTPUT"
           echo "Trivy image findings at ${FAIL_ON}: $n of $(jq '[.runs[].results[]] | length' "$REPORT") reported"
       - name: Trivy image — enforce
+        id: trivy_image_enforce
         if: always()
         env:
           N: ${{ steps.trivy_image_count.outputs.count }}
@@ -3681,9 +3885,12 @@ jobs:
             echo "::error title=COLLECTION_FAILED::No Trivy image count. An ABSENT measurement is not a measurement of zero."
             exit 1
           fi
+          # Vulnerabilities go to the gate (findings_state), which enforces by the resolved policy
+          # (O-24). A secret in the image still fails this job: the secrets step above, every mode.
           if [ "$N" -gt 0 ] && [ "$ADVISORY_MODE" != "true" ]; then
-            echo "::error title=Trivy image::${N} finding(s) at ${FAIL_ON}. GATE=FAIL"
-            exit 1
+            echo "findings_state=FINDINGS" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Trivy image::${N} finding(s) at ${FAIL_ON} -- handed to the security gate, which decides by the resolved policy."
+            exit 0
           fi
           echo "Trivy image: ${N} finding(s) at ${FAIL_ON} (advisory=${ADVISORY_MODE})"
       # THE SECRET REPORT IS HELD TO THE SAME ROWS BEFORE IT IS PUBLISHED (ledger L02; flagship
@@ -3756,7 +3963,7 @@ jobs:
       # END REDACT_STEP
       - name: Trivy image — keep SARIF as an artifact
         if: always() && steps.sarif_img.outputs.vuln == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sarif-trivy-image-${{ github.run_attempt }}
           path: trivy-image.sarif
@@ -3766,7 +3973,7 @@ jobs:
         id: cs_img
         if: always() && steps.sarif_img.outputs.vuln == 'true'
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: trivy-image.sarif
           category: trivy-image
@@ -3801,7 +4008,7 @@ jobs:
       # END REDACT_STEP
       - name: Trivy image secrets — keep SARIF as an artifact
         if: always() && steps.sarif_img.outputs.secret == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sarif-trivy-image-secret-${{ github.run_attempt }}
           path: trivy-image-secret.sarif
@@ -3811,7 +4018,7 @@ jobs:
         id: cs_img_secret
         if: always() && steps.sarif_img.outputs.secret == 'true'
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: trivy-image-secret.sarif
           category: trivy-image-secret
@@ -3865,7 +4072,7 @@ jobs:
         # A RUN-SCOPED ARTIFACT, NOT `uses: ./` and NOT a copy per call site. Why, at
         # length, in the `kit-scripts` job at the top of this file.
         if: always()
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: kit-scripts-${{ github.run_attempt }}
           path: /tmp
@@ -3880,7 +4087,7 @@ jobs:
           echo "77747346d57de23c8a301758499db36f89f41e3850a2495497d2983a6cb3916a  kit-scripts.sha256" | sha256sum -c -
           sha256sum -c kit-scripts.sha256
       # END FETCH_KIT_SCRIPTS
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install OSV-Scanner
         # PINNED BY VERSION, VERIFIED BY CHECKSUM (ledger L84). This fetched `releases/latest`:
         # never stale, never reproducible, and a release replaced upstream would have run inside
@@ -4083,7 +4290,7 @@ jobs:
       # END REDACT_STEP
       - name: OSV — keep SARIF as an artifact
         if: always() && steps.sarif_osv.outputs.exists == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sarif-osv-${{ github.run_attempt }}
           path: osv.sarif
@@ -4093,7 +4300,7 @@ jobs:
         id: cs_osv
         if: always() && steps.sarif_osv.outputs.exists == 'true'
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: osv.sarif
           category: osv
@@ -4151,7 +4358,7 @@ jobs:
         # A RUN-SCOPED ARTIFACT, NOT `uses: ./` and NOT a copy per call site. Why, at
         # length, in the `kit-scripts` job at the top of this file.
         if: always()
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: kit-scripts-${{ github.run_attempt }}
           path: /tmp
@@ -4166,7 +4373,7 @@ jobs:
           echo "77747346d57de23c8a301758499db36f89f41e3850a2495497d2983a6cb3916a  kit-scripts.sha256" | sha256sum -c -
           sha256sum -c kit-scripts.sha256
       # END FETCH_KIT_SCRIPTS
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Syft (pinned, verified)
         # PINNED BY VERSION, VERIFIED BY CHECKSUM (ledger L84). This fetched anchore/syft's
         # install.sh from `main` and ran whatever it installed -- 1.54.1 on the last hosted run,
@@ -4268,7 +4475,7 @@ jobs:
           fi
           bash /tmp/redact_all.sh
       # END REDACT_STEP
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: sbom
@@ -4334,6 +4541,8 @@ jobs:
     outputs:
       blocking_findings: ${{ steps.render.outputs.blocking_findings }}
       jobs_with_findings: ${{ steps.render.outputs.jobs_with_findings }}
+      # The secret scan's findings by fingerprint, for the gate's secret exceptions (lane L-S).
+      secret_findings: ${{ steps.render.outputs.secret_findings }}
       # THE FINDINGS FILE (L52): identify() results, one per finding, inside the evidence
       # artifact. propose-ledger reads it from the artifact; this output names the path.
       findings: ${{ steps.render.outputs.findings }}
@@ -4367,7 +4576,7 @@ jobs:
         # A RUN-SCOPED ARTIFACT, NOT `uses: ./` and NOT a copy per call site. Why, at
         # length, in the `kit-scripts` job at the top of this file.
         if: always()
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: kit-scripts-${{ github.run_attempt }}
           path: /tmp
@@ -4382,7 +4591,7 @@ jobs:
           echo "77747346d57de23c8a301758499db36f89f41e3850a2495497d2983a6cb3916a  kit-scripts.sha256" | sha256sum -c -
           sha256sum -c kit-scripts.sha256
       # END FETCH_KIT_SCRIPTS
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # THE LEDGER NEEDS A MERGE BASE (L45). baseline_ledger.py grandfathers from the merge
           # base of this commit and the default branch, and a depth-1 checkout has none -- the
@@ -4390,7 +4599,7 @@ jobs:
           fetch-depth: 0
 
       - name: Collect every SARIF this run produced
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         # suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE -- with `if: always()` this job
         # runs even when every scanner was skipped, and
         # download-artifact fails when no artifact matches the pattern. Failing here would delete
@@ -4416,6 +4625,9 @@ jobs:
           R_SECRET: ${{ needs.secret-scan.result }}
           R_QUALITY: ${{ needs.code-quality.result }}
           R_SEMGREP: ${{ needs.sast-semgrep.result }}
+          # KDEC-016 (2026-10-22): the Semgrep scan's own state and the PHP files it could not fully parse.
+          R_SEMGREP_SCAN_STATE: ${{ needs.sast-semgrep.outputs.scan_state }}
+          R_SEMGREP_PARTIAL_FILES: ${{ needs.sast-semgrep.outputs.parse_partial_files }}
           R_BANDIT: ${{ needs.sast-bandit.result }}
           R_CODEQL: ${{ needs.codeql.result }}
           R_DEPS: ${{ needs.deps-scan.result }}
@@ -4555,7 +4767,16 @@ jobs:
           add "eslint"        "$(appl "$D_NODE")" "$R_QUALITY" "node sources"           'eslint.sarif' code-quality
 
           # --- SAST ----------------------------------------------------------------------
-          add "semgrep"       APPLICABLE          "$R_SEMGREP" "source"                 'semgrep.sarif' sast-semgrep
+          # A PARTIAL SEMGREP SCAN IS NOT A PASS ROW (KDEC-016, 2026-10-22: scan what parses, flag
+          # the rest). The files it could not fully parse are named in the row's scope, and a PASS
+          # the state builder would write is PARTIAL; findings stay findings.
+          sg_scope="source"
+          [ "${R_SEMGREP_SCAN_STATE:-}" = "PARTIAL" ] && sg_scope="source; PARTIAL (PARSE_PARTIAL_PHP_SYNTAX), not fully parsed: ${R_SEMGREP_PARTIAL_FILES:-unnamed}"
+          add "semgrep"       APPLICABLE          "$R_SEMGREP" "$sg_scope"              'semgrep.sarif' sast-semgrep
+          if [ "${R_SEMGREP_SCAN_STATE:-}" = "PARTIAL" ] && [ -f _states/state-semgrep.json ]; then
+            jq '.gate = (if .gate == "PASS" then "PARTIAL" else .gate end)' _states/state-semgrep.json > _states/state-semgrep.tmp &&
+              mv _states/state-semgrep.tmp _states/state-semgrep.json
+          fi
           add "bandit"        "$(appl "$D_PYTHON")" "$R_BANDIT" "python"                'bandit.sarif' sast-bandit
           add "java-sast"     "$(appl "$D_JAVA")" "$R_JAVA"    "java"                   'java-semgrep.sarif' sast-java
           add "gosec"         "$(appl "$D_GO")"   "$R_GO"      "go"                     'gosec.sarif' sast-go
@@ -4708,7 +4929,7 @@ jobs:
       # END REDACT_STEP
       - name: Keep the report as evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: security-report-${{ github.run_attempt }}
           path: _states
@@ -4761,6 +4982,7 @@ jobs:
       enforcement_state: ${{ steps.gate.outputs.enforcement_state }}
       gate_decision: ${{ steps.gate.outputs.gate_decision }}
       secret_gate: ${{ steps.gate.outputs.secret_gate }}
+      secret_exceptions_applied: ${{ steps.gate.outputs.secret_exceptions_applied }}
       scanner_states: ${{ steps.gate.outputs.scanner_states }}
       undetermined: ${{ steps.gate.outputs.undetermined }}
       evidence_artifact: ${{ steps.gate.outputs.evidence_artifact }}
@@ -4777,6 +4999,21 @@ jobs:
       weakenings: ${{ steps.posture.outputs.weakenings }}
       weakening_attribution: ${{ steps.posture.outputs.weakening_attribution }}
       weakening_record: ${{ steps.posture.outputs.weakening_record }}
+      policy_resolution: ${{ steps.posture.outputs.policy_resolution }}
+      policy_source: ${{ steps.posture.outputs.policy_source }}
+      policy_chain: ${{ steps.posture.outputs.policy_chain }}
+      rung_declared: ${{ steps.posture.outputs.rung_declared }}
+      rung_effective: ${{ steps.posture.outputs.rung_effective }}
+      rung_divergence: ${{ steps.posture.outputs.rung_divergence }}
+      policy_mode: ${{ steps.posture.outputs.policy_mode }}
+      effective_minimum: ${{ steps.posture.outputs.effective_minimum }}
+      policy_divergences: ${{ steps.posture.outputs.policy_divergences }}
+      environment_tier: ${{ steps.posture.outputs.environment_tier }}
+      team_pattern: ${{ steps.posture.outputs.team_pattern }}
+      unvalidated_human_workflow_paths: ${{ steps.posture.outputs.unvalidated_human_workflow_paths }}
+      deploy_approval: ${{ steps.posture.outputs.deploy_approval }}
+      run_record: ${{ steps.record.outputs.run_record }}
+      assurance_result: ${{ steps.record.outputs.assurance_result }}
     # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
     # converts a dependency failure into uncontrolled cost).
     # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
@@ -4784,11 +5021,32 @@ jobs:
     # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
     timeout-minutes: 10
     steps:
+      - name: Resolve the enforcement policy from the register and the protected default branch
+        id: policy
+        # STAGE 1 RUNS BEFORE ANY RESULT IS READ. The rung, the per-control minimums and the tier
+        # come from the policy register (the kit's central copy and the repository's own file on
+        # its protected default branch, never this run's tree); policy_mode is DERIVED and never
+        # received. No register anywhere is the kit default, crawl: only secrets block. A refusal
+        # is named (policy_resolution), and an unreadable register is never the default.
+        # scripts/policy_registration.py; tests/prove_gate_reads_rung.py.
+        uses: $/.github/actions/resolve-policy
+        with:
+          default-branch: ${{ github.event.repository.default_branch }}
+          environment: ${{ inputs.target_environment }}
+          event: ${{ github.event_name }}
+          supplied-inputs: ${{ toJSON(inputs) }}
       - name: Enforce required scans
         id: gate
+        # Runs whatever the policy step did: a policy step that failed leaves P_STATE empty and the
+        # gate strict, never skipped (tests/prove_scanners_survive_enforce.py).
+        if: always()
         env:
           # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (ledger L38).
           IN_ADVISORY_MODE: ${{ inputs.advisory_mode }}
+          # The resolved policy (stage 1, above): whether it resolved, and each scanner job's
+          # weakest permitted route. Empty = no policy step ran, and the gate is strict.
+          P_STATE: ${{ steps.policy.outputs.policy_state }}
+          P_JOB_MINIMUMS: ${{ steps.policy.outputs.policy_job_minimums }}
           # EVERY VALUE ARRIVES THROUGH env:, NOT A $-DOUBLE-BRACE EXPRESSION IN THE SCRIPT. A script that holds an
           # expression is a template, and GitHub refuses the WHOLE workflow when a template passes
           # 21,000 characters -- which this one did (first hosted run, 2026-10-15). Without an
@@ -4816,6 +5074,8 @@ jobs:
           G_NEEDS_SAST_GO_RESULT: ${{ needs.sast-go.result }}
           G_NEEDS_SAST_JAVA_RESULT: ${{ needs.sast-java.result }}
           G_NEEDS_SAST_SEMGREP_RESULT: ${{ needs.sast-semgrep.result }}
+          G_NEEDS_SAST_SEMGREP_OUTPUTS_SCAN_STATE: ${{ needs.sast-semgrep.outputs.scan_state }}
+          G_NEEDS_SAST_SEMGREP_OUTPUTS_PARSE_PARTIAL_FILES: ${{ needs.sast-semgrep.outputs.parse_partial_files }}
           G_NEEDS_SBOM_OUTPUTS_LICENCE_DENIED: ${{ needs.sbom.outputs.licence_denied }}
           G_NEEDS_SBOM_OUTPUTS_LICENCE_STATE: ${{ needs.sbom.outputs.licence_state }}
           G_NEEDS_SBOM_RESULT: ${{ needs.sbom.result }}
@@ -4831,6 +5091,27 @@ jobs:
           G_NEEDS_RESOLVE_OUTPUTS_CAPABILITY_GAP_COUNT: ${{ needs.resolve.outputs.capability_gap_count }}
           G_NEEDS_RESOLVE_OUTPUTS_FITNESS_NOTES: ${{ needs.resolve.outputs.fitness_notes }}
           G_NEEDS_RESOLVE_RESULT: ${{ needs.resolve.result }}
+          # THE FINDINGS EACH SCANNER JOB HANDS THIS GATE (lane L-S, O-24): FINDINGS when the job's
+          # own threshold fired and no caller input softened it. The jobs no longer fail on it --
+          # this gate is the single enforcement point -- so it is read here, not from a conclusion.
+          G_FS_CODE_QUALITY: ${{ needs.code-quality.outputs.findings_state }}
+          G_FS_SAST_SEMGREP: ${{ needs.sast-semgrep.outputs.findings_state }}
+          G_FS_SAST_BANDIT: ${{ needs.sast-bandit.outputs.findings_state }}
+          G_FS_SAST_DOTNET: ${{ needs.sast-dotnet.outputs.findings_state }}
+          G_FS_SAST_JAVA: ${{ needs.sast-java.outputs.findings_state }}
+          G_FS_SAST_GO: ${{ needs.sast-go.outputs.findings_state }}
+          G_FS_SAST_CPP: ${{ needs.sast-cpp.outputs.findings_state }}
+          G_FS_DEPS_SCAN: ${{ needs.deps-scan.outputs.findings_state }}
+          G_FS_IAC_SCAN: ${{ needs.iac-scan.outputs.findings_state }}
+          G_FS_IMAGE_SCAN: ${{ needs.image-scan.outputs.findings_state }}
+          # SECRETS ARE HANDED OVER TOO (owner ruling 2026-10-22): the secret scan's count, the
+          # report's fingerprint of each secret, and the register's secret exceptions -- in force
+          # and refused. A secret blocks at every tier unless each one is excepted by fingerprint.
+          G_FS_SECRET_SCAN: ${{ needs.secret-scan.outputs.findings_state }}
+          G_SECRET_COUNT: ${{ needs.secret-scan.outputs.secret_count }}
+          G_REPORT_SECRET_FINDINGS: ${{ needs.report.outputs.secret_findings }}
+          P_SECRET_EXCEPTIONS: ${{ steps.policy.outputs.policy_secret_exceptions }}
+          P_SECRET_EXCEPTION_REFUSALS: ${{ steps.policy.outputs.policy_secret_exception_refusals }}
         run: |
           set -u
           fail=0
@@ -4901,6 +5182,9 @@ jobs:
           LICENCE_STATE="${G_NEEDS_SBOM_OUTPUTS_LICENCE_STATE}"
           LICENCE_DENIED="${G_NEEDS_SBOM_OUTPUTS_LICENCE_DENIED}"
           softened=0       # findings established by a job that nonetheless succeeded
+          findings_named=""  # every job whose state is FINDINGS, for the policy below
+          nonfinding_fail=0  # a job failed with no findings on record: crashed, not scanned
+          coverage_partial=""  # jobs that scanned only part of their scope (e.g. PHP Semgrep could not parse)
           states=""          # scanner:state pairs, emitted as JSON below
           established=""     # capabilities that DID establish something
           unestablished=""   # capabilities that could not
@@ -4934,8 +5218,34 @@ jobs:
             # one -- a wrong state that still looks like a state.
             st=""
             printf '  %-16s %s\n' "$name" "$res"
-            # FINDINGS ON RECORD EXPLAIN THE CONCLUSION. Failed with findings = the control fired.
-            # Succeeded with findings = enforcement was softened, and the findings still exist.
+            # THE SINGLE ENFORCEMENT POINT (lane L-S; owner ruling O-24). A scanner job REPORTS: it
+            # succeeds with findings and hands them over as findings_state=FINDINGS, failing only
+            # when it could not scan or trust its own count. Findings the job's own threshold fired
+            # on, unsoftened by a caller input, are read exactly as a job that failed on them was
+            # read before -- the control fired -- and the resolved policy below decides whether
+            # they block. tests/prove_gate_policy_enforcement.py (sep_*).
+            fs=""; shown="$res"; handed=0
+            case "$name" in
+              secret-scan)  fs="${G_FS_SECRET_SCAN:-}" ;;
+              code-quality) fs="${G_FS_CODE_QUALITY:-}" ;;
+              sast-semgrep) fs="${G_FS_SAST_SEMGREP:-}" ;;
+              sast-bandit)  fs="${G_FS_SAST_BANDIT:-}" ;;
+              sast-dotnet)  fs="${G_FS_SAST_DOTNET:-}" ;;
+              sast-java)    fs="${G_FS_SAST_JAVA:-}" ;;
+              sast-go)      fs="${G_FS_SAST_GO:-}" ;;
+              sast-cpp)     fs="${G_FS_SAST_CPP:-}" ;;
+              deps-scan)    fs="${G_FS_DEPS_SCAN:-}" ;;
+              iac-scan)     fs="${G_FS_IAC_SCAN:-}" ;;
+              image-scan)   fs="${G_FS_IMAGE_SCAN:-}" ;;
+            esac
+            if [ "$res" = "success" ] && [ "$fs" = "FINDINGS" ]; then
+              res=failure; st=FINDINGS; handed=1
+              shown="success — findings handed to this gate (findings_state=FINDINGS)"
+            fi
+            # FINDINGS ON RECORD EXPLAIN THE CONCLUSION. Handed (above) or failed with findings = the
+            # control fired (a FAILED non-secret job is re-read below as one that could not finish).
+            # Succeeded with findings and nothing handed = enforcement was softened by a caller
+            # input (or the scanner has no threshold of its own, CodeQL), and the findings exist.
             case "$FINDINGS_JOBS" in
               *" $name "*)
                 case "$res" in
@@ -4943,7 +5253,7 @@ jobs:
                   failure) st=FINDINGS ;;
                 esac ;;
             esac
-            echo "| $name | $res |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| $name | $shown |" >> "$GITHUB_STEP_SUMMARY"
             # Accumulate the per-scanner verdict so the CONSUMER receives vocabulary, not a
             # boolean. A job result of success/skipped is projected into scanner_state terms.
             case "$name:$res" in
@@ -4960,6 +5270,17 @@ jobs:
               case "$MALICIOUS_STATE" in
                 FINDINGS|COLLECTION_FAILED) st="$MALICIOUS_STATE" ;;
               esac
+            fi
+            # PHP SEMGREP COULD NOT FULLY PARSE (KDEC-016, 2026-10-22: scan what parses, flag the
+            # rest). The job succeeded and its findings are kept; its scan is PARTIAL, never PASS.
+            # Findings outrank it (st is already FINDINGS); the files are named either way.
+            if [ "$name" = "sast-semgrep" ] && [ "$res" != "skipped" ] && [ "${G_NEEDS_SAST_SEMGREP_OUTPUTS_SCAN_STATE:-}" = "PARTIAL" ]; then
+              [ "$res" = "success" ] && [ -z "${st:-}" ] && st=PARTIAL
+              # Named for the posture step even when findings outrank the PARTIAL here, so a
+              # softened finding beside an unparsed file carries both causes (lane L-A).
+              coverage_partial="${coverage_partial}${coverage_partial:+ }${name}"
+              echo "::warning title=sast-semgrep PARTIAL (PARSE_PARTIAL_PHP_SYNTAX)::PHP file(s) Semgrep could not fully parse: ${G_NEEDS_SAST_SEMGREP_OUTPUTS_PARSE_PARTIAL_FILES:-unnamed}. Everything else was scanned; these were not, fully."
+              echo "| (coverage) | PARTIAL — PARSE_PARTIAL_PHP_SYNTAX | sast-semgrep could not fully parse ${G_NEEDS_SAST_SEMGREP_OUTPUTS_PARSE_PARTIAL_FILES:-unnamed files}; every other file was scanned and its findings stand (COVERAGE_PARTIAL) |" >> "$GITHUB_STEP_SUMMARY"
             fi
             if [ "$name" = "sbom" ] && [ "$res" = "success" ] && [ "$LICENCE_STATE" = "FINDINGS" ]; then
               st=FINDINGS
@@ -5013,11 +5334,34 @@ jobs:
                 ;;
             esac
             states="${states}${states:+,}\"$name\":\"$st\""
+            [ "$st" = "FINDINGS" ] && findings_named="${findings_named} ${name}"
 
             case "$res" in
               success|skipped) ;;
               *)
                 fail=1
+                # A job that failed WITHOUT findings on record did not establish anything: O-24
+                # (owner, 2026-10-22) -- the policy never makes that advisory.
+                [ "$st" = "FINDINGS" ] || nonfinding_fail=1
+                # NOR DID ONE THAT FAILED BESIDE ITS FINDINGS (lane L-S). A scanner job hands its
+                # findings over (findings_state) and never fails on them, so a FAILED job with
+                # findings on record found some and then could not finish or trust the rest (gosec
+                # with one module unanalysed, a count refused mid-run). Its findings stay findings;
+                # the run is untrusted, at every rung. An image secret and a known-malicious package
+                # still fail their own job and are read as that below; the secret scan hands its
+                # secrets over, so a FAILED secret scan is read as a secret too -- fail-safe.
+                if [ "$st" = "FINDINGS" ] && [ "$handed" = "0" ]; then
+                  crashed=1
+                  case "$name" in
+                    secret-scan|malicious-deps) crashed=0 ;;
+                    image-scan) [ "$IMAGE_SECRET_STATE" = "failure" ] && crashed=0 ;;
+                  esac
+                  if [ "$crashed" = "1" ]; then
+                    nonfinding_fail=1; undetermined=1
+                    unestablished="${unestablished}${unestablished:+ }${name}(FAILED)"
+                    echo "::error title=${name} FAILED beside its findings::the job failed, and a scanner job never fails on findings -- it could not finish or trust its scan. Its findings stand; the run is untrusted."
+                  fi
+                fi
                 # SECRETS ARE NOT SUBJECT TO ADVISORY MODE. A leaked credential is live
                 # exposure, not inherited technical debt, and the remediation is
                 # unambiguous: rotate it. Everything else may crawl while a team works
@@ -5041,6 +5385,72 @@ jobs:
                 ;;
             esac
           done
+          # SECRET EXCEPTIONS (owner ruling 2026-10-22, lane L-S): "There must be the possibility of
+          # exceptions ... but they must be requested and logged with tickets that have explanations."
+          # The secret scan's findings are excepted ONLY when the resolved policy (a protected-branch
+          # register, never a run input) holds an exception in force for EVERY one of them, by the
+          # report's fingerprint, one exception per finding, and the report accounts for exactly the
+          # scan's own count. Anything less and the secret BLOCKS, at every tier. An exception the
+          # register refused (unticketed, unattributed, expired, not one finding) was never in force.
+          # An image secret and a known-malicious package are not exceptable here.
+          secret_excepted=0; sx_used=""; sx_uncovered=""
+          words_have() { case " $(printf '%s' "$1" | tr '\r\n' '  ') " in *" $2 "*) return 0 ;; esac; return 1; }
+          case "${P_STATE:-}" in POLICY_RESOLVED|POLICY_DECISION_EXPIRED) sx_policy=1 ;; *) sx_policy=0 ;; esac
+          if [ "${G_FS_SECRET_SCAN:-}" = "FINDINGS" ] && words_have "$secret_cause" secret-scan; then
+            sx_in_force=""
+            if [ "$sx_policy" = "1" ]; then
+              sx_in_force=$(printf '%s' "${P_SECRET_EXCEPTIONS:-[]}" | jq -r '.[].finding' 2>/dev/null) || sx_in_force=""
+            fi
+            sx_total=0; sx_covered=1
+            for fp in ${G_REPORT_SECRET_FINDINGS:-}; do
+              sx_total=$((sx_total + 1))
+              if [ -n "$sx_in_force" ] && words_have "$sx_in_force" "$fp" && ! words_have "$sx_used" "$fp"; then
+                sx_used="${sx_used}${sx_used:+ }${fp}"
+              else
+                sx_covered=0; sx_uncovered="${sx_uncovered}${sx_uncovered:+ }${fp}"
+              fi
+            done
+            # The report must account for exactly what the scan counted, or a secret it could not
+            # fingerprint would ride through on another's exception.
+            [ "$sx_total" -gt 0 ] && [ "$sx_total" = "${G_SECRET_COUNT:-unknown}" ] || sx_covered=0
+            if [ "$sx_covered" = "1" ]; then
+              secret_excepted=1
+              secret_cause=$(printf '%s' " $secret_cause " | sed 's/ secret-scan / /' | tr -s ' ' | sed 's/^ //; s/ $//')
+              [ -n "$secret_cause" ] || secret_fail=0
+              findings_named=$(printf '%s' " $findings_named " | sed 's/ secret-scan / /')
+              echo "::warning title=SECRET EXCEPTED (ticketed)::${sx_total} secret finding(s) excepted by the policy register, each by fingerprint, ticket and named approver: ${sx_used}. The secret is NOT clean; the exception is logged in the run record and the summary."
+            elif [ "$sx_policy" = "1" ] && [ -n "$sx_in_force" ]; then
+              echo "::error title=Secret not excepted::the policy register holds secret exceptions, and they do not cover every secret this run found (not covered: ${sx_uncovered:-none}; the scan counted ${G_SECRET_COUNT:-?}, the report fingerprinted ${sx_total}). The secret blocks."
+            fi
+          fi
+          sx_applied_json='[]'
+          if [ "$secret_excepted" = "1" ]; then
+            sx_applied_json=$(printf '%s' "${P_SECRET_EXCEPTIONS:-[]}" | jq -c --arg used " $sx_used " \
+              '[.[] | select(.finding as $f | $used | contains(" " + $f + " "))]' 2>/dev/null) || sx_applied_json='[]'
+          fi
+          {
+            if [ "$secret_excepted" = "1" ]; then
+              echo ""
+              echo "### Secret exceptions applied (ticketed, attributed, unexpired)"
+              echo ""
+              echo "| finding (fp) | ticket | approver | expires | register entry |"
+              echo "|---|---|---|---|---|"
+              printf '%s' "$sx_applied_json" | jq -r '.[] | "| `\(.finding)` | \(.ticket) | \(.approver) | \(.expires) | \(.entry) |"' 2>/dev/null
+              echo ""
+              echo "> **An excepted secret is not a clean result.** Rotate it; the exception expires."
+              echo ""
+            fi
+            sx_refused=$(printf '%s' "${P_SECRET_EXCEPTION_REFUSALS:-[]}" | jq -r 'length' 2>/dev/null) || sx_refused=0
+            if [ "${sx_refused:-0}" != "0" ]; then
+              echo ""
+              echo "### Secret exceptions REFUSED by the register (never in force)"
+              echo ""
+              echo "| finding | ticket | refusal | register entry |"
+              echo "|---|---|---|---|"
+              printf '%s' "${P_SECRET_EXCEPTION_REFUSALS:-[]}" | jq -r '.[] | "| `\(.finding)` | \(.ticket) | \(.code) | \(.entry) |"' 2>/dev/null
+              echo ""
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
           # THE EVIDENCE JOB, CHECKED AS ITSELF AND NOT AS A SCANNER.
           #
           # `report` produces no SARIF, so it has no scanner_state and belongs in no row
@@ -5274,6 +5684,40 @@ jobs:
             echo "> **A green gate is scoped to the rows above it.** These gaps are stated, not"
             echo "> fixed. An annotated gap is honest; a silent one is a lie."
           } >> "$GITHUB_STEP_SUMMARY"
+          # THE RESOLVED POLICY DECIDES WHICH FINDINGS BLOCK (stage 1; owner requirement 2026-10-22).
+          # Each job with findings contributes its registered minimum (policy_job_minimums); the
+          # strictest of them is the findings route. Below BLOCKED the findings are ADVISORY here --
+          # the crawl default, only secrets block -- and the posture step routes that minimum
+          # (PROCEED_WITH_ADVISORY, or DECISION_REQUIRED at walk). Secrets, a malicious package and
+          # a toolchain failure are decided above and below this and never consult it. NO RESOLVED
+          # POLICY IS NOT CRAWL: an empty or refused policy leaves the gate strict, as it was.
+          # tests/prove_gate_policy_enforcement.py.
+          policy_on=0
+          case "${P_STATE:-}" in POLICY_RESOLVED|POLICY_DECISION_EXPIRED) policy_on=1 ;; esac
+          route_rank() { case "$1" in BLOCKED) echo 5;; EVIDENCE_UNTRUSTED) echo 4;; DECISION_REQUIRED) echo 3;; PROCEED_WITH_ADVISORY) echo 2;; PROCEED) echo 1;; *) echo 0;; esac; }
+          policy_findings_route=""
+          if [ "$policy_on" = "1" ]; then
+            for j in $findings_named; do
+              jm=""
+              for kv in ${P_JOB_MINIMUMS:-}; do
+                case "$kv" in "${j}="*) jm="${kv#*=}" ;; esac
+              done
+              # A job the policy does not name is read at its strictest, never its weakest.
+              [ -n "$jm" ] || jm=BLOCKED
+              if [ "$(route_rank "$jm")" -gt "$(route_rank "$policy_findings_route")" ]; then
+                policy_findings_route="$jm"
+              fi
+            done
+          fi
+          # OWNER RULING O-24 (2026-10-22): the policy softens FINDINGS only. A job that crashed or
+          # could not collect -- the kit unable to run its own scan -- is never made advisory by it.
+          findings_advisory="${IN_ADVISORY_MODE}"
+          if [ "$policy_on" = "1" ] && [ "$policy_findings_route" != "BLOCKED" ] && [ "$nonfinding_fail" = "0" ]; then
+            findings_advisory=true
+          fi
+          # NOR DOES advisory_mode (lane L-S): it softens findings, and a scanner job that failed
+          # with no findings on record could not scan. That stays a refusal in every mode.
+          [ "$nonfinding_fail" = "1" ] && findings_advisory=false
           # EMIT THE CONTRACT BEFORE ANY exit. A gate that blocks and tells the caller nothing
           # about WHY forces every consumer to re-derive state from logs -- which is how a
           # vocabulary dies at an integration boundary.
@@ -5284,7 +5728,11 @@ jobs:
           # which no job has ever produced, so every consumer following the pointer found nothing.
           # tests/prove_evidence_artifact_named.py compares the two.
           emit evidence_artifact "security-report-${G_GITHUB_RUN_ATTEMPT}"
-          emit secret_gate "$([ "$secret_fail" = "1" ] && echo FAIL || echo PASS)"
+          # EXCEPTED: secrets were found and every one is excepted, ticketed, in the register -- never PASS.
+          if [ "$secret_fail" = "1" ]; then emit secret_gate FAIL
+          elif [ "$secret_excepted" = "1" ]; then emit secret_gate EXCEPTED
+          else emit secret_gate PASS; fi
+          emit secret_exceptions_applied "$sx_applied_json"
           # TWO SEPARATE QUESTIONS, answered separately on purpose.
           #
           #   assurance_state   what this run ESTABLISHED about the code
@@ -5316,6 +5764,8 @@ jobs:
           emit not_selected "$not_selected"
           emit version_gapped "$version_gapped"
           emit version_gapped_unverified "$version_gapped_unverified"
+          emit policy_findings_route "$policy_findings_route"
+          emit coverage_partial "$coverage_partial"
 
           if [ "${G_NEEDS_DISCOVER_OUTPUTS_STATE}" = "DISCOVERY_UNAVAILABLE" ] || [ "$discover_dead" = "1" ]; then
             echo "::error title=UNDETERMINED::Discovery failed, so the set of capabilities that"
@@ -5337,7 +5787,7 @@ jobs:
 
           if [ "$secret_fail" = "1" ] || [ "$tooling_fail" = "1" ]; then
             emit enforcement_state BLOCKED; emit gate_decision FAIL
-          elif [ "$fail" = "1" ] && [ "${IN_ADVISORY_MODE}" = "true" ]; then
+          elif [ "$fail" = "1" ] && [ "$findings_advisory" = "true" ]; then
             emit enforcement_state ADVISORY; emit gate_decision ADVISORY
           elif [ "$fail" = "1" ]; then
             emit enforcement_state BLOCKED; emit gate_decision FAIL
@@ -5423,7 +5873,17 @@ jobs:
             exit 1
           fi
           if [ "$fail" = "1" ]; then
-            if [ "${IN_ADVISORY_MODE}" = "true" ]; then
+            if [ "$findings_advisory" = "true" ] && [ "${IN_ADVISORY_MODE}" != "true" ]; then
+              echo "::warning title=GATE=ADVISORY (registered policy)::Non-secret findings are reported and not blocked: the resolved policy (${P_STATE}) sets them at ${policy_findings_route:-PROCEED_WITH_ADVISORY}. Secrets still block unless each one is excepted, by fingerprint and ticket, in the register (see secret_gate). The posture record carries the rung and the route."
+              {
+                echo "## GATE = ADVISORY (registered policy)"
+                echo ""
+                echo "> Findings are reported and persisted; the registered rung does not block them."
+                echo "> **Secrets are always enforced.** The route is \`${policy_findings_route:-PROCEED_WITH_ADVISORY}\`."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            if [ "$findings_advisory" = "true" ]; then
               echo "::warning title=GATE=ADVISORY — non-secret findings not blocked::Scanners ran"
               echo "and findings were reported and persisted, but enforcement is OFF for them."
               echo "SECRETS STILL BLOCK — advisory mode never covered them."
@@ -5445,8 +5905,8 @@ jobs:
           if [ "$softened" = "1" ]; then
             echo "::warning title=GATE=ADVISORY — findings recorded, enforcement softened::"
             echo "Blocking findings were established (${BLOCKING_FINDINGS}) in:${FINDINGS_JOBS}-- and"
-            echo "their jobs were configured not to fail (soft_fail_sast or advisory_mode). This is"
-            echo "NOT a clean result."
+            echo "their jobs handed none of them to this gate (softened by soft_fail_sast or"
+            echo "advisory_mode, or a scanner with no threshold of its own). This is NOT a clean result."
             {
               echo "## GATE = ADVISORY — findings recorded, not blocked"
               echo ""
@@ -5503,6 +5963,28 @@ jobs:
           G_UNESTABLISHED: ${{ steps.gate.outputs.unestablished }}
           G_VERSION_GAPPED: ${{ steps.gate.outputs.version_gapped }}
           G_VERSION_GAPPED_UNVERIFIED: ${{ steps.gate.outputs.version_gapped_unverified }}
+          G_POLICY_FINDINGS_ROUTE: ${{ steps.gate.outputs.policy_findings_route }}
+          G_COVERAGE_PARTIAL: ${{ steps.gate.outputs.coverage_partial }}
+          W_TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          # What stage 1 resolved, as data (wiring/gate-rung.patch.md section 4.1).
+          P_RESOLUTION: ${{ steps.policy.outputs.policy_state }}
+          P_ROUTES: ${{ steps.policy.outputs.policy_routes_to }}
+          P_RUNG_DECLARED: ${{ steps.policy.outputs.policy_rung_declared }}
+          P_RUNG_EFFECTIVE: ${{ steps.policy.outputs.policy_rung_effective }}
+          P_RUNG_DIVERGENCE: ${{ steps.policy.outputs.policy_rung_divergence }}
+          P_POLICY_MODE: ${{ steps.policy.outputs.policy_policy_mode }}
+          P_ENVIRONMENT: ${{ steps.policy.outputs.policy_environment }}
+          P_TIER: ${{ steps.policy.outputs.policy_environment_tier }}
+          P_TEAM: ${{ steps.policy.outputs.policy_team_pattern }}
+          P_EFFECTIVE_MINIMUM: ${{ steps.policy.outputs.policy_effective_minimum }}
+          P_DIVERGENCES: ${{ steps.policy.outputs.policy_divergences }}
+          P_WEAKENINGS: ${{ steps.policy.outputs.policy_weakenings }}
+          P_UNVALIDATED: ${{ steps.policy.outputs.policy_unvalidated_human_workflow_paths }}
+          P_STOPS_ON_UNTRUSTED: ${{ steps.policy.outputs.policy_stops_on_evidence_untrusted }}
+          P_SOURCE: ${{ steps.policy.outputs.policy_source }}
+          P_CHAIN: ${{ steps.policy.outputs.policy_chain }}
+          P_REFUSALS: ${{ steps.policy.outputs.policy_refusals }}
+          P_DEPLOY_APPROVAL: ${{ steps.policy.outputs.policy_deploy_approval }}
         run: |
           set -u
           req=""; exe=""; skp=""; red=""; wk=""; dead=""; inforce=0; badclass=0
@@ -5590,10 +6072,14 @@ jobs:
           # refused -- tests/prove_test_only_seeds_add_only.py runs each refusal. The secret-scan
           # job warns and writes a summary row whenever it is in force.
           posture test_only_seed_artifact   NOT_A_CONTROL_SURFACE - -
-          # THE SHIPPED DEFAULT IS THE WEAK SIDE, so the baseline is declared at the strong value
-          # and a default run records the weakening. That is deliberate and it is the point: the
-          # default has not been decided (ledger OD-7), and until it is, nothing says otherwise.
-          posture soft_fail_sast            GATE_SOFTENED         "false"             sast               "$W_SOFT_FAIL_SAST"
+          # Selects a policy-register cell, and never one weaker than a merge already reaches: the
+          # resolver evaluates a pull request at the merge reach whatever is named. Not a control's
+          # strength, scope, depth or enforcement by itself (wiring/gate-rung.patch.md section 2).
+          posture target_environment        NOT_A_CONTROL_SURFACE - -
+          # THE SHIPPED DEFAULT IS THE BASELINE (KDEC-008 OD-7: soft_fail_sast false), so a caller
+          # who changes nothing records no weakening, and setting it true is one -- a softening the
+          # caller chose, recorded against the registered policy beside it.
+          posture soft_fail_sast           GATE_SOFTENED         "false"             sast               "$W_SOFT_FAIL_SAST"
           # No environment named = the baseline control is skipped (identity claim EVIDENCE_UNTRUSTED,
           # nothing grandfathered); a target not supplied, deliberately not a weakening.
           posture environment               TARGET_NOT_SUPPLIED   NONEMPTY            baseline-ledger    "$W_ENVIRONMENT"
@@ -5641,6 +6127,28 @@ jobs:
             fi
           fi
 
+          # THE POLICY (wiring/gate-rung.patch.md section 4.2). Stage 1 resolved the register, or
+          # refused by name. A refusal is not the default: a policy DEFECT (a supplied policy_mode,
+          # a conflict, an unattributed decision, a softened secret, non-monotone tiers) routes
+          # BLOCKED, a missing input (unreadable register, unknown environment) routes
+          # EVIDENCE_UNTRUSTED, an expired decision DECISION_REQUIRED -- folded by precedence below.
+          # A register softening in force arrives as attributed weakening rows and joins the record.
+          case "${P_RESOLUTION:-}" in
+            POLICY_RESOLVED) : ;;
+            "") P_ROUTES=EVIDENCE_UNTRUSTED
+                echo "::error title=Policy not resolved::the resolve-policy step emitted nothing; this run has no rung." ;;
+            *)  echo "::error title=Policy ${P_RESOLUTION}::see the resolve-policy step. An unreadable or defective register is never the kit default." ;;
+          esac
+          if [ -n "${P_WEAKENINGS:-}" ] && [ "${P_WEAKENINGS}" != "[]" ]; then
+            pw="${P_WEAKENINGS#[}"; wk="$wk,${pw%]}"
+            inforce=$((inforce+1))
+            if printf '%s' "$P_WEAKENINGS" | grep -Eq 'WEAKENING_UNATTRIBUTED|WEAKENING_EXCEPTION_EXPIRED'; then
+              auth=WEAKENING_UNATTRIBUTED
+            elif [ "$auth" = WEAKENING_AT_BASELINE ]; then
+              auth=WEAKENING_ATTRIBUTED
+            fi
+          fi
+
           # KDEC-010: A VERSION GAP IS WARN-CLASS. scanner_state.PARTIAL "warns; does not block",
           # so an assurance PARTIAL whose EVERY unestablished entry is a (PARTIAL) -- a capability
           # no carried scanner could read, run and annotated -- is advisory, not missing evidence.
@@ -5675,6 +6183,14 @@ jobs:
                [ "${G_ASSURANCE:-}" = "FINDINGS" ] || [ "${G_ASSURANCE:-}" = "PARTIAL" ]; then
             route=PROCEED_WITH_ADVISORY
           fi
+          # FOLD THE POLICY BY THE REGISTERED PRECEDENCE (patch section 4.3): the resolution's own
+          # route (a refusal, an expired decision, an attributed softening) and the route the
+          # registered minimums give the findings the gate did not block (DECISION_REQUIRED at
+          # walk). A policy can only raise the route here, never lower it.
+          rank() { case "$1" in BLOCKED) echo 5;; EVIDENCE_UNTRUSTED) echo 4;; DECISION_REQUIRED) echo 3;; PROCEED_WITH_ADVISORY) echo 2;; PROCEED) echo 1;; *) echo 0;; esac; }
+          for pr_route in "${P_ROUTES:-}" "${G_POLICY_FINDINGS_ROUTE:-}"; do
+            if [ "$(rank "$pr_route")" -gt "$(rank "$route")" ]; then route="$pr_route"; fi
+          done
 
           # WHY IT IS ADVISORY (KDEC-014; vocabulary :: advisory_cause). A deploy refuses a
           # VERSION_GAP (established by READ ranges) at uat/prod without an attributed exception,
@@ -5696,8 +6212,14 @@ jobs:
               done
             fi
             [ "$inforce" -gt 0 ] && causes="$causes,WEAKENING_ATTRIBUTED"
+            # A secret found and excepted -- by fingerprint, ticket, named approver, unexpired
+            # (owner ruling 2026-10-22). Its own cause, so no reader takes it for a clean secret scan.
+            [ "${G_SECRET_GATE:-}" = "EXCEPTED" ] && causes="$causes,SECRET_EXCEPTION_ATTRIBUTED"
             { [ "${G_ENFORCEMENT:-}" = "ADVISORY" ] || [ "${G_ASSURANCE:-}" = "FINDINGS" ]; } &&
               causes="$causes,FINDINGS_NOT_BLOCKED"
+            # A job that scanned only part of its scope while its findings outranked the PARTIAL
+            # (lane L-P85: PHP Semgrep could not fully parse) is still a coverage gap: both causes.
+            [ -n "${G_COVERAGE_PARTIAL:-}" ] && causes="$causes,COVERAGE_PARTIAL"
           fi
           CAUSES="$(dedupe "$causes")"
 
@@ -5712,6 +6234,21 @@ jobs:
           emit weakenings "[${wk#,}]"
           emit weakening_attribution "$auth"
           emit weakening_record "{\"reason\":\"$W_WEAKENING_REASON\",\"authority\":\"$W_WEAKENING_AUTHORITY\",\"exception_ref\":\"$W_WEAKENING_EXCEPTION_REF\",\"expires\":\"$W_WEAKENING_EXPIRES\"}"
+          # The policy the verdict was reached under (ETFB 2.2: a rung label with no emitted
+          # effective set is soft_fail_sast again).
+          emit policy_resolution "${P_RESOLUTION:-}"
+          emit policy_source "${P_SOURCE:-}"
+          emit policy_chain "${P_CHAIN:-}"
+          emit rung_declared "${P_RUNG_DECLARED:-}"
+          emit rung_effective "${P_RUNG_EFFECTIVE:-}"
+          emit rung_divergence "${P_RUNG_DIVERGENCE:-}"
+          emit policy_mode "${P_POLICY_MODE:-}"
+          emit effective_minimum "${P_EFFECTIVE_MINIMUM:-}"
+          emit policy_divergences "${P_DIVERGENCES:-[]}"
+          emit environment_tier "${P_TIER:-}"
+          emit team_pattern "${P_TEAM:-}"
+          emit unvalidated_human_workflow_paths "${P_UNVALIDATED:-}"
+          emit deploy_approval "${P_DEPLOY_APPROVAL:-}"
 
           {
             echo "### Control posture — security scan"
@@ -5746,11 +6283,94 @@ jobs:
               echo "> Do not read the absence of a block as the absence of risk."
               echo ""
             fi
-            if [ "${G_ASSURANCE:-}" = "PARTIAL" ] && [ "$partial_only" = "1" ]; then
+            # PER CAUSE: a version gap and a scanner that read the version but not every file are
+            # different gaps with different remedies (lane L-P85 follow-up).
+            if inlist "$(printf '%s' "$CAUSES" | tr ',' ' ')" VERSION_GAP ||
+               inlist "$(printf '%s' "$CAUSES" | tr ',' ' ')" VERSION_GAP_UNVERIFIED; then
               echo "> **PARTIAL, not clean:** no carried scanner can read the target version for"
-              echo "> \`${UNAV}\` (KDEC-010). The scan ran where it could and the gap is annotated;"
-              echo "> it warns and does not block. Closing it is a registry row or a repository file,"
-              echo "> named in the gate and resolve summaries."
+              echo "> \`${G_VERSION_GAPPED:-}${G_VERSION_GAPPED_UNVERIFIED:+ $G_VERSION_GAPPED_UNVERIFIED}\` (KDEC-010). The scan ran where it could and the gap is"
+              echo "> annotated; it warns and does not block. Closing it is a registry row or a repository"
+              echo "> file, named in the gate and resolve summaries."
+              echo ""
+            fi
+            if inlist "$(printf '%s' "$CAUSES" | tr ',' ' ')" COVERAGE_PARTIAL; then
+              echo "> **COVERAGE_PARTIAL, not clean:** a scanner read the target version but not all of its"
+              echo "> scope -- for example PHP files Semgrep could not fully parse (named in the gate summary,"
+              echo "> \`${G_COVERAGE_PARTIAL:-${UNAV}}\`). Everything else was scanned and its findings stand;"
+              echo "> the unparsed parts were not. Advisory, not untrusted evidence."
               echo ""
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+          # THE GOVERNANCE POSITION, NOT ONLY THE RESULT (ETFB section 10; patch section 4.5).
+          {
+            echo "### Enforcement policy (stage 1)"
+            echo ""
+            echo "| | |"; echo "|---|---|"
+            echo "| resolution | \`${P_RESOLUTION:-none}\` ${P_REFUSALS:+(refusals: \`$P_REFUSALS\`)} |"
+            echo "| source | \`${P_SOURCE:-none}\` -- KIT_DEFAULT is crawl: only secrets block |"
+            echo "| entries applied | \`${P_CHAIN:-none}\` |"
+            echo "| environment / tier / team | \`${P_ENVIRONMENT:-}\` / \`${P_TIER:-}\` / \`${P_TEAM:-unregistered}\` |"
+            echo "| rung declared / effective | \`${P_RUNG_DECLARED:-}\` / \`${P_RUNG_EFFECTIVE:-}\` |"
+            echo "| policy_mode (derived) | \`${P_POLICY_MODE:-}\` |"
+            echo "| effective minimum per control | \`${P_EFFECTIVE_MINIMUM:-}\` |"
+            echo "| findings route under the policy | \`${G_POLICY_FINDINGS_ROUTE:-no findings}\` |"
+            [ -n "${P_UNVALIDATED:-}" ] && echo "| unvalidated human-workflow paths | \`${P_UNVALIDATED}\` -- reported, never passing |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Emit the run record (schemas/assurance-result.schema.json)
+        id: record
+        # LEDGER L36. The machine contract for this run, built from the gate's own outputs and
+        # validated against the schema before it is emitted; an invalid record is named and not
+        # emitted. Recorded before the verdict, so a refused run still has its record.
+        if: always()
+        uses: $/.github/actions/run-record
+        with:
+          assurance-state: ${{ steps.gate.outputs.assurance_state }}
+          enforcement-state: ${{ steps.gate.outputs.enforcement_state }}
+          secret-gate: ${{ steps.gate.outputs.secret_gate }}
+          discovery-state: ${{ needs.discover.outputs.state }}
+          scanner-states: ${{ steps.gate.outputs.scanner_states }}
+          report-result: ${{ needs.report.result }}
+          blocking-findings: ${{ needs.report.outputs.blocking_findings }}
+          evidence-artifact: ${{ steps.gate.outputs.evidence_artifact }}
+          # Every applied secret exception: finding, ticket, approver, expiry, entry (lane L-S).
+          secret-exceptions: ${{ steps.gate.outputs.secret_exceptions_applied }}
+
+      - name: Exit on the verdict
+        id: verdict
+        if: always()
+        env:
+          ROUTE: ${{ steps.posture.outputs.routing_result }}
+          STOPS_ON_UNTRUSTED: ${{ steps.policy.outputs.policy_stops_on_evidence_untrusted }}
+          RESOLUTION: ${{ steps.policy.outputs.policy_state }}
+        run: |
+          # THE GATE EXITS ON A VERDICT, NOT A JOB RESULT (SINGLE_PIPELINE_TARGET.md section 5.2;
+          # patch section 5). BLOCKED stops at every tier. EVIDENCE_UNTRUSTED stops at EVERY tier
+          # too -- OWNER RULING O-24 (2026-10-22): even at crawl, the kit being unable to run or
+          # trust its own scan (a crash, COLLECTION_FAILED, a hollow or unreadable scan, a
+          # bootstrap failure, an unresolved policy) blocks, because a pipeline that silently did
+          # not scan cannot count as "scanned, advisory". This is stricter than the tier rule of
+          # enforcement_axes.gate_stops (ETFB section 3), and the ruling supersedes it for the gate.
+          # A coverage gap is not untrusted evidence: it routes PROCEED_WITH_ADVISORY. Neither
+          # DECISION_REQUIRED nor the advisories stop the gate: the deploy refuses
+          # DECISION_REQUIRED, and a decision owed is not a refusal observed.
+          # An absent resolution is not a resolved one: it is named, and it stops on untrusted evidence.
+          resolved=0
+          if [ -z "${RESOLUTION:-}" ]; then
+            echo "::warning title=No policy resolution::the policy step emitted nothing"
+          elif [ "$RESOLUTION" = "POLICY_RESOLVED" ] || [ "$RESOLUTION" = "POLICY_DECISION_EXPIRED" ]; then
+            resolved=1
+          fi
+          case "${ROUTE:-}" in
+            '') echo "::error title=No verdict::the posture step emitted no routing_result"; exit 1 ;;
+            BLOCKED) echo "::error title=BLOCKED::a control refused this run (see the posture record)"; exit 1 ;;
+            EVIDENCE_UNTRUSTED)
+              why="the kit could not run or trust its own scan"
+              [ "$resolved" = "1" ] || why="the enforcement policy did not resolve"
+              [ "${STOPS_ON_UNTRUSTED:-true}" = "true" ] && why="${why}; this tier is a production tier"
+              echo "::error title=EVIDENCE_UNTRUSTED::${why}. A run that did not scan is not a run that scanned clean, at any rung or tier (O-24)."
+              exit 1 ;;
+            PROCEED|PROCEED_WITH_ADVISORY|DECISION_REQUIRED) echo "verdict: ${ROUTE}" ;;
+            *) echo "::error title=No verdict::the posture step emitted an unregistered routing_result"; exit 1 ;;
+          esac

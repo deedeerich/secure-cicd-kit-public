@@ -27,7 +27,8 @@ HOW IT RUNS WITHOUT A CONTAINER RUNTIME
     shipped step.
 
 SCENARIOS
-    seeded          one module with flaws, soft_fail off  -> count >= 1, enforce FAILS
+    seeded          one module with flaws, soft_fail off  -> count >= 1, enforce hands it to the gate
+                    (findings_state=FINDINGS; the step succeeds -- lane L-S, O-24)
     clean           one clean module                      -> count 0, enforce passes
     newer_beside    clean + a module that will not load   -> COLLECTION_FAILED (regression)
     silent_beside   seeded + a module that writes nothing -> COLLECTION_FAILED
@@ -118,15 +119,17 @@ def main():
         dshim = os.path.join(sb.root, 'docker-shim')
         h.write(os.path.join(dshim, 'docker'), DOCKER)
         os.chmod(os.path.join(dshim, 'docker'), 0o755)
+        # enforce: HANDED (exit 0, findings_state=FINDINGS: the security gate enforces it -- lane
+        # L-S, O-24) | PASS (exit 0, nothing handed) | FAIL (could not analyse every module)
         scenarios = [
-            ('seeded', module('svc', src=SEEDED_SRC), '', True, False),
-            ('clean', module('svc'), '', False, True),
+            ('seeded', module('svc', src=SEEDED_SRC), '', True, 'HANDED'),
+            ('clean', module('svc'), '', False, 'PASS'),
             ('newer_beside', merge(module('svc'), module('newer', go='1.99')),
-             'COLLECTION_FAILED', None, False),
+             'COLLECTION_FAILED', None, 'FAIL'),
             ('silent_beside', merge(module('svc', src=SEEDED_SRC), module('silent')),
-             'COLLECTION_FAILED', None, False),
+             'COLLECTION_FAILED', None, 'FAIL'),
             ('corrupt_beside', merge(module('svc', src=SEEDED_SRC), module('corrupt')),
-             'COLLECTION_FAILED', None, False),
+             'COLLECTION_FAILED', None, 'FAIL'),
         ]
         for name, files, want_coll, finds, enforce_ok in scenarios:
             ws = sb.workspace(name, files)
@@ -137,7 +140,8 @@ def main():
                 bad.append('%s: scan step reads unmodelled %s' % (name, unk))
             evals = dict(vals, **{'steps.gosec.outputs.%s' % k: out.get(k, '')
                                   for k in ('count', 'collection')})
-            erc, elog, _o, unk = sb.run(bash, steps[ENFORCE], evals, ws)
+            erc, elog, eout, unk = sb.run(bash, steps[ENFORCE], evals, ws)
+            handed = eout.get('findings_state', '')
             if unk:
                 bad.append('%s: enforce step reads unmodelled %s' % (name, unk))
             coll, n = out.get('collection', ''), out.get('count', '')
@@ -152,9 +156,15 @@ def main():
                            % (name, log[-600:]))
             if finds is False and n != '0':
                 bad.append('%s: count=%r, expected 0' % (name, n))
-            if enforce_ok and erc != 0:
-                bad.append('%s: enforce failed (exit %d)\n%s' % (name, erc, elog[-300:]))
-            if not enforce_ok and erc == 0:
+            if enforce_ok in ('PASS', 'HANDED') and erc != 0:
+                bad.append('%s: enforce failed (exit %d) -- findings go to the gate, never a '
+                           'failed job\n%s' % (name, erc, elog[-300:]))
+            if enforce_ok == 'HANDED' and handed != 'FINDINGS':
+                bad.append('%s: findings_state=%r -- a counted finding with soft_fail_sast off must '
+                           'be handed to the gate' % (name, handed))
+            if enforce_ok == 'PASS' and handed:
+                bad.append('%s: findings_state=%r where nothing is enforced' % (name, handed))
+            if enforce_ok == 'FAIL' and erc == 0:
                 bad.append('%s: enforce PASSED where it must fail' % name)
     finally:
         sb.close()
