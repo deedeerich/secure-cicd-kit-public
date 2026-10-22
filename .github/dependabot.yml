@@ -107,6 +107,20 @@ updates:
     commit-message:
       prefix: "deps(maven)"
 
+  # PHP (lane L-PHP). The kit itself ships no Composer manifest; listed for the reason above
+  # (over-listing costs nothing), and the fixture's deliberately vulnerable composer.lock is
+  # excluded like every other ecosystem's.
+  - package-ecosystem: composer
+    directory: /
+    exclude-paths:
+      - "tests/consumer-fixture/**"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: [dependencies, php]
+    commit-message:
+      prefix: "deps(composer)"
+
   - package-ecosystem: docker
     directory: /
     exclude-paths:

@@ -143,7 +143,10 @@ def workflow_text():
     estate keeps finding in other forms.
     """
     blobs = {}
-    for base, tag in ((WF, 'core'), (OVERLAY_ROOT, 'overlay')):
+    # The core's composites are core too: a scanner job's body lives in .github/actions/<scanner>/
+    # since ledger L64, so detect-secrets, for one, is invoked nowhere else.
+    actions = os.path.join(ROOT, '.github', 'actions')
+    for base, tag in ((WF, 'core'), (actions, 'core'), (OVERLAY_ROOT, 'overlay')):
         if not os.path.isdir(base):
             continue
         for dp, _dn, fns in os.walk(base):

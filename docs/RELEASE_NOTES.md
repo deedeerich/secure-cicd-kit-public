@@ -5,6 +5,155 @@ trunk: the candidate merges the trunk and keeps every consumer overlay off `main
 and the public export generated from it, carry no consumer-specific material. Each entry names the
 trunk commit that brought the change.
 
+## Release 3
+
+Built on `release/main-candidate-3` from Release 2 (`b634cff`) and the trunk through `2cd078e`
+(first cut at `09a22a8`, re-cut to carry the NVD fix). `overlays/` stays removed, as in Releases 1
+and 2. Both merges had no conflicts; the release tree equals the trunk at `2cd078e` apart from
+`overlays/` and this file.
+
+### PHP, a supported ecosystem (KDEC-016)
+
+- **PHP moves from a declared coverage gap to a supported ecosystem.** Discovery finds `*.php`,
+  `composer.json` and `composer.lock` under the same could-not-look-is-not-found-nothing and depth-8
+  rules as the other ecosystems; a `composer.json` with no `composer.lock` beside it is a named,
+  counted coverage gap (`PHPDependenciesUnlocked`), because the dependency scanner reads only the
+  lock. The target PHP version is resolved from `.php-version`, then `config.platform.php`, then
+  `require.php` (a constraint, never rounded), then the lock's platform entries, then a Dockerfile
+  `FROM php:<v>`. (`f880b80`, merged in `7fe3d54`)
+- **PHP SAST.** `sast-semgrep` adds `p/php` as a floor whenever discovery found PHP or could not
+  say, beside the caller's own Semgrep configuration; it reports seeded SQL injection, cross-site
+  scripting and command injection at ERROR. A PHP scan that examined no PHP file, or loaded no PHP
+  rule, is `COLLECTION_FAILED`, never clean. (`f880b80`)
+- **Composer dependencies through Trivy.** A `composer.lock` pinning a vulnerable package fails
+  `deps-scan`; a clean lock passes. Dependabot's composer entry excludes the deliberately vulnerable
+  fixtures. (`f880b80`)
+- **The consumer path carries PHP.** The full fixture has 24 seeded signals (was 20), four of them
+  PHP; a new PHP-only negative run (`consumer-path-negative.yml` with `scope=php`) must fail with
+  discovery succeeding and the Semgrep job, the dependency scan and the gate each failing.
+  (`f880b80`)
+- **The PHP range Semgrep reads is measured, not assumed.** A seeded PHP corpus holds one family per
+  PHP release that added syntax (5.6, 7.0 to 7.4, 8.0 to 8.5), each checked with `php -l` under that
+  release's official image and the release before, and an unparseable control.
+  `tests/corpora/probe_php_corpus.py` reads Semgrep's result for each family, and a weekly hosted
+  corpus job measures the job's own image. Shipped row: **READ 5.6 to 8.4**. (`8c4854b`, `a928010`)
+- **PHP 8.5 goes through the existing per-application exception (KDEC-014).** Semgrep 1.178.0 and
+  the newest release measured, 1.182.0, both fail to parse 8.5's `(void)` cast and `final` promoted
+  properties (the pipe operator parses). A PHP 8.5 target is therefore a proven version gap: at dev
+  and test the run proceeds with the gap recorded; at uat and prod a deploy needs the attributed
+  exception (a named accepter, a reason, an unexpired date and the environment's reviewers). No kit
+  change until a Semgrep release reads 8.5. (`a928010`, `09a22a8`)
+
+### One Semgrep release
+
+- **Every Semgrep in the kit is 1.178.0.** The `sast-semgrep` job's container moves from the
+  `1.90.0` tag (which read PHP only to 7.2, so 7.3+ syntax was exit 3 under `--strict` and failed the
+  whole job) to the 1.178.0 image **pinned by digest**; the C# and Java jobs and self-test
+  pip-install `semgrep==1.178.0`; validate-scanners' container probe, a new `semgrep-php` probe and
+  the corpus probe run the same digest. The local Semgrep proofs fail if the release they run is not
+  the job's. (`5569274`, merged in `f0fba61`)
+- **A push no longer cancels a dispatched or scheduled run** of validate-scanners or the corpus
+  probe; only push and pull-request runs cancel one another. (`5569274`)
+
+### A slimmer flagship workflow
+
+- **Six scanner jobs move into composite actions** reached through `$/`: `secret-scan`, `sast-cpp`,
+  `iac-scan`, `deps-scan`, `sast-dotnet` and `sast-java`. The flagship `reusable-security.yml` goes
+  from 460,924 to 338,021 bytes (about 461 KB to 338 KB; 342,047 bytes at this release with PHP
+  added), well under GitHub's limit. Each move is pinned by
+  `tests/prove_composite_move_equivalence.py`: the composite, expanded back into its job, has the
+  same canonical digest as the job before the move. (`6ceaa63`, `aa9eea1`, `600995a`, `6501b41`,
+  `3ee2948`, `208fb2c`, merged in `80d8eaf`)
+- **No reader went blind on the move.** The dataflow tracer, the capability inventory, the
+  kit-script digest count, the custody check and every step reader now read jobs through one
+  composite-expansion rule; the tracer's output was byte-identical before and after, and
+  validate-scanners also triggers on `.github/actions/**`, where scanner pins now live. (`6ceaa63`,
+  `3ee2948`)
+
+### Dependency-Check and the NVD database
+
+- **The NVD database is built from the Dependency-Check project's NVD mirror by default**, in both
+  the real NVD scan (`reusable-nvd-cve.yml`) and the validate-scanners probe. Cause, measured: the
+  NVD API itself trickles (about 40 kB/s per 2,000-record page, about 207 pages for a cold build),
+  so a cold build could not finish inside the job's limit with any version or key; the mirror
+  builds the same database cold in about 1.5 minutes. A new input, `nvd_datafeed_url`, names the
+  source; setting it to `""` restores the keyed NVD API. (`ef1458c`, merged in `71c8f6b`)
+- **Dependency-Check 12.2.2, signature-verified, from the canonical repository.** The kit had
+  downloaded from a separate repository whose releases stop at 12.1.0; it now fetches from
+  `dependency-check/DependencyCheck`, pinned to the digest Maven Central publishes for the
+  PGP-signed asset. 12.1.0 silently dropped CVE-2026-6785 and CVE-2026-6786 ("Value too long");
+  12.2.2 fixes that and adds a read timeout. The probe and the real scan run the same version, digest,
+  repository and datafeed (`tests/prove_validate_scanners_matrix.py` M9). (`ef1458c`)
+- **A stalled update leaves evidence.** The probe's update step no longer dies silently under
+  `bash -e`; an incomplete update records its last progress line, retried requests and HTTP
+  statuses (M10). (`ef1458c`)
+- Proven hosted on the trunk at `2cd078e`: validate-scanners 39743589679 built the database cold
+  from the mirror in 2 minutes and the scan ran.
+- **The probe's update sequence matches the real scan's**: it installs, restores a cached
+  database from its own version-scoped namespace (complete, then partial), updates in the
+  background under a budget with a heartbeat every 60 seconds, saves a complete or partial cache
+  (keyed by run attempt), then scans warm with the real scan's arguments. (`bcc6978`, merged in
+  `b463c7d`; the namespace re-keyed to 12.2.2 in `ef1458c`)
+- **Earlier probe defects fixed on the way**: the leg had failed on every run because Dependency-Check refuses an
+  `--out` with no parent directory, hidden by a usage dump (`778ce1c`, `144bb98`); the key now
+  travels as one argument and only its shape is printed (`09a2986`); detection now means a SARIF
+  file holding at least one result, not merely a file (`7e5ef03`); an unknown cache-restore outcome
+  is reported as `UNKNOWN`, not as a cold start (`b463c7d`). The real NVD workflow's comment that it
+  had "never run" was false and now cites both measured runs (`bcc6978`).
+
+### Export and neutrality
+
+- **Untracked files are never exported** (E8, carried from Release 2 and now proven with E9 beside
+  it). **Generated files are regenerated from the copy** (E9): the exporter rebuilds each generated
+  file inside the exported tree, from that tree, in full and incremental exports, and refuses if
+  regeneration fails, so a generated file can no longer name something the export withholds; the
+  exported copy passes its own proof census. (`1cf0422`)
+- **Source-only controls say so in an exported copy** (E9): the export-safety check, the deny-sample
+  proof and the export-scope proof guard the source and need the deny list, which an export never
+  carries. In a copy recognised by its watermark and the list's absence, each prints
+  `SOURCE-ONLY CONTROL` and exits 0, stating that nothing was checked there; in the kit each runs
+  exactly as before. (`8c3f037`)
+
+### Self-test and hygiene
+
+- Release 2's `main` passed its own self-test on GitHub (run 39664610236 on `b634cff`).
+- The self-test's "Normalizer drift" limit is 30 minutes (was 15), from three measured runs.
+  (`17b243f`)
+- A shell variable read as an unregistered vocabulary word is renamed to mixed case, as the
+  taxonomy check prescribes. (`8478400`)
+- Hosted on the trunk at `f0fba61` (the tree of `09a22a8` apart from one decision record): self-test
+  39701219662 green; the corpus probe 39701219513 green, including the PHP corpus on the 1.178.0
+  image; validate-scanners 39701219505 green on the `semgrep-php` and `semgrep-container` probes.
+- The continuity check counts work commits only: merges and commits that change only these release
+  notes no longer count against the context's reconciliation limit, so a release candidate is not
+  read as unreconciled work; real work beyond the limit is still refused. (`2cd078e`)
+- Hosted on the trunk at `2cd078e`: self-test 39743586463 and validate-scanners 39743589679 green.
+
+### Known limits
+
+- **PHP 8.5** is a proven version gap until a Semgrep release reads it (above); a file using the
+  `(void)` cast or `final` promoted properties makes the Semgrep job `COLLECTION_FAILED`.
+- **Dependency-Check does not read a bare `pom.xml`.** The database now builds (cold, from the
+  mirror, in 2 minutes on a hosted runner) and the scan runs, but the Dependency-Check CLI reads no
+  dependencies declared only in a standalone `pom.xml` with no JAR, so the probe's seeded Maven
+  dependency is not detected by it (a JAR carrying the same coordinates is). Trivy's dependency
+  scan covers Maven source manifests. The probe's detection stays under its dated acceptance until
+  2026-11-30.
+- **The consumer path on this release is owed**: the full run at 24 signals, the default negative
+  and the `scope=php` negative have not yet run on GitHub for Release 3's head.
+- **The sidecar channels of Checkov, Trivy, cppcheck and flawfinder are not read** (Semgrep's
+  is): Checkov parse errors, Trivy's empty result count, cppcheck's checkers report and
+  flawfinder's line counts (completion ledger L03).
+- **Seeded corpora exist only for PHP, Checkov and Trivy-config**; the other scanner version ranges
+  stay `UNVERIFIED` and are never selected (ledger V-02).
+- Unchanged from Release 2: a real gate verdict feeding a deploy in one pipeline, a hosted
+  establish-then-propose ledger run, Azure DevOps ticketing live, SHA-pinned actions (the self-use
+  weakening expires 2026-10-31), the rung ladder in the gate, and the dated deferrals for attestation
+  signing, change detection and the Terraform toolchain (2026-12-31).
+- **Documentation lag**: a few documents still describe the NVD workflow's CVSS threshold as it was
+  before Release 2; the shipped default is 9.0. `tests/check_doc_currency.py` lists each such line
+  as known-stale until 2026-11-15.
+
 ## Release 2
 
 Built on `release/main-candidate-2` from Release 1 (`ef4b15d`) and the trunk through `25f14d3`.

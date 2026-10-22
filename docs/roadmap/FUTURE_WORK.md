@@ -462,6 +462,7 @@ a retired NVD endpoint.
 | Tool | Was | Now | Note |
 |---|---|---|---|
 | Dependency-Check | `9.0.9` | `12.1.0` | was calling a decommissioned API |
+| Dependency-Check | `12.1.0` | **`12.2.2`** | 2026-10-21, lane L-NV. `12.1.0` was "latest" only because the URL named `jeremylong/DependencyCheck`, a separate repository whose releases stop there; the project is `dependency-check/DependencyCheck`. Probe and real scan held to one version and its published digest (`tests/prove_validate_scanners_matrix.py` M9) |
 | gosec | `2.21.4` | **`2.24.6`** | see the correction below |
 | trivy-action | `v0.36.0` | — | current |
 | syft · osv-scanner · gitleaks | via action | **unpinned** | never stale, but not reproducible |

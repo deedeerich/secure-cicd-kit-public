@@ -460,6 +460,27 @@ namespaces:
           is labelled a substitution and is never presented as equivalent coverage.
 
   # ─────────────────────────────────────────────────────────────────────────────
+  corpus_family_outcome:
+    description: >-
+      What a seeded-corpus probe (tests/corpora/probe_php_corpus.py) observed for one version
+      family's file: READ (the seed reported, no error), MISSED (no seed and no error -- a silent
+      drop), COLLECTION_FAILED (no report it can be held to), or PARSE_ERROR, below. Only READ
+      families extend a measured range; the range is contiguous from the oldest family.
+    consumers: [tests/corpora/probe_php_corpus.py, tests/prove_php_corpus.py, scanner-registry.yaml version_support basis]
+    rule: >-
+      A FAMILY THE SCANNER SAID IT COULD NOT FULLY PARSE IS NOT READ, even when the seed came back
+      through error recovery. Measured on Semgrep 1.90.0: such a file exits 3 under --strict, which
+      the job reads as COLLECTION_FAILED, so counting it as read would claim a range the job fails on.
+    values:
+      PARSE_ERROR:
+        definition: >-
+          The scanner reported an error naming the family's file (a syntax error, or Semgrep's
+          PartialParsing): by its own account it did not read all of the file.
+        rule: >-
+          Never READ and never MISSED: it is loud where MISSED is silent, and it caps the range at
+          the family below it exactly as a silent drop does.
+
+  # ─────────────────────────────────────────────────────────────────────────────
   toolchain_currency:
     description: >-
       Whether the tools the pipeline itself runs are current, supported and safe to keep running.

@@ -5,6 +5,18 @@ Commit ids are on the build trunk `fix/normalization-and-discovery`. Versions 1.
 `10b-CHANGE-LOG-EARLIER.md`. A reader whose last copy was v1.10 (`a907dc8`) reads
 `12-CHANGES-SINCE-A907DC8.md` first: it groups every change since by what an integrator must do.
 
+## Unreleased — Release 3 (next): PHP (lane `lane/L-PHP`, 2026-10-21)
+
+Owner: "I need php and we need it now". Proven locally (each proof failed first on `75d935c`);
+hosted runs owed: the consumer path at 24 seeded signals, its `scope=php` negative, self-test, the
+corpus probe.
+
+| commit | change | parts affected |
+|---|---|---|
+| `f880b80` | **PHP a supported ecosystem**: discovery `php` (`*.php`, `composer.json`, `composer.lock`); a `composer.json` without its lock is the named gap `PHPDependenciesUnlocked` (Trivy reads only the lock); PHP target versions in resolve; `p/php` a floor in `sast-semgrep` with a hollow-PHP witness (Semgrep's own `paths.scanned`); a vulnerable Composer lock blocks `deps-scan`; fixture 20 → 24 signals and a PHP-only negative | 02, 04, 08, 09 |
+| lane L-PHP, corpus commit | **the PHP range Semgrep reads, MEASURED** on the job's own image by a seeded corpus whose families are `php -l`-checked: 1.90.0 reads 5.6–7.2 (7.3+ syntax is exit 3 under `--strict`); 1.178.0 read 5.6–8.4. Registry row READ 5.6–7.2; weekly probe job | 04, 09 |
+| lane L-SG | **one Semgrep release, pinned by digest** (ledger L03; KDEC-016, PHP 8.x required): `sast-semgrep` runs the Semgrep 1.178.0 image by digest, not the 1.90.0 tag; the PHP row re-measured on it, READ 5.6–8.4; validate-scanners probes the same digest and gains a `semgrep-php` probe; self-test pins Semgrep 1.178.0, and the local Semgrep proofs fail if their release is not the job's. A push no longer cancels a dispatched or scheduled run of validate-scanners or the corpus probe. A PHP 8.5 corpus family, MEASURED unread on 1.178.0 and 1.182.0 (`(void)` cast, `final` promotion): the row stays READ 5.6–8.4 and an 8.5 target is a proven VERSION_GAP. Proven locally, each proof failed first on `7fe3d54`; hosted runs owed | 04, 09 |
+
 ## Version 1.12 — 2026-10-21 (trunk `078ef90`, lane `lane/L-G2`)
 
 `main` is still `ef4b15d`. The trunk's changes below are proven locally; the trunk owes the consumer-path run.

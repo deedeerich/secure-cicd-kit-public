@@ -79,6 +79,17 @@ SCANNERS = ['secret-scan', 'code-quality', 'sast-semgrep', 'sast-bandit', 'sast-
             'sbom', 'codeql', 'image-scan']
 
 
+def _expand(doc):
+    """The workflow with every `$/` composite step expanded into its job, as the runner sees it.
+
+    Scanner job bodies live in `.github/actions/<scanner>/` (ledger L64); this reads the steps a
+    job actually runs. One rule, tests/_composite_expand.py, for every reader.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.expanded_doc(doc)
+
+
 def ctx(scanner='success', kit='success', report='success', advisory='false',
         discovery='COMPLETE', discover_result='success', resolve_result='success',
         version_gaps='', version_gap_count=None, capped_jobs='', not_selected_jobs='',
@@ -243,7 +254,7 @@ SCENARIOS = [
 
 def gate_step():
     import yaml
-    doc = yaml.safe_load(io.open(WF, encoding='utf-8'))
+    doc = _expand(yaml.safe_load(io.open(WF, encoding='utf-8')))
     for s in (doc['jobs'][GATE_JOB].get('steps') or []):
         if s.get('name') == GATE_STEP:
             return s
@@ -293,7 +304,7 @@ def env_for_run(run_text, values):
     unset and prove a step nobody ships. Unknown text resolves to no extra environment.
     """
     import yaml
-    doc = yaml.safe_load(io.open(WF, encoding='utf-8'))
+    doc = _expand(yaml.safe_load(io.open(WF, encoding='utf-8')))
     for job in (doc.get('jobs') or {}).values():
         for s in (job or {}).get('steps') or []:
             if s.get('run') == run_text:

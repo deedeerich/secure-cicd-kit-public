@@ -17,7 +17,7 @@ cited transcript. "Hosted" means a GitHub runner run id.
 | stage | what it is | state | release |
 |---|---|---|---|
 | 1 policy resolution | rung per (repo, environment), registration file, derived `policy_mode` | BUILT as libraries, proven; gate wiring is a written patch, not applied | 2 |
-| 2 discovery | presence probes, could-not-look ≠ not-present, coverage gaps; beyond the 8-level bound is UNDETERMINED, never NOT_APPLICABLE (`11db350`) | BUILT, proven hosted (consumer path, before the bound fix); the bound proven locally | 1 |
+| 2 discovery | presence probes, could-not-look ≠ not-present, coverage gaps; beyond the 8-level bound is UNDETERMINED, never NOT_APPLICABLE (`11db350`); `php` an ecosystem since lane L-PHP, a lock-less `composer.json` a named gap | BUILT, proven hosted (consumer path, before the bound fix); the bound and PHP proven locally | 1 (PHP: 3) |
 | 3 version discovery | the version each root targets | BUILT, proven locally | 2 |
 | 4 capability selection | the capability picks the scanner; a substitute is labelled; no capable scanner = PARTIAL, never PASS (KDEC-010) | BUILT, proven locally; many ranges UNVERIFIED until seeded test sets exist, so those read PARTIAL | 2 |
 | 5 execution planning | the job set as data before anything runs | DESIGNED (owner review, EP-1..EP-4) + an advisory plan output nothing enforces | 2 |
@@ -88,6 +88,12 @@ person-only cases (duplicate, close, reopen). `main` is at Release 1 (`ef4b15d`,
   capability refusal, KDEC-014** on a live target: stub-proven only.
 - **The rung ladder, SLA and severity derivation in the gate** — Release 2. Version fitness is consumed
   (KDEC-010): a scanner that cannot read the code at its version never carries a PASS.
+- **PHP 8.x on a runner**: lane L-SG moved the `sast-semgrep` job to the Semgrep 1.178.0 image,
+  pinned by digest, which reads PHP 5.6–8.4 (measured locally in that image). No hosted run of the
+  job on that image exists yet.
+- **PHP 8.5**: measured, Semgrep cannot fully parse it (the `(void)` cast and `final` promoted
+  properties; 1.178.0 and the newest, 1.182.0). A file using them is exit 3, `COLLECTION_FAILED`
+  for the whole Semgrep job, and a PHP 8.5 target is a proven `VERSION_GAP` (Release 3, below).
 - **The NVD workflow blocking anything**: `fail_on_cvss` defaults to 11.
 - **SHA-pinned actions**: the kit's own third-party actions are referenced by tag.
 - **The kit as a landing-zone deploy engine** — there is no plan/apply/destroy/vend pipeline.
@@ -98,6 +104,21 @@ Seeded corpora for the UNVERIFIED scanner ranges (semgrep, gosec, checkov, trivy
 eslint — D-VF-4; until then those scanners are never *selected* and the capabilities only they serve go
 PARTIAL), rung-ladder gate wiring, severity/SLA in the gate and ledger, execution-plan enforcement, cost
 packing, scheduled revalidation (PROV V3), the retirement register, overlays B and C beyond their docs.
+
+## Release 3 (next)
+
+**PHP, a supported ecosystem** (owner, 2026-10-21: "I need php and we need it now"; lane L-PHP).
+BUILT and PROVEN LOCALLY, hosted runs owed (consumer path at 24 seeded signals, the PHP-only
+negative, self-test, validate-scanners, the corpus probe):
+
+| piece | state |
+|---|---|
+| discovery `php` (`*.php`, `composer.json`, `composer.lock`), the same could-not-look and depth rules | PROVEN LOCALLY (`test_discovery.py`) |
+| PHP target versions (`.php-version`, `config.platform.php`, `require.php`, the lock, `FROM php:`) | PROVEN LOCALLY (`test_resolve.py`) |
+| SAST: `p/php` a floor in `sast-semgrep`; SQL injection, XSS, command injection detected; a hollow PHP scan is `COLLECTION_FAILED` | PROVEN LOCALLY (`prove_semgrep_php.py`) |
+| dependencies: a vulnerable `composer.lock` blocks `deps-scan`; a lock-less `composer.json` is a named gap | PROVEN LOCALLY (`prove_deps_scan_composer.py`) |
+| the PHP range Semgrep reads, MEASURED on the job's image | **READ 5.6–8.4** on the job's 1.178.0 image, pinned by digest (lane L-SG; re-measured locally in that image 2026-10-21; `prove_php_corpus.py`). The weekly corpus probe and the validate-scanners `semgrep-php` probe run the same digest; their hosted runs are owed. **8.5 measured unread** on 1.178.0 and 1.182.0, so an 8.5 target is a proven `VERSION_GAP`. Before L-SG: READ 5.6–7.2 on the 1.90.0 container |
+| one Semgrep release (ledger L03) | the job's image, the C# and Java jobs and self-test all at 1.178.0; the local Semgrep proofs fail if the release they run is not the job's | PROVEN LOCALLY (`prove_semgrep_strict.py` P4, `prove_semgrep_php.py` S6) |
 
 ## Open owner decisions
 

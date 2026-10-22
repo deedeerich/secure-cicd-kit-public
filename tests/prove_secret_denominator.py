@@ -53,9 +53,20 @@ RULES, GITLEAKS, DETECT = 'Write the Azure/Entra rules', 'Gitleaks (path-scoped,
     'detect-secrets (defense in depth)'
 
 
+def _expand(doc):
+    """The workflow with every `$/` composite step expanded into its job, as the runner sees it.
+
+    Scanner job bodies live in `.github/actions/<scanner>/` (ledger L64); this reads the steps a
+    job actually runs. One rule, tests/_composite_expand.py, for every reader.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.expanded_doc(doc)
+
+
 def steps():
     import yaml
-    doc = yaml.safe_load(io.open(pbf.WF, encoding='utf-8'))
+    doc = _expand(yaml.safe_load(io.open(pbf.WF, encoding='utf-8')))
     found = {s.get('name'): s.get('run') for s in (doc['jobs'][JOB].get('steps') or [])}
     return found.get(RULES), found.get(GITLEAKS), found.get(DETECT)
 

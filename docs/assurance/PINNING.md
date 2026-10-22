@@ -22,7 +22,7 @@ The kit's own workflows currently reference third-party actions **by tag**, not 
 | `aquasecurity/trivy-action` | `@v0.36.0` | no — must be SHA-pinned |
 | `bridgecrewio/checkov-action` | `@v12` | no — must be SHA-pinned |
 | `dorny/paths-filter` | `@v4` | no — must be SHA-pinned |
-| `semgrep/semgrep` (container image) | `:1.90.0` | pin by image digest |
+| `semgrep/semgrep` (container image) | `@sha256:32e45996…` (1.178.0; lane L-SG) | pinned by image digest |
 | `actions/*`, `github/*`, `azure/*`, `docker/*`, `hashicorp/*` | tags | yes — exempt by configuration |
 
 ### A tag you cannot resolve is worse than a tag you have not reviewed

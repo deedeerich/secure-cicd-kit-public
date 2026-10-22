@@ -103,6 +103,16 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # Proven as shipped by tests/test_discovery.py, which runs its steps from this composite; its
     # failure is read by the gate as `needs.discover.result` (tooling, never NOT_APPLICABLE).
     "action:discover": [],
+    # SCANNER COMPOSITES (ledger L64; decomposition plan §6.5): a composite is an IMPLEMENTATION of
+    # the job's capability, never a new one, so it carries the job's own name and adds no debt
+    # (deferrals are deduplicated by capability). The job still runs it, the gate still reads
+    # `needs.<job>.result`; tests/prove_composite_move_equivalence.py holds the move.
+    "action:secret-scan": ["secret-scan"],
+    "action:sast-cpp": ["sast-cpp"],
+    "action:sast-java": ["sast-java"],
+    "action:sast-dotnet": ["sast-dotnet"],
+    "action:deps-scan": ["deps-scan"],
+    "action:iac-scan": ["iac-scan"],
     # D-VF-4 (ledger V-02), lane L-C1: re-measures the IaC scanners' version ranges over the seeded
     # Terraform corpus and fails when scanner-registry.yaml claims more than was measured. A
     # MEASUREMENT OF WHAT A SCANNER CAN READ, not an assurance claim about code -- the same rule as

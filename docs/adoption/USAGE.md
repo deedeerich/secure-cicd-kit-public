@@ -165,6 +165,9 @@ seeded fixture that a green job failed to detect.
 | .NET SCA | `.csproj` / `.sln` so `dotnet restore` can resolve | dependency audit finds nothing |
 | .NET / Java SAST | `.cs` / `.java` sources under `paths` | job reports "no sources", skips, and says so |
 | Python SAST | `.py` sources under `paths` | skipped with a notice |
+| **PHP dependency scan** (since Release 3, next) | **`composer.lock`** beside each `composer.json`. Trivy reads only the lock: a `composer.json` alone produced no result at all (measured, trivy 0.71.2) | each `composer.json` without its lock is a named, counted `COVERAGE_GAP` (`PHPDependenciesUnlocked`) — never a dependency scan that passed |
+| PHP SAST (Semgrep; since Release 3, next) | `.php` sources under `paths`. `p/php` is added to your `semgrep_config` automatically whenever discovery finds PHP, so narrowing the rulesets cannot drop it | a PHP scan that examined no PHP file, or loaded no PHP rule, is `COLLECTION_FAILED`. **The shipped Semgrep container (1.178.0, pinned by digest) reads PHP 5.6–8.4** (measured in that image). **PHP 8.5 is measured and not read**: a file using the `(void)` cast or `final` promoted properties makes Semgrep exit 3 under `--strict`, which is `COLLECTION_FAILED` for the whole Semgrep job (the newest Semgrep, 1.182.0, is the same), and a PHP 8.5 target is a proven `VERSION_GAP` (`PARTIAL` at dev/test; refused at uat/prod without a named acceptance, KDEC-014). Kit versions before lane L-SG ran Semgrep 1.90.0, which read PHP only to 7.2 |
+| PHP target version | `.php-version`, or `config.platform.php` / `require.php` in `composer.json` (a constraint such as `^8.1` is recorded as a constraint, never a version) | no version declared: the PHP capability is `VERSION_GAP` (recorded, not enforced), so Semgrep's PASS reads `PARTIAL` |
 | IaC | Terraform, Bicep, ARM, Kubernetes, Helm or a Dockerfile under `paths`; `iac_mode` (default `auto`) not `disabled` | `NOT_APPLICABLE` with the path searched. `iac_mode: required` makes absence a finding; `disabled` is a recorded weakening. (`enable_iac` is deprecated and ignored — the run says so) |
 | Container image | `image_ref` (prefer a digest) | `NOT_APPLICABLE`, never a clean result |
 | Everything Semgrep | Your code must not sit under a path Semgrep ignores by default (`tests/`, `fixtures/`, …) | **the kit overrides this** with its own `.semgrepignore`, because the default caused silent empty results |
@@ -181,7 +184,7 @@ discovery, against the content under `paths`** — a selector can only narrow it
 | `language:` | Meaning |
 |---|---|
 | **`auto`** (default), `multi` | Consider every family. Each still runs only if discovery finds something for it to analyze. `multi` is a synonym |
-| a list of `python`, `node`, `dotnet`, `java`, `go`, `cpp`, `iac` (aliases `js`/`ts`, `py`, `c#`, `c++`, `tf`) | **Exclude** every discovered ecosystem not listed. It can never add one discovery did not find, and the narrowing is recorded as a weakening (`SCOPE_NARROWED`) — attribute it or the verdict is `DECISION_REQUIRED` |
+| a list of `python`, `node`, `dotnet`, `java`, `go`, `cpp`, `php`, `iac` (aliases `js`/`ts`, `py`, `c#`, `c++`, `tf`) | **Exclude** every discovered ecosystem not listed. It can never add one discovery did not find, and the narrowing is recorded as a weakening (`SCOPE_NARROWED`) — attribute it or the verdict is `DECISION_REQUIRED` |
 
 So the default on a repository containing Python and Terraform runs the Python and IaC paths and
 **skips** Go, Java, .NET and C/C++. That is the correct outcome, not a coverage gap. Running a Go

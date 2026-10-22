@@ -74,6 +74,17 @@ m:Natanael Copa <ncopa@alpinelinux.org>
 '''
 
 
+def _expand(doc):
+    """The workflow with every `$/` composite step expanded into its job, as the runner sees it.
+
+    Scanner job bodies live in `.github/actions/<scanner>/` (ledger L64); this reads the steps a
+    job actually runs. One rule, tests/_composite_expand.py, for every reader.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.expanded_doc(doc)
+
+
 def token():
     """A credential-shaped string built at runtime, so the source holds no secret-shaped literal."""
     body = ''.join('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[(i * 7 + 3) % 62]
@@ -107,7 +118,7 @@ def image(path, files, tag):
 
 def trivy_step():
     import yaml
-    doc = yaml.safe_load(io.open(WF, encoding='utf-8'))
+    doc = _expand(yaml.safe_load(io.open(WF, encoding='utf-8')))
     for s in (doc['jobs'][JOB].get('steps') or []):
         if 'trivy-action' in str(s.get('uses', '')):
             return s
@@ -270,7 +281,7 @@ def enforce_steps(report, advisory):
 
 def trivy_steps():
     import yaml
-    doc = yaml.safe_load(io.open(WF, encoding='utf-8'))
+    doc = _expand(yaml.safe_load(io.open(WF, encoding='utf-8')))
     return [s for s in (doc['jobs'][JOB].get('steps') or [])
             if 'trivy-action' in str(s.get('uses', ''))]
 

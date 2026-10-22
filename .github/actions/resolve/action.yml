@@ -74,6 +74,10 @@ inputs:
     description: needs.discover.outputs.cpp.
     required: false
     default: ''
+  discovered-php:
+    description: needs.discover.outputs.php (lane L-PHP).
+    required: false
+    default: ''
   discovered-iac:
     description: needs.discover.outputs.iac.
     required: false
@@ -245,6 +249,7 @@ runs:
         D_DOTNET: ${{ inputs.discovered-dotnet }}
         D_JAVA: ${{ inputs.discovered-java }}
         D_CPP: ${{ inputs.discovered-cpp }}
+        D_PHP: ${{ inputs.discovered-php }}
         D_IAC: ${{ inputs.discovered-iac }}
         D_STATE: ${{ inputs.discovery-state }}
         D_COVERAGE_GAPS: ${{ inputs.coverage-gaps }}
@@ -560,9 +565,22 @@ runs:
                 "verified": "UNVERIFIED"
               }
             ],
+            "php": [
+              {
+                "basis": "MEASURED by the seeded PHP corpus (tests/corpora/php_corpus.py; D-VF-4): semgrep 1.178.0 read the seed, with no parse error, in every family 5.6..8.4 (families: 5.6, 7.0, 7.1, 7.2, 7.3, 7.4, 8.0, 8.1, 8.2, 8.3, 8.4, 8.5); 8.5 was PARSE_ERROR, so the ceiling is the family below it. Releases with no new syntax are claimed through their neighbours. Measured 2026-10-21 (locally, in the semgrep/semgrep 1.178.0 image the sast-semgrep job runs, pulled by the digest it pins (sha256:32e459968daa); families 5.6..8.4 php -l-checked under their own release and the one before by lane L-PHP, 8.5 under 8.5.12 and 8.4.27 by lane L-SG) by tests/corpora/probe_php_corpus.py.",
+                "compare": "version",
+                "corpus": "tests/corpora/php_corpus.py",
+                "max": "8.4",
+                "max_from_input": null,
+                "min": "5.6",
+                "tool": "semgrep",
+                "unbounded": false,
+                "verified": "READ"
+              }
+            ],
             "python": [
               {
-                "basis": "semgrep carries its own parser, independent of the runner interpreter. PEP 695 parsed at 1.178.0; the kit pins 1.90.0 and nothing measured that version (PO section 3.4). Per-version language support is not published.",
+                "basis": "semgrep carries its own parser, independent of the runner interpreter. PEP 695 parsed at 1.178.0, the release the sast-semgrep job's image pins since lane L-SG; no corpus has measured a Python range (PO section 3.4). Per-version language support is not published.",
                 "compare": "version",
                 "max": null,
                 "max_from_input": null,
@@ -654,6 +672,12 @@ runs:
               "codeql/codeql"
             ],
             "class": "node"
+          },
+          "php-sast": {
+            "candidates": [
+              "sast-semgrep/semgrep"
+            ],
+            "class": "php"
           },
           "python-quality": {
             "candidates": [
@@ -1151,12 +1175,72 @@ runs:
                         exact("iac", root, "helm", m.group(1), src + ":apiVersion", [src]); found = True
             return found
 
+        # ── php: .php-version > composer.json config.platform.php > require.php > the lock's
+        # copies of the two > Dockerfile FROM php:<v> (lane L-PHP). config.platform.php is the
+        # version Composer resolves dependencies FOR, so it is exact; require.php is a constraint
+        # and is never rounded to a version. The lock's `platform-overrides` / `platform` are the
+        # same two values as Composer recorded them, read only where composer.json said nothing.
+        def php_spec(doc, src, lock):
+            if not isinstance(doc, dict):
+                return None
+            if lock:
+                ov = (doc.get("platform-overrides") or {}).get("php") if isinstance(doc.get("platform-overrides"), dict) else None
+                if ov:
+                    return ("exact", str(ov), src + ":platform-overrides.php")
+                pl = (doc.get("platform") or {}).get("php") if isinstance(doc.get("platform"), dict) else None
+                return ("constraint", str(pl), src + ":platform.php") if pl else None
+            cfg = doc.get("config") if isinstance(doc.get("config"), dict) else {}
+            plat = (cfg.get("platform") or {}).get("php") if isinstance(cfg.get("platform"), dict) else None
+            if plat:
+                return ("exact", str(plat), src + ":config.platform.php")
+            req = (doc.get("require") or {}).get("php") if isinstance(doc.get("require"), dict) else None
+            return ("constraint", str(req), src + ":require.php") if req else None
+
+        def probe_php(root, names):
+            present = [n for n in (".php-version", "composer.json", "composer.lock") if n in names] + \
+                      sorted(n for n in names if n.startswith("Dockerfile"))
+            if not any(n in names for n in (".php-version", "composer.json", "composer.lock")) and \
+                    not any(n.endswith(".php") for n in names) and \
+                    not any(n.startswith("Dockerfile") for n in names):
+                return False
+            checked = [rsrc(root, n) for n in present]
+            for n in present:
+                text = read(path(root, n)); src = rsrc(root, n)
+                if text is None:
+                    record("php", root, "language", strength="unreadable", checked=checked,
+                           note="could not read " + n)
+                    return True
+                if n == ".php-version":
+                    exact("php", root, "language", first_line(text), src, checked); return True
+                if n in ("composer.json", "composer.lock"):
+                    try:
+                        doc = json.loads(text)
+                    except Exception:
+                        record("php", root, "language", strength="unreadable", source=src,
+                               checked=checked, note=n + " did not parse")
+                        return True
+                    got = php_spec(doc, src, n == "composer.lock")
+                    if got and got[0] == "exact":
+                        exact("php", root, "language", got[1], got[2], checked); return True
+                    if got:
+                        constrained("php", root, "language", got[1], got[2], checked); return True
+                    continue
+                if n.startswith("Dockerfile"):
+                    m = re.search(r"^\s*FROM\s+(?:[\w.\-/]+/)?php:v?(\d+(?:\.\d+)+)", text, re.M | re.I)
+                    if m:
+                        exact("php", root, "language", m.group(1), src + ":FROM", checked); return True
+            # PHP is here (a source file, a manifest) and nothing in this root declares a version:
+            # the repository-wide `none` record below names the remedy once.
+            return False
+
         probes = {"python": probe_python, "node": probe_node, "go": probe_go, "dotnet": probe_dotnet,
-                  "java": probe_java, "cpp": probe_cpp, "iac": probe_iac}
+                  "java": probe_java, "cpp": probe_cpp, "php": probe_php, "iac": probe_iac}
         remediation = {"python": ".python-version (or requires-python in pyproject.toml)",
                        "node": ".nvmrc (or engines.node in package.json)", "go": "a go directive in go.mod",
                        "dotnet": "TargetFramework in the project file", "java": "maven.compiler.release in pom.xml (or a Gradle toolchain)",
-                       "cpp": "a C++ standard (set(CMAKE_CXX_STANDARD n)) in CMakeLists.txt", "iac": "required_version in a terraform block"}
+                       "cpp": "a C++ standard (set(CMAKE_CXX_STANDARD n)) in CMakeLists.txt",
+                       "php": ".php-version (or config.platform.php / require.php in composer.json)",
+                       "iac": "required_version in a terraform block"}
 
         for cls, probe in probes.items():
             any_root = False
@@ -1548,7 +1632,8 @@ runs:
                      ".ts": "node", ".tsx": "node", ".go": "go", ".cs": "dotnet", ".java": "java",
                      ".c": "cpp", ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".h": "cpp", ".hpp": "cpp",
                      ".hh": "cpp", ".hxx": "cpp", ".tf": "iac", ".bicep": "iac",
-                     ".rs": "Rust", ".rb": "Ruby", ".php": "PHP", ".swift": "Swift", ".kt": "Kotlin",
+                     ".php": "php",
+                     ".rs": "Rust", ".rb": "Ruby", ".swift": "Swift", ".kt": "Kotlin",
                      ".kts": "Kotlin", ".scala": "Scala", ".ex": "Elixir", ".exs": "Elixir",
                      ".erl": "Erlang", ".hs": "Haskell", ".lua": "Lua", ".pl": "Perl", ".r": "R",
                      ".jl": "Julia", ".dart": "Dart", ".groovy": "Groovy", ".clj": "Clojure",

@@ -15,6 +15,16 @@ name: Consumer path — negative (EXPECTED TO FAIL)
 
 on:
   workflow_dispatch:
+    inputs:
+      # ONE REUSABLE CALL PER RUN, ON PURPOSE. Two calls in one run publish artifacts under the
+      # same names (sarif-semgrep-1, ...), and the grader downloads this run's sarif-* by name. So
+      # the PHP-only proof (lane L-PHP) is its own dispatch of this file, selected here, and the
+      # full fixture -- the graded one -- stays the default.
+      scope:
+        description: "full = the graded multi-language fixture; php = the PHP subtree alone"
+        type: choice
+        options: [full, php]
+        default: full
 
 permissions:
   contents: read
@@ -31,6 +41,7 @@ jobs:
   # committed and already in the checkout the scan reads.
   seed:
     name: Generate the never-committed secret seeds
+    if: inputs.scope != 'php'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -64,6 +75,7 @@ jobs:
   seeded:
     name: Seeded findings MUST block the caller
     needs: seed
+    if: inputs.scope != 'php'
     uses: ./.github/workflows/reusable-security.yml
     permissions:
       contents: read
@@ -72,8 +84,9 @@ jobs:
     with:
       # The FULL multi-language fixture, so one run proves two things at once: that the gate
       # blocks, and that every seeded signal is actually detected through the consumer path.
-      # 20 expected signals — Python, Node, .NET/C#, Java, Go, C/C++, Terraform, Dockerfile,
-      # three Azure/Entra credential classes — and a negative control that must NOT fire.
+      # 24 expected signals — Python, Node, .NET/C#, Java, Go, C/C++, PHP (SQL injection, XSS,
+      # command injection, a vulnerable Composer lock), Terraform, Dockerfile, three Azure/Entra
+      # credential classes — and a negative control that must NOT fire.
       language: multi
       paths: tests/consumer-fixture/full
       enable_iac: true
@@ -85,4 +98,27 @@ jobs:
       # TEST-ONLY (KDEC-011): the seeds generated above, ADDED to the scanned tree before the
       # secret scan. The artifact belongs to this run; the name is the `seed` job's output.
       test_only_seed_artifact: ${{ needs.seed.outputs.artifact }}
+    secrets: inherit
+
+  # ── PHP ALONE MUST BLOCK (lane L-PHP) ────────────────────────────────────────────────
+  #
+  # The full fixture blocks on a dozen seeds, so its failure cannot show that PHP findings block
+  # by themselves. This call scans ONLY the PHP subtree -- three Semgrep seeds and a Composer lock
+  # with a CRITICAL advisory -- with `language: auto`, so discovery alone decides that PHP is
+  # here. It runs only when dispatched with scope=php; consumer-path-test.yml asserts, by job
+  # name, that this call's Semgrep job, its dependency scan and its gate each FAILED.
+  seeded-php:
+    name: Seeded PHP MUST block the caller
+    if: inputs.scope == 'php'
+    uses: ./.github/workflows/reusable-security.yml
+    permissions:
+      contents: read
+      security-events: write
+      actions: read   # the CodeQL job reads workflow metadata on private repositories
+    with:
+      language: auto
+      paths: tests/consumer-fixture/full/php
+      soft_fail_sast: false
+      enable_sbom: false
+      enable_malicious_pkg_scan: false
     secrets: inherit

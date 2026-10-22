@@ -60,10 +60,18 @@ exit 0
 '''
 
 
+def _shipped(path):
+    """The flagship's text plus the scanner composites it calls through `$/` (ledger L64): a
+    scanner's commands live there now, and reading the workflow alone would count fewer sites."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.shipped_text(path)
+
+
 def static_checks(bad):
     import yaml
     v = io.open(VALIDATE, encoding='utf-8').read()
-    f = io.open(FLAGSHIP, encoding='utf-8').read()
+    f = _shipped(FLAGSHIP)
     shipped = set(re.findall(r'pip install --quiet semgrep==([0-9.]+)', f))
     probed = set(re.findall(r'pip install --quiet semgrep==([0-9.]+)', v))
     print('  V1 semgrep shipped (pip) %s, probed %s' % (sorted(shipped), sorted(probed)))

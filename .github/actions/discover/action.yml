@@ -59,6 +59,9 @@ outputs:
   cpp:
     description: true / false, as python.
     value: ${{ steps.d.outputs.cpp }}
+  php:
+    description: true / false, as python. composer.json, composer.lock or *.php (lane L-PHP).
+    value: ${{ steps.d.outputs.php }}
   iac:
     description: true / false, as python, after iac_mode.
     value: ${{ steps.d.outputs.iac }}
@@ -154,7 +157,7 @@ runs:
 
         # FAIL-SAFE: if the survey itself cannot run, everything is enabled and the state says so.
         trap 'echo "::error title=Discovery failed::Applicability could not be established."; \
-              for k in python node go dotnet java cpp iac; do echo "$k=true" >> "$GITHUB_OUTPUT"; done; \
+              for k in python node go dotnet java cpp php iac; do echo "$k=true" >> "$GITHUB_OUTPUT"; done; \
               echo "state=DISCOVERY_UNAVAILABLE" >> "$GITHUB_OUTPUT"; exit 0' ERR
 
         # PER-PROBE SENTINEL FILES, NOT ONE GLOBAL FLAG, AND NOT VARIABLES.
@@ -242,7 +245,7 @@ runs:
               "c#"|csharp|dotnet|.net) ;;
               c|c++|cpp) ;;
               tf|terraform|iac) ;;
-              go|java|kotlin|scala) ;;
+              go|java|kotlin|scala|php) ;;
               *) _unknown="$_unknown $_w" ;;
             esac
           done
@@ -253,7 +256,7 @@ runs:
             # to "scan less" -- that is the same inversion as treating a failed probe as absence.
             echo "::error title=Unrecognised language selector::language=\'$sel\' contains$_unknown,"
             echo "which this kit does not recognise. Refusing to silently scan less. Use auto, or"
-            echo "a list of: python node go java dotnet cpp iac (aliases: js/ts, py, c#, c++, tf)."
+            echo "a list of: python node go java dotnet cpp php iac (aliases: js/ts, py, c#, c++, tf)."
             echo "| (selector) | UNRECOGNISED | $_unknown -- refused, see error |" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
@@ -319,7 +322,10 @@ runs:
         dn="$(probe dotnet -name '*.csproj' -o -name '*.sln')"
         jv="$(probe java   -name pom.xml -o -name build.gradle -o -name build.gradle.kts)"
         cp="$(probe cpp    -name '*.c' -o -name '*.cpp' -o -name '*.cc' -o -name '*.h' -o -name '*.hpp')"
-        ia="$(probe iac    -name '*.tf' -o -name '*.bicep' -o -name 'Dockerfile*' -o -name Chart.yaml -o -name kustomization.yaml -o -name azuredeploy.json)"
+        # PHP: the source, the Composer manifest, or its lock. Each alone is PHP here; the lock is
+        # what the dependency scan reads, and the source is what Semgrep reads (lane L-PHP).
+        ph="$(probe php    -name '*.php' -o -name composer.json -o -name composer.lock)"
+        ia="$(probe iac   -name '*.tf' -o -name '*.bicep' -o -name 'Dockerfile*' -o -name Chart.yaml -o -name kustomization.yaml -o -name azuredeploy.json)"
 
         # WHAT IS HERE THAT WE CANNOT SCAN?
         #
@@ -345,17 +351,17 @@ runs:
         # individually by emit(), so DISCOVERY_UNAVAILABLE needs no special case -- it falls
         # out of every probe having failed.
         failed=0
-        for k in python node go dotnet java cpp iac; do
+        for k in python node go dotnet java cpp php iac; do
           [ -e "$FAILDIR/$k" ] && failed=$((failed + 1))
         done
-        if [ "$failed" -eq 7 ]; then
+        if [ "$failed" -eq 8 ]; then
           state=DISCOVERY_UNAVAILABLE
           echo "::error title=Discovery unavailable::Every probe failed. Applicability could not"
           echo "be established at all, so every capability is force-enabled. Results from this"
           echo "run must NOT be read as coverage."
         elif [ "$failed" -gt 0 ]; then
           state=DISCOVERY_PARTIAL
-          echo "::warning title=Discovery partial::$failed of 7 probes failed. What the other"
+          echo "::warning title=Discovery partial::$failed of 8 probes failed. What the other"
           echo "probes established still holds; the failed ones are enabled as UNDETERMINED."
         fi
 
@@ -365,6 +371,7 @@ runs:
         emit dotnet "$dn" "*.csproj / *.sln"
         emit java   "$jv" "pom.xml / build.gradle"
         emit cpp    "$cp" "*.c / *.cpp / *.h"
+        emit php    "$ph" "*.php / composer.json / composer.lock"
 
         # IaC carries its own mode, because "off by default" was the wrong worldview.
         case "$iac_mode" in
@@ -442,7 +449,6 @@ runs:
           case "$1" in
             rs)     printf 'Rust' ;;
             rb)     printf 'Ruby' ;;
-            php)    printf 'PHP' ;;
             swift)  printf 'Swift' ;;
             kt|kts) printf 'Kotlin' ;;
             scala)  printf 'Scala' ;;
@@ -479,7 +485,7 @@ runs:
 
         unsupported=""
         unsup_raw="$(find "$scope" -maxdepth 8 -type f \( \
-            -name '*.rs' -o -name '*.rb' -o -name '*.php' -o -name '*.swift' -o -name '*.kt' \
+            -name '*.rs' -o -name '*.rb' -o -name '*.swift' -o -name '*.kt' \
             -o -name '*.scala' -o -name '*.ex' -o -name '*.exs' -o -name '*.erl' -o -name '*.hs' \
             -o -name '*.lua' -o -name '*.pl' -o -name '*.r' -o -name '*.jl' -o -name '*.dart' \
             -o -name '*.groovy' -o -name '*.clj' -o -name '*.zig' -o -name '*.nim' \
@@ -514,6 +520,38 @@ runs:
           done
         fi
         echo "unsupported=$unsupported" >> "$GITHUB_OUTPUT"
+
+        # A COMPOSER MANIFEST WITHOUT ITS LOCK IS PHP NO CARRIED SCANNER CAN RESOLVE (lane L-PHP).
+        # The dependency scan (Trivy fs) reads composer.lock and never composer.json: measured with
+        # trivy 0.71.2 on 2026-10-21, a composer.json naming a package with a CRITICAL advisory and
+        # no lock beside it produced no result at all, while the same package in a composer.lock
+        # was reported. A manifest is a set of CONSTRAINTS; the lock is the versions. So each
+        # composer.json with no composer.lock in its directory is declared, named and counted --
+        # never left to read as a dependency scan that passed over nothing.
+        if [ "$ph" = "yes" ]; then
+          # suppression: PRESENTATION_ONLY -- find's stderr is noise on unreadable subtrees; the
+          # EXIT STATUS is captured beside it and drives an UNDETERMINED row, never absence.
+          # discards: find's stderr on permission-denied or unreadable subtrees
+          # preserved_by: cj_rc, which turns a failed probe into an explicit UNDETERMINED row
+          cj_rc=0
+          cj_raw="$(find "$scope" -maxdepth 8 -type f -name composer.json \
+              -not -path '*/node_modules/*' -not -path '*/vendor/*' -not -path '*/.git/*' \
+              -print 2>/dev/null)" || cj_rc=$?
+          if [ "$cj_rc" -ne 0 ]; then
+            echo "::warning title=Composer lock probe failed::Could not determine whether every"
+            echo "composer.json has its composer.lock. Unknown, not absent."
+            echo "| PHPDependenciesUnlocked | UNDETERMINED | probe failed; whether each composer.json has its lock is unknown |" >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$cj_raw" ]; then
+            _unlocked=0
+            while IFS= read -r _cj; do
+              [ -n "$_cj" ] || continue
+              [ -f "$(dirname "$_cj")/composer.lock" ] || _unlocked=$((_unlocked + 1))
+            done <<< "$cj_raw"
+            if [ "$_unlocked" -gt 0 ]; then
+              declare_gap PHPDependenciesUnlocked "$_unlocked" "a composer.lock beside each composer.json; Trivy reads only composer.lock, so these dependency sets are unresolved"
+            fi
+          fi
+        fi
 
         # THE PIPELINE'S OWN DEFINITION FILES ARE AN ARTIFACT CLASS TOO.
         #

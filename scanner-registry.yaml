@@ -40,19 +40,19 @@ jobs:
   # NOT_APPLICABLE), and its step bodies run from the composite through `$/` -- inline, they took
   # the flagship to 518 KB, past the ceiling at which a workflow never starts.
   resolve:        {class: infrastructure, composite: resolve}
-  secret-scan:    {class: scanner, capability: secret-scan,    applies: always,                    composite: null}
+  secret-scan:    {class: scanner, capability: secret-scan,    applies: always,                    composite: secret-scan}
   # python OR node, as the job's own condition reads since the ESLint-behind-a-Python-gate fix.
   # `applies` is read by nothing that enforces; the resolve job's advisory plan states the same rule.
   code-quality:   {class: scanner, capability: code-quality,   applies: discover.python|discover.node, composite: null}
   sast-semgrep:   {class: scanner, capability: sast-semgrep,   applies: always,                    composite: null}
   sast-bandit:    {class: scanner, capability: sast-bandit,    applies: discover.python,           composite: null}
   codeql:         {class: scanner, capability: codeql,         applies: discover.any-codeql-lang,  composite: null}
-  deps-scan:      {class: scanner, capability: deps-scan,      applies: always,                    composite: null}
-  iac-scan:       {class: scanner, capability: iac-scan,       applies: discover.iac,              composite: null}
-  sast-dotnet:    {class: scanner, capability: sast-dotnet,    applies: discover.dotnet,           composite: null}
-  sast-java:      {class: scanner, capability: sast-java,      applies: discover.java,             composite: null}
+  deps-scan:      {class: scanner, capability: deps-scan,      applies: always,                    composite: deps-scan}
+  iac-scan:       {class: scanner, capability: iac-scan,       applies: discover.iac,              composite: iac-scan}
+  sast-dotnet:    {class: scanner, capability: sast-dotnet,    applies: discover.dotnet,           composite: sast-dotnet}
+  sast-java:      {class: scanner, capability: sast-java,      applies: discover.java,             composite: sast-java}
   sast-go:        {class: scanner, capability: sast-go,        applies: discover.go,               composite: null}
-  sast-cpp:       {class: scanner, capability: sast-cpp,       applies: discover.cpp,              composite: null}
+  sast-cpp:       {class: scanner, capability: sast-cpp,       applies: discover.cpp,              composite: sast-cpp}
   image-scan:     {class: scanner, capability: image-scan,     applies: input.image_ref,           composite: null}
   malicious-deps: {class: scanner, capability: malicious-deps, applies: input.enable_malicious_pkg_scan, composite: null}
   sbom:           {class: scanner, capability: sbom,           applies: input.enable_sbom,         composite: null}
@@ -126,7 +126,7 @@ version_support:
         max_from_input: null
         unbounded: false
         compare: version
-        basis: "semgrep carries its own parser, independent of the runner interpreter. PEP 695 parsed at 1.178.0; the kit pins 1.90.0 and nothing measured that version (PO section 3.4). Per-version language support is not published."
+        basis: "semgrep carries its own parser, independent of the runner interpreter. PEP 695 parsed at 1.178.0, the release the sast-semgrep job's image pins since lane L-SG; no corpus has measured a Python range (PO section 3.4). Per-version language support is not published."
         verified: UNVERIFIED
     node:
       - tool: semgrep
@@ -164,6 +164,26 @@ version_support:
         compare: version
         basis: "own parser; per-version support not published."
         verified: UNVERIFIED
+    # PHP (lane L-PHP, 2026-10-21). The sast-semgrep job is the only carried scanner that reads
+    # PHP source; it adds p/php to its rulesets whenever discovery finds PHP. Which PHP releases
+    # Semgrep's parser reads is not published, so the range is MEASURED on the job's own image by
+    # tests/corpora/php_corpus.py (re-measured weekly by probe-scanner-corpora.yml). The 1.90.0
+    # container the job ran until lane L-SG stopped at 7.2: 7.3, 8.1, 8.2, 8.3 and 8.4 syntax was
+    # PartialParsing (exit 3 under --strict). Lane L-SG moved the job to the 1.178.0 image, pinned
+    # by digest (KDEC-016: PHP 8.x is required), and re-measured this row on it: 5.6..8.4. PHP 8.5
+    # is in the corpus and MEASURED unread: the (void) cast and final promoted properties draw
+    # PartialParsing (exit 3 under --strict) on 1.178.0 and on 1.182.0, the newest release
+    # (2026-10-21). A PHP 8.5 target is therefore a proven VERSION_GAP.
+    php:
+      - tool: semgrep
+        min: "5.6"
+        max: "8.4"
+        max_from_input: null
+        unbounded: false
+        compare: version
+        basis: "MEASURED by the seeded PHP corpus (tests/corpora/php_corpus.py; D-VF-4): semgrep 1.178.0 read the seed, with no parse error, in every family 5.6..8.4 (families: 5.6, 7.0, 7.1, 7.2, 7.3, 7.4, 8.0, 8.1, 8.2, 8.3, 8.4, 8.5); 8.5 was PARSE_ERROR, so the ceiling is the family below it. Releases with no new syntax are claimed through their neighbours. Measured 2026-10-21 (locally, in the semgrep/semgrep 1.178.0 image the sast-semgrep job runs, pulled by the digest it pins (sha256:32e459968daa); families 5.6..8.4 php -l-checked under their own release and the one before by lane L-PHP, 8.5 under 8.5.12 and 8.4.27 by lane L-SG) by tests/corpora/probe_php_corpus.py."
+        verified: READ
+        corpus: tests/corpora/php_corpus.py
   sast-dotnet:
     dotnet:
       - tool: dotnet-sdk
@@ -350,4 +370,7 @@ capability_selection:
   # substitute for anything and nothing substitutes for it.
   dotnet-nuget-audit: {class: dotnet, candidates: [sast-dotnet/dotnet-sdk]}
   cpp-sast:           {class: cpp,    candidates: [sast-cpp/flawfinder, sast-cpp/cppcheck, codeql/codeql]}
+  # PHP: Semgrep alone. CodeQL has no PHP extractor, so nothing substitutes; a PHP target outside
+  # what Semgrep's row establishes is a VERSION_GAP (PARTIAL, never PASS).
+  php-sast:           {class: php,    candidates: [sast-semgrep/semgrep]}
   iac:                {class: iac,    candidates: [iac-scan/checkov, iac-scan/trivy-config]}

@@ -245,7 +245,12 @@ jobs:
     # run 38811959160 took 7m29s, and the three install/registry proofs added that day (real pip
     # venvs, npm, a local registry with a syft download) are estimated at 2-3 minutes more. Still a
     # bound, not a budget: a job that needs the full fifteen has a stalled dependency.
-    timeout-minutes: 15
+    # RAISED 15 -> 30 on 2026-10-21, from measurements, not estimates: the job grew with every
+    # proof wired that day (L-E census, L-B composite equivalence, L-C1 corpora, L-D deploy, L-PHP).
+    # 12m52s on a re-run of 39658855303, 14m09s on 39659025182, then cut off at 15m06s on
+    # 39694056635 (cancelled, every step that had run had passed). Thirty is twice the measured
+    # time; if it needs more, split the job rather than raise it again.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - name: Inlined normalizer must match the canonical source
@@ -330,6 +335,15 @@ jobs:
           # image-scan once sat in the gate's needs and was never read. Decomposition Phase 2
           # moves jobs into composites one at a time, and this must stay green after each move.
           python3 tests/check_scanner_registry.py
+
+      - name: A scanner job moved into a composite must expand to exactly the job it replaced
+        run: |
+          set -euo pipefail
+          # Ledger L64: each moved job's `$/` composite, expanded back into the job with its
+          # inputs substituted, has the canonical digest the job had before the move -- every
+          # step, condition, artefact name and SARIF category -- and nothing in the composite
+          # reads a context a composite does not have.
+          python3 tests/prove_composite_move_equivalence.py
 
       - name: The reporter must run where the report job runs it, with only what reaches that job
         run: |
@@ -460,7 +474,7 @@ jobs:
       - name: The sast-java job must find, count and enforce a seeded Java flaw
         run: |
           set -euo pipefail
-          python3 -m pip install --quiet semgrep
+          python3 -m pip install --quiet semgrep==1.178.0
           python3 tests/prove_sast_java_detects.py
 
       - name: Image scan must fail on CVEs (advisory off) and on a credential in every mode
@@ -480,6 +494,9 @@ jobs:
           # L17: Trivy reports every severity; fail_on_severity alone decides the block, in
           # deps-scan and image-scan, run the way trivy-action runs it.
           python3 tests/prove_trivy_threshold.py
+          # PHP (lane L-PHP): a vulnerable Composer package in composer.lock blocks deps-scan, a
+          # clean lock passes, and a composer.json with no lock is a declared gap, never a pass.
+          python3 tests/prove_deps_scan_composer.py
 
       - name: A known-malicious package must block in every mode, and no evidence must not read as clean
         run: |
@@ -560,12 +577,17 @@ jobs:
           python3 tests/prove_codeql_build_outcome.py
           # Real tools: .NET static analysis finds a seeded C# flaw; every configured Semgrep
           # ruleset loads and tests/ + fixtures/ are scanned; flawfinder runs and cppcheck's
-          # output reaches the uploads.
-          python3 -m pip install --quiet semgrep
+          # output reaches the uploads. Semgrep is pinned to the release the sast-semgrep job's
+          # image is (lane L-SG): prove_semgrep_strict P4 and prove_semgrep_php S6 hold them equal.
+          python3 -m pip install --quiet semgrep==1.178.0
           python3 tests/prove_sast_dotnet_detects.py
           python3 tests/prove_semgrep_rulesets.py
           # An unparseable file is exit 3 under --strict, and COLLECTION_FAILED -- never a zero.
           python3 tests/prove_semgrep_strict.py
+          # PHP (lane L-PHP): the seeded SQL injection, XSS and command injection are reported at
+          # ERROR even under a narrowed semgrep_config (p/php is a floor whenever discovery finds
+          # PHP), and a PHP scan that examined no PHP is COLLECTION_FAILED.
+          python3 tests/prove_semgrep_php.py
           # The weekly validation probes the SHIPPED Semgrep and gosec, and its negative
           # control fails without a scanner or with a lying one (W4K-116).
           python3 tests/prove_validate_scanners.py
@@ -624,7 +646,7 @@ jobs:
       - name: Semgrep and Checkov must count findings by their effective SARIF level
         run: |
           set -euo pipefail
-          python3 -m pip install --quiet semgrep
+          python3 -m pip install --quiet semgrep==1.178.0
           python3 tests/prove_sarif_effective_level.py
 
       - name: The build must record its base image digests, lockfile hashes and toolchain
@@ -1487,6 +1509,9 @@ jobs:
           # The IaC corpus probe (KDEC-014): every outcome and refusal of the probe that writes the
           # READ ranges, against a stub scanner; seeds stay Python data, never committed IaC.
           python3 tests/prove_iac_corpus.py
+          # The PHP corpus probe (lane L-PHP): the same, for sast-semgrep's PHP range -- measured on
+          # the job's own Semgrep image, a partial parse and a silent drop told from a read.
+          python3 tests/prove_php_corpus.py
           # Real checkov and trivy SARIF: a real finding counts, a real clean run is never hollow.
           python3 tests/prove_real_sarif_corpus.py
 

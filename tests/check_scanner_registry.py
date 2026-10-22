@@ -54,8 +54,18 @@ def as_list(v):
     return [v] if isinstance(v, str) else list(v or [])
 
 
-def check(doc, reg, capabilities):
-    """-> list of problems. Pure, so the self-test can feed it broken inputs."""
+def composite_on_disk(comp):
+    """True when .github/actions/<comp>/action.yml (or .yaml) exists in this repository."""
+    base = os.path.join(ROOT, '.github', 'actions', comp)
+    return any(os.path.isfile(os.path.join(base, f)) for f in ('action.yml', 'action.yaml'))
+
+
+def check(doc, reg, capabilities, composite_exists=composite_on_disk):
+    """-> list of problems. Pure, so the self-test can feed it broken inputs.
+
+    `composite_exists(name)` answers whether the named composite is on disk. A job that `uses:` a
+    composite which does not exist fails at RUN time, on the runner, as "Can't find action.yml"
+    -- every static check here would have agreed with itself while the scanner never ran (L64)."""
     problems = []
     jobs = doc.get('jobs') or {}
     rows = reg.get('jobs') or {}
@@ -97,6 +107,10 @@ def check(doc, reg, capabilities):
             if want not in used:
                 problems.append('%s: registered composite %s, but the job does not use it '
                                 '(uses: %s)' % (name, want, used or 'none'))
+            if not composite_exists(comp):
+                problems.append('%s: registered composite %s has no action.yml under '
+                                '.github/actions/%s -- the job would fail on the runner, not here'
+                                % (name, want, comp))
         if cls in AFTER_GATE:
             if name in gate_needs:
                 problems.append('%s: a %s job is in %s.needs -- the gate must never wait for a job '
@@ -141,6 +155,14 @@ def self_test():
                          'gov': {'class': 'governance'}}}
     caps = {'c1', 'g'}
     import copy
+
+    real = globals()['check']
+
+    def on_disk(_comp):
+        return True
+
+    def check(d, r, c, composite_exists=on_disk):
+        return real(d, r, c, composite_exists)
     if check(base_doc, base_reg, caps):
         return 'the control failed: %s' % check(base_doc, base_reg, caps)
     cases = []
@@ -155,15 +177,27 @@ def self_test():
     cases.append(('capability unregistered', base_doc, base_reg, {'g'}))
     r = copy.deepcopy(base_reg); r['jobs']['s1']['composite'] = 'scan-s1'
     cases.append(('composite named but not used', base_doc, r, caps))
+    d = copy.deepcopy(base_doc)
+    d['jobs']['s1']['steps'] = [{'uses': '$/.github/actions/scan-s1'}]
+    cases.append(('composite used but absent from .github/actions',
+                  d, r, caps, lambda _c: False))
     # The inverted rule for a post-gate job: the gate waiting for it, or it not consuming the
     # report, is each a defect.
     d = copy.deepcopy(base_doc); d['jobs'][GATE]['needs'].append('gov')
     cases.append(('gate waits for a governance job', d, base_reg, caps))
     d = copy.deepcopy(base_doc); d['jobs']['gov']['needs'] = ['s1']
     cases.append(('governance job does not need the report', d, base_reg, caps))
-    for label, d, r, c in cases:
-        if not check(d, r, c):
+    for case in cases:
+        label, d, r, c = case[:4]
+        exists = case[4] if len(case) > 4 else on_disk
+        if not check(d, r, c, exists):
             return 'did not catch: %s' % label
+    # The composite case must fail ONLY for the absence: the same doc with the file present passes.
+    d = copy.deepcopy(base_doc)
+    d['jobs']['s1']['steps'] = [{'uses': '$/.github/actions/scan-s1'}]
+    r = copy.deepcopy(base_reg); r['jobs']['s1']['composite'] = 'scan-s1'
+    if check(d, r, caps):
+        return 'the composite control failed: %s' % check(d, r, caps)
     return None
 
 
@@ -179,7 +213,7 @@ def main():
         print('SELF-TEST FAILED: %s. A checker that misses its own defect class proves nothing.'
               % err)
         return 1
-    print('self-test ok: 8 seeded defects caught, the control passes')
+    print('self-test ok: 9 seeded defects caught, the controls pass')
     doc = yaml.safe_load(io.open(WF, encoding='utf-8'))
     reg = yaml.safe_load(io.open(REG, encoding='utf-8'))
     caps = set(rv.CAPABILITY_REGISTRY.get('reusable-security.yml') or [])

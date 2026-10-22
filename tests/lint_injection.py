@@ -138,6 +138,17 @@ BLOCKING = ['.github/workflows/reusable-*.yml', '.github/workflows/reusable-*.ya
 UNTRUSTED_RE = [re.compile(p) for p in UNTRUSTED]
 
 
+def _expand(doc):
+    """The workflow with every `$/` composite step expanded into its job, as the runner sees it.
+
+    Scanner job bodies live in `.github/actions/<scanner>/` (ledger L64); this reads the steps a
+    job actually runs. One rule, tests/_composite_expand.py, for every reader.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.expanded_doc(doc)
+
+
 def is_blocking(path, root):
     rel = os.path.relpath(path, root).replace(os.sep, '/')
     return any(fnmatch.fnmatch(rel, g) for g in BLOCKING)
@@ -188,7 +199,7 @@ def triggers_of(doc):
 def scan_file(path):
     """-> (findings, error). A file that cannot be parsed is reported, never skipped."""
     try:
-        doc = yaml.safe_load(io.open(path, encoding='utf-8', errors='replace'))
+        doc = _expand(yaml.safe_load(io.open(path, encoding='utf-8', errors='replace')))
     except Exception as e:
         return ([], '%s: %s' % (type(e).__name__, str(e)[:120]))
     if not isinstance(doc, dict):

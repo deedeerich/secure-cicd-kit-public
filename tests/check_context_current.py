@@ -160,7 +160,11 @@ def check(root, max_commits=DEFAULT_MAX_COMMITS):
                          'was reconciled on a branch this one does not contain.' % (name, sha))
             continue
 
-        behind = git(root, 'rev-list', '--count', '%s..HEAD' % sha)
+        # WORK, not release mechanics: merges, and commits that change only the release notes, are
+        # how main is assembled and never reach the trunk; counting them failed every release
+        # candidate. A path-limited count also skips commits that change nothing.
+        behind = git(root, 'rev-list', '--count', '--no-merges', '%s..HEAD' % sha, '--', '.',
+                     ':(exclude)docs/RELEASE_NOTES.md')
         behind = int(behind) if behind.isdigit() else 0
         if behind > max_commits:
             fails.append('%s: context was reconciled against %s and HEAD is %d commits ahead '
@@ -230,6 +234,31 @@ def self_test():
         if not any('commits ahead' in x for x in f):
             fails.append('TOUCHING THE FILE MADE IT PASS -- the gate is measuring the clock, not '
                          'the work')
+
+        # RELEASE MECHANICS ARE NOT WORK (Release 3 candidate, 2026-10-21): on a release branch the
+        # context was 16 commits "behind", 12 of them main's own release merges and release-notes
+        # commits that never reach the trunk. Those must not count; a real change still must.
+        io.open(os.path.join(pdir, 'current-state.md'), 'w', encoding='utf-8').write(
+            '# s\n\n> Reconciled against commit `%s`.\n' % git(root, 'rev-parse', 'HEAD'))
+        commit('context restated')
+        os.makedirs(os.path.join(root, 'docs'), exist_ok=True)
+        for i in range(DEFAULT_MAX_COMMITS + 2):
+            io.open(os.path.join(root, 'docs', 'RELEASE_NOTES.md'), 'a').write('r%d\n' % i)
+            subprocess.run(['git', '-C', root, 'add', '-A'], capture_output=True)
+            subprocess.run(['git', '-C', root, 'commit', '-q', '-m', 'notes %d' % i],
+                           capture_output=True)
+        for i in range(DEFAULT_MAX_COMMITS + 2):
+            subprocess.run(['git', '-C', root, 'commit', '-q', '--allow-empty', '-m', 'merge-like %d'
+                            % i], capture_output=True)
+        f, _ = check(root)
+        if any('commits ahead' in x for x in f):
+            fails.append('release-notes-only and empty commits counted as work behind the context')
+        for i in range(DEFAULT_MAX_COMMITS + 2):
+            commit('real work %d' % i)
+        f, _ = check(root)
+        if not any('commits ahead' in x for x in f):
+            fails.append('real work beyond the limit was not counted once release commits were '
+                         'excluded')
 
         # A claimed commit that does not exist must be refused, not believed.
         io.open(os.path.join(pdir, 'current-state.md'), 'w', encoding='utf-8').write(

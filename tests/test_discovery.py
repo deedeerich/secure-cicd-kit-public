@@ -43,9 +43,11 @@ PARTS = {"d": ("survey", "d"), "platform": ("platform", "platform")}
 # THE JOB'S OUTPUTS CONTRACT, AS IT STOOD INLINE (2bf2e49, before the move). Every consumer reads
 # needs.discover.outputs.<name>; the move must not rename one, drop one, or re-source one. Pinned
 # here as data rather than read from history, because a CI checkout is shallow.
+# `php` is the one deliberate addition since (lane L-PHP, 2026-10-21): PHP stopped being an
+# unsupported class and became an ecosystem discovery answers for, read by resolve and sast-semgrep.
 BASE_OUTPUTS = dict(
     [(k, "${{ steps.d.outputs.%s }}" % k) for k in
-     ("python", "node", "go", "dotnet", "java", "cpp", "iac", "state", "unsupported",
+     ("python", "node", "go", "dotnet", "java", "cpp", "php", "iac", "state", "unsupported",
       "coverage_gaps", "coverage_gap_count")] +
     [(k, "${{ steps.platform.outputs.%s }}" % k) for k in
      ("ghas_available", "code_scanning", "secret_scanning", "push_protection",
@@ -351,12 +353,12 @@ def main():
     ok &= check("discovery failure -> everything ON",
                 run_case(shell, ["app/main.py"], break_find=True),
                 {"state": "DISCOVERY_UNAVAILABLE", "python": "true", "go": "true",
-                 "java": "true", "dotnet": "true", "cpp": "true", "iac": "true"})
+                 "java": "true", "dotnet": "true", "cpp": "true", "php": "true", "iac": "true"})
 
     ok &= check("all probes fail (no abort) -> unavailable",
                 run_case(shell, ["app/main.py"], break_all_soft=True),
                 {"state": "DISCOVERY_UNAVAILABLE", "python": "true", "go": "true",
-                 "java": "true", "dotnet": "true", "cpp": "true", "iac": "true"})
+                 "java": "true", "dotnet": "true", "cpp": "true", "php": "true", "iac": "true"})
 
     # PARTIAL IS NOT TOTAL. One probe failing must not discard six good answers.
     ok &= check("one probe fails -> others survive",
@@ -378,9 +380,10 @@ def main():
 
     # COVERAGE IS NOT APPLICABILITY. Discovery asking seven closed questions and hearing "no"
     # seven times is not the same as understanding the repository.
+    # PHP is not among them any more (lane L-PHP): it is an ecosystem, answered like the others.
     ok &= check("unsupported languages are declared",
                 run_case(shell, ["src/main.rs", "app/h.rb", "web/i.php"]),
-                {"state": "COMPLETE", "unsupported": "php,rb,rs",
+                {"state": "COMPLETE", "unsupported": "rb,rs", "php": "true",
                  "python": "false", "go": "false"})
 
     ok &= check("supported + unsupported coexist",
@@ -430,15 +433,67 @@ def main():
     ok &= check_text("workflow gap names the missing scanner", gha, "__summary__",
                      must=["| GitHubActionsWorkflow | COVERAGE_GAP |", "actionlint"])
 
-    # Swift, Kotlin, Ruby, PHP, Rust are in this estate and nothing here scans them.
+    # Swift, Kotlin, Ruby, Rust are in this estate and nothing here scans them. PHP is in it too,
+    # and since lane L-PHP it is SCANNED: it must be a RUN row, never a COVERAGE_GAP row.
     est = run_case(shell, ["ios/App.swift", "android/Main.kt", "app/h.rb",
                            "web/i.php", "native/core.rs"])
-    ok &= check("swift/kotlin/ruby/php/rust all named", est,
-                {"coverage_gap_count": "5"})
+    ok &= check("swift/kotlin/ruby/rust named; php runs", est,
+                {"coverage_gap_count": "4", "coverage_gaps": "Kotlin,Ruby,Rust,Swift",
+                 "php": "true"})
     ok &= check_text("each class named, not spelled as an extension", est, "__summary__",
                      must=["| Swift | COVERAGE_GAP |", "| Kotlin | COVERAGE_GAP |",
-                           "| Ruby | COVERAGE_GAP |", "| PHP | COVERAGE_GAP |",
-                           "| Rust | COVERAGE_GAP |"])
+                           "| Ruby | COVERAGE_GAP |", "| Rust | COVERAGE_GAP |",
+                           "| php | RUN |"],
+                     must_not=["| PHP | COVERAGE_GAP |"])
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # PHP, AN ECOSYSTEM (lane L-PHP, 2026-10-21). The same rules as every other probe:
+    # could-not-look is not found-nothing, the depth bound is not absence, the selector narrows
+    # what is known and never resolves an unknown, and vendor/ is not the repository's code.
+    # ─────────────────────────────────────────────────────────────────────────
+    ok &= check("php: source + composer manifest + lock -> RUN",
+                run_case(shell, ["web/index.php", "web/composer.json", "web/composer.lock"]),
+                {"php": "true", "unsupported": "", "coverage_gaps": "",
+                 "coverage_gap_count": "0", "state": "COMPLETE", "python": "false"})
+    ok &= check("php: source alone -> RUN",
+                run_case(shell, ["src/a.php"]), {"php": "true", "unsupported": ""})
+    ok &= check("php: a lock file alone -> RUN",
+                run_case(shell, ["composer.lock"]), {"php": "true", "coverage_gaps": ""})
+    ok &= check("php absent -> NOT_APPLICABLE",
+                run_case(shell, ["app/main.py"]), {"php": "false"})
+    ok &= check("php under vendor/ is not the repository's",
+                run_case(shell, ["app/main.py", "vendor/acme/lib/x.php",
+                                 "vendor/acme/lib/composer.json"]),
+                {"php": "false", "unsupported": "", "coverage_gaps": ""})
+    # TRIVY READS composer.lock, NEVER composer.json (measured, trivy 0.71.2: a composer.json alone
+    # produced no result at all). A manifest without its lock is a PHP dependency set no carried
+    # scanner can resolve: a NAMED, COUNTED coverage gap, never a quiet PASS of the dependency scan.
+    unlocked = run_case(shell, ["web/index.php", "web/composer.json",
+                                "lib/composer.json", "lib/composer.lock"])
+    ok &= check("composer.json without its lock -> named gap", unlocked,
+                {"php": "true", "coverage_gaps": "PHPDependenciesUnlocked",
+                 "coverage_gap_count": "1", "state": "COMPLETE"})
+    ok &= check_text("unlocked composer gap names the lock", unlocked, "__summary__",
+                     must=["| PHPDependenciesUnlocked | COVERAGE_GAP |", "composer.lock",
+                           "1 file(s)"])
+    ok &= check_text("unlocked composer gap warns", unlocked, "__log__",
+                     must=["::warning title=COVERAGE_GAP: PHPDependenciesUnlocked::"])
+    ok &= check("php probe failed -> UNDETERMINED -> RUN",
+                run_case(shell, ["app/main.py"], break_probes=["composer.json"]),
+                {"php": "true", "python": "true", "state": "DISCOVERY_PARTIAL"})
+    ok &= check("php selected by name",
+                run_case(shell, ["web/a.php", "app/main.py"], language="php"),
+                {"php": "true", "python": "false"})
+    excl = run_case(shell, ["web/a.php", "app/main.py"], language="python")
+    ok &= check("php present, selector excludes it", excl, {"php": "false", "python": "true"})
+    ok &= check_text("php exclusion is said out loud", excl, "__summary__",
+                     must=["| php | EXCLUDED_BY_SELECTOR |"])
+    deep = run_case(shell, ["app/main.py", "a/b/c/d/e/f/g/h/i/j/k.php"])
+    ok &= check("php only beyond depth 8 -> UNDETERMINED -> RUN", deep,
+                {"php": "true", "python": "true"})
+    ok &= check_text("php beyond depth is not NOT_APPLICABLE", deep, "__summary__",
+                     must=["| php | UNDETERMINED -> RUN |"],
+                     must_not=["| php | NOT_APPLICABLE |"])
 
     # A GAP IS NOT AN APPLICABILITY ANSWER. Supported code still runs; the gap sits beside it.
     ok &= check("gap coexists with a real scanner",

@@ -25,6 +25,8 @@ on:
   push:
     paths:
       - ".github/workflows/reusable-security.yml"
+      # Scanner job bodies and their pins live in composites since ledger L64.
+      - ".github/actions/**"
       - ".github/workflows/reusable-nvd-cve.yml"
       - ".github/workflows/validate-scanners.yml"
       - "tests/**"
@@ -32,9 +34,15 @@ on:
 
 # Metered minutes: supersede in-flight runs of this workflow on the same ref instead of
 # letting an obsolete run finish at full cost. A private repo pays for every minute.
+#
+# A push may supersede a push, never a dispatched or scheduled run (lane L-SG): with one group per
+# ref and cancel-in-progress always on, later pushes cancelled dispatch runs 39681385412 and
+# 39688249062 -- the depcheck leg's cold NVD update alone can need 32+ minutes. The event name
+# splits the group, and only push and pull_request runs cancel their predecessor.
+# tests/prove_validate_scanners_matrix.py M8.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -144,7 +152,19 @@ jobs:
     # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
     # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
     # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
-    timeout-minutes: 15
+    # depcheck alone gets longer: with the NVD key it builds the NVD database first.
+    # 65, SIZED FROM EVIDENCE (2026-10-21). The real scan's keyed COLD update -- same
+    # Dependency-Check 12.1.0, same --updateonly --data /tmp/nvd-data, no cache restored -- took
+    # 32 min 03 s on 2026-08-18 (hosted run 32190300370) and 9 min 17 s on 2026-08-20 (run
+    # 32382255986): the same 380k records, so the NVD API's pace alone varies about 3.5x. The cache
+    # save took 4 s (116 MB) and the scan 8 s. The update here gets a 50-min budget (about 1.5x the
+    # WORST measured; step limit 55) and the job 10 more for install, restore, save and scan.
+    # NOT longer: run 39668863606 sat silently for its whole 45 min in the OLD design (update and
+    # scan in ONE call, default data dir, OSS Index enabled) and its log showed nothing, so the
+    # cause -- a slow NVD day or that design -- is unexplained. A longer limit would pay to hide
+    # it. If the budget is spent again, the heartbeat shows whether the download crawled or
+    # stalled, and the partial database is kept.
+    timeout-minutes: ${{ matrix.probe.id == 'depcheck' && 65 || 15 }}
     # NOT continue-on-error (ledger L76, lane L-E). It was, "so a probe failing must not hide the
     # others" -- but `fail-fast: false` already keeps every leg running, and continue-on-error ALSO
     # turned a failed probe into a green run. A probe that cannot fail the run proves nothing.
@@ -156,10 +176,14 @@ jobs:
             lang: python
           - id: semgrep
             lang: multi
-          # The SHIPPED container: the flagship's sast-semgrep job runs semgrep/semgrep:1.90.0, not
-          # the pip-installed 1.178.0 the C# and Java jobs use. W4K-116 left it unprobed (L76).
+          # The SHIPPED container: the image the flagship's sast-semgrep job runs, by digest. W4K-116
+          # left it unprobed (L76); since lane L-SG it is the 1.178.0 image, the same release the
+          # C# and Java jobs pip-install.
           - id: semgrep-container
             lang: multi
+          # The same image over the seeded PHP files alone, with p/php (lane L-SG; KDEC-016).
+          - id: semgrep-php
+            lang: php
           - id: gosec
             lang: go
           - id: flawfinder
@@ -186,12 +210,191 @@ jobs:
         with:
           python-version: "3.12"
 
+      # ---- depcheck leg only: the NVD database, built the way reusable-nvd-cve.yml builds it ----
+      # restore (complete, else partial) -> --updateonly with the key -> save complete OR partial
+      # -> scan --noupdate against that database. Run 39668863606 did all of it inside one silent
+      # scan call: 45 minutes of cold download, cancelled, and nothing kept for the next run.
+      #
+      # ITS OWN CACHE NAMESPACE (nvd-probe-*), NOT the real scan's nvd-data-*. Deliberately not
+      # shared: (1) this probe validates the scanner, and a database built by the system under
+      # test would let a broken update in one pass silently in the other; (2) the probe pins
+      # Dependency-Check 12.1.0 while reusable-nvd-cve.yml's version is caller input, and an H2
+      # database written by another release is not a safe restore; (3) a probe that starts cold in
+      # its own namespace is what MEASURES the cold-update time the real scan's limit still needs.
+      # (4) sharing would not warm the probe anyway: on 2026-10-21 this repository held NO
+      # nvd-data-* cache (the real scan last ran 2026-08-20; unused caches are evicted after 7 days).
+      # The cost is a second copy of the database (116 MB compressed, run 32382255986) in this
+      # repository's cache. The version is in the key, so a bump starts cold instead of restoring
+      # another release's database.
+      - name: Install Dependency-Check (depcheck leg)
+        if: matrix.probe.id == 'depcheck'
+        run: |
+          set -uo pipefail
+          # The hosted image already ships a JRE and unzip. Do not make the call that hangs.
+          if ! command -v java >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
+            timeout 180 sudo apt-get -o DPkg::Lock::Timeout=60 update -qq || true
+            timeout 300 sudo apt-get -o DPkg::Lock::Timeout=60 install -y --no-install-recommends openjdk-17-jre-headless unzip
+          fi
+          # The version AND digest reusable-nvd-cve.yml ships as its defaults; the two may not drift
+          # (tests/prove_validate_scanners_matrix.py M9). Bump both workflows, the digest, and the
+          # dc<version> in the cache keys below together. 12.2.2 (lane L-NV, 2026-10-21) over 12.1.0:
+          # 12.1.1 gave the NVD HTTP client a read timeout (12.1.0 could wait on a dead response
+          # forever, upstream #7418/#7437), 12.2.2 widened the reference-URL column (12.1.0 drops
+          # CVE-2026-6785/6786 with "Value too long", seen in run 32382255986 and locally) and parses
+          # NVD's 9-digit timestamps (#8427). Digest: Maven Central's published .sha256 for
+          # dependency-check-cli-12.2.2-release.zip, equal to the GitHub asset (PGP-signed, key
+          # 259A55407DD6C00299E6607EFFDE55BE73A2D1ED). 13.0.0 is not taken: its keyless update is
+          # broken (upstream #8715). THE CANONICAL REPOSITORY, dependency-check/DependencyCheck: the
+          # old jeremylong/DependencyCheck URL is a separate repository (created 2025-01-15, not a
+          # redirect) whose releases stop at 12.1.0, and returns 404 for 12.2.2.
+          VER=12.2.2
+          if wget -q "https://github.com/dependency-check/DependencyCheck/releases/download/v${VER}/dependency-check-${VER}-release.zip" \
+             && echo "bf07fefd81af3094c5f6850423b014df44db62ce2dbad0f79079a90df675e44a  dependency-check-${VER}-release.zip" | sha256sum -c -; then
+            unzip -q "dependency-check-${VER}-release.zip" -d /opt/
+            chmod +x /opt/dependency-check/bin/dependency-check.sh
+          else
+            # Not fatal here: the probe step reports EXEC=fail with this reason, as before.
+            echo "::error title=DEPENDENCY_ACQUISITION_UNAVAILABLE::dependency-check ${VER} download or digest failed"
+          fi
+
+      - name: Restore NVD data cache (depcheck leg)
+        if: matrix.probe.id == 'depcheck'
+        id: nvd_cache
+        uses: actions/cache/restore@v6
+        with:
+          path: /tmp/nvd-data
+          # Keyed on run_id, so the primary key never hits; restores come through the prefixes.
+          key: nvd-probe-good-${{ runner.os }}-dc12.2.2-${{ github.run_id }}-${{ github.run_attempt }}
+          # ORDER MATTERS: a COMPLETE database first; a PARTIAL one only as a resume base.
+          restore-keys: |
+            nvd-probe-good-${{ runner.os }}-dc12.2.2-
+            nvd-probe-partial-${{ runner.os }}-dc12.2.2-
+
+      - name: Update NVD database (depcheck leg)
+        if: matrix.probe.id == 'depcheck'
+        id: nvd_update
+        # Backstop only. The script's own budget (50 min, about 1.5x the worst measured cold
+        # update of 32 min) ends the update first, so the saves run in the ordinary path; this
+        # limit and the job's sit outside it.
+        timeout-minutes: 55
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+          RESTORED_FROM: ${{ steps.nvd_cache.outputs.cache-matched-key }}
+          # An empty key means a cache MISS only when the restore step itself succeeded;
+          # otherwise nothing was looked up and the start state is unknown, not cold.
+          RESTORE_OUTCOME: ${{ steps.nvd_cache.outcome }}
+        run: |
+          set -uo pipefail
+          if [ "${RESTORE_OUTCOME:-}" != "success" ]; then
+            RESTORED_FROM="UNKNOWN (the cache restore step's outcome was '${RESTORE_OUTCOME:-not reported}')"
+          elif [ -z "${RESTORED_FROM:-}" ]; then
+            RESTORED_FROM="nothing (cold)"
+          fi
+          DC=/opt/dependency-check/bin/dependency-check.sh
+          mkdir -p /tmp/nvd-data
+          echo "NVD cache restored from: ${RESTORED_FROM}"
+          du -sh /tmp/nvd-data 2>/dev/null || true
+          KEY="$(printf '%s' "${NVD_API_KEY:-}" | tr -d '[:space:]')"
+          if [ ! -x "$DC" ]; then
+            echo "Dependency-Check is not installed; nothing to update."
+            echo "keyless=true" >> "$GITHUB_OUTPUT"; echo "NVD_DB_STATE=not installed" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if [ -z "$KEY" ]; then
+            echo "::warning title=No NVD API key::the depcheck leg scans whatever cached database exists."
+            echo "keyless=true" >> "$GITHUB_OUTPUT"
+            echo "NVD_DB_STATE=no key: cached database only (${RESTORED_FROM})" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          # Its SHAPE is reported, never its value.
+          echo "NVD key shape: ${#NVD_API_KEY} chars as stored, ${#KEY} after removing whitespace"
+          # THE DATA SOURCE (lane L-NV, 2026-10-21): the Dependency-Check project's own NVD mirror,
+          # the same URL as reusable-nvd-cve.yml's nvd_datafeed_url default (M9 holds them equal).
+          # WHY: the NVD API itself now delivers ~10-40 kB/s per response. Measured from a 30 MB/s
+          # host: one 2000-record page took 203 s (8.15 MB) and gzip did not help; NVD's own 2.0
+          # feed gave 3.7 of 25 MB in 197 s. A cold build of ~413k records (207 pages) cannot fit any
+          # budget here: runs 39688249062 and 39701225219 sat at 10,000-20,000 records for 35+ min.
+          # The mirror built the same database cold in 91-95 s (12.1.0 and 12.2.2, locally). With a
+          # datafeed set, Dependency-Check updates from it alone (NvdApiDataSource.update) and the key
+          # is unused; it stays on the command line so an emptied feed falls back to the keyed API.
+          # TRUST: the mirror is published by the project whose code this runs, on the same origin as
+          # the hosted suppressions it already fetches by default (hosted.suppressions.url).
+          feed=https://dependency-check.github.io/DependencyCheck_Builder/nvd_cache/
+          # HEARTBEAT, NEVER SILENCE. The update runs in the background under its own budget, and
+          # every 60 s this prints the elapsed time and the last [INFO] line. TERM first, so the
+          # JVM can close its database; KILL two minutes later only if it will not stop.
+          budget_s=3000
+          LOG=dc-update.log
+          START=$(date +%s)
+          timeout --signal=TERM --kill-after=120 "$budget_s" "$DC" --updateonly --data /tmp/nvd-data --nvdDatafeed "$feed" --nvdApiKey "$KEY" > "$LOG" 2>&1 &
+          pid=$!
+          while kill -0 "$pid" 2>/dev/null; do
+            for _ in $(seq 1 60); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+            last="$(grep -F '[INFO]' "$LOG" | tail -1 || true)"
+            [ -n "$last" ] || last="$(tail -1 "$LOG" 2>/dev/null || true)"
+            echo "[heartbeat] $(( ($(date +%s) - START) / 60 )) min elapsed; last: ${last:-<no output yet>}"
+          done
+          # NOT `wait "$pid"; rc=$?`: GitHub runs this under `bash -e`, so a non-zero wait ENDED THE
+          # STEP there (run 39701225219: "exit code 124" straight after the last heartbeat) and none
+          # of the evidence below was ever printed or recorded. M10 runs this step as shipped.
+          rc=0; wait "$pid" || rc=$?
+          MIN=$(( ($(date +%s) - START) / 60 ))
+          echo "--- warnings and errors ---"
+          grep -E '^\[(ERROR|WARN)\]|Exception' "$LOG" | head -15 || true
+          echo "--- last lines ---"; tail -8 "$LOG" || true
+          du -sh /tmp/nvd-data 2>/dev/null || true
+          if [ "$rc" -eq 0 ]; then
+            echo "complete=true" >> "$GITHUB_OUTPUT"
+            echo "NVD_DB_STATE=complete: updated in ${MIN} min from ${RESTORED_FROM}" >> "$GITHUB_ENV"
+            echo "NVD update finished in ${MIN} min (restored from: ${RESTORED_FROM})"
+            echo "- NVD update finished in **${MIN} min**; restored from \`${RESTORED_FROM}\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            why="exit $rc"; [ "$rc" -eq 124 ] && why="budget of $(( budget_s / 60 )) min spent"
+            # THE STALL EVIDENCE, not only "INCOMPLETE": the last progress line, how many requests
+            # were retried and the last one, and any HTTP status the client named. It travels in
+            # NVD_DB_STATE into the probe's NOTE and the step summary. Reduced to a safe character
+            # set, because the NOTE is later written into a JSON result by a heredoc.
+            progress="$(grep -E '\[INFO\] (Downloaded|NVD API has|Download (Started|Complete))' "$LOG" | tail -1 || true)"
+            retries="$(grep -c -F 'Retrying request' "$LOG" || true)"
+            last_retry="$(grep -F 'Retrying request' "$LOG" | tail -1 || true)"
+            statuses="$(grep -o -E 'Status Code: [0-9]{3}|HTTP/[0-9.]+ [0-9]{3}' "$LOG" | sort | uniq -c | tr -s ' \n' ' ' || true)"
+            evidence="last progress: ${progress:-none}; retried requests: ${retries:-0}${last_retry:+ (last: $last_retry)}; HTTP statuses: ${statuses:-none named}"
+            evidence="$(printf '%s' "$evidence" | tr -cd 'A-Za-z0-9 ,.:;/?=&%()_+#-' | cut -c1-400)"
+            echo "--- stall evidence ---"; echo "$evidence"
+            echo "::warning title=NVD update incomplete::$why after ${MIN} min. $evidence. The partial database is saved as a resume base; this run's scan is NOT a clean verdict."
+            echo "NVD_DB_STATE=PARTIAL ($why after ${MIN} min; $evidence): not a clean verdict" >> "$GITHUB_ENV"
+            echo "- NVD update INCOMPLETE ($why after **${MIN} min**); restored from \`${RESTORED_FROM}\`; $evidence" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Saved BEFORE the scan, so a failing scan cannot cost the database (as in the real scan).
+      - name: Save NVD data cache (complete, depcheck leg)
+        if: always() && matrix.probe.id == 'depcheck' && steps.nvd_update.outputs.complete == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: /tmp/nvd-data
+          key: nvd-probe-good-${{ runner.os }}-dc12.2.2-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # always(): this runs when the update spent its budget, failed, timed out or was CANCELLED
+      # (job limit, or a newer push superseding this run) -- the downloaded work survives as a
+      # resume base and is never restored ahead of a complete copy. As in reusable-nvd-cve.yml.
+      # NOT ESTABLISHED: how much a partial base saves. Dependency-Check records its NVD
+      # last-modified mark only when an update completes, so a partial base may still be
+      # downloaded in full; a cold update must therefore fit the budget on its own.
+      - name: Save NVD data cache (partial, resume base only, depcheck leg)
+        if: always() && matrix.probe.id == 'depcheck' && steps.nvd_update.outcome != 'skipped' && steps.nvd_update.outputs.complete != 'true' && steps.nvd_update.outputs.keyless != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: /tmp/nvd-data
+          key: nvd-probe-partial-${{ runner.os }}-dc12.2.2-${{ github.run_id }}-${{ github.run_attempt }}
+
       - name: Probe
         id: probe
         env:
           # As data, not script text: it also keeps this long script free of any expression, so
           # GitHub's 21,000-character expression-template limit cannot reach it (L76 grew it).
           PROBE_ID: ${{ matrix.probe.id }}
+          # NVD_API_KEY no longer reaches this step: only the depcheck leg's update step uses it,
+          # and the scan here runs --noupdate. (NVD_DB_STATE arrives through GITHUB_ENV.)
         run: |
           set -uo pipefail
           exec 2>&1
@@ -232,7 +435,7 @@ jobs:
               [ "${n:-0}" -gt 0 ] && DETECT=ok; NOTE="$n findings"
               ;;
             semgrep)
-              # The SHIPPED pin (W4K-116); the 1.90.0 container job is not probed here.
+              # The SHIPPED pin (W4K-116) of the C# and Java jobs; the container is probed below.
               pip install --quiet semgrep==1.178.0
               semgrep scan --config p/default --config p/csharp --config p/java \
                 --json --output out.json fixture >/dev/null 2>&1; EXEC=ok
@@ -267,7 +470,7 @@ jobs:
               # preserved_by: the absent-report and parse checks below
               # --user 0 and HOME=/tmp so the report can be written into the mounted workspace
               # whatever the image's default user is.
-              docker run --rm --user 0 -e HOME=/tmp -v "$PWD":/src -w /src semgrep/semgrep:1.90.0 semgrep scan \
+              docker run --rm --user 0 -e HOME=/tmp -v "$PWD":/src -w /src semgrep/semgrep@sha256:32e459968daabe7ab86968184a29109b9564aa00392401156f9788452b42786b semgrep scan \
                 --config p/default --config p/owasp-top-ten --config p/xss --metrics=off \
                 --json --output /src/out.json fixture >/dev/null 2>&1 || true
               EXEC=ok
@@ -284,7 +487,32 @@ jobs:
                 echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
                 exit 1
               fi
-              [ "${n:-0}" -gt 0 ] && DETECT=ok; NOTE="$n findings (container 1.90.0)"
+              [ "${n:-0}" -gt 0 ] && DETECT=ok; NOTE="$n findings (container 1.178.0)"
+              ;;
+            semgrep-php)
+              # The flagship's own image (1.178.0, by digest) over the seeded PHP files alone, with
+              # the p/php floor the sast-semgrep job adds whenever discovery finds PHP (lane L-SG;
+              # KDEC-016). DETECTED only when ERROR results name all three seeded files -- SQL
+              # injection, XSS, command injection -- measured locally on this image 2026-10-21.
+              # suppression: EXPECTED_NEGATIVE_RESULT -- semgrep exits 1 on findings
+              # preserved_by: the absent-report and parse checks below
+              docker run --rm --user 0 -e HOME=/tmp -v "$PWD":/src -w /src semgrep/semgrep@sha256:32e459968daabe7ab86968184a29109b9564aa00392401156f9788452b42786b semgrep scan \
+                --config p/php --metrics=off --json --output /src/out.json fixture/php >/dev/null 2>&1 || true
+              EXEC=ok
+              if [ ! -s out.json ]; then
+                echo "::error title=COLLECTION_FAILED::out.json was not produced."
+                echo "An ABSENT report is not zero findings. Posture cannot be established from this run."
+                echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              if ! n=$(jq '[.results[] | select(.extra.severity == "ERROR") | .path] | unique | length' out.json 2>&1); then
+                echo "::error title=COLLECTION_FAILED::out.json is not valid semgrep JSON."
+                echo "jq said: $n"
+                echo "A PARSE FAILURE is not zero findings."
+                echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              [ "${n:-0}" -ge 3 ] && DETECT=ok; NOTE="$n of 3 seeded PHP files at ERROR (container 1.178.0)"
               ;;
             gosec)
               # The SHIPPED image, without -no-fail, as the flagship runs it (W4K-116).
@@ -493,28 +721,31 @@ jobs:
             depcheck)
               # The capability unique to reusable-nvd-cve.yml. Trivy overlaps on
               # dependency CVEs; Dependency-Check adds CPE matching against NVD.
-              # NOTE: without NVD_API_KEY the DB update is heavily rate limited, so
-              # this probe validates INSTALL + EXECUTE + OUTPUT SHAPE only. Detection
-              # against a fully-updated NVD database requires a key and is a separate,
-              # documented gap rather than something this probe can establish.
-              # The hosted image already ships a JRE and unzip. Do not make the call that hangs.
-              if ! command -v java >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
-                timeout 180 sudo apt-get -o DPkg::Lock::Timeout=60 update -qq || true
-                timeout 300 sudo apt-get -o DPkg::Lock::Timeout=60 install -y                   --no-install-recommends openjdk-17-jre-headless unzip
-              fi
-              # 12.1.0, the version reusable-nvd-cve.yml ships (9.0.9 predates the NVD API change).
-              VER=12.1.0
-              if wget -q "https://github.com/jeremylong/DependencyCheck/releases/download/v${VER}/dependency-check-${VER}-release.zip" \
-                 && echo "0e5ba6ae58e753d5841048c6c8e495dbc4c7a4ea921a2b14daeac65195700532  dependency-check-${VER}-release.zip" | sha256sum -c -; then
-                unzip -q "dependency-check-${VER}-release.zip" -d /opt/
-                chmod +x /opt/dependency-check/bin/dependency-check.sh
+              # Installed, and its NVD database restored and updated, by the depcheck-only steps
+              # above. This scan runs --noupdate against that database; DC_MODE says what the
+              # database was (complete, PARTIAL, or cached-only without a key).
+              if [ -x /opt/dependency-check/bin/dependency-check.sh ]; then
                 EXEC=ok
+                DC_MODE="NVD database: ${NVD_DB_STATE:-unknown}"
                 # --format SARIF is the assumption recorded as untested in VALIDATION_DEBT.
-                if /opt/dependency-check/bin/dependency-check.sh --project probe --scan fixture/java                      --format SARIF --format JSON --out dcout --noupdate 2>&1 | tail -20; then :; fi
+                # DETECT follows a RESULT in the SARIF, never the file existing.
+                # --enableExperimental and --disableOssIndex: the arguments reusable-nvd-cve.yml
+                # scans with, so the probe proves the shipped configuration, not a nearer one.
+                # The key travels as ONE argument, and only to the update step (run 39659031826:
+                # an unquoted key split into extra arguments and the tool printed its usage).
+                /opt/dependency-check/bin/dependency-check.sh --project probe --scan fixture/java \
+                     --format SARIF --format JSON --out "$PWD/dcout" --data /tmp/nvd-data --noupdate \
+                     --enableExperimental --disableOssIndex > dc.log 2>&1 || true
+                # The lines that say WHY, then the end of the log -- a usage dump hid the cause before.
+                grep -E '^\[(ERROR|WARN)\]|Unrecognized|Missing argument|Exception' dc.log | head -15 || true
+                # A usage dump STARTS with its reason; the tail alone never shows it (run 39663949714).
+                echo "--- first lines ---"; head -8 dc.log
+                echo "--- last lines ---"; tail -8 dc.log
                 if [ -f dcout/dependency-check-report.sarif ]; then
                   cp dcout/dependency-check-report.sarif out.json
-                  NOTE="SARIF supported; filename confirmed"
-                  DETECT=ok
+                  n=$(python3 -c "import json,sys; print(sum(len(r.get('results') or []) for r in json.load(open(sys.argv[1])).get('runs') or []))" out.json 2>/dev/null || echo 0)
+                  NOTE="SARIF supported; $n result(s); $DC_MODE"
+                  if [ "${n:-0}" -gt 0 ]; then DETECT=ok; fi
                 elif [ -f dcout/dependency-check-report.json ]; then
                   cp dcout/dependency-check-report.json out.json
                   NOTE="SARIF MISSING — only JSON produced. reusable-nvd-cve.yml SARIF upload WILL FAIL."
@@ -669,16 +900,22 @@ jobs:
           # simply vanished from the table, and the job could not fail at all. Every probe in the
           # matrix above is expected here; tests/prove_validate_scanners_matrix.py holds this list
           # equal to the matrix ids.
-          EXPECTED = ["bandit", "semgrep", "semgrep-container", "gosec", "flawfinder", "checkov",
-                      "trivy", "osv", "syft", "dotnet", "depcheck"]
+          EXPECTED = ["bandit", "semgrep", "semgrep-container", "semgrep-php", "gosec", "flawfinder",
+                      "checkov", "trivy", "osv", "syft", "dotnet", "depcheck"]
           # NOT PROVEN, DATED, OWNED -- reported, not failed, until it expires. Silence never
-          # renews it. depcheck: this workflow has no NVD_API_KEY, so Dependency-Check builds no
-          # database and writes no report (hosted run 39618320185, "no report produced").
+          # renews it. depcheck: first, this workflow had no NVD_API_KEY, so Dependency-Check
+          # built no database (hosted run 39618320185, "no report produced"); then the keyed NVD
+          # API build could not finish (runs 39688249062, 39701225219). Lane L-NV (2026-10-21,
+          # local, 12.1.0 and 12.2.2 against a complete database): the CLI does not read the
+          # dependencies of a standalone pom.xml -- fixture/java/pom.xml yields zero dependencies
+          # and zero results -- while a code-free JAR carrying log4j-core 2.14.1's Maven
+          # coordinates yields CVE-2021-44228 among 9 results (10 on 12.1.0). The seed, not the
+          # database, is what is missing now.
           ACCEPTED_UNPROVEN = {
               "depcheck": {"expires": "2026-11-30", "owner": "kit-maintainer",
-                           "reason": "no NVD_API_KEY reaches this workflow, so Dependency-Check "
-                                     "detection is not established here; owner decision: grant "
-                                     "the key to this workflow, or move the probe to nvd-cve.yml"},
+                           "reason": "Dependency-Check's CLI does not read a standalone pom.xml, so "
+                                     "fixture/java seeds nothing it can detect (lane L-NV); owner "
+                                     "decision: seed a JAR carrying Maven coordinates"},
           }
           today = datetime.date.today()
           rows, unknown = {}, []

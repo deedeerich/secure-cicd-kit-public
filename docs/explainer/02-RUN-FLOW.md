@@ -52,7 +52,7 @@ advisory.
 
 ### 2. `discover` — what is actually here
 
-Seven presence probes (python, node, go, dotnet, java, cpp, iac) plus an unsupported-language sweep
+Eight presence probes (python, node, go, dotnet, java, cpp, php, iac; php since lane L-PHP) plus an unsupported-language sweep
 and a platform probe (visibility, code-scanning and secret-scanning availability, Dependabot state).
 Each probe distinguishes **found nothing** from **could not look**: a probe that errors does not read
 as "not present". If the survey itself cannot run, discovery turns **everything on** and reports
@@ -60,6 +60,8 @@ as "not present". If the survey itself cannot run, discovery turns **everything 
 
 Languages present that no kit scanner can read are reported as `COVERAGE_GAP` — present, a control is
 owed, nothing looked — and the gate repeats them so a green result is never read as full coverage.
+PHP is no longer one of them; a `composer.json` without its `composer.lock` is
+(`PHPDependenciesUnlocked`), because the dependency scan reads only the lock.
 
 **The search has a depth bound of 8 directory levels** (`11db350`, VERIFIED: `prove_discovery_depth.py`
 at `078ef90`). A probe that found nothing while the scope holds entries deeper than 8 levels reports

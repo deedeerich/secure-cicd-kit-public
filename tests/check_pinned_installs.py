@@ -51,6 +51,17 @@ RULES = [
 DOWNLOAD = re.compile(r'releases/download/')
 
 
+def _expand(doc):
+    """The workflow with every `$/` composite step expanded into its job, as the runner sees it.
+
+    Scanner job bodies live in `.github/actions/<scanner>/` (ledger L64); this reads the steps a
+    job actually runs. One rule, tests/_composite_expand.py, for every reader.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.expanded_doc(doc)
+
+
 def steps(doc):
     if isinstance(doc.get('runs'), dict):
         yield '(composite)', doc['runs'].get('steps') or []
@@ -105,7 +116,7 @@ def main():
         if not os.path.exists(p):
             print('UNKNOWN: %s missing; an absent file is not a pinned one.' % rel)
             return 2
-        doc = yaml.safe_load(io.open(p, encoding='utf-8')) or {}
+        doc = _expand(yaml.safe_load(io.open(p, encoding='utf-8'))) or {}
         seen = set()
         for jn, ss in steps(doc):
             if jobs is not None and jn not in jobs:

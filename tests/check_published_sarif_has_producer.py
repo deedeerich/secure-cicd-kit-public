@@ -46,6 +46,17 @@ ROOT = os.path.dirname(HERE)
 OUT_FLAG = r'(?:-o|--out|--output|--output-file|-out|--sarif-output|--sarif-output-file)'
 
 
+def _expand(doc):
+    """The workflow with every `$/` composite step expanded into its job, as the runner sees it.
+
+    Scanner job bodies live in `.github/actions/<scanner>/` (ledger L64); this reads the steps a
+    job actually runs. One rule, tests/_composite_expand.py, for every reader.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.expanded_doc(doc)
+
+
 def writes(step, name):
     """True when `step` writes the file `name` (a basename or relative path)."""
     base = re.escape(name)
@@ -156,7 +167,7 @@ def main():
         return 2
     bad, n = [], 0
     for f in files:
-        doc = yaml.safe_load(io.open(f, encoding='utf-8'))
+        doc = _expand(yaml.safe_load(io.open(f, encoding='utf-8')))
         for job in ((doc or {}).get('jobs') or {}).values():
             for s in (job or {}).get('steps') or []:
                 n += len(published(s))
