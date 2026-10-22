@@ -299,6 +299,19 @@ def main():
     if a.self_test:
         return self_test()
 
+    # SOURCE-ONLY CONTROL (2026-10-22). The continuity record lives in the SOURCE; a neutral export
+    # never carries .context/ (tests/prove_export_scope.py E2). In an exported copy -- recognised by
+    # its watermark AND the record's absence -- there is nothing to check: say so by name and do not
+    # fail the copy's self-test. A copy that DOES carry .context/ is checked as normal. E9.
+    if (os.path.isfile(os.path.join(a.root, '.neutral-export-watermark.json'))
+            and not os.path.isdir(os.path.join(a.root, '.context'))):
+        print('SOURCE-ONLY CONTROL: check_context_current.py guards the source repository\'s '
+              'continuity record. This is an exported copy (.neutral-export-watermark.json present) '
+              'and, by design, carries no .context/, so there is nothing here for it to check; the '
+              'source ran it at the commit the watermark records. Nothing was checked here, and '
+              'nothing passed.')
+        return 0
+
     fails, notes = check(a.root, a.max_commits)
     print('')
     print('CONTEXT CURRENCY -- %s' % a.root)
