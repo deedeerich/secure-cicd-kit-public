@@ -54,8 +54,14 @@ The org is the repository's owner (case-insensitive); team and product come from
 `repositories` map — an unmapped repository gets its org's entries only. The **enterprise** is the
 org's value in the central `orgs` map (`{"org-a": "my-enterprise", "org-b": "my-enterprise"}`); an
 enterprise scope names only `enterprise` (and optionally `environment_tier`) and binds every
-repository of every org mapped to it. An org the map does not name belongs to no enterprise — so map
-every org when you add one.
+repository of every org mapped to it.
+
+**Once the `orgs` map defines an enterprise, an org it does not name does not run** (KDEC-019 item 1,
+owner 2026-10-22: *"No run with the enterprise floor even if unmapped previously"*). Every run in that
+org — any tier, a pull request too — is refused **`ORG_NOT_UNDER_ENTERPRISE`** (`BLOCKED`), naming the
+org, even if it ran before the map existed. The remedy is to name the org in the map, never to drop
+the map. With no `orgs` map (or an empty one) nothing changes. `--validate` names every org the
+register mentions — an entry's `org` or `repository`, a `repositories` key — that the map leaves out.
 
 ## The authority floor: narrower scopes only tighten
 
@@ -240,7 +246,8 @@ python3 scripts/policy_registration.py --validate .security/policy-registration.
 ```
 
 It refuses everything resolution would refuse anywhere: schema, conflicts, attribution, expired
-decisions and non-monotone tiers for every mapped repository and every org.
+decisions and non-monotone tiers for every mapped repository and every org, and (once an enterprise is
+defined) every org the register mentions that the `orgs` map leaves out (`ORG_NOT_UNDER_ENTERPRISE`).
 
 ## Deploy approval: read back from the environment
 

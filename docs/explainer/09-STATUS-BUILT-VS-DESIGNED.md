@@ -30,7 +30,7 @@ cited transcript. "Hosted" means a GitHub runner run id.
 | 12 gate + verdict | `routing_result`, `advisory_causes`, posture record | BUILT, proven locally (21 routing scenarios) and live in the consumer path (caller blocked); rung floor Release 2 | 1 |
 | 13 ticketing | Jira first, Azure DevOps second | BUILT; the reconciler proven LIVE on a personal Jira; Azure DevOps against stand-ins only; the armed workflow has no hosted run and no template calls it; updates keep human text (T-02 fixed, `795d13c`) and write only on a delta | 1 |
 | 14 reporting | 25 rows, findings counts, findings JSON, evidence artifact | BUILT, proven; the run record `assurance-result.json` its schema describes is emitted nowhere (L36) | 1 |
-| 15 deploy + verification | verdict-gated, digest-bound, reversible | BUILT, proven LIVE on Azure for Container Apps and App Service: refusal, healthy deploy, verified rollback, a second actor refused, the slot swap. KDEC-014 (prod refuses a proven version gap without a named acceptance) built, stub-proven; since `078ef90` an absent ruling is EVIDENCE_UNTRUSTED | 1 |
+| 15 deploy + verification | verdict-gated, digest-bound, reversible | BUILT, proven LIVE on Azure for Container Apps and App Service: refusal, healthy deploy, verified rollback, a second actor refused, the slot swap. KDEC-014 (prod refuses a proven version gap without a named acceptance) built, stub-proven; since `078ef90` an absent ruling is EVIDENCE_UNTRUSTED. Sequential rollback with e2e tests between steps (KDEC-019) built, stub-proven only | 1 |
 
 ## Hosted and live status (trunk `078ef90`)
 

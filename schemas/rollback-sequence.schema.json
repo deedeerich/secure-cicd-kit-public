@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://secure-cicd-kit/schemas/rollback-sequence.schema.json",
+  "title": "Sequential rollback record (schema_version 1)",
+  "description": "What scripts/rollback_sequence.py did to an ordered sequence of deployments, reversed newest first with the application's end-to-end tests after each step (KDEC-019 item 4). ROLLBACK_SEQUENCE_VERIFIED only when every step is ROLLBACK_STEP_VERIFIED. Vocabulary: assurance-taxonomy.yaml rollback_sequence, rollback_sequence_step, rollback_state.",
+  "type": "object",
+  "required": ["schema_version", "sequence_id", "started_at", "finished_at", "result", "why", "order", "e2e", "steps", "escalation"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 1},
+    "sequence_id": {"type": ["string", "null"]},
+    "started_at": {"type": "string"},
+    "finished_at": {"type": "string"},
+    "result": {"enum": ["ROLLBACK_SEQUENCE_VERIFIED", "ROLLBACK_SEQUENCE_REFUSED_NO_E2E", "ROLLBACK_SEQUENCE_REFUSED_INPUT", "ROLLBACK_SEQUENCE_STOPPED_INELIGIBLE", "ROLLBACK_SEQUENCE_HALTED_ROLLBACK_UNVERIFIED", "ROLLBACK_SEQUENCE_HALTED_HEALTH_FAILED", "ROLLBACK_SEQUENCE_HALTED_E2E_FAILED"]},
+    "why": {"type": "string"},
+    "order": {"const": "reverse of deployment order (newest first)"},
+    "e2e": {
+      "type": "object",
+      "required": ["supplied", "command_sha256", "timeout_seconds"],
+      "additionalProperties": false,
+      "properties": {
+        "supplied": {"type": "boolean"},
+        "command_sha256": {"type": ["string", "null"]},
+        "timeout_seconds": {"type": "integer", "minimum": 1}
+      }
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["position", "executed_as", "deployment", "run_id", "run_attempt", "adapter", "target", "started_at", "finished_at", "eligibility", "rollback", "health", "e2e", "step_result"],
+        "additionalProperties": false,
+        "properties": {
+          "position": {"type": "integer", "minimum": 1, "description": "The step's place in DEPLOYMENT order (1 = oldest)."},
+          "executed_as": {"type": ["integer", "null"], "description": "The step's place in EXECUTION order (1 = first reversed); null when the sequence was refused before any step."},
+          "deployment": {"type": "string"},
+          "run_id": {"type": "string"},
+          "run_attempt": {"type": "string"},
+          "adapter": {"type": "string"},
+          "target": {"type": ["string", "null"]},
+          "started_at": {"type": ["string", "null"]},
+          "finished_at": {"type": ["string", "null"]},
+          "eligibility": {
+            "type": ["object", "null"],
+            "required": ["eligible", "basis", "disposition", "why", "checks"],
+            "additionalProperties": false,
+            "properties": {
+              "eligible": {"type": "boolean"},
+              "basis": {"enum": ["ELIGIBLE_UNTOUCHED", "ELIGIBLE_OWNED_PART_SEPARABLE", null]},
+              "disposition": {"enum": ["ROLLBACK_REQUIRES_HUMAN_DECISION", "ROLLBACK_PROHIBITED", null]},
+              "why": {"type": "string"},
+              "checks": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["check", "held", "detail"],
+                  "additionalProperties": false,
+                  "properties": {"check": {"type": "string"}, "held": {"type": "boolean"}, "detail": {"type": "string"}}
+                }
+              }
+            }
+          },
+          "rollback": {
+            "type": "object",
+            "required": ["result", "reversal_path", "not_reversed"],
+            "additionalProperties": false,
+            "properties": {
+              "result": {"enum": ["not-run", "ROLLBACK_VERIFIED", "ROLLBACK_PARTIAL", "STATUS_UNTRUSTED"]},
+              "reversal_path": {"type": ["string", "null"]},
+              "not_reversed": {"type": "array"}
+            }
+          },
+          "health": {
+            "type": "object",
+            "required": ["result", "url"],
+            "additionalProperties": false,
+            "properties": {"result": {"enum": ["not-run", "passed", "failed"]}, "url": {"type": ["string", "null"]}}
+          },
+          "e2e": {
+            "type": "object",
+            "required": ["result", "exit_code"],
+            "additionalProperties": false,
+            "properties": {"result": {"enum": ["not-run", "passed", "failed", "timed-out"]}, "exit_code": {"type": ["integer", "null"]}}
+          },
+          "step_result": {"enum": ["ROLLBACK_STEP_VERIFIED", "ROLLBACK_STEP_HALTED", "ROLLBACK_STEP_INELIGIBLE", "ROLLBACK_STEP_NOT_REACHED"]}
+        }
+      }
+    },
+    "escalation": {
+      "type": ["object", "null"],
+      "required": ["resolution_owner", "next_action", "required_artefacts", "permitted_agent_action"],
+      "additionalProperties": false,
+      "properties": {
+        "resolution_owner": {"type": "string"},
+        "next_action": {"type": "string"},
+        "required_artefacts": {"type": "array"},
+        "permitted_agent_action": {"type": "object"}
+      }
+    }
+  }
+}

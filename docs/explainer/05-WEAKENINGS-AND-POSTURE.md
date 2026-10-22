@@ -103,6 +103,8 @@ secret scan always covers the repository root (`prove_crawl_floor.py`).
   softening left — the authority (enterprise/org) softening the kit default deploy approval — joins
   this record as an attributed weakening row (`WEAKENING_ATTRIBUTED`) and the deploy never honours
   it. The repository's own file may only tighten. Secrets never soften as a class; nothing is `PROCEED`.
+- **No run outside the enterprise** (KDEC-019): once the `orgs` map defines an enterprise, an org it
+  does not name is refused, `ORG_NOT_UNDER_ENTERPRISE` (`BLOCKED`), even if it ran before the map.
 - **Every exception carries its history** (KDEC-018): `renews` lists its prior grants; the gate
   summary, run record and deploy show "first exception" or "previously excepted N time(s) since …,
   tickets …, approvers …"; more renewals than `numbers.max_exception_renewals` (default 2, 0..5) is

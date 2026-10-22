@@ -112,3 +112,26 @@ vs NOW SERVING, the reversal and the KDEC-014 ruling — is **not** a workflow o
 summary and in the `deploy-evidence-<run_id>-<attempt>` artifact (`outcome.json`, `snapshot.json`,
 `manifest.json`, `capability.json`, `verification.json`, `reversal.json`, and `provenance.json` when
 a stamp was written). Their shape is defined in code (`scripts/deploy_contract.py`), not by a schema.
+
+## Sequential rollback (BUILT, lane L-RB; proven locally against the stub cloud, NOT live)
+
+KDEC-019 item 4: when several deployments must be rolled back, they are reversed **newest first**,
+and the application's **end-to-end tests run after each step** (`reusable-rollback-sequence.yml`,
+`scripts/rollback_sequence.py`, `templates/rollback-sequence.yml`; `ROLLBACK_CONTRACT.md`
+"Sequential rollback"). The caller names the deploy runs, oldest first; each run's
+`deploy-evidence-<run_id>-<attempt>` artifact is its manifest.
+
+- **Each step, in order:** eligible from a fresh live read (`ELIGIBLE_UNTOUCHED` — nothing else
+  touched the resource; or `ELIGIBLE_OWNED_PART_SEPARABLE` — a shared Container App whose revision
+  and traffic from this run are intact); reversed and `ROLLBACK_VERIFIED` by the same deploy-contract
+  code the deploys run; healthy; and the caller's `e2e_test_command` passes (bounded, without the
+  deploy identity's Azure session).
+- **Anything else stops or halts the sequence, by name**, before anything later is touched: an
+  ineligible step (`ROLLBACK_REQUIRES_HUMAN_DECISION`, or `ROLLBACK_PROHIBITED` for a step declared
+  forward-fix only), a partial reversal, a failed probe, a failed or hung test
+  (`ROLLBACK_SEQUENCE_HALTED_E2E_FAILED`).
+- **No end-to-end tests is a refusal** (`ROLLBACK_SEQUENCE_REFUSED_NO_E2E`), before login: running the
+  reversals untested is the broken intermediate state the rule forbids.
+- The record (`schemas/rollback-sequence.schema.json`) lists every step — deployment, eligibility
+  basis, rollback, health, e2e, timestamps — and reads `ROLLBACK_SEQUENCE_VERIFIED` only when every
+  step is verified. App Service is eligible only untouched. Never run against Azure (risks R-04).

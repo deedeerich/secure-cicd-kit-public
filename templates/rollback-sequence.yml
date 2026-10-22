@@ -1,0 +1,47 @@
+# Consumer template -- roll back several deployments in reverse order, end-to-end tests between steps
+# (KDEC-019 item 4). Copy to .github/workflows/rollback-sequence.yml in the consuming repository,
+# replace YOUR_ORG, and pin the kit by its 40-hex commit SHA; kit_ref is the SAME commit.
+#
+# Run it by hand. `sequence` names the deploy runs to roll back, OLDEST FIRST (their run ids are on
+# the Actions page; each uploaded a deploy-evidence-<run>-<attempt> artifact). They are rolled back
+# NEWEST FIRST, and after each one the health probe and YOUR end-to-end tests run; a failing test
+# halts the sequence for a human decision. With no end-to-end command nothing is rolled back
+# (ROLLBACK_SEQUENCE_REFUSED_NO_E2E). The environment is the one the deploys ran in (the deploy
+# identity; required reviewers approve the run).
+#
+# Example sequence:
+#   {"sequence_id": "release-42", "steps": [
+#     {"run_id": "1234567890", "run_attempt": "1", "adapter": "containerapp"},
+#     {"run_id": "1234567999", "run_attempt": "1", "adapter": "containerapp"}]}
+
+name: Sequential rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      sequence:
+        description: "JSON: the deploy runs to roll back, oldest first (see the comment at the top)"
+        required: true
+        type: string
+      environment:
+        description: "The GitHub environment the deploys ran in"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  actions: read
+
+jobs:
+  rollback:
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-rollback-sequence.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    with:
+      github_environment: ${{ inputs.environment }}
+      kit_repository: YOUR_ORG/secure-cicd-kit
+      kit_ref: "0000000000000000000000000000000000000000"   # the same commit as the pin above
+      sequence: ${{ inputs.sequence }}
+      # Your application's end-to-end tests, run after EACH step in this repository's checkout.
+      # $ROLLBACK_APP_URL is the restored app's URL; $ROLLBACK_STEP the step being tested.
+      e2e_test_command: "./tests/e2e.sh"
+      e2e_timeout_minutes: 30

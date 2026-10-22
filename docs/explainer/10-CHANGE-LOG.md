@@ -5,6 +5,15 @@ Commit ids are on the build trunk `fix/normalization-and-discovery`. Versions 1.
 `10b-CHANGE-LOG-EARLIER.md`. A reader whose last copy was v1.10 (`a907dc8`) reads
 `12-CHANGES-SINCE-A907DC8.md` first: it groups every change since by what an integrator must do.
 
+## Unreleased — unmapped orgs refused; sequential rollback (lane L-RB, 2026-10-22)
+
+KDEC-019 items 1 and 4 (owner, 2026-10-22). Proven locally, each proof failed first; no hosted run.
+
+| change | parts affected |
+|---|---|
+| **No run outside the enterprise floor**: once the central `orgs` map defines an enterprise, a run in an org it does not name is `ORG_NOT_UNDER_ENTERPRISE` (`BLOCKED`, the org named), at every tier and on pull requests, even if it ran before; no map, nothing changes; `--validate` names every org the register mentions that the map leaves out | 03, 05 |
+| **Sequential rollback, tested end to end between steps**: `reusable-rollback-sequence.yml` + `scripts/rollback_sequence.py` + `templates/rollback-sequence.yml` reverse several deploy runs newest first; each step must be eligible from a fresh live read (`ELIGIBLE_UNTOUCHED`, or `ELIGIBLE_OWNED_PART_SEPARABLE` on a shared Container App), `ROLLBACK_VERIFIED` by the deploy contract, healthy, and pass the caller's `e2e_test_command`; anything else stops or halts by name (`ROLLBACK_SEQUENCE_HALTED_E2E_FAILED`, ...) before later steps are touched; no e2e command is `ROLLBACK_SEQUENCE_REFUSED_NO_E2E`; record `schemas/rollback-sequence.schema.json`. Stub cloud only | 07 |
+
 ## Unreleased — crawl is the floor; the authority binds; exceptions resurface (lane L-FX, 2026-10-22)
 
 KDEC-018 (owner, 2026-10-22). Proven locally, each proof failed first; no hosted run.

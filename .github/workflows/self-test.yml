@@ -1412,6 +1412,16 @@ jobs:
           # live acceptance matrix (DCR 7.8) is a hosted run and is owed.
           python3 tests/prove_deploy_outcome.py
 
+      - name: Sequential rollback reverses newest first and tests end to end between steps
+        run: |
+          set -euo pipefail
+          # KDEC-019 item 4 (lane L-RB). Real deploy evidence from the shipped deploy reusables, one
+          # stub cloud, scripts/rollback_sequence.py driving the deploy contract's own reversal: a
+          # failing e2e test, an ineligible step, a partial rollback or a failed probe halts before
+          # anything later is touched; no e2e command is a refusal. STUBBED: the live run is owed.
+          python3 scripts/rollback_sequence.py --self-test
+          python3 tests/prove_rollback_sequence.py
+
       - name: Harness teardown only behind PRE and POST zero-count assertions
         run: |
           set -euo pipefail

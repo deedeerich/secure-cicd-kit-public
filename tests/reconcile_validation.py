@@ -61,6 +61,11 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     "reusable-dependabot-triage.yml": ["dependabot-triage", "dependabot-merge-hosted"],
     "reusable-deploy-appservice.yml": ["deploy-appservice"],
     "reusable-deploy-containerapp.yml": ["deploy-containerapp"],
+    # KDEC-019 item 4 (lane L-RB, 2026-10-22): several deployments reversed newest first, the
+    # application's end-to-end tests after each step. TWO CAPABILITIES, as the Dependabot triage has:
+    # the sequencing, eligibility and halting are proven locally against the stub cloud with real
+    # deploy evidence; the same against Azure, with a real e2e command, needs a live run.
+    "reusable-rollback-sequence.yml": ["rollback-sequence", "rollback-sequence-live"],
     "workflow-policy-check.yml": ["workflow-policy"],
     # `authorization-boundary-isolation` SPLIT OUT 2026-09-22, when the probe was rewritten from
     # an authentication check into a boundary check. It is NOT azure-oidc-auth at a finer grain:
@@ -456,6 +461,12 @@ VALIDATION_REGISTRY: dict[str, dict] = {
     # shipped: tests/prove_exception_due.py (E1..E11). Level `tool`: no hosted run, no real Jira.
     "exception-resurfacing": {"probe": "tests/prove_exception_due.py", "state": "observed",
                               "level": "tool"},
+    # OBSERVED 2026-10-22, locally (lane L-RB): scripts/rollback_sequence.py driving the deploy
+    # contract's own reversal against the stub cloud, over evidence written by the shipped deploy
+    # reusables run step by step: tests/prove_rollback_sequence.py (S1..S12). Level `tool`: the
+    # reusable workflow has not run on a runner, and nothing has run against Azure.
+    "rollback-sequence": {"probe": "tests/prove_rollback_sequence.py", "state": "observed",
+                          "level": "tool"},
     "version-metadata-wired": {"probe": "tests/prove_build_push_round_trip.py",
                                "state": "observed", "level": "tool"},
     }
@@ -655,6 +666,18 @@ DEFERRALS: dict[str, dict] = {
                             "trigger": "the coordinator's hello-world run (DEPENDABOT_TRIAGE.md "
                                        "section 6)",
                             "expires": "2026-12-31"},
+    "rollback-sequence-live": {"reason": "a live run needs the owner's sandbox subscription with "
+                                         "several kit deploys standing on one target, and an "
+                                         "application with end-to-end tests; Actions minutes on the "
+                                         "kit's own account are blocked by billing",
+                               "owner": "kit-maintainer",
+                               "proves": "reusable-rollback-sequence.yml on the sandbox: three "
+                                         "stacked Container App deploys reversed newest first with "
+                                         "an e2e command after each, ROLLBACK_SEQUENCE_VERIFIED; a "
+                                         "failing e2e command halting at step 2 with step 3 "
+                                         "untouched; an empty command refused before login",
+                               "trigger": "the next live deploy acceptance run (KDEC-012)",
+                               "expires": "2026-12-31"},
     "attestation-verify":  {"reason": "IMPLEMENTATION_HELD -- the owner's plan (Pro) offers no "
                                       "attestations on private repositories, so V1 cannot be armed "
                                       "there; classification and routing are proven locally only",
@@ -765,7 +788,11 @@ DEFERRALS: dict[str, dict] = {
 
 # Ratchet. Accepted debt may shrink, never grow. A new deferral must displace an old one or
 # raise this number deliberately, in a reviewable diff, with a reason in the commit message.
-MAX_ACCEPTED_DEBT = 4    # RAISED 3 -> 4 on 2026-10-22 for dependabot-merge-hosted (FUTURE_WORK 6): a
+MAX_ACCEPTED_DEBT = 5    # RAISED 4 -> 5 on 2026-10-22 for rollback-sequence-live (KDEC-019 item 4,
+                         # lane L-RB): a NEW capability -- sequential rollback against Azure -- whose
+                         # local half is observed; nothing existing became provable in this change,
+                         # so nothing could be displaced. Ratchet it back when it closes.
+                         # RAISED 3 -> 4 on 2026-10-22 for dependabot-merge-hosted (FUTURE_WORK 6): a
                          # NEW capability -- the GitHub half of the Dependabot triage (token scopes,
                          # auto-merge held by branch protection) -- whose proof needs a hosted run on
                          # a repository receiving Dependabot PRs. Nothing existing became provable in

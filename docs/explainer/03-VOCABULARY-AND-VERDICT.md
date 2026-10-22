@@ -80,7 +80,7 @@ advisory (`VERSION_GAP` / `COVERAGE_PARTIAL`). At `walk` findings route `DECISIO
 where a registered control is `BLOCKED`, they route `BLOCKED`. The policy can only raise the route.
 A refused policy is folded in by the same precedence: a defect (conflict, unattributed decision,
 supplied `policy_mode`, a narrower scope below the authority's floor — `POLICY_BELOW_AUTHORITY_FLOOR`,
-KDEC-018) `BLOCKED`, an unreadable register `EVIDENCE_UNTRUSTED`, an expired decision or a softening
+KDEC-018; an org outside a defined enterprise — `ORG_NOT_UNDER_ENTERPRISE`, KDEC-019) `BLOCKED`, an unreadable register `EVIDENCE_UNTRUSTED`, an expired decision or a softening
 renewed past its cap (`EXCEPTION_RENEWAL_LIMIT`) `DECISION_REQUIRED`. A secret exception renewed past
 the cap is refused by the same name and the secret blocks (part 05). The gate job then exits on the verdict: `BLOCKED` and `EVIDENCE_UNTRUSTED`
 fail it at every tier; the rest pass the gate and the deploy refuses `DECISION_REQUIRED`. With no policy step at all the gate is strict, never crawl.

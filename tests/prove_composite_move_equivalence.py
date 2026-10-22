@@ -83,8 +83,15 @@ MOVES = {
     # secret scan below crawl (tests/prove_crawl_floor.py K1). The step-level diff against 109cff8
     # was IN_PATHS on the seeds, gitleaks and detect-secrets steps only ('${{ inputs.paths }}' ->
     # '.'). The L-S pin was 32f72944...1ff6.
+    # RE-PINNED 2026-10-22, lane L-SD, `--repin secret-scan`. Reason: with the scope at the root,
+    # the kit's own rules file (and history log, staged binary, detect-secrets report) landed in
+    # the scanned scope and was counted, so an empty repository was never COLLECTION_FAILED
+    # (hosted job 119995060869; tests/prove_secret_denominator.py). They now go to RUNNER_TEMP,
+    # and detect-secrets leaves out the kit's own gitleaks.sarif. The step-level diff against
+    # a31c0a6 was `run` on Write the Azure/Entra rules, Install gitleaks, Gitleaks and
+    # detect-secrets only. The L-FX pin was dbd82bc7...fc8f.
     'secret-scan': ('secret-scan', '11d1d56',
-                    'dbd82bc7328f722bf5037f62b9914bbb6612b6adcc774f768fb3c2ba7121fc8f'),
+                    '0f2cd63c483c387ea740bb1547eba9740c533ce8c13bd1fccf17b2b76153f8c4'),
     'sast-cpp': ('sast-cpp', '11d1d56',
                  '2763b67bc90b5eda80dbef2ba0343179cb72a4edd9d86e419271398e7a51eeeb'),
     'iac-scan': ('iac-scan', '11d1d56',

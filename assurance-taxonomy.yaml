@@ -2495,6 +2495,102 @@ namespaces:
           unreconciled, untrusted; it is never resolved by assuming the attempt took or did not.
 
   # ─────────────────────────────────────────────────────────────────────────
+  # Registered 2026-10-22 (KDEC-019 item 4, lane L-RB) with the mechanism: scripts/rollback_sequence.py,
+  # .github/workflows/reusable-rollback-sequence.yml, ROLLBACK_CONTRACT.md "Sequential rollback".
+  # Checked first: rollback_state says what MAY be done about ONE failed change and deployment_outcome
+  # what ONE run did; neither can say what happened to an ORDERED SET of reversals with tests between
+  # them, nor why a step was or was not reversed. rollback_state's two refusals are reused unchanged
+  # as the disposition of an ineligible step.
+  rollback_sequence:
+    description: >-
+      What a sequential rollback did: several standing deployments reversed in REVERSE deployment
+      order, each step eligible, reversed by the deploy contract, probed and end-to-end tested
+      before the next. Exactly one value per sequence.
+    consumers: [scripts/rollback_sequence.py, reusable-rollback-sequence, tests/prove_rollback_sequence.py]
+    rule: >-
+      VERIFIED ONLY WHEN EVERY STEP IS ROLLBACK_STEP_VERIFIED. A halt never rounds up, and the
+      sequence never continues past a step whose rollback, health probe or end-to-end tests did not
+      hold. No end-to-end tests is a refusal, not a pass (owner, 2026-10-22: tests between each
+      rollback).
+    values:
+      ROLLBACK_SEQUENCE_VERIFIED:
+        definition: >-
+          Every step was eligible, reversed and ROLLBACK_VERIFIED by the deploy contract, answered
+          its health probe, and passed the application's end-to-end tests, newest first.
+      ROLLBACK_SEQUENCE_REFUSED_NO_E2E:
+        definition: >-
+          No end-to-end test command was supplied. Refused before login and before the first step;
+          nothing was touched.
+        rule: >-
+          THE FAIL-SAFE, CHOSEN OVER "RUN AND RECORD THE GAP": running the reversals untested is the
+          broken intermediate state the rule forbids, and a record after the fact cannot un-break a
+          user path. Each deploy's own single-run reversal is unaffected.
+      ROLLBACK_SEQUENCE_REFUSED_INPUT:
+        definition: >-
+          The sequence, or a step's deploy evidence, could not be read whole or was inconsistent (an
+          unknown field, a run named twice, a manifest belonging to another run). Refused before
+          anything was touched.
+      ROLLBACK_SEQUENCE_STOPPED_INELIGIBLE:
+        definition: >-
+          A step was not eligible (rollback_step_eligibility) and the sequence stopped BEFORE it.
+          The steps before it are reversed and verified; it and the steps after it are untouched.
+      ROLLBACK_SEQUENCE_HALTED_ROLLBACK_UNVERIFIED:
+        definition: >-
+          A step's reversal ended ROLLBACK_PARTIAL or STATUS_UNTRUSTED. The sequence halts; a partial
+          rollback is never verified and no test is run on it.
+      ROLLBACK_SEQUENCE_HALTED_HEALTH_FAILED:
+        definition: >-
+          A step was reversed and verified, but the health probe on the consumer-facing name never
+          answered 200. The end-to-end tests are not run on it; the sequence halts.
+      ROLLBACK_SEQUENCE_HALTED_E2E_FAILED:
+        definition: >-
+          A step was reversed, verified and healthy, but the application's end-to-end tests failed
+          or exceeded their bound. The sequence halts for a human decision.
+        rule: A hung test is a failed test, never a pass.
+
+  rollback_sequence_step:
+    description: What happened to ONE step of a sequential rollback. Exactly one value per step.
+    consumers: [scripts/rollback_sequence.py, tests/prove_rollback_sequence.py]
+    rule: >-
+      A STEP IS COMPLETE ONLY WHEN ELIGIBLE, ROLLBACK_VERIFIED, HEALTHY AND ITS END-TO-END TESTS
+      PASSED. A step that was never reached says so; silence about a step is indistinguishable from
+      a step that was reversed.
+    values:
+      ROLLBACK_STEP_VERIFIED:
+        definition: Eligible, reversed and verified, healthy, end-to-end tests passed.
+      ROLLBACK_STEP_HALTED:
+        definition: The step ran and its reversal, health probe or end-to-end tests did not hold.
+      ROLLBACK_STEP_INELIGIBLE:
+        definition: >-
+          Judged not eligible from a fresh live read; nothing of it was touched. Its disposition is
+          ROLLBACK_REQUIRES_HUMAN_DECISION or ROLLBACK_PROHIBITED (rollback_state).
+      ROLLBACK_STEP_NOT_REACHED:
+        definition: The sequence was refused, stopped or halted before this step; it is untouched.
+
+  rollback_step_eligibility:
+    description: >-
+      Why a step of a sequential rollback was eligible, judged from a fresh live read just before it
+      against what the deploying run recorded. The two bases the owner named (KDEC-019 item 4).
+    consumers: [scripts/rollback_sequence.py, tests/prove_rollback_sequence.py]
+    rule: >-
+      EVERY UNKNOWN RESOLVES TO A HUMAN DECISION, NEVER TO THE REVERSAL. Revisions created by steps
+      this sequence already reversed are its own, not another actor's.
+    values:
+      ELIGIBLE_UNTOUCHED:
+        definition: >-
+          Nothing else touched the resource: every object the run's manifest names holds what the
+          run left (P1 stamp, P2 version), no later release stands on it (P6), nothing labels it
+          (P5), and nothing else on the resource moved.
+      ELIGIBLE_OWNED_PART_SEPARABLE:
+        definition: >-
+          The resource is shared and something else on it moved, but this deployment's own part (on
+          a Container App: its revision and its traffic) is intact and is reversed on its own -- DCR
+          section 8.1, "the unit of conflict is the mutation".
+        rule: >-
+          Container Apps only. An App Service reversal is verified across every slot it captured,
+          so a moved slot makes the step ineligible rather than certainly partial.
+
+  # ─────────────────────────────────────────────────────────────────────────
   evidence_confidence:
     description: How strongly a capability claim is supported.
     consumers: [capability-matrix, validation-debt, handoff readiness]
@@ -3162,6 +3258,17 @@ namespaces:
           differently. Per-finding exceptions (secret_exceptions) are not rung changes and are not
           this. Crawl itself is the absolute floor: no rung is below it and secrets never soften
           (CHERRY_PICK_BELOW_FLOOR).
+      ORG_NOT_UNDER_ENTERPRISE:
+        definition: >-
+          The central register defines an enterprise (its `orgs` map is non-empty) and the run's org
+          is not named in that map, so the run would sit outside the enterprise floor. KDEC-019 item
+          1 (owner, 2026-10-22): "No run with the enterprise floor even if unmapped previously."
+        rule: >-
+          BLOCKED, naming the org, at every tier and on a pull request -- even for an org that ran
+          before the map existed. The remedy is to name the org in the orgs map, never to drop the
+          map. With no enterprise defined (no map, or an empty one) nothing changes. --validate
+          names every org the register mentions (an entry or the repository map) that the map
+          leaves out, before any run meets it.
       EXCEPTION_RENEWAL_LIMIT:
         definition: >-
           A register entry SOFTENS (the authority's softening of the kit default deploy approval)

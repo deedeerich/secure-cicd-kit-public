@@ -14,6 +14,9 @@ NOT live (stub-proven only, tests/prove_deploy_outcome.py): EMPTY and UNKNOWN pr
 PARTIAL_APPLY / STATUS_UNTRUSTED (matrix B and D), a capability refusal at a production tier,
 provenance tags written, a post-swap production failure. `requires-integration-environment` is
 empty: the three surfaces left it on the runs above.
+SEQUENTIAL ROLLBACK (2026-10-22, lane L-RB, KDEC-019 item 4): several deployments reversed newest
+first with the application's end-to-end tests between steps -- built and proven against the stub
+cloud only (tests/prove_rollback_sequence.py); never run live. Section "Sequential rollback" below.
 ```
 
 ## The rule
@@ -173,6 +176,88 @@ genuinely different semantics:
 ```
 capture → mutate → validate → restore-on-failure → verify-restoration
 ```
+
+## Sequential rollback — several deployments, tested end to end between steps
+
+KDEC-019 item 4 (owner, 2026-10-22, relaying a colleague): when more than one deployment must be
+rolled back, *"and can be done because nothing else touched the resource and/or because the
+resource was shared but still able to be rolled back for that particular application or deployment
+… intelligently then we should do end to end tests to make sure that between each rollback things
+still work."* Built by lane L-RB: `scripts/rollback_sequence.py`, `.github/workflows/reusable-rollback-sequence.yml`,
+`templates/rollback-sequence.yml`, record schema `schemas/rollback-sequence.schema.json`.
+
+Everything above is about **one run** reversing **its own** change. A sequence reverses **several
+standing deployments** — several runs' manifests, or several resources of one release — and adds
+nothing to the per-run rules: each step is the same manifest-scoped, precondition-checked,
+live-verified reversal the deploys already perform (`deploy_contract.py reverse`, the same code).
+What the sequence adds is **order**, **eligibility before each step**, and **tests between steps**.
+
+**Order.** Steps are listed oldest first and executed **newest first**, because a later release may
+stand on an earlier one (DCR §8.1 P6). A sequence listed in the wrong order does not reverse out of
+order: the first step it reaches has later releases standing on it, and it stops before touching
+anything.
+
+**Eligibility, from a fresh live read just before each step.** Two bases, the two the owner named:
+
+| basis | means | adapters |
+|---|---|---|
+| `ELIGIBLE_UNTOUCHED` | every object the run's manifest names holds what the run left (P1 stamp, P2 version), no later release stands on it (P6), nothing labels it (P5), and nothing else on the resource moved | both |
+| `ELIGIBLE_OWNED_PART_SEPARABLE` | the resource is shared and something else on it moved (another actor's inactive revision, a newer latest revision that takes no traffic), but **this deployment's part** — its revision and its traffic — is intact and is reversed on its own (DCR §8.1, "the unit of conflict is the mutation") | Container Apps |
+
+Anything else stops the sequence **before** the step, and nothing of that step or any later one is
+touched: `ROLLBACK_REQUIRES_HUMAN_DECISION` (touched by someone else, unreadable, a later release
+outside the sequence standing on it, no valid mechanism, a deployment that is not standing), or
+`ROLLBACK_PROHIBITED` for a step the caller declares forward-fix only (`forward_fix_only`, with the
+reason: the emergency mitigation and RBAC rows of the table above). Revisions created by steps this
+sequence has already reversed are its own, not another actor's. **App Service is eligible only
+untouched:** its reversal is verified by comparing every slot it captured, so a slot another actor
+moved would make the reversal unverifiable; the step stops before it rather than run to a certain
+`ROLLBACK_PARTIAL`.
+
+**A step is complete only when all four hold, in order:**
+
+1. eligible (above);
+2. reversed and **`ROLLBACK_VERIFIED`** by the deploy contract — `ROLLBACK_PARTIAL` or
+   `STATUS_UNTRUSTED` halts the sequence (`ROLLBACK_SEQUENCE_HALTED_ROLLBACK_UNVERIFIED`); a partial
+   rollback is never verified;
+3. **healthy**: the deploy's own health probe answers 200 on the consumer-facing name
+   (`ROLLBACK_SEQUENCE_HALTED_HEALTH_FAILED` otherwise; the tests are not run on an unhealthy state);
+4. **the application's end-to-end tests pass**: the caller's `e2e_test_command`, run in the caller's
+   checkout by `/bin/sh` after **each** step, with the step named in its environment
+   (`$ROLLBACK_STEP`, `$ROLLBACK_STEPS_TOTAL`, `$ROLLBACK_DEPLOYMENT`, `$ROLLBACK_ADAPTER`,
+   `$ROLLBACK_APP_URL`, `$ROLLBACK_SEQUENCE_ID`), **without** the deploy identity's Azure session (its
+   Azure configuration directory is a fresh empty one), and bounded by `e2e_timeout_minutes`. A
+   failure **or a timeout** halts the sequence, `ROLLBACK_SEQUENCE_HALTED_E2E_FAILED`, for a human
+   decision. It never continues on a broken intermediate state.
+
+**No end-to-end tests is a refusal, not a pass.** An empty `e2e_test_command` is
+`ROLLBACK_SEQUENCE_REFUSED_NO_E2E` before login and before the first step; nothing is touched. The
+alternatives were weighed: *run the reversals and record the gap* leaves exactly the untested
+intermediate states the rule forbids, and a record after the fact cannot un-break a user path;
+*treat the health probe as the test* collapses one request into functional validation, which this
+kit refuses for promotion for the same reason. Refusing is the non-destructive branch: each deploy's
+own single-run reversal is unaffected, and a caller with no tests can still reverse one deployment at
+a time.
+
+**The record** (`rollback-sequence.json`, validated against its schema before it is written; the job
+summary and an artifact): the sequence result; each step's deployment, position and execution order,
+eligibility basis or disposition with the checks that decided it, rollback result and residue,
+health, e2e result and exit code, timestamps; and, for anything but a verified sequence, an
+escalation contract (owner, next action, artefacts, what an automated actor may and may not do — the
+same lists as the deploy outcome). **`ROLLBACK_SEQUENCE_VERIFIED` only when every step is
+`ROLLBACK_STEP_VERIFIED`.** Vocabulary: `rollback_sequence`, `rollback_sequence_step`,
+`rollback_step_eligibility` in `assurance-taxonomy.yaml`.
+
+**Proven locally, not live.** `tests/prove_rollback_sequence.py` deploys with the shipped deploy
+reusables against the stub cloud (three stacked Container App releases; one App Service + Container
+App release) and runs the sequence: all good; step 2 of 3 failing its tests (halts, step 3
+untouched); an ineligible step (stops before it); a shared app with the app-owned part intact
+(eligible); no tests (refused, zero mutating calls); a partial rollback (never verified); forward-fix
+only; wrong order; a failed probe; a hung test; evidence of another run. **Limits:** never executed
+against Azure (risks R-04); the sequence serialises per environment but cannot hold the deploys'
+per-target concurrency groups, so a deploy into a target mid-sequence is caught by the next step's
+fresh read and the reversal's own preconditions, not excluded; P5 dependents beyond traffic labels
+are not readable (DCR §8.7); the e2e command is the caller's own code and is trusted as such.
 
 ## Integration-test harness — separate, and safe for a different reason
 

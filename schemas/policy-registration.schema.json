@@ -25,7 +25,7 @@
       "additionalProperties": {"$ref": "#/$defs/tier"}
     },
     "orgs": {
-      "type": "object", "description": "CENTRAL ONLY. org -> the enterprise it belongs to (KDEC-018). An enterprise scope binds every repository of every org mapped to it; an org this map does not name belongs to no enterprise. Org names compare case-insensitively.",
+      "type": "object", "description": "CENTRAL ONLY. org -> the enterprise it belongs to (KDEC-018). An enterprise scope binds every repository of every org mapped to it. Once this map is non-empty an org it does not name does not run: ORG_NOT_UNDER_ENTERPRISE, BLOCKED (KDEC-019). Org names compare case-insensitively.",
       "propertyNames": {"pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
       "additionalProperties": {"type": "string", "minLength": 1}
     },

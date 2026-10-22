@@ -40,9 +40,13 @@ PRECEDENCE (most specific wins; deterministic; ties are conflicts)
 
     kit default < enterprise < org < org+team < org+product < org+team+product < repository
     and, at each level, the scope without environment_tier < the same scope with it.
-    The ENTERPRISE of a repository is its org's value in the central `orgs` map ({org: enterprise});
-    an org the map does not name belongs to no enterprise. An enterprise scope names only
-    `enterprise` (and optionally environment_tier).
+    The ENTERPRISE of a repository is its org's value in the central `orgs` map ({org: enterprise}).
+    An enterprise scope names only `enterprise` (and optionally environment_tier). ONCE THE MAP
+    DEFINES AN ENTERPRISE (it is non-empty), an org it does not name does not run at all:
+    ORG_NOT_UNDER_ENTERPRISE, BLOCKED, even if it ran before the map existed (KDEC-019 item 1,
+    owner 2026-10-22: "No run with the enterprise floor even if unmapped previously"). With no
+    map, or an empty one, nothing changes. --validate names every org the register mentions that
+    the map leaves out.
 
 THE AUTHORITY FLOOR (KDEC-018, owner 2026-10-22: "if they say walk everyone is at walk")
 
@@ -74,6 +78,8 @@ WHAT RESOLUTION REFUSES, BY NAME (policy_resolution in assurance-taxonomy.yaml)
     REPOSITORY_FILE_SOFTENING     BLOCKED   the repository's own file softened what it inherited
     POLICY_BELOW_AUTHORITY_FLOOR  BLOCKED   a central entry left something weaker than the
                                             authority floor above it (THE AUTHORITY FLOOR)
+    ORG_NOT_UNDER_ENTERPRISE      BLOCKED   an enterprise is defined and the run's org is not in
+                                            the orgs map (KDEC-019)
     CELLS_NOT_MONOTONE           BLOCKED   sandbox <= dev <= test <= uat = prod violated
     POLICY_DECISION_EXPIRED       DECISION_REQUIRED  an applied decision expired; its tightening
                                             stays in force and its softening reverts
@@ -121,6 +127,8 @@ POLICY_DECISION_UNATTRIBUTED = 'POLICY_DECISION_UNATTRIBUTED'
 POLICY_DECISION_EXPIRED = 'POLICY_DECISION_EXPIRED'
 REPOSITORY_FILE_SOFTENING = 'REPOSITORY_FILE_SOFTENING'
 POLICY_BELOW_AUTHORITY_FLOOR = 'POLICY_BELOW_AUTHORITY_FLOOR'
+# An org outside the enterprise once one is defined (KDEC-019 item 1).
+ORG_NOT_UNDER_ENTERPRISE = 'ORG_NOT_UNDER_ENTERPRISE'
 # An exception renewed more often than the authority's cap (KDEC-018 item 4; scripts/exception_history.py).
 EXCEPTION_RENEWAL_LIMIT = eh.EXCEPTION_RENEWAL_LIMIT
 # Precedence levels. The AUTHORITY is the enterprise and the org: only they may soften the kit
@@ -136,14 +144,14 @@ ROUTE_OF = {
     rl.POLICY_MODE_SUPPLIED: 'BLOCKED', POLICY_REGISTER_CONFLICT: 'BLOCKED',
     POLICY_DECISION_UNATTRIBUTED: 'BLOCKED', rl.CHERRY_PICK_BELOW_FLOOR: 'BLOCKED',
     REPOSITORY_FILE_SOFTENING: 'BLOCKED', POLICY_BELOW_AUTHORITY_FLOOR: 'BLOCKED',
-    rl.CELLS_NOT_MONOTONE: 'BLOCKED',
+    ORG_NOT_UNDER_ENTERPRISE: 'BLOCKED', rl.CELLS_NOT_MONOTONE: 'BLOCKED',
     rl.REGISTRATION_UNAVAILABLE: 'EVIDENCE_UNTRUSTED', rl.CELL_NOT_REGISTERED: 'EVIDENCE_UNTRUSTED',
     POLICY_DECISION_EXPIRED: 'DECISION_REQUIRED', EXCEPTION_RENEWAL_LIMIT: 'DECISION_REQUIRED',
 }
 # When several refusals apply, the record names the first of these that fired.
 REFUSAL_ORDER = (rl.POLICY_MODE_SUPPLIED, POLICY_REGISTER_CONFLICT, POLICY_DECISION_UNATTRIBUTED,
                  rl.CHERRY_PICK_BELOW_FLOOR, REPOSITORY_FILE_SOFTENING, POLICY_BELOW_AUTHORITY_FLOOR,
-                 rl.CELLS_NOT_MONOTONE,
+                 ORG_NOT_UNDER_ENTERPRISE, rl.CELLS_NOT_MONOTONE,
                  rl.REGISTRATION_UNAVAILABLE, rl.CELL_NOT_REGISTERED, EXCEPTION_RENEWAL_LIMIT,
                  POLICY_DECISION_EXPIRED)
 
@@ -582,6 +590,10 @@ def validate(doc, origin, today):
             if code:
                 problems.append((code, 'entry %r: %s' % (e.get('id'), why)))
     if origin == ORIGIN_CENTRAL:
+        for o in unmapped_orgs(doc):
+            problems.append((ORG_NOT_UNDER_ENTERPRISE, 'org %r appears in this register but not in its orgs map; '
+                             'once an enterprise is defined every run in it is refused (KDEC-019). Name it in '
+                             'the orgs map' % o))
         # Every mapped repository, and each org (named by an entry or the orgs map) with its
         # unmapped repositories.
         orgs = set(_s((e.get('scope') or {}).get('org')).lower()
@@ -605,6 +617,31 @@ def validate(doc, origin, today):
 
 
 # ── resolution ────────────────────────────────────────────────────────────────────────────────
+
+def enterprise_defined(central):
+    """True when the central register places any org in an enterprise (a non-empty `orgs` map; an
+    enterprise entry cannot exist without one). From then on every org must be named (KDEC-019)."""
+    orgs = (central or {}).get('orgs')
+    return isinstance(orgs, dict) and any(_s(v) for v in orgs.values())
+
+
+def unmapped_orgs(doc):
+    """The orgs a central register mentions (an entry's org or repository, the repository map) that
+    its orgs map does not name -- each would be refused at every run once an enterprise is defined."""
+    if not enterprise_defined(doc):
+        return []
+    mapped = set(_s(o).lower() for o in doc['orgs'])
+    seen = set()
+    for e in doc.get('policies') or []:
+        sc = e.get('scope') or {}
+        if _s(sc.get('org')):
+            seen.add(_s(sc['org']).lower())
+        if _s(sc.get('repository')):
+            seen.add(_s(sc['repository']).split('/')[0].lower())
+    for rname in doc.get('repositories') or {}:
+        seen.add(_s(rname).split('/')[0].lower())
+    return sorted(o for o in seen if o and o not in mapped)
+
 
 def _identity(doc, repository):
     owner, _sep, _name = (repository or '').partition('/')
@@ -866,6 +903,14 @@ def resolve(central, repo_doc, repository, environment, event, supplied_inputs, 
                 return _blank(POLICY_REGISTER_CONFLICT, why, defects=[why])
             names[n] = t
     ident = _identity(central, repository)
+    # KDEC-019 item 1: once the central register defines an enterprise, an org it does not place
+    # in one is outside the floor, and a run there is refused -- even if it ran before the map.
+    if enterprise_defined(central) and not ident.get('enterprise'):
+        why = ('org %r is not named in the central register\'s orgs map, which defines an enterprise (%s): '
+               'a run outside the enterprise floor is refused. Add the org to the orgs map (KDEC-019)'
+               % (ident['org'], ', '.join(sorted(set(_s(v) for v in central['orgs'].values())))))
+        return _blank(ORG_NOT_UNDER_ENTERPRISE, why, defects=[why], environment=_s(environment) or None,
+                      scope=ident)
     # A repository-file entry beside a central repository entry for one tier: two registrations.
     if repo_doc:
         mine = set((e.get('scope') or {}).get('environment_tier') for e in repo_doc.get('policies') or [])

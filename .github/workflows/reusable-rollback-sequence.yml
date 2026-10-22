@@ -1,0 +1,399 @@
+name: "Kit: Sequential rollback (reverse order, end-to-end tests between steps)"
+
+# KDEC-019 item 4 (owner, 2026-10-22): when several deployments must be rolled back and each can
+# be -- nothing else touched the resource, or the resource is shared but this deployment's part can
+# be reversed on its own -- the rollbacks run in REVERSE deployment order and the application's
+# end-to-end tests run after EACH one. A step whose tests fail halts the sequence for a human
+# decision; it never continues on a broken intermediate state.
+#
+# WHAT IT DOES. `sequence` names the deployments (the deploy runs, oldest first). The job fetches
+# each run's deploy evidence (the `deploy-evidence-<run>-<attempt>` artifact the deploy reusables
+# upload), logs in (OIDC), and runs scripts/rollback_sequence.py from the kit at the pinned commit:
+# per step, newest first -- eligibility from a fresh live read, the deploy contract's own reversal
+# (only ROLLBACK_VERIFIED counts), the health probe, then `e2e_test_command` (run by /bin/sh in the
+# caller's checkout, bounded by e2e_timeout_minutes, WITHOUT the deploy identity's Azure session).
+# The record (schemas/rollback-sequence.schema.json) is the job summary and an artifact.
+#
+# NO END-TO-END TESTS IS A REFUSAL: an empty e2e_test_command is ROLLBACK_SEQUENCE_REFUSED_NO_E2E
+# before login, and nothing is touched (docs/architecture/ROLLBACK_CONTRACT.md, "Sequential
+# rollback").
+#
+# A MUTATING JOB, SO NO timeout-minutes (ROLLBACK_CONTRACT.md: a timeout is a cancellation nobody
+# chose, mid-reversal). The e2e command is bounded instead. Concurrency is serialised per
+# environment and never cancelled; a deploy to the same target while this runs is caught by each
+# step's fresh eligibility read and by the reversal's own preconditions, but it is not excluded --
+# do not deploy into a target while it is being rolled back.
+#
+# DATA, NEVER CODE: every caller value reaches a script through `env:` (tests/lint_injection.py).
+# STATUS: proven locally against the stub cloud (tests/prove_rollback_sequence.py, S1..S12); NOT
+# run live (risks R-04).
+
+on:
+  workflow_call:
+    inputs:
+      github_environment:
+        description: "GitHub Environment holding the deploy identity (the same one the deploys ran in)."
+        type: string
+        required: true
+      kit_repository:
+        description: "owner/repo of this kit, checked out for its scripts."
+        type: string
+        required: true
+      kit_ref:
+        description: "Full commit SHA of the kit to check out. A tag or branch can move."
+        type: string
+        required: true
+      sequence:
+        description: >-
+          JSON: {"sequence_id": "...", "steps": [{"run_id", "run_attempt", "adapter"
+          (containerapp | appservice), ["deployment"], ["health_path"], ["forward_fix_only"]}]},
+          steps in DEPLOYMENT order, oldest first. Executed newest first.
+        type: string
+        required: true
+      e2e_test_command:
+        description: >-
+          The application's end-to-end tests, run after EACH step in the caller's checkout by
+          /bin/sh with $ROLLBACK_STEP, $ROLLBACK_APP_URL and the rest set. Required in effect:
+          empty is refused (ROLLBACK_SEQUENCE_REFUSED_NO_E2E) and nothing is rolled back.
+        type: string
+        required: false
+        default: ""
+      e2e_timeout_minutes:
+        description: "Bound on each run of the e2e command; a run past it counts as failed and halts the sequence."
+        type: number
+        required: false
+        default: 30
+      health_retries:
+        description: "Health probe attempts after each verified reversal before the step is declared failed"
+        type: number
+        required: false
+        default: 12
+      health_interval_seconds:
+        description: "Seconds between health probe attempts"
+        type: number
+        required: false
+        default: 10
+      cloud:
+        description: "commercial | gov"
+        type: string
+        required: false
+        default: "commercial"
+      weakening_reason:
+        description: "Why a control on this invocation is weaker than baseline."
+        type: string
+        required: false
+        default: ""
+      weakening_authority:
+        description: "WHO decided: a role, a team, a named approver."
+        type: string
+        required: false
+        default: ""
+      weakening_exception_ref:
+        description: "Where the exception is recorded."
+        type: string
+        required: false
+        default: ""
+      weakening_expires:
+        description: "ISO date (YYYY-MM-DD) on which the weakening lapses. Silence never renews it."
+        type: string
+        required: false
+        default: ""
+    secrets:
+      AZURE_TENANT_ID:
+        description: "Entra tenant ID for OIDC login (a variable of the environment is used when absent)."
+        required: false
+      AZURE_SUBSCRIPTION_ID:
+        description: "Target subscription ID for OIDC login (a variable of the environment is used when absent)."
+        required: false
+      AZURE_CLIENT_ID:
+        description: "Client ID of the federated deploy identity (a variable of the environment is used when absent)."
+        required: false
+    outputs:
+      sequence_result:
+        description: "rollback_sequence (assurance-taxonomy.yaml): ROLLBACK_SEQUENCE_VERIFIED only when every step is."
+        value: ${{ jobs.rollback.outputs.sequence_result }}
+      steps_verified:
+        description: "How many steps were reversed, verified, healthy and passed the e2e tests."
+        value: ${{ jobs.rollback.outputs.steps_verified }}
+      routing_result:
+        description: "PROCEED only for a verified sequence; see the posture step."
+        value: ${{ jobs.rollback.outputs.routing_result }}
+      controls_required:
+        description: "Comma list of the controls this run should have run."
+        value: ${{ jobs.rollback.outputs.controls_required }}
+      controls_executed:
+        description: "Comma list of the controls that ran."
+        value: ${{ jobs.rollback.outputs.controls_executed }}
+      controls_unavailable:
+        description: "Controls that were required and could not be provided. NOT the same as clean."
+        value: ${{ jobs.rollback.outputs.controls_unavailable }}
+      controls_reduced:
+        description: "Controls that ran with their scope or threshold changed from baseline."
+        value: ${{ jobs.rollback.outputs.controls_reduced }}
+      controls_skipped:
+        description: "Controls that were switched off."
+        value: ${{ jobs.rollback.outputs.controls_skipped }}
+      weakenings:
+        description: "JSON array, one object per declared input that governs a control."
+        value: ${{ jobs.rollback.outputs.weakenings }}
+      weakening_attribution:
+        description: "WEAKENING_AT_BASELINE | WEAKENING_ATTRIBUTED | WEAKENING_UNATTRIBUTED | WEAKENING_EXCEPTION_EXPIRED."
+        value: ${{ jobs.rollback.outputs.weakening_attribution }}
+      weakening_record:
+        description: "Reason, authority, exception reference and expiry as one JSON object."
+        value: ${{ jobs.rollback.outputs.weakening_record }}
+
+concurrency:
+  group: rollback-sequence-${{ inputs.github_environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write   # OIDC
+  actions: read     # download each deploy run's evidence artifact
+
+jobs:
+  rollback:
+    name: Roll back in reverse order, end-to-end tests between steps
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.github_environment }}
+    outputs:
+      sequence_result: ${{ steps.sequence.outputs.sequence_result }}
+      steps_verified: ${{ steps.sequence.outputs.steps_verified }}
+      routing_result: ${{ steps.posture.outputs.routing_result }}
+      controls_required: ${{ steps.posture.outputs.controls_required }}
+      controls_executed: ${{ steps.posture.outputs.controls_executed }}
+      controls_unavailable: ${{ steps.posture.outputs.controls_unavailable }}
+      controls_reduced: ${{ steps.posture.outputs.controls_reduced }}
+      controls_skipped: ${{ steps.posture.outputs.controls_skipped }}
+      weakenings: ${{ steps.posture.outputs.weakenings }}
+      weakening_attribution: ${{ steps.posture.outputs.weakening_attribution }}
+      weakening_record: ${{ steps.posture.outputs.weakening_record }}
+    steps:
+      - name: Check out the repository (its end-to-end tests)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out the kit at a pinned commit (its scripts)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.kit_repository }}
+          ref: ${{ inputs.kit_ref }}
+          path: .kit
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Fetch each deployment's evidence
+        # A run whose evidence cannot be fetched is named here and refused, whole, by the sequence
+        # step: nothing is rolled back on a sequence that cannot be read in full.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEQUENCE: ${{ inputs.sequence }}
+          KIT_DIR: ${{ github.workspace }}/.kit
+        run: |
+          set -uo pipefail
+          root="$RUNNER_TEMP/rollback-evidence"
+          mkdir -p "$root"
+          if ! python3 "$KIT_DIR/scripts/rollback_sequence.py" list-runs --sequence-env sequence > "$RUNNER_TEMP/rollback-runs.txt"; then
+            echo "::error title=Sequence unreadable::the sequence input is not a readable sequence; the sequence step refuses it"
+            exit 0
+          fi
+          while read -r run_id attempt; do
+            name="deploy-evidence-${run_id}-${attempt}"
+            if ! gh run download "$run_id" -R "$GITHUB_REPOSITORY" -n "$name" -D "$root/$name"; then
+              echo "::error title=Evidence not fetched::${name} could not be downloaded; the sequence step refuses the sequence"
+            fi
+          done < "$RUNNER_TEMP/rollback-runs.txt"
+
+      - name: Azure login (OIDC)
+        # Not even a login without end-to-end tests: the sequence is refused before it.
+        if: inputs.e2e_test_command != ''
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
+          environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
+
+      - name: Roll back newest first, end-to-end tests after each step
+        id: sequence
+        env:
+          SEQUENCE: ${{ inputs.sequence }}
+          E2E_TEST_COMMAND: ${{ inputs.e2e_test_command }}
+          E2E_TIMEOUT_MINUTES: ${{ inputs.e2e_timeout_minutes }}
+          HEALTH_RETRIES: ${{ inputs.health_retries }}
+          HEALTH_INTERVAL_SECONDS: ${{ inputs.health_interval_seconds }}
+          KIT_DIR: ${{ github.workspace }}/.kit
+        run: |
+          set -uo pipefail
+          kv="$RUNNER_TEMP/rollback-sequence.out"
+          : > "$kv"
+          rc=0
+          python3 "$KIT_DIR/scripts/rollback_sequence.py" run --sequence-env sequence \
+            --evidence-root "$RUNNER_TEMP/rollback-evidence" --work "$RUNNER_TEMP/rollback-work" \
+            --out "$RUNNER_TEMP/rollback-sequence.json" --e2e-command "$E2E_TEST_COMMAND" \
+            --e2e-timeout-seconds "$((E2E_TIMEOUT_MINUTES * 60))" \
+            --summary "$GITHUB_STEP_SUMMARY" --github-output "$kv" || rc=$?
+          sequence_result="$(sed -n 's/^sequence_result=//p' "$kv" | tail -1)"
+          steps_verified="$(sed -n 's/^steps_verified=//p' "$kv" | tail -1)"
+          {
+            echo "rc=$rc"
+            echo "sequence_result=$sequence_result"
+            echo "steps_verified=$steps_verified"
+          } >> "$GITHUB_OUTPUT"
+          exit "$rc"
+
+      - name: Keep the sequence record and each step's reversal evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rollback-sequence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/rollback-sequence.json
+            ${{ runner.temp }}/rollback-work
+          if-no-files-found: warn
+          retention-days: 90
+
+      # Vocabulary: assurance-taxonomy.yaml :: control_weakening, routing_result, rollback_sequence.
+      # The enumeration is TOTAL over this workflow's inputs (tests/check_weakening_record.py).
+      - name: Control posture -- what the sequence did, what it could not, and who decided
+        id: posture
+        if: always()
+        env:
+          W_SEQUENCE: ${{ inputs.sequence }}
+          W_E2E_TEST_COMMAND: ${{ inputs.e2e_test_command }}
+          W_HEALTH_RETRIES: ${{ inputs.health_retries }}
+          W_HEALTH_INTERVAL_SECONDS: ${{ inputs.health_interval_seconds }}
+          W_WEAKENING_REASON: ${{ inputs.weakening_reason }}
+          W_WEAKENING_AUTHORITY: ${{ inputs.weakening_authority }}
+          W_WEAKENING_EXCEPTION_REF: ${{ inputs.weakening_exception_ref }}
+          W_WEAKENING_EXPIRES: ${{ inputs.weakening_expires }}
+          RC: ${{ steps.sequence.outputs.rc }}
+          RESULT: ${{ steps.sequence.outputs.sequence_result }}
+        run: |
+          set -u
+          req=""; exe=""; skp=""; red=""; wk=""; inforce=0; badclass=0
+          at_baseline() {
+            case "$2" in
+              NONEMPTY) [ -n "$1" ] ;;
+              max:*)    [ -n "$1" ] && [ "$1" -le "${2#max:}" ] 2>/dev/null ;;
+              *)        [ "$1" = "$2" ] ;;
+            esac
+          }
+          # posture <input> <control_weakening class> <baseline> <control> "<value>"
+          posture() {
+            n="$1"; cls="$2"; base="$3"; ctl="$4"; val="${5-}"; st=WEAKENING_AT_BASELINE
+            case "$cls" in
+              NOT_A_CONTROL_SURFACE|EXCEPTION_ATTRIBUTION)
+                return 0 ;;
+              TARGET_NOT_SUPPLIED)
+                req="$req,$ctl"
+                if at_baseline "$val" "$base"; then exe="$exe,$ctl"; else skp="$skp,$ctl"; fi ;;
+              SEVERITY_RAISED)
+                req="$req,$ctl"; exe="$exe,$ctl"
+                at_baseline "$val" "$base" || { st=CONTROL_RECONFIGURED; red="$red,$ctl"; inforce=$((inforce+1)); } ;;
+              *)
+                echo "::error title=Unregistered control_weakening class::$cls on input $n"
+                badclass=1; return 0 ;;
+            esac
+            wk="$wk,{\"input\":\"$n\",\"class\":\"$cls\",\"control\":\"$ctl\",\"baseline\":\"$base\",\"value\":\"$val\",\"state\":\"$st\"}"
+          }
+
+          posture github_environment       NOT_A_CONTROL_SURFACE - -
+          posture kit_repository           NOT_A_CONTROL_SURFACE - -
+          posture kit_ref                  NOT_A_CONTROL_SURFACE - -
+          posture sequence                 TARGET_NOT_SUPPLIED NONEMPTY rollback-sequence "$W_SEQUENCE"
+          # Empty is refused by the sequence itself (ROLLBACK_SEQUENCE_REFUSED_NO_E2E); recorded here
+          # as the e2e control skipped, so the record and the refusal say the same thing.
+          posture e2e_test_command         TARGET_NOT_SUPPLIED NONEMPTY e2e-between-steps "$W_E2E_TEST_COMMAND"
+          # A bound on a hung test: a lower value only fails a test sooner.
+          posture e2e_timeout_minutes      NOT_A_CONTROL_SURFACE - -
+          # More attempts, or a longer wait, tolerates a restored state the shipped probe would fail.
+          posture health_retries           SEVERITY_RAISED "max:12" health-probe "$W_HEALTH_RETRIES"
+          posture health_interval_seconds  SEVERITY_RAISED "max:10" health-probe "$W_HEALTH_INTERVAL_SECONDS"
+          posture cloud                    NOT_A_CONTROL_SURFACE - -
+          posture weakening_reason         EXCEPTION_ATTRIBUTION - -
+          posture weakening_authority      EXCEPTION_ATTRIBUTION - -
+          posture weakening_exception_ref  EXCEPTION_ATTRIBUTION - -
+          posture weakening_expires        EXCEPTION_ATTRIBUTION - -
+
+          # UNAVAILABLE IS NOT CLEAN: no exit code or no result means the sequence never reached a
+          # verdict it could stand behind.
+          unav=""
+          case "${RC:-}" in
+            0|1)
+              case "${RESULT:-}" in
+                '') unav="rollback-sequence" ;;
+              esac ;;
+            *) unav="rollback-sequence" ;;
+          esac
+
+          dedupe() {
+            printf '%s' "${1#,}" | tr ',' '\n' | sed '/^$/d' | sort -u | tr '\n' ',' | sed 's/,$//'
+          }
+          REQ="$(dedupe "$req")"; EXE="$(dedupe "$exe")"
+          SKP="$(dedupe "$skp")"; RED="$(dedupe "$red")"; UNAV="$(dedupe "$unav")"
+
+          auth=WEAKENING_AT_BASELINE
+          if [ "$inforce" -gt 0 ]; then
+            if [ -n "$W_WEAKENING_REASON" ] && [ -n "$W_WEAKENING_AUTHORITY" ]; then
+              auth=WEAKENING_ATTRIBUTED
+              if [ -n "$W_WEAKENING_EXPIRES" ]; then
+                if ! printf '%s' "$W_WEAKENING_EXPIRES" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' ||
+                   [ "$(date -u -d "$W_WEAKENING_EXPIRES" +%Y-%m-%d 2>/dev/null)" != "$W_WEAKENING_EXPIRES" ]; then
+                  auth=WEAKENING_EXCEPTION_EXPIRED
+                elif [ "$(date -u +%Y-%m-%d)" ">" "$W_WEAKENING_EXPIRES" ]; then
+                  auth=WEAKENING_EXCEPTION_EXPIRED
+                fi
+              fi
+            else
+              auth=WEAKENING_UNATTRIBUTED
+            fi
+          fi
+
+          # The SEQUENCE claim. A refusal touched nothing and blocks; a stop or a halt owes a human
+          # decision; a partial rollback leaves a state this run cannot vouch for.
+          route=PROCEED
+          if [ -n "$UNAV" ] || [ "$badclass" = "1" ]; then
+            route=EVIDENCE_UNTRUSTED
+          else
+            case "$RESULT" in
+              ROLLBACK_SEQUENCE_VERIFIED) route=PROCEED ;;
+              ROLLBACK_SEQUENCE_REFUSED_NO_E2E|ROLLBACK_SEQUENCE_REFUSED_INPUT) route=BLOCKED ;;
+              ROLLBACK_SEQUENCE_HALTED_ROLLBACK_UNVERIFIED) route=EVIDENCE_UNTRUSTED ;;
+              *) route=DECISION_REQUIRED ;;
+            esac
+            if [ "$route" = "PROCEED" ]; then
+              if [ "$auth" = "WEAKENING_UNATTRIBUTED" ] || [ "$auth" = "WEAKENING_EXCEPTION_EXPIRED" ]; then
+                route=DECISION_REQUIRED
+              elif [ "$inforce" -gt 0 ]; then
+                route=PROCEED_WITH_ADVISORY
+              fi
+            fi
+          fi
+
+          emit() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
+          emit routing_result "$route"
+          emit controls_required "$REQ"
+          emit controls_executed "$EXE"
+          emit controls_unavailable "$UNAV"
+          emit controls_reduced "$RED"
+          emit controls_skipped "$SKP"
+          emit weakenings "[${wk#,}]"
+          emit weakening_attribution "$auth"
+          emit weakening_record "{\"reason\":\"$W_WEAKENING_REASON\",\"authority\":\"$W_WEAKENING_AUTHORITY\",\"exception_ref\":\"$W_WEAKENING_EXCEPTION_REF\",\"expires\":\"$W_WEAKENING_EXPIRES\"}"
+          {
+            echo "### Control posture -- sequential rollback"
+            echo ""
+            echo "| row | value |"
+            echo "|---|---|"
+            echo "| routing_result | **$route** |"
+            echo "| sequence result | ${RESULT:-not reported} |"
+            echo "| controls skipped | ${SKP:-none} |"
+            echo "| controls unavailable | ${UNAV:-none} |"
+            echo "| weakening attribution | $auth |"
+          } >> "$GITHUB_STEP_SUMMARY"

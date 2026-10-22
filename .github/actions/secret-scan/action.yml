@@ -182,7 +182,14 @@ runs:
         # it worked only inside this repo. Consumers were silently getting STOCK gitleaks
         # while the capability matrix claimed 14 custom Azure/Entra classes — detection the
         # caller never actually had.
-        cat > gitleaks-azure.toml <<'GITLEAKS_TOML'
+        #
+        # WRITTEN TO RUNNER_TEMP, NEVER INTO THE CHECKOUT (lane L-SD). The scanned scope is the
+        # repository root (KDEC-018), so a rules file written there was counted by the denominator
+        # as a file the scan read: an EMPTY repository reported "1 file scanned, 0 secrets" and
+        # was never COLLECTION_FAILED (hosted self-test job 119995060869). Every file this job
+        # writes before or during a scan lives outside the scope. tests/prove_secret_denominator.py.
+        : "${RUNNER_TEMP:?RUNNER_TEMP is unset: the kit has nowhere outside the scanned scope to write}"
+        cat > "$RUNNER_TEMP/gitleaks-azure.toml" <<'GITLEAKS_TOML'
         # Gitleaks config — Azure / Entra credential classes.
         #
         # WHY THIS EXISTS: the baseline hook set carried `detect-aws-credentials` and nothing equivalent for
@@ -322,7 +329,7 @@ runs:
           '''(^|/)CHANGELOG\.md$''',
         ]
         GITLEAKS_TOML
-        echo "rules loaded: $(grep -c 'rules' gitleaks-azure.toml)"
+        echo "rules loaded: $(grep -c 'rules' "$RUNNER_TEMP/gitleaks-azure.toml")"
 
     - name: Install gitleaks
       shell: bash -e {0}
@@ -333,9 +340,11 @@ runs:
         IMG=zricethezav/gitleaks:v8.21.2
         docker pull -q "$IMG"
         CID=$(docker create "$IMG")
-        docker cp "$CID:/usr/bin/gitleaks" ./gitleaks || docker cp "$CID:/gitleaks" ./gitleaks
+        # Staged in RUNNER_TEMP, not the checkout: the checkout is the scanned scope (KDEC-018).
+        docker cp "$CID:/usr/bin/gitleaks" "$RUNNER_TEMP/gitleaks" \
+          || docker cp "$CID:/gitleaks" "$RUNNER_TEMP/gitleaks"
         docker rm -f "$CID" >/dev/null
-        sudo mv gitleaks /usr/local/bin/ && sudo chmod +x /usr/local/bin/gitleaks
+        sudo mv "$RUNNER_TEMP/gitleaks" /usr/local/bin/ && sudo chmod +x /usr/local/bin/gitleaks
         gitleaks version
 
     - name: Gitleaks (path-scoped, redacted)
@@ -361,9 +370,10 @@ runs:
         # tests/prove_secret_denominator.py runs this step against empty and populated scopes.
         if [ "${IN_SCAN_GIT_HISTORY}" = "true" ]; then
           echo "Scanning working tree AND git history (repository-wide; ignores paths)."
-          gitleaks detect --redact --config gitleaks-azure.toml \
-            --report-format sarif --report-path gitleaks.sarif --exit-code 0 2>&1 | tee .gitleaks.log
-          commits=$(sed 's/\x1b\[[0-9;]*m//g' .gitleaks.log \
+          gitleaks detect --redact --config "$RUNNER_TEMP/gitleaks-azure.toml" \
+            --report-format sarif --report-path gitleaks.sarif --exit-code 0 2>&1 \
+            | tee "$RUNNER_TEMP/gitleaks.log"
+          commits=$(sed 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/gitleaks.log" \
             | grep -oE '[0-9]+ commits scanned' | grep -oE '^[0-9]+' | tail -1)
           if [ -z "${commits:-}" ] || [ "$commits" -eq 0 ]; then
             echo "::error title=COLLECTION_FAILED::gitleaks scanned ${commits:-no} commits."
@@ -393,7 +403,7 @@ runs:
           fi
           echo "files_scanned=$files" >> "$GITHUB_OUTPUT"
           gitleaks detect --no-git --source "${IN_PATHS}" --redact \
-            --config gitleaks-azure.toml \
+            --config "$RUNNER_TEMP/gitleaks-azure.toml" \
             --report-format sarif --report-path gitleaks.sarif --exit-code 0
         fi
         # A PARSE FAILURE IS NOT ZERO FINDINGS.
@@ -576,7 +586,21 @@ runs:
         # suppression: PRESENTATION_ONLY -- find's stderr is noise on unreadable subtrees.
         # discards: find's stderr on unreadable or permission-denied subtrees
         # preserved_by: the EXIT STATUS is checked here and a failure is COLLECTION_FAILED
-        if ! _list=$(find "${IN_PATHS}" -type f -not -path '*/.git/*' 2>/dev/null); then
+        #
+        # THE KIT'S OWN REPORT IS NOT A FILE THE SCAN READ (lane L-SD). The scope is the
+        # repository root (KDEC-018), and by now gitleaks has written gitleaks.sarif there -- it
+        # must stay there, because the redaction sweep, the artifact and the Security-tab upload
+        # read it from the working directory -- and the redactor may have renamed it to
+        # gitleaks.sarif.UNREDACTED-WITHHELD. Counted, either made an empty repository read as
+        # "1 file scanned". Exactly those two working-directory files are left out, by file
+        # identity in the count and by an anchored path in the scan; a gitleaks.sarif anywhere
+        # else in the tree is the consumer's and is counted. Everything else this step writes
+        # goes to RUNNER_TEMP. tests/prove_secret_denominator.py (ds_empty, ds_after_report).
+        _kit=()
+        for _k in gitleaks.sarif gitleaks.sarif.UNREDACTED-WITHHELD; do
+          if [ -f "$_k" ]; then _kit+=( ! -samefile "$_k" ); fi
+        done
+        if ! _list=$(find "${IN_PATHS}" -type f -not -path '*/.git/*' "${_kit[@]}" 2>/dev/null); then
           echo "::error title=COLLECTION_FAILED (detect-secrets)::The scope could not be enumerated."
           exit 1
         fi
@@ -586,10 +610,12 @@ runs:
           exit 1
         fi
         # detect-secrets records hashes rather than values, so its report is safe to retain.
-        detect-secrets scan --all-files --exclude-files '(^|/)\.git/' "${IN_PATHS}" > .ds-scan.json
+        detect-secrets scan --all-files --exclude-files '(^|/)\.git/' \
+          --exclude-files '^(\./)?gitleaks\.sarif(\.UNREDACTED-WITHHELD)?$' \
+          "${IN_PATHS}" > "$RUNNER_TEMP/ds-scan.json"
         if ! ds=$(jq -e '.results | if type == "object" then ([.[] | length] | add // 0)
-                         else error("no results map") end' .ds-scan.json 2>&1); then
-          echo "::error title=COLLECTION_FAILED (detect-secrets)::.ds-scan.json is not a usable report."
+                         else error("no results map") end' "$RUNNER_TEMP/ds-scan.json" 2>&1); then
+          echo "::error title=COLLECTION_FAILED (detect-secrets)::the detect-secrets report is not usable."
           echo "jq said: $ds"
           exit 1
         fi
