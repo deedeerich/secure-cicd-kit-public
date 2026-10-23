@@ -58,6 +58,9 @@ SKIP_DIRS = {os.path.join("docs", "architecture", "prototypes")}
 # taxonomy term would defeat the whole check.
 NOT_VOCABULARY = {
     "GITHUB_OUTPUT", "GITHUB_ENV", "GITHUB_STEP_SUMMARY", "GITHUB_PATH", "GITHUB_TOKEN",
+    # The runner's REST API base URL, read by scripts/environment_protection.py to read an
+    # environment's protection rules back. A platform environment variable, same class as above.
+    "GITHUB_API_URL",
     # The runner's per-job temp directory -- a platform environment variable of the same class
     # as GITHUB_OUTPUT, named as a string by the deploy-step harness that stands it in locally.
     "RUNNER_TEMP",
@@ -82,6 +85,14 @@ NOT_VOCABULARY = {
     # Cited by its short name ("JOB_TOPOLOGY §4") in the resolve job, its harness and the
     # execution-planning design. A citation of a document is not a use of its vocabulary.
     "JOB_TOPOLOGY",
+    # Lane L-SCAN-B (KDEC-026): identifiers INSIDE the generated platform fixtures (C macros, Apple
+    # CommonCrypto names, Gradle environment names), build-tool flags and environment switches the
+    # proofs pass to CMake, apt and dotnet, a shell variable, the step-name constants of a proof, and
+    # the fixture contract's FILENAME (PLATFORM_SIGNALS.json, like EXPECTED_SIGNALS). None is a state.
+    "BUF_LEN", "CC_LONG", "CC_MD5", "CC_MD5_DIGEST_LENGTH", "KEY_PASSWORD", "STORE_PASSWORD",
+    "DCMAKE_EXPORT_COMPILE_COMMANDS", "FATAL_ERROR", "DEBIAN_FRONTEND", "DOTNET_CLI_TELEMETRY_OPTOUT",
+    "DOTNET_NOLOGO", "IN_DISCOVERED_KOTLIN", "MOBSF_ENFORCE_STEP", "RULES_ENFORCE_STEP",
+    "PLATFORM_SIGNALS",
     # Script-internal identifiers and shell variables.
     "WF_DIR", "TX_PY", "STRIP_PY", "TRUSTED_ORGS", "WORKFLOWS_PATH", "SCAN_DIRS", "SCAN_EXT",
     "NOT_VOCABULARY", "CAPABILITY_REGISTRY", "VALIDATION_REGISTRY", "TEST_RESOURCE_GROUP",
@@ -140,6 +151,29 @@ NOT_VOCABULARY = {
     # runs after which a carried obligation is escalated to a person (TICKETING_CONTRACT.md 4.1).
     # A numeric SETTING; nothing branches on its value being one of a fixed set.
     "TICKET_DEGRADED_RUN_THRESHOLD",
+    # The same class (KDEC-024, lane L-TKT): the per-run call budget and the Jira priority ladder
+    # the SLA escalation climbs, and the GitHub Issues token's secret name in the reusable
+    # workflow. SETTINGS whose values are a number, a list of the tracker's own priority names
+    # and a credential -- never states.
+    "TICKET_CALL_BUDGET", "JIRA_PRIORITY_LADDER", "GH_TICKET_TOKEN",
+    # The same class (KDEC-028, lane L-AM): Jira auth and test-ticketing SETTINGS -- the auth mode
+    # (basic|bearer), the site's cloud id, the real project keys a test run checks itself
+    # against, and the ticketing mode the reusable workflow DERIVES from the ref (real|test,
+    # lower-case values, never a state). And the constants and step env names that carry them:
+    # the test label and summary prefix, the test-binding ledger prefix, the guard's
+    # TEST_ENVIRONMENT; the routing proof's placeholder constants and a checkov rule id used as a
+    # fixture value (somebody else's identifier).
+    "JIRA_AUTH_MODE", "JIRA_CLOUD_ID", "JIRA_REAL_PROJECTS", "TICKETING_MODE", "TEST_ENVIRONMENT",
+    "TEST_LABEL", "TEST_PREFIX", "TEST_LEDGER_PREFIX", "CREATEMETA_STORY", "ORIGIN_CENTRAL",
+    "ORIGIN_REPOSITORY", "CKV_AZURE_1",
+    # Platform environment variables the reconciler reads to link a ticket to its run and commit,
+    # the same class as GITHUB_OUTPUT.
+    "GITHUB_SERVER_URL", "GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_REPOSITORY",
+    # Python constant names, referenced as attributes from another module (so the structural
+    # assignment rule cannot see them): the model's actor string for an unattended mutation, and
+    # the ticket proofs' placeholder configurations and forbidden-field pattern. Containers of
+    # values, never states.
+    "ROUTINE_ACTOR", "AZDO_KW", "GH_ENV", "JIRA_ENV", "FORBIDDEN_FIELD",
     # Environment-variable NAMES of .github/workflows/reusable-ticket-reconcile.yml's steps, set
     # by tests/prove_ticket_reconcile_workflow.py when it runs the extracted steps. Each carries a
     # path, a date, an exit code or a caller input as DATA; none is a state. The W_* names follow
@@ -160,6 +194,10 @@ NOT_VOCABULARY = {
     "SCAN_STATUS_SH", "REDACT_SARIF", "REDACT_SARIF_PY", "PR_BODY", "TICKET_HOST",
     "TICKET_PROJECT", "ENFORCE_DIGIT_RANGE", "MIN_DIGITS", "MAX_DIGITS", "IN_PATHS",
     "IN_LANGUAGE", "IN_IAC_MODE", "REDACTED_MARK", "DECLARED_KEYS", "DECLARED_LABEL",
+    # The optional SECRET name of .github/workflows/reusable-dependabot-triage.yml (a credential
+    # for fetch-metadata's lookups) and the template's suggested repository secret. Names of
+    # settings, not states; the triage's own states are lowercase rule ids.
+    "METADATA_TOKEN", "DEPENDABOT_METADATA_TOKEN",
     # Env-var NAMES of .github/workflows/reusable-ticket-reference.yml's step (KDEC-013): a Jira
     # site host and a project key, carried as DATA. Each names a SETTING; nothing branches on its
     # value being one of a fixed set. The gate's states are ticket_reference_outcome.
@@ -254,6 +292,12 @@ NOT_VOCABULARY = {
     # (tests/prove_sarif_effective_level.py, same class as CKV_SECRET_6), and the constant that
     # holds a seeded apk database (tests/prove_image_scan_enforces.py).
     "KIT_OWNER", "KIT_REPO", "CKV_PROBE_1", "APK_INSTALLED",
+    # The same class: the owner placeholder in templates/ `uses:` paths, which
+    # tests/check_action_pins.py accepts (in templates only) beside forty zeros. A path, never a state.
+    "YOUR_ORG",
+    # SETTINGS, never states: scripts/pin-actions.sh's API base (set to a local stand-in by
+    # tests/prove_pin_actions_names_release.py) and the directories it walks (docs/assurance/PINNING.md).
+    "GITHUB_API_URL", "SEARCH_PATHS",
     # Python CONSTANT NAMES in the assurance scripts -- the class the export-tooling note above
     # left to its owner, classified here on the owner's instruction. Every one is a CONTAINER OF
     # REGISTERED VALUES or a literal: BY_SCANNER maps scanner names to finding_subject values;
@@ -304,6 +348,19 @@ NOT_VOCABULARY = {
     # as CMAKE_CXX_STANDARD above.
     "TRIVY_SEVERITY", "TRIVY_EXIT_CODE", "TRIVY_FORMAT", "TRIVY_IGNORE_UNFIXED", "TRIVY_INPUT",
     "TRIVY_OUTPUT", "TRIVY_SCANNERS", "TRIVY_TIMEOUT",
+    # KDEC-027 (lane L-PIN, ghe.com support), classified at integration (L-INT1). Third-party
+    # tool ENVIRONMENT NAMES, never states: Trivy's database-cache directory, now that the kit
+    # installs the binary itself; the gh CLI's host selector; git's own environment switches
+    # that tests/_github_refs.py clears so a ref lookup never reads the developer's config or
+    # prompts; and the loader/runtime variables tests/check_output_writes.py names as unsafe to
+    # write into $GITHUB_ENV. Somebody else's identifiers, the same class as the TRIVY_* above.
+    "TRIVY_CACHE_DIR", "GH_HOST", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_NOSYSTEM", "GIT_DIR", "GIT_WORK_TREE", "GIT_TERMINAL_PROMPT", "LD_PRELOAD",
+    "NODE_OPTIONS",
+    # SETTINGS, never states (KDEC-027): scripts/pin-actions.sh's public-actions API base and
+    # the token-host pin the pin checker reads, both set to local stand-ins by the ghe.com proofs.
+    # The same class as PIN_ACTIONS' GITHUB_API_URL and SEARCH_PATHS above.
+    "PIN_ACTIONS_API", "PIN_CHECK_TOKEN_HOST",
 }
 
 TOKEN = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")

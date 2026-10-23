@@ -57,6 +57,38 @@ def run_step(script, env, cwd):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def eval_job_if(expr, event, ref, default_branch, mode):
+    """Evaluate a job-level `if:` that carries the guard rule (KDEC-024: the clock modes are ONE
+    job, so the guard is the job's own condition). Only the names the rule may use are accepted;
+    anything else is refused rather than guessed, so a widened condition fails this proof."""
+    e = ' '.join(str(expr or '').split())
+    e = e.replace("format('refs/heads/{0}', inputs.default_branch)",
+                  "('refs/heads/' + inputs_default_branch)")
+    for a, b in (('inputs.mode', 'inputs_mode'), ('inputs.default_branch', 'inputs_default_branch'),
+                 ('github.event_name', 'github_event_name'), ('github.ref', 'github_ref'),
+                 ('&&', ' and '), ('||', ' or ')):
+        e = e.replace(a, b)
+    names = set(re.findall(r"\b[A-Za-z_][A-Za-z_0-9]*\b", re.sub(r"'[^']*'", "''", e)))
+    unknown = names - {'inputs_mode', 'inputs_default_branch', 'github_event_name', 'github_ref',
+                       'and', 'or', 'not'}
+    if unknown:
+        raise ValueError('the job condition uses %s, outside the guard rule' % sorted(unknown))
+    return bool(eval(e, {'__builtins__': {}}, {  # noqa: S307 - names checked above
+        'inputs_mode': mode, 'inputs_default_branch': default_branch,
+        'github_event_name': event, 'github_ref': ref}))
+
+
+GUARD_CASES = [
+    ('a pull request', 'pull_request', 'refs/pull/7/merge', 'false'),
+    ('pull_request_target', 'pull_request_target', 'refs/heads/main', 'false'),
+    ('a run chained off another workflow', 'workflow_run', 'refs/heads/main', 'false'),
+    ('a push to a feature branch', 'push', 'refs/heads/feature', 'false'),
+    ('a push to the protected default branch', 'push', 'refs/heads/main', 'true'),
+    ('a schedule on the default branch', 'schedule', 'refs/heads/main', 'true'),
+    ('a manual dispatch on the default branch', 'workflow_dispatch', 'refs/heads/main', 'true'),
+]
+
+
 def main():
     try:
         import yaml
@@ -84,6 +116,10 @@ def main():
     if not guard or not rec:
         fails.append('expected exactly a guard job and a reconcile job, got %r' % sorted(jobs))
         return report(fails)
+    if "inputs.mode == 'reconcile'" not in str(guard.get('if') or ''):
+        fails.append('the guard job runs for every mode (%r); the clock modes carry the rule in '
+                     'their own job, so a guard job for them is a second billed job'
+                     % guard.get('if'))
 
     # ONE job holds the credential: the reconcile job, behind the guard, in an environment.
     if 'secrets.' in yaml.safe_dump(guard):
@@ -118,17 +154,53 @@ def main():
             fails.append('T-21: the sweep job requests an environment; it contacts no tracker')
         if 'secrets.' in yaml.safe_dump(sweep_job):
             fails.append('T-21: the sweep job references a secret; it needs none')
-        if sweep_job.get('needs') not in ('guard', ['guard']) or \
-                'needs.guard.outputs.armed' not in str(sweep_job.get('if') or '') or \
-                "inputs.mode == 'sweep'" not in str(sweep_job.get('if') or ''):
-            fails.append('T-21: the sweep job does not run on the guard and mode sweep only: %r'
+        if sweep_job.get('needs'):
+            fails.append('T-17: the sweep job needs %r -- the clock is ONE job; the guard is its '
+                         'own condition' % sweep_job.get('needs'))
+        if "inputs.mode == 'sweep'" not in str(sweep_job.get('if') or ''):
+            fails.append('T-21: the sweep job does not run on mode sweep only: %r'
                          % sweep_job.get('if'))
         if (sweep_job.get('permissions') or {}) != {'contents': 'read'} or \
                 not sweep_job.get('timeout-minutes'):
             fails.append('T-21: the sweep job lacks contents: read or a timeout')
-    if "inputs.mode != 'sweep'" not in str(rec.get('if') or ''):
-        fails.append('T-21: the credentialed reconcile job still runs in mode sweep: %r'
-                     % rec.get('if'))
+    if "inputs.mode == 'reconcile'" not in str(rec.get('if') or ''):
+        fails.append('T-21: the credentialed reconcile job runs for a mode other than reconcile: '
+                     '%r' % rec.get('if'))
+
+    # T-17 / KDEC-024: THE CLOCK WITH WRITES -- one job, in the protected environment, its own
+    # condition the guard rule.
+    res_job = jobs.get('resurface') or {}
+    if not res_job:
+        fails.append('T-17: there is no resurface job (the scheduled clock with writes)')
+    else:
+        if res_job.get('needs'):
+            fails.append('T-17: the resurface job needs %r; the clock must be one job'
+                         % res_job.get('needs'))
+        if not res_job.get('environment'):
+            fails.append('T-17: the resurface job holds the credential without the protected '
+                         'environment')
+        if (res_job.get('permissions') or {}) != {'contents': 'read'} or \
+                not res_job.get('timeout-minutes'):
+            fails.append('T-17: the resurface job lacks contents: read or a timeout')
+        if "inputs.mode == 'resurface'" not in str(res_job.get('if') or ''):
+            fails.append('T-17: the resurface job does not run on mode resurface only: %r'
+                         % res_job.get('if'))
+    # The job-level guard rule, EVALUATED against every context the guard step is run against.
+    for jname, job, mode in (('sweep', sweep_job, 'sweep'), ('resurface', res_job, 'resurface')):
+        if not job:
+            continue
+        try:
+            for label, event, ref, want in GUARD_CASES:
+                got = eval_job_if(job.get('if'), event, ref, 'main', mode)
+                if str(got).lower() != want:
+                    fails.append('%s job condition, %s: runs=%r, expected %s'
+                                 % (jname, label, got, want))
+            if eval_job_if(job.get('if'), 'push', 'refs/heads/main', '', mode):
+                fails.append('%s job condition: an EMPTY default branch armed it' % jname)
+            if eval_job_if(job.get('if'), 'schedule', 'refs/heads/main', 'main', 'reconcile'):
+                fails.append('%s job runs in mode reconcile' % jname)
+        except ValueError as exc:
+            fails.append('%s job condition: %s' % (jname, exc))
 
     # DATA, NEVER CODE: no expression inside any run: block.
     for name, job in jobs.items():
@@ -159,6 +231,32 @@ def main():
         if rc != 0 or outputs.get('armed') != want:
             fails.append('guard, %s: armed=%r (rc %d), expected %s' % (label, outputs.get('armed'),
                                                                       rc, want))
+    # KDEC-028: TEST TICKETING IS CHOSEN BY THE REF. With a sandbox environment named, a push or
+    # dispatch on another branch is armed as a TEST run; the default branch is always real; a
+    # schedule, a pull request, or no sandbox named, never arms a test run.
+    for label, event, ref, tenv, want, mode in (
+            ('feature push, sandbox named', 'push', 'refs/heads/dev', 'ticketing-test', 'true', 'test'),
+            ('feature dispatch, sandbox named', 'workflow_dispatch', 'refs/heads/feat/x',
+             'ticketing-test', 'true', 'test'),
+            ('default branch, sandbox named', 'push', 'refs/heads/main', 'ticketing-test', 'true',
+             'real'),
+            ('feature schedule, sandbox named', 'schedule', 'refs/heads/dev', 'ticketing-test',
+             'false', None),
+            ('pull request, sandbox named', 'pull_request', 'refs/pull/7/merge', 'ticketing-test',
+             'false', None),
+            ('feature push, no sandbox', 'push', 'refs/heads/dev', '', 'false', None)):
+        rc, out, outputs = run_step(gs, {'EVENT_NAME': event, 'REF': ref, 'DEFAULT_BRANCH': 'main',
+                                         'TEST_ENVIRONMENT': tenv}, ROOT)
+        if rc != 0 or outputs.get('armed') != want or \
+                (mode and outputs.get('ticketing_mode') != mode):
+            fails.append('guard (KDEC-028), %s: armed=%r mode=%r (rc %d), expected %s/%s'
+                         % (label, outputs.get('armed'), outputs.get('ticketing_mode'), rc, want,
+                            mode))
+    env_expr = str(rec.get('environment') or '')
+    if 'needs.guard.outputs.ticketing_mode' not in env_expr or 'inputs.test_environment' not in \
+            env_expr:
+        fails.append('the reconcile job\'s environment is not chosen by the guard\'s ref-derived '
+                     'mode: %r' % env_expr)
     rc, out, outputs = run_step(gs, {'EVENT_NAME': 'push', 'REF': 'refs/heads/main',
                                      'DEFAULT_BRANCH': ''}, ROOT)
     if outputs.get('armed') != 'false':
@@ -170,14 +268,24 @@ def main():
         fails.append('the reconcile job has no step with id: reconcile')
         return report(fails)
     rs = r[0]['run']
-    # Credentials only from secrets, and only in this step's env.
+    # Credentials only from secrets, and only in the env of the two steps that write to the
+    # tracker: reconcile, and the clock's resurface step (KDEC-024).
+    writers = [r[0]] + [s for s in (jobs.get('resurface') or {}).get('steps') or []
+                        if s.get('id') == 'resurface']
     for name, job in jobs.items():
         for st in job.get('steps') or []:
-            if st is r[0]:
+            if any(st is w for w in writers):
                 continue
             if re.search(r'secrets\.', yaml.safe_dump(st)):
-                fails.append('step %r in job %s touches a secret; only the reconcile step may'
-                             % (st.get('name'), name))
+                fails.append('step %r in job %s touches a secret; only the reconcile and '
+                             'resurface steps may' % (st.get('name'), name))
+    # Every backend the script supports is wired into both writing steps (KDEC-024, D5).
+    for w in writers:
+        env = w.get('env') or {}
+        for need in ('JIRA_TOKEN', 'AZDO_PAT', 'GH_TOKEN', 'TICKET_REPO', 'JIRA_TRANSITION_DONE',
+                     'AZDO_STATE_DONE', 'TICKET_CALL_BUDGET'):
+            if need not in env:
+                fails.append('step %r does not wire %s' % (w.get('name'), need))
     tmp =tempfile.mkdtemp(prefix='ticket-wf-ws-')
     try:
         findings = os.path.join(tmp, 'findings.json')
@@ -221,11 +329,30 @@ def main():
                 fails.append('the sweep job with NO ledger did not exit 3 with routing '
                              'EVIDENCE_UNTRUSTED (nothing swept is not "nothing elapsed"): rc '
                              '%d, %r' % (rc, so))
-        for mode in ('anything', 'sweep'):
+        for mode in ('anything', 'sweep', 'resurface'):
             # The credentialed step serves mode reconcile only; anything else is misuse.
             rc, out, _o = run_step(rs, dict(base, MODE=mode), tmp)
             if rc == 0:
                 fails.append('the reconcile step exited 0 for MODE=%s' % mode)
+        # THE CLOCK WITH WRITES, extracted and run with NO credential: the control is off, so the
+        # claim is untrusted (exit 3), never "nothing was due" -- with or without a ledger.
+        rw = [s for s in (jobs.get('resurface') or {}).get('steps') or []
+              if s.get('id') == 'resurface']
+        if not rw:
+            fails.append('T-17: the resurface job has no step with id: resurface')
+        else:
+            rbase = {'KIT_DIR': ROOT, 'LEDGER_PATH': base['LEDGER_PATH'], 'APPLY': 'true',
+                     'TODAY_OVERRIDE': '2026-10-14', 'TICKET_BACKEND': 'jira'}
+            rc, out, ro = run_step(rw[0]['run'], rbase, tmp)
+            if rc != 3 or ro.get('routing_result') != 'EVIDENCE_UNTRUSTED' or \
+                    ro.get('ticketing_state') != 'TICKETING_NOT_CONFIGURED':
+                fails.append('the resurface step with no credential did not exit 3, '
+                             'EVIDENCE_UNTRUSTED, TICKETING_NOT_CONFIGURED: rc %d, %r' % (rc, ro))
+            rc, out, ro = run_step(rw[0]['run'], dict(rbase, LEDGER_PATH=os.path.join(
+                tmp, 'no-ledger.json')), tmp)
+            if rc != 3 or ro.get('routing_result') != 'EVIDENCE_UNTRUSTED':
+                fails.append('the resurface step with NO ledger did not exit 3 (nothing checked '
+                             'is not "nothing due"): rc %d, %r' % (rc, ro))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -270,12 +397,13 @@ def report(fails):
         print('::error title=Ticket reconcile workflow unproven::%d failure(s) (W-1)' % len(fails))
         return 1
     print('reusable-ticket-reconcile.yml: called only; the guard arms on push/schedule/dispatch to '
-          'the default branch and refuses pull requests, chained runs and other refs; one job '
-          'holds the environment, contents: read and a timeout; no expression in any run: block; '
-          'the extracted step refuses with no credential and with absent findings (exit 3) and '
-          'hands its exit code to the posture step under bash -e; the scheduled sweep runs in its '
-          'own job with no environment and no secret (T-21) and reports an elapsed deferral. '
-          'Hosted behaviour is NOT proven here.')
+          'the default branch and refuses pull requests, chained runs and other refs -- as a guard '
+          'job for mode reconcile and as the clock jobs\' own evaluated condition (one job each, '
+          'T-17); the writing jobs hold the environment, contents: read and a timeout and wire '
+          'jira, azdo and github; no expression in any run: block; the extracted steps refuse '
+          'with no credential and with absent findings or ledger (exit 3) and hand their exit '
+          'code on under bash -e; the scheduled sweep runs with no environment and no secret '
+          '(T-21) and reports an elapsed deferral. Hosted behaviour is NOT proven here.')
     return 0
 
 

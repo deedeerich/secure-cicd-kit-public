@@ -50,6 +50,17 @@ WRITE_STEP = 'Write the canonical scripts'
 PIN_STEP = 'Pin what was written, and assert it is what this file promises'
 
 
+def _expand(doc):
+    """The workflow with every `$/` composite step expanded into its job, as the runner sees it.
+
+    Scanner job bodies live in `.github/actions/<scanner>/` (ledger L64); this reads the steps a
+    job actually runs. One rule, tests/_composite_expand.py, for every reader.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.expanded_doc(doc)
+
+
 def tmpdir_of(bash):
     """The shell's own /tmp, as a path THIS process can open.
 
@@ -90,7 +101,7 @@ def main():
 
     import inline_normalizer as gen
 
-    doc = yaml.safe_load(io.open(WF, encoding='utf-8'))
+    doc = _expand(yaml.safe_load(io.open(WF, encoding='utf-8')))
     write = step_run(doc, BOOTSTRAP, WRITE_STEP)
     pin = step_run(doc, BOOTSTRAP, PIN_STEP)
     if not write or not pin:
@@ -181,6 +192,11 @@ def main():
     # The pin must actually BE in the workflow text at every download site, not merely
     # computable. A constant the generator knows and the file does not is not a pin.
     text = io.open(WF, encoding='utf-8').read()
+    # A scanner composite (ledger L64) fetches the bundle as its own first steps: its download
+    # site is a download site, and it must carry the same pin.
+    for comp in getattr(gen, 'COMPOSITES', []):
+        cp = os.path.join(gen.ACTIONS, comp, 'action.yml')
+        text += '\n' + io.open(cp, encoding='utf-8').read()
     sites = text.count('%s  kit-scripts.sha256' % pinned)
     fetches = text.count('# BEGIN ' + FETCH_MARKER + ' ')
     print('  script-bundle download sites          : %d' % fetches)

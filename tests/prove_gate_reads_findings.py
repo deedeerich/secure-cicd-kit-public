@@ -18,7 +18,10 @@ SCENARIOS (gate script as shipped, inputs substituted, run)
     clean                 jobs success, 0 blocking findings      -> PASS / ALLOWED / exit 0
     findings_softened     jobs success, 7 blocking findings      -> FINDINGS / ADVISORY / exit 0
     findings_unknown      jobs success, count ABSENT             -> never PASS; UNDETERMINED evidence
-    findings_hard         a scanner failed, 7 blocking findings  -> FINDINGS / BLOCKED / exit 1
+    findings_hard         a scanner HANDED 7 blocking findings (findings_state=FINDINGS, job
+                          success; lane L-S), no policy  -> FINDINGS / BLOCKED / exit 1
+    failed_beside_findings a scanner FAILED with 7 on record  -> PARTIAL / BLOCKED / exit 1 (a job
+                          never fails on findings now, so it could not finish its scan)
 
 EXIT  0 every scenario decided as it must   1 a wrong decision   2 could not be checked
 """
@@ -45,6 +48,12 @@ def ctx(count, jobs='', results=None, advisory='false'):
     return d
 
 
+def handed(d, job):
+    """`job` succeeded and handed its findings to the gate (findings_state=FINDINGS, lane L-S)."""
+    d['needs.%s.outputs.findings_state' % job] = 'FINDINGS'
+    return d
+
+
 def mal(state, result='failure', advisory='false'):
     """malicious-deps ended `result` and published malicious_state=`state`."""
     d = ctx('0', advisory=advisory, results={'malicious-deps': result})
@@ -67,9 +76,15 @@ SCENARIOS = [
     ('findings_softened', ctx('7', 'sast-bandit'), (True, 'FINDINGS', 'ADVISORY')),
     ('findings_softened_advisory', ctx('7', 'sast-bandit', advisory='true'),
      (True, 'FINDINGS', 'ADVISORY')),
-    # Hard enforcement: the job FAILED BECAUSE it found something. That is FINDINGS, not UNAVAILABLE.
-    ('findings_hard', ctx('7', 'sast-bandit', {'sast-bandit': 'failure'}),
+    # Hard enforcement: the job's own threshold fired and it HANDED the findings to the gate
+    # (findings_state=FINDINGS) -- it succeeded, because the gate is the single enforcement point
+    # (lane L-S, O-24). With no resolved policy the gate is strict: FINDINGS, BLOCKED.
+    ('findings_hard', handed(ctx('7', 'sast-bandit'), 'sast-bandit'),
      (False, 'FINDINGS', 'BLOCKED')),
+    # A scanner job never fails on findings now, so one that FAILED with findings on record found
+    # some and could not finish or trust the rest: untrusted (PARTIAL), never "the control fired".
+    ('failed_beside_findings', ctx('7', 'sast-bandit', {'sast-bandit': 'failure'}),
+     (False, 'PARTIAL', 'BLOCKED')),
     # A job that failed with no findings on record crashed; posture is partial, never FINDINGS-clean.
     ('crash_beside_findings', ctx('7', 'sast-bandit', {'sast-go': 'failure'}),
      (False, 'PARTIAL', 'BLOCKED')),

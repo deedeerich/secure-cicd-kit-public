@@ -92,7 +92,9 @@ def utc_now():
 def output(**kv):
     path = os.environ.get('GITHUB_OUTPUT')
     for k, v in kv.items():
-        line = '%s=%s' % (k, '' if v is None else v)
+        # One line per value: a newline in a value would end the file command early and let the
+        # rest set another output (output injection; KDEC-027, tests/check_output_writes.py).
+        line = '%s=%s' % (k, '' if v is None else ' '.join(str(v).splitlines()))
         print(line)
         if path:
             io.open(path, 'a', encoding='utf-8').write(line + '\n')
@@ -440,13 +442,17 @@ def cmd_mutate(a):
         return 0
     slot = env('slot') or 'production'
     prior_img = (snap.get('images') or {}).get(slot, '')
+    rid, err, prior_stamp = resource_id('appservice', slot, with_stamp=True)
+    # KDEC-021: the slot's previous ownership stamp is kept, as the swap keeps production's, so the
+    # reversal hands the slot back to the release it held before. Without it a stacked sequence
+    # could never reverse the earlier release: the slot still carried the later one's stamp.
     entry = {'action': 'MODIFIED', 'object_type': 'slot-container', 'object': slot,
              'prior': ('DOCKER|' + prior_img) if prior_img else '', 'post': 'DOCKER|' + ref,
-             'stamp': stamp_value(ref), 'mutated_at': utc_now()}
+             'stamp': stamp_value(ref), 'mutated_at': utc_now(), 'object_id': rid,
+             'prior_stamp': prior_stamp}
     m['entries'].append(entry)
     save_manifest(m)
     output(mutation_started='true')
-    rid, err = resource_id('appservice', slot)
     steps = []
     if rid:
         steps.append(('tag', 'update', '--resource-id', rid, '--operation', 'Merge', '--tags',
@@ -1008,6 +1014,14 @@ def reverse_appservice(m, snap):
                                'release_ownership_stamp=%s' % (prop.get('prior_stamp') or ''))
                 r['stamp_restored'] = okk
                 err = err or e
+            elif done and prop['action'] == 'MODIFIED' and prop.get('object_id') \
+                    and 'prior_stamp' in prop:
+                # The slot's image is restored; so is its previous owner's claim (KDEC-021).
+                okk, _, e = az('tag', 'update', '--resource-id', prop['object_id'],
+                               '--operation', 'Merge', '--tags',
+                               'release_ownership_stamp=%s' % (prop.get('prior_stamp') or ''))
+                r['stamp_restored'] = okk
+                err = err or e
             r['performed'], r['error'] = done, err
         results.append(r)
     return results
@@ -1120,7 +1134,8 @@ def verify_appservice_reversal(snap):
 
 
 # ----------------------------------------------------------------------------- provenance
-def resource_id(adapter, slot=''):
+def resource_id(adapter, slot='', with_stamp=False):
+    """-> (id, error), or (id, error, ownership stamp) with `with_stamp` -- one read for both."""
     if adapter == 'containerapp':
         ok, shown, err = az('containerapp', 'show', '-n', env('containerapp_name'),
                             '-g', env('resource_group'))
@@ -1130,7 +1145,10 @@ def resource_id(adapter, slot=''):
             args += ['--slot', slot]
         ok, shown, err = az(*args)
     if not ok or not isinstance(shown, dict) or not shown.get('id'):
-        return None, err or 'no resource id in the response'
+        out = (None, err or 'no resource id in the response')
+        return out + ('',) if with_stamp else out
+    if with_stamp:
+        return shown['id'], '', (shown.get('tags') or {}).get('release_ownership_stamp', '')
     return shown['id'], ''
 
 
@@ -1376,7 +1394,11 @@ def cmd_report(a):
     # gap was ruled on, so a refused exception is on the record too.
     ruling = env('version_gap_ruling')
     exc = {'accepted_by': env('weakening_authority'), 'reason': env('weakening_reason'),
-           'exception_ref': env('weakening_exception_ref'), 'expires': env('weakening_expires')}
+           'exception_ref': env('weakening_exception_ref'), 'expires': env('weakening_expires'),
+           # KDEC-018 item 4: how often it was renewed, and its history, as the verdict step read them.
+           'renewals': (int(env('exception_renewals')) if env('exception_renewals').isdigit()
+                        else env('exception_renewals') or None),
+           'history': env('exception_history') or None}
     exc = exc if ruling in ('VERSION_GAP_EXCEPTION_ACCEPTED', 'VERSION_GAP_REFUSED') else None
     outcome, why = derive_outcome(adapter, live)
     report = {'deployment_outcome': outcome, 'why': why,

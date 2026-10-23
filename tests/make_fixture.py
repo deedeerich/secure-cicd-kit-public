@@ -229,6 +229,70 @@ add("java/Vuln.java", """
     }
     """, "sast:java-semgrep")
 
+# ---------------------------------------------------------------- php
+# PHP became a supported ecosystem in lane L-PHP (2026-10-21). One seeded class per file, so each
+# is graded on its own: a SQL injection, a reflected XSS and a command injection, each reported at
+# ERROR by Semgrep's p/php (measured on 1.90.0 and 1.178.0; tests/prove_semgrep_php.py), pinned to
+# the Semgrep job so another scanner cannot cover for it.
+PHP_HEAD = "<?php\n// SYNTHETIC SECURITY FIXTURE -- INTENTIONALLY VULNERABLE -- DO NOT DEPLOY.\n"
+
+# TRIVY READS composer.lock, NEVER composer.json (measured, trivy 0.71.2): the manifest is an input
+# with no expectation of its own, exactly as node/package.json is. config.platform.php pins the
+# PHP version resolve reads.
+add("php/composer.json", json.dumps({
+    "name": "fixture/php", "description": "synthetic, intentionally vulnerable",
+    "require": {"php": ">=7.4", "phpmailer/phpmailer": "5.2.18"},
+    "config": {"platform": {"php": "8.2.0"}},
+}, indent=4), None)
+
+# phpmailer/phpmailer v5.2.18: CVE-2016-10045 (CRITICAL, remote code execution through the mail()
+# sender) and four HIGH advisories, as trivy 0.71.2 reported them on 2026-10-21. Pinned to the
+# dependency scan, because the point is that Trivy's Composer path works through the consumer path.
+add("php/composer.lock", json.dumps({
+    "_readme": ["Synthetic lock file for a scanner fixture. Intentionally vulnerable."],
+    "content-hash": "0" * 32,
+    "packages": [{"name": "phpmailer/phpmailer", "version": "v5.2.18", "type": "library",
+                  "license": ["LGPL-2.1"]}],
+    "packages-dev": [], "aliases": [], "minimum-stability": "stable", "stability-flags": [],
+    "prefer-stable": False, "prefer-lowest": False, "platform": {"php": ">=7.4"},
+    "platform-dev": [], "plugin-api-version": "2.6.0",
+}, indent=4), "deps:php-cve", tool="trivy-deps")
+
+add("php/sqli.php", PHP_HEAD + textwrap.dedent("""
+    // semgrep p/php tainted-sql-string: request input concatenated into SQL
+    $id = $_GET['id'];
+    $conn = mysqli_connect('localhost', 'u', 'p', 'db');
+    $r = mysqli_query($conn, "SELECT * FROM users WHERE id = " . $id);
+    """).lstrip("\n"), "sast:php-sqli", tool="semgrep")
+
+add("php/xss.php", PHP_HEAD + textwrap.dedent("""
+    // semgrep p/php echoed-request: request input echoed unescaped
+    echo "Hello " . $_GET['name'];
+    """).lstrip("\n"), "sast:php-xss", tool="semgrep")
+
+add("php/cmd.php", PHP_HEAD + textwrap.dedent("""
+    // semgrep p/php tainted-exec: request input in a shell command
+    system("ping -c 1 " . $_GET['host']);
+    """).lstrip("\n"), "sast:php-command-injection", tool="semgrep")
+
+# PHP 8.5 THAT SEMGREP CANNOT FULLY PARSE (owner, 2026-10-22: "scan what parses, flag the rest";
+# KDEC-016 amended). The `final` promoted property and the `(void)` cast draw PartialParsing on
+# Semgrep 1.178.0, so the sast-semgrep job reports this file PARTIAL (PARSE_PARTIAL_PHP_SYNTAX) and
+# keeps every finding -- the three seeds above still BLOCK under the negative's own policy
+# (soft_fail_sast false), so the PHP-only negative still fails as designed. NO expectation of its
+# own: the request input below reached system() and Semgrep reported it anyway when measured
+# (2026-10-22, the job's image), but a finding inside a file the tool could not fully parse is a
+# recovery, not a contract -- the contract is that the file is NAMED, which
+# tests/prove_semgrep_php.py S8 proves.
+add("php/php85.php", PHP_HEAD + textwrap.dedent("""
+    // PHP 8.5: final promoted property and the (void) cast -- Semgrep PartialParsing (PARTIAL)
+    final class Box {
+        public function __construct(final public int $size) {}
+    }
+    (void) strlen("ignored");
+    system("ping -c 1 " . $_GET['host']);
+    """).lstrip("\n"), None)
+
 # ------------------------------------------------- second roots (monorepo shape)
 # A single root cannot prove multi-root discovery. The workflow used to take the FIRST
 # match and report success, so a fixture with one Node project and one Go module would

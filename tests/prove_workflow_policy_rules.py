@@ -25,6 +25,17 @@ WHAT IT PROVES
            step, run as shipped, routes that EVIDENCE_UNTRUSTED (unavailable, not clean)
     CONTROL a clean workflow passes (rc 0, no ERROR)
 
+    PINNING SWEEP (ledger L82, O-23 -- added with the sweep, so it reads the REAL tree as well)
+    R2C    a composite action's step by tag is an ERROR, as a workflow step is
+    NOTE   an untrusted SHA with no `# vX.Y.Z` comment is named (the gate's own advisory)
+    TREE   the shipped script, run over this repository's own workflows and composites with
+           `trusted_orgs` EMPTY (so no owner is exempt), finds ZERO references that are not
+           SHA-pinned. On 2cd078e it found 161. The stricter rules the gate does not hold --
+           templates/, the version comment matching the SHA -- are tests/check_action_pins.py.
+    DOGFOOD self-test's `dogfood-policy` job calls the gate with `require_sha_pinning: true` and
+           `soft_fail: false` (or the defaults), and carries no weakening record: the dated
+           exception was removed by the sweep, not re-dated
+
 EXIT  0 all hold   1 any does not   2 could not be checked
 """
 import io
@@ -84,6 +95,17 @@ CASES = [
      '    runs-on: ubuntu-latest\n    steps:\n      - run: echo "${{ inputs.who }}"\n',
      'ERROR', 'attacker-controlled'),
 ]
+# Cases that need a composite action beside the workflow: (label, composite text, sev, substring).
+CLEAN_WF = HEAD + '  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n'
+COMPOSITE_CASES = [
+    ('R2C composite step by tag', 'name: c\ndescription: d\nruns:\n  using: composite\n  steps:\n'
+     '    - uses: someone/tool@v2\n', 'ERROR', 'not SHA-pinned'),
+]
+NOTE_CASES = [
+    ('NOTE SHA with no version comment', HEAD + '  a:\n    runs-on: ubuntu-latest\n    steps:\n'
+     '      - uses: someone/tool@' + SHA + '\n', 'NOTE', 'add a trailing `# vX.Y.Z` comment'),
+]
+SELF_TEST = '.github/workflows/self-test.yml'
 CLEAN = (HEAD + '  a:\n    runs-on: ubuntu-latest\n'
          '    container: node@sha256:' + 'b' * 64 + '\n    steps:\n'
          '      - uses: actions/checkout@v4\n'
@@ -105,7 +127,7 @@ def policy_script(step):
     return m.group(1) if m else None
 
 
-def run_policy(step, script, wf_dir, work):
+def run_policy(step, script, wf_dir, work, overrides=None):
     import _step_harness as H
     # ONE RELOCATION, declared: the script records its file count in /tmp for the shell to emit;
     # a probe must not write outside its own temp directory.
@@ -113,6 +135,7 @@ def run_policy(step, script, wf_dir, work):
     # The step's OWN env block, substituted as the runner does: the variable names are the shipped
     # ones, never retyped here.
     ctx = dict(INPUTS, **{'inputs.workflows_path': wf_dir})
+    ctx.update(overrides or {})
     env = dict(os.environ, PYTHONUTF8='1')
     for k, v in (step.get('env') or {}).items():
         env[str(k)] = H.substitute(v, ctx)[0]
@@ -150,6 +173,61 @@ def main():
             print('  %-36s rc=%s %s' % (label, rc, 'ok' if ok else 'WRONG'))
             if not ok:
                 bad.append('%s: no %s naming %r (rc=%s)' % (label, sev, sub, rc))
+        for i, (label, comp, sev, sub) in enumerate(COMPOSITE_CASES):
+            base = os.path.join(work, 'k%d' % i)
+            d = os.path.join(base, '.github', 'workflows')
+            os.makedirs(d)
+            os.makedirs(os.path.join(base, '.github', 'actions', 'c'))
+            io.open(os.path.join(d, 'w.yml'), 'w', encoding='utf-8').write(CLEAN_WF)
+            io.open(os.path.join(base, '.github', 'actions', 'c', 'action.yml'), 'w',
+                    encoding='utf-8').write(comp)
+            rc, out = run_policy(pstep, script, d, base)
+            ok = finding(out, sev, sub) and rc != 0
+            print('  %-36s rc=%s %s' % (label, rc, 'ok' if ok else 'WRONG'))
+            if not ok:
+                bad.append('%s: no %s naming %r (rc=%s)' % (label, sev, sub, rc))
+        for i, (label, text, sev, sub) in enumerate(NOTE_CASES):
+            d = os.path.join(work, 'n%d' % i, '.github', 'workflows')
+            os.makedirs(d)
+            io.open(os.path.join(d, 'w.yml'), 'w', encoding='utf-8').write(text)
+            rc, out = run_policy(pstep, script, d, os.path.join(work, 'n%d' % i))
+            ok = finding(out, sev, sub) and rc == 0
+            print('  %-36s rc=%s %s' % (label, rc, 'ok' if ok else 'WRONG'))
+            if not ok:
+                bad.append('%s: no %s naming %r, or it blocked (rc=%s)' % (label, sev, sub, rc))
+
+        # TREE: this repository's own workflows and composites, no owner exempt.
+        tw = os.path.join(work, 'tree')
+        os.makedirs(tw)
+        rc, out = run_policy(pstep, script, os.path.join(ROOT, '.github', 'workflows'), tw,
+                             {'inputs.trusted_orgs': ''})
+        unpinned = [ln for ln in out.splitlines() if 'ERROR' in ln and 'not SHA-pinned' in ln]
+        print('  %-36s rc=%s unpinned=%d' % ('TREE every owner, real workflows', rc, len(unpinned)))
+        if unpinned:
+            bad.append('TREE %d remote `uses:` reference(s) in this repository are not SHA-pinned '
+                       '(trusted_orgs empty); first: %s' % (len(unpinned), unpinned[0][:200]))
+        elif rc != 0:
+            bad.append('TREE the gate refused this repository for another reason (rc=%s): %s'
+                       % (rc, out[-600:]))
+
+        # DOGFOOD: the self-test calls the gate at baseline, with no dated exception left.
+        import yaml
+        sdoc = yaml.safe_load(io.open(os.path.join(ROOT, SELF_TEST), encoding='utf-8')) or {}
+        dog = ((sdoc.get('jobs') or {}).get('dogfood-policy') or {})
+        w = dog.get('with') or {}
+        dog_bad = []
+        if dog.get('uses') != './.github/workflows/workflow-policy-check.yml':
+            dog_bad.append('dogfood-policy does not call the shipped gate (%r)' % dog.get('uses'))
+        if w.get('require_sha_pinning', True) is not True:
+            dog_bad.append('require_sha_pinning is %r, not true' % w.get('require_sha_pinning'))
+        if w.get('soft_fail', False) is not False:
+            dog_bad.append('soft_fail is %r, not false' % w.get('soft_fail'))
+        left = sorted(k for k in w if str(k).startswith('weakening_'))
+        if left:
+            dog_bad.append('a weakening record is still carried: %s' % ', '.join(left))
+        print('  %-36s %s' % ('DOGFOOD self-test at baseline', 'ok' if not dog_bad else 'WRONG'))
+        bad += ['DOGFOOD ' + x for x in dog_bad]
+
         d = os.path.join(work, 'clean', '.github', 'workflows')
         os.makedirs(d)
         io.open(os.path.join(d, 'w.yml'), 'w', encoding='utf-8').write(CLEAN)

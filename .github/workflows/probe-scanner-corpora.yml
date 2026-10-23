@@ -26,9 +26,13 @@ on:
       - tests/corpora/**
       - .github/workflows/probe-scanner-corpora.yml
 
+# A push may supersede a push, never a dispatched or scheduled measurement (lane L-SG; the same
+# rule as validate-scanners.yml, whose dispatch runs later pushes cancelled). The event name splits
+# the group, and only push and pull_request runs cancel their predecessor.
+# tests/prove_validate_scanners_matrix.py M8.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -39,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Measure checkov over the seeded Terraform corpus and compare with the registry
         env:
           # ghcr.io/bridgecrewio/checkov:3.3.30 -- the image checkov-action@v12 names (fetched
@@ -65,8 +69,8 @@ jobs:
           - version: "0.70.0"
             sha256: "8b4376d5d6befe5c24d503f10ff136d9e0c49f9127a4279fd110b727929a5aa9"
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Install trivy (pinned, digest-verified)
@@ -89,3 +93,35 @@ jobs:
           python -m pip install --quiet pyyaml==6.0.2
           python -I tests/corpora/probe_iac_corpus.py --tool trivy-config \
             --cmd "$RUNNER_TEMP/trivy/trivy" --tool-version "$V" --check
+
+  # PHP (lane L-PHP): sast-semgrep's PHP range (scanner-registry.yaml version_support
+  # sast-semgrep/php) is READ because tests/corpora/php_corpus.py measured the job's own Semgrep:
+  # the semgrep/semgrep 1.178.0 image the job's `container:` names, by the SAME digest (lane L-SG;
+  # tests/prove_php_corpus.py P8 holds the two equal). The image carries no PyYAML, so it
+  # measures inside the container and the runner compares.
+  semgrep-php:
+    name: "CORPUS: semgrep PHP (semgrep/semgrep 1.178.0, the sast-semgrep job's image, by digest)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Measure the job's Semgrep over the seeded PHP corpus
+        env:
+          # semgrep/semgrep 1.178.0 (image created 2026-09-23), the digest the sast-semgrep job pins.
+          # A tag can move, a digest cannot.
+          IMAGE: semgrep/semgrep@sha256:32e459968daabe7ab86968184a29109b9564aa00392401156f9788452b42786b
+        run: |
+          set -euo pipefail
+          docker pull "$IMAGE"
+          docker run --rm --user 0 -e HOME=/tmp --entrypoint python3 \
+            -v "$GITHUB_WORKSPACE:/kit:ro" -v "$RUNNER_TEMP:/out" -w /kit "$IMAGE" \
+            -I tests/corpora/probe_php_corpus.py --cmd semgrep --tool-version 1.178.0 \
+            --out /out/php-corpus.json
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Compare the PHP measurement with the registry
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet pyyaml==6.0.2
+          python -I tests/corpora/probe_php_corpus.py --from "$RUNNER_TEMP/php-corpus.json" --check

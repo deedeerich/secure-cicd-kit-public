@@ -20,8 +20,10 @@ MEASURED, NOT ASSUMED (bandit 1.9.4, 2026-10-14)
     the same reading the Semgrep count uses, and blocking follows HIGH severity only.
 
 SCENARIOS
-    seeded_enforce   shell=True + eval, soft_fail off -> count 1 (B602), enforce FAILS
-    seeded_soft      the same, soft_fail on           -> count 1, enforce passes (recorded)
+    seeded_enforce   shell=True + eval, soft_fail off -> count 1 (B602), enforce HANDS it to the gate:
+                     the step succeeds and publishes findings_state=FINDINGS (lane L-S, O-24: the
+                     security gate is the single enforcement point; prove_gate_policy_enforcement)
+    seeded_soft      the same, soft_fail on           -> count 1, enforce passes, nothing handed
     low_only         `import subprocess` only          -> count 0, enforce passes (bandit exit 1)
     clean            no flaw                           -> count 0, enforce passes
     scanner_crash    bandit exits 2, writes nothing    -> COLLECTION_FAILED, enforce FAILS
@@ -92,17 +94,18 @@ def main():
             for f in os.listdir(d):
                 os.chmod(os.path.join(d, f), 0o755)
         scenarios = [
-            # name, files, soft, scanner?, preset report, expect collection, count, enforce ok
-            ('seeded_enforce', {'app/svc.py': SEEDED}, 'false', True, None, '', '1', False),
-            ('seeded_soft', {'app/svc.py': SEEDED}, 'true', True, None, '', '1', True),
-            ('low_only', {'app/svc.py': LOW}, 'false', True, None, '', '0', True),
-            ('clean', {'app/svc.py': CLEAN}, 'false', True, None, '', '0', True),
+            # name, files, soft, scanner?, preset report, expect collection, count, enforce:
+            #   HANDED (exit 0, findings_state=FINDINGS) | PASS (exit 0, nothing handed) | FAIL
+            ('seeded_enforce', {'app/svc.py': SEEDED}, 'false', True, None, '', '1', 'HANDED'),
+            ('seeded_soft', {'app/svc.py': SEEDED}, 'true', True, None, '', '1', 'PASS'),
+            ('low_only', {'app/svc.py': LOW}, 'false', True, None, '', '0', 'PASS'),
+            ('clean', {'app/svc.py': CLEAN}, 'false', True, None, '', '0', 'PASS'),
             ('scanner_crash', {'app/svc.py': SEEDED}, 'false', False, None, 'COLLECTION_FAILED',
-             None, False),
+             None, 'FAIL'),
             ('unparseable', None, 'false', True, '{"runs": [ truncated', 'COLLECTION_FAILED',
-             None, False),
+             None, 'FAIL'),
             ('results_null', None, 'false', True, NULL_RESULTS, 'COLLECTION_FAILED', None,
-             False),
+             'FAIL'),
         ]
         for name, files, soft, scanner, preset, want_coll, want_n, enforce_ok in scenarios:
             ws = sb.workspace(name, files)
@@ -123,7 +126,7 @@ def main():
             # An output the count step did not write is absent, which GitHub renders as ''.
             evals = dict(cvals, **{'steps.bandit_count.outputs.%s' % k: cout.get(k, '')
                                    for k in ('count', 'collection')})
-            erc, elog, _o, unk = sb.run(bash, steps[ENFORCE], evals, ws)
+            erc, elog, eout, unk = sb.run(bash, steps[ENFORCE], evals, ws)
             if unk:
                 bad.append('%s: enforce step reads unmodelled %s' % (name, unk))
             coll, n = cout.get('collection', ''), cout.get('count')
@@ -134,13 +137,17 @@ def main():
                                                                    (log + clog)[-600:]))
             if want_n is not None and n != want_n:
                 bad.append('%s: count=%r, expected %s' % (name, n, want_n))
-            if enforce_ok and erc != 0:
-                bad.append('%s: enforce failed (exit %d) where it must pass\n%s'
-                           % (name, erc, elog[-300:]))
-            if not enforce_ok and erc == 0:
-                bad.append('%s: enforce PASSED. %s' % (name, (
-                    'A HIGH-severity finding with soft_fail_sast off must block.'
-                    if want_coll == '' else 'No evidence is not a clean scan.')))
+            handed = eout.get('findings_state', '')
+            if enforce_ok in ('PASS', 'HANDED') and erc != 0:
+                bad.append('%s: enforce failed (exit %d) where it must pass -- a finding is handed '
+                           'to the gate, never a failed job\n%s' % (name, erc, elog[-300:]))
+            if enforce_ok == 'HANDED' and handed != 'FINDINGS':
+                bad.append('%s: findings_state=%r -- a HIGH-severity finding with soft_fail_sast '
+                           'off must be handed to the gate, which enforces it' % (name, handed))
+            if enforce_ok == 'PASS' and handed:
+                bad.append('%s: findings_state=%r where nothing is enforced' % (name, handed))
+            if enforce_ok == 'FAIL' and erc == 0:
+                bad.append('%s: enforce PASSED. No evidence is not a clean scan.' % name)
     finally:
         sb.close()
     if bad:
@@ -148,7 +155,7 @@ def main():
             print('FAIL: %s' % b)
         return 1
     print('PASS: the shipped bandit steps record the exit code, count the effective error level, '
-          'enforce it unless softened, and read an absent, unparseable or results-null report as '
+          'hand it to the gate unless softened, and read an absent, unparseable or results-null report as '
           'COLLECTION_FAILED.')
     return 0
 

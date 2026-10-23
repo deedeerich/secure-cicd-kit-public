@@ -174,6 +174,44 @@ on:
         type: string
         required: false
         default: ""
+      weakening_renews:
+        description: >-
+          KDEC-018: this exception's history -- a JSON list of its PRIOR grants, each {ticket,
+          approver, from, expires}. Empty is a first exception. Shown with the version-gap exception;
+          more renewals than the cap refuse it (EXCEPTION_RENEWAL_LIMIT), and an unreadable list
+          refuses it too. Endless exceptions are not a thing.
+        type: string
+        required: false
+        default: ""
+      max_exception_renewals:
+        description: >-
+          The security gate's max_exception_renewals output (the authority's renewal cap). The
+          deploy holds the stronger of this and the kit default (2): a lower cap binds, a higher
+          one does not.
+        type: string
+        required: false
+        default: ""
+      declared_dependencies:
+        description: >-
+          KDEC-023. JSON array of what this deploy depends on and a rollback could have taken away:
+          resource ids, entry paths (an NSG rule, a Front Door route), host names (a Key Vault
+          reference's vault, a database server), schema or migration markers recorded as nodes.
+          When a rollback of this target completed after the commit this deploy was built from,
+          each is checked against what the rollback removed or changed, beside the release lineage
+          and the image. Empty checks the lineage and the image only.
+        type: string
+        required: false
+        default: ""
+      deploy_approval:
+        description: >-
+          The security gate's deploy_approval output (JSON per tier: approver_groups,
+          approvers_required, self_review_prevented). Before login this job reads the protection
+          rules of the GitHub environment it runs in and, at uat and prod, refuses when they lack
+          what is demanded. Empty = the kit default: uat and prod need one required reviewer with
+          self-review prevented. A passed value can only add to that default; it never lowers it.
+        type: string
+        required: false
+        default: ""
     secrets:
       AZURE_TENANT_ID:
         description: "Entra tenant ID for OIDC federated login. Not a secret value in the cryptographic sense, but org-identifying — keep it in secrets."
@@ -230,6 +268,13 @@ on:
       weakening_record:
         description: "Reason, authority, exception reference and expiry as one JSON object."
         value: ${{ jobs.deploy.outputs.weakening_record }}
+      environment_protection:
+        description: >-
+          What the GitHub environment's protection rules were read back as: ENVIRONMENT_PROTECTION_VERIFIED |
+          ENVIRONMENT_PROTECTION_NOT_REQUIRED | ENVIRONMENT_REVIEWERS_ABSENT | ENVIRONMENT_SELF_REVIEW_ALLOWED |
+          ENVIRONMENT_APPROVER_GROUP_MISSING | ENVIRONMENT_PROTECTION_NOT_ESTABLISHED. At uat and prod only
+          the first two proceed.
+        value: ${{ jobs.deploy.outputs.environment_protection }}
 
 # Concurrency for a CHANGE workflow is the opposite of concurrency for a validation
 # workflow. Validation cancels the superseded run — the answer is stale, killing it costs
@@ -245,14 +290,20 @@ on:
 # The key is the APP, never the slot (L99). Every slot path ends in a swap INTO PRODUCTION, so two
 # runs staging into two slots of one app both write production; keyed per slot, they would not
 # queue. Proven by tests/prove_deploy_concurrency.py.
+#
+# KDEC-021 (owner, 2026-10-23): "A deployment rolling mid rollback means the deployment has to be
+# rolled back." The group is the TARGET's, shared with reusable-rollback-sequence.yml
+# (kit-target-<environment>-<resource group>-<name>, no adapter prefix), so a deploy queues behind a
+# rollback of the same target instead of racing it. Proven by tests/prove_rollback_sequence.py S19.
 concurrency:
-  group: deploy-appservice-${{ inputs.github_environment }}-${{ inputs.resource_group }}-${{ inputs.webapp_name }}
+  group: kit-target-${{ inputs.github_environment }}-${{ inputs.resource_group }}-${{ inputs.webapp_name }}
   cancel-in-progress: false
 
 permissions:
   contents: read
   id-token: write   # OIDC
   attestations: read   # V1 reads the digest's signed build provenance (P-02); nothing here writes one
+  actions: read        # KDEC-023: read the rollback marker artifact of this target
 
 jobs:
   deploy:
@@ -269,6 +320,7 @@ jobs:
       weakenings: ${{ steps.posture.outputs.weakenings }}
       weakening_attribution: ${{ steps.posture.outputs.weakening_attribution }}
       weakening_record: ${{ steps.posture.outputs.weakening_record }}
+      environment_protection: ${{ steps.protection.outputs.environment_protection }}
     # SAFE_ENV_TRANSPORT (L100/L38). Every caller input reaches the scripts below as DATA in the
     # environment, never as text substituted into a script body. The digest guard used to read
     # `d='${{ inputs.image_digest }}'` -- validation that ran after bash had already parsed the
@@ -296,6 +348,8 @@ jobs:
       WEAKENING_AUTHORITY: ${{ inputs.weakening_authority }}
       WEAKENING_EXCEPTION_REF: ${{ inputs.weakening_exception_ref }}
       WEAKENING_EXPIRES: ${{ inputs.weakening_expires }}
+      WEAKENING_RENEWS: ${{ inputs.weakening_renews }}
+      MAX_EXCEPTION_RENEWALS: ${{ inputs.max_exception_renewals }}
       DEPLOY_ENVIRONMENT: ${{ inputs.github_environment }}
       ROLLBACK_ON_FAILURE: ${{ inputs.rollback_on_failure }}
       ENVIRONMENT_TIER: ${{ inputs.environment_tier }}
@@ -410,7 +464,9 @@ jobs:
           def output(**kv):
               path = os.environ.get('GITHUB_OUTPUT')
               for k, v in kv.items():
-                  line = '%s=%s' % (k, '' if v is None else v)
+                  # One line per value: a newline in a value would end the file command early and let the
+                  # rest set another output (output injection; KDEC-027, tests/check_output_writes.py).
+                  line = '%s=%s' % (k, '' if v is None else ' '.join(str(v).splitlines()))
                   print(line)
                   if path:
                       io.open(path, 'a', encoding='utf-8').write(line + '\n')
@@ -758,13 +814,17 @@ jobs:
                   return 0
               slot = env('slot') or 'production'
               prior_img = (snap.get('images') or {}).get(slot, '')
+              rid, err, prior_stamp = resource_id('appservice', slot, with_stamp=True)
+              # KDEC-021: the slot's previous ownership stamp is kept, as the swap keeps production's, so the
+              # reversal hands the slot back to the release it held before. Without it a stacked sequence
+              # could never reverse the earlier release: the slot still carried the later one's stamp.
               entry = {'action': 'MODIFIED', 'object_type': 'slot-container', 'object': slot,
                        'prior': ('DOCKER|' + prior_img) if prior_img else '', 'post': 'DOCKER|' + ref,
-                       'stamp': stamp_value(ref), 'mutated_at': utc_now()}
+                       'stamp': stamp_value(ref), 'mutated_at': utc_now(), 'object_id': rid,
+                       'prior_stamp': prior_stamp}
               m['entries'].append(entry)
               save_manifest(m)
               output(mutation_started='true')
-              rid, err = resource_id('appservice', slot)
               steps = []
               if rid:
                   steps.append(('tag', 'update', '--resource-id', rid, '--operation', 'Merge', '--tags',
@@ -1326,6 +1386,14 @@ jobs:
                                          'release_ownership_stamp=%s' % (prop.get('prior_stamp') or ''))
                           r['stamp_restored'] = okk
                           err = err or e
+                      elif done and prop['action'] == 'MODIFIED' and prop.get('object_id') \
+                              and 'prior_stamp' in prop:
+                          # The slot's image is restored; so is its previous owner's claim (KDEC-021).
+                          okk, _, e = az('tag', 'update', '--resource-id', prop['object_id'],
+                                         '--operation', 'Merge', '--tags',
+                                         'release_ownership_stamp=%s' % (prop.get('prior_stamp') or ''))
+                          r['stamp_restored'] = okk
+                          err = err or e
                       r['performed'], r['error'] = done, err
                   results.append(r)
               return results
@@ -1438,7 +1506,8 @@ jobs:
 
 
           # ----------------------------------------------------------------------------- provenance
-          def resource_id(adapter, slot=''):
+          def resource_id(adapter, slot='', with_stamp=False):
+              """-> (id, error), or (id, error, ownership stamp) with `with_stamp` -- one read for both."""
               if adapter == 'containerapp':
                   ok, shown, err = az('containerapp', 'show', '-n', env('containerapp_name'),
                                       '-g', env('resource_group'))
@@ -1448,7 +1517,10 @@ jobs:
                       args += ['--slot', slot]
                   ok, shown, err = az(*args)
               if not ok or not isinstance(shown, dict) or not shown.get('id'):
-                  return None, err or 'no resource id in the response'
+                  out = (None, err or 'no resource id in the response')
+                  return out + ('',) if with_stamp else out
+              if with_stamp:
+                  return shown['id'], '', (shown.get('tags') or {}).get('release_ownership_stamp', '')
               return shown['id'], ''
 
 
@@ -1694,7 +1766,11 @@ jobs:
               # gap was ruled on, so a refused exception is on the record too.
               ruling = env('version_gap_ruling')
               exc = {'accepted_by': env('weakening_authority'), 'reason': env('weakening_reason'),
-                     'exception_ref': env('weakening_exception_ref'), 'expires': env('weakening_expires')}
+                     'exception_ref': env('weakening_exception_ref'), 'expires': env('weakening_expires'),
+                     # KDEC-018 item 4: how often it was renewed, and its history, as the verdict step read them.
+                     'renewals': (int(env('exception_renewals')) if env('exception_renewals').isdigit()
+                                  else env('exception_renewals') or None),
+                     'history': env('exception_history') or None}
               exc = exc if ruling in ('VERSION_GAP_EXCEPTION_ACCEPTED', 'VERSION_GAP_REFUSED') else None
               outcome, why = derive_outcome(adapter, live)
               report = {'deployment_outcome': outcome, 'why': why,
@@ -2127,6 +2203,664 @@ jobs:
           if __name__ == '__main__':
               sys.exit(main(sys.argv[1:]))
           kit_derive_reversal_disposition_py
+          cat > "$RUNNER_TEMP/kit-deploy/environment_protection.py" <<'kit_environment_protection_py'
+          #!/usr/bin/env python3
+          """Read back the deployment protection of the GitHub environment a deploy runs in, and say whether
+          it is what the policy demands. Read-only; refuses before login at uat and prod. (owner, 2026-10-22)
+
+          WHY
+
+              KDEC-014 made the uat/prod environment's REQUIRED REVIEWERS half of every exception, and the
+              owner's single-developer rule makes them the control itself: a prod or uat deploy needs ONE
+              approver from a named reviewer group (architect / security / platform) who is NOT the deploying
+              developer -- GitHub environment required reviewers with self-review prevented. The kit cannot SET
+              that, but it can READ it (GET /repos/{owner}/{repo}/environments/{name}, which anyone with read
+              access may call). A deploy to an unprotected prod environment is a real gap, so it is refused.
+
+          WHAT IS DEMANDED (per tier)
+
+              The security gate emits `deploy_approval` (the policy register's per-tier demand, or the kit
+              default) and the caller passes it to the deploy. The deploy holds the STRONGER of that and the
+              kit default for the tier, because it cannot tell a value the gate emitted from one a caller typed:
+              uat and prod always demand at least one required reviewer with self-review prevented. Approver
+              groups, when named, are a tightening and are honoured.
+
+          OUTCOMES (environment_protection in assurance-taxonomy.yaml)
+
+              ENVIRONMENT_PROTECTION_VERIFIED        the environment's reviewer rule satisfies the demand
+              ENVIRONMENT_PROTECTION_NOT_REQUIRED    nothing is demanded at this tier (below uat by default)
+              ENVIRONMENT_REVIEWERS_ABSENT           no required-reviewer rule, or one with no reviewers
+              ENVIRONMENT_SELF_REVIEW_ALLOWED        self-review must be prevented and is not
+              ENVIRONMENT_APPROVER_GROUP_MISSING     named groups are demanded and a reviewer outside them
+                                                     (or no reviewer from them) could approve
+              ENVIRONMENT_PROTECTION_NOT_ESTABLISHED the API could not be read, or the demand could not be
+
+              At uat and prod anything but VERIFIED or NOT_REQUIRED refuses the deploy before login. Below
+              uat it is recorded and warned, never refused.
+
+          USAGE
+              python3 environment_protection.py --repository owner/name --environment NAME --tier TIER \
+                  [--demand-json JSON] [--api-url URL] [--github-output FILE]      (token: $GH_TOKEN)
+              python3 environment_protection.py --self-test
+
+          EXIT 0 permitted   1 refused   2 usage or self-test failure
+          """
+          import argparse
+          import json
+          import os
+          import sys
+          import urllib.parse
+          import urllib.request
+
+          PRODUCTION_TIERS = ('uat', 'prod')
+          TIERS = ('sandbox', 'dev', 'test', 'uat', 'prod')
+          VERIFIED = 'ENVIRONMENT_PROTECTION_VERIFIED'
+          NOT_REQUIRED = 'ENVIRONMENT_PROTECTION_NOT_REQUIRED'
+          REVIEWERS_ABSENT = 'ENVIRONMENT_REVIEWERS_ABSENT'
+          SELF_REVIEW_ALLOWED = 'ENVIRONMENT_SELF_REVIEW_ALLOWED'
+          GROUP_MISSING = 'ENVIRONMENT_APPROVER_GROUP_MISSING'
+          NOT_ESTABLISHED = 'ENVIRONMENT_PROTECTION_NOT_ESTABLISHED'
+          PERMITTED = (VERIFIED, NOT_REQUIRED)
+
+
+          def default_demand(tier):
+              prod = tier in PRODUCTION_TIERS
+              return {'approver_groups': [], 'approvers_required': 1 if prod else 0,
+                      'self_review_prevented': 'required' if prod else 'not_required'}
+
+
+          def demand_for(tier, demand_json):
+              """-> (demand, note). The stronger of the supplied demand and the kit default; None when the
+              supplied value cannot be read (the demand is then not established)."""
+              base = default_demand(tier)
+              if not (demand_json or '').strip():
+                  return base, 'no deploy_approval was passed; the kit default for %s applies' % tier
+              try:
+                  doc = json.loads(demand_json)
+              except ValueError:
+                  return None, 'deploy_approval is not JSON'
+              if not isinstance(doc, dict):
+                  return None, 'deploy_approval is not a JSON object'
+              sup = doc.get(tier, {}) if any(k in TIERS for k in doc) else doc
+              if not isinstance(sup, dict):
+                  return None, 'deploy_approval[%s] is not an object' % tier
+              groups = sup.get('approver_groups') or []
+              if not isinstance(groups, list) or any(not isinstance(g, str) or not g.strip() for g in groups):
+                  return None, 'deploy_approval approver_groups is not a list of names'
+              req = sup.get('approvers_required', 0)
+              out = {'approver_groups': sorted(g.strip() for g in groups),
+                     'approvers_required': max(base['approvers_required'], 1 if req == 1 else 0),
+                     'self_review_prevented': 'required' if 'required' in (base['self_review_prevented'],
+                                                                           sup.get('self_review_prevented')) else 'not_required'}
+              if out['approver_groups'] and not out['approvers_required']:
+                  out['approvers_required'] = 1
+              note = 'the stronger of the passed deploy_approval and the kit default for %s' % tier
+              return out, note
+
+
+          def evaluate(env_doc, demand):
+              """-> (outcome, why). `env_doc`: the parsed API answer, or None when it could not be read."""
+              if demand is None:
+                  return NOT_ESTABLISHED, 'the policy\'s deploy approval could not be read, so what to verify is unknown'
+              if not demand['approvers_required'] and demand['self_review_prevented'] != 'required':
+                  return NOT_REQUIRED, 'no required reviewer is demanded at this tier'
+              if not isinstance(env_doc, dict):
+                  return NOT_ESTABLISHED, 'the environment\'s protection rules could not be read'
+              rules = env_doc.get('protection_rules')
+              if not isinstance(rules, list):
+                  return NOT_ESTABLISHED, 'the API answer carries no protection_rules list'
+              rv = [r for r in rules if isinstance(r, dict) and (r.get('type') == 'required_reviewers' or 'reviewers' in r)]
+              reviewers = [x for r in rv for x in (r.get('reviewers') or []) if isinstance(x, dict)]
+              if not reviewers:
+                  return REVIEWERS_ABSENT, 'the environment has no required reviewers: anyone who can run the workflow deploys'
+              if demand['self_review_prevented'] == 'required' and not all(r.get('prevent_self_review') is True for r in rv):
+                  return SELF_REVIEW_ALLOWED, ('the environment lets the person who started the deploy approve it '
+                                               '(prevent_self_review is off)')
+              groups = set(g.lower() for g in demand['approver_groups'])
+              if groups:
+                  outside, inside = [], 0
+                  for x in reviewers:
+                      who = x.get('reviewer') or {}
+                      names = set(str(who.get(k, '')).lower() for k in ('slug', 'name')) - {''}
+                      if x.get('type') == 'Team' and names & groups:
+                          inside += 1
+                      else:
+                          outside.append(str(who.get('slug') or who.get('login') or who.get('name') or '?'))
+                  if outside or not inside:
+                      return GROUP_MISSING, ('a reviewer outside the named groups (%s) could approve: %s'
+                                             % (', '.join(sorted(groups)), ', '.join(sorted(outside)) or 'none from them'))
+              return VERIFIED, 'required reviewers%s, self-review %s' % (
+                  ' from %s' % ', '.join(sorted(groups)) if groups else '',
+                  'prevented' if all(r.get('prevent_self_review') is True for r in rv) else 'not demanded')
+
+
+          def fetch(api_url, repository, environment, token):
+              url = '%s/repos/%s/environments/%s' % (api_url.rstrip('/'), repository, urllib.parse.quote(environment, safe=''))
+              req = urllib.request.Request(url, headers={'Accept': 'application/vnd.github+json',
+                                                         'X-GitHub-Api-Version': '2022-11-28'})
+              if token and url.startswith('https://'):
+                  req.add_header('Authorization', 'Bearer %s' % token)
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      return json.loads(resp.read().decode('utf-8')), None
+              except Exception as exc:  # noqa: BLE001 -- any failure is "could not read", never a pass
+                  return None, 'GET %s failed: %s' % (url.split('?')[0], type(exc).__name__)
+
+
+          def _selftest():
+              fails = []
+              prot = {'protection_rules': [{'type': 'required_reviewers', 'prevent_self_review': True,
+                                            'reviewers': [{'type': 'Team', 'reviewer': {'slug': 'security', 'name': 'Security'}}]}]}
+              d, _n = demand_for('prod', '')
+              if evaluate(prot, d)[0] != VERIFIED:
+                  fails.append('a protected prod environment was not VERIFIED')
+              if evaluate({'protection_rules': []}, d)[0] != REVIEWERS_ABSENT:
+                  fails.append('an unprotected prod environment was not REVIEWERS_ABSENT')
+              if evaluate(None, d)[0] != NOT_ESTABLISHED:
+                  fails.append('an unreadable answer was not NOT_ESTABLISHED')
+              d, _n = demand_for('prod', json.dumps({'prod': {'approvers_required': 0, 'self_review_prevented': 'not_required'}}))
+              if d['approvers_required'] != 1:
+                  fails.append('a passed demand weakened the prod default')
+              if fails:
+                  for f in fails:
+                      sys.stderr.write('FAIL: %s\n' % f)
+                  return 2
+              print('environment_protection selftest ok. The full proof is tests/prove_deploy_environment_protection.py.')
+              return 0
+
+
+          def main(argv=None):
+              ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+              ap.add_argument('--self-test', action='store_true')
+              ap.add_argument('--repository', default=os.environ.get('GITHUB_REPOSITORY', ''))
+              ap.add_argument('--environment', default='')
+              ap.add_argument('--tier', default='')
+              ap.add_argument('--demand-json', default='')
+              ap.add_argument('--api-url', default=os.environ.get('GITHUB_API_URL', 'https://api.github.com'))
+              ap.add_argument('--github-output', default='')
+              a = ap.parse_args(argv)
+              if a.self_test:
+                  return _selftest()
+              tier = a.tier.strip()
+              demand, note = demand_for(tier, a.demand_json)
+              if tier not in TIERS:
+                  # A tier nobody can name cannot be shown to be below production.
+                  outcome, why = NOT_ESTABLISHED, 'environment_tier %r is not a registered tier' % tier
+              elif demand is not None and not demand['approvers_required'] and demand['self_review_prevented'] != 'required':
+                  outcome, why = evaluate(None, demand)
+              elif not a.environment.strip() or not a.repository.strip():
+                  outcome, why = NOT_ESTABLISHED, 'no GitHub environment (or repository) is named, so none can be read'
+              else:
+                  doc, err = fetch(a.api_url, a.repository, a.environment, os.environ.get('GH_TOKEN', ''))
+                  outcome, why = evaluate(doc, demand)
+                  if err:
+                      why = '%s (%s)' % (why, err)
+              refused = outcome not in PERMITTED and (tier in PRODUCTION_TIERS or tier not in TIERS)
+              print('environment_protection=%s tier=%s refused=%s' % (outcome, tier or '(none)', str(refused).lower()))
+              print('  ' + why)
+              print('  demand: %s (%s)' % (json.dumps(demand, sort_keys=True), note))
+              if a.github_output:
+                  with open(a.github_output, 'a', encoding='utf-8') as fh:
+                      fh.write('environment_protection=%s\n' % outcome)
+                      fh.write('environment_protection_refused=%s\n' % str(refused).lower())
+                      fh.write('environment_protection_why=%s\n' % why.replace('\n', ' '))
+              return 1 if refused else 0
+
+
+          if __name__ == '__main__':
+              sys.exit(main())
+          kit_environment_protection_py
+          cat > "$RUNNER_TEMP/kit-deploy/rollback_hold.py" <<'kit_rollback_hold_py'
+          #!/usr/bin/env python3
+          """After a rollback: the target's rollback MARKER, and the DEPENDENCY CHECK every incoming deploy of
+          that target runs before it logs in. (KDEC-023 item 4, owner 2026-10-23, lane L-RB3.)
+
+          WHY THIS EXISTS
+
+              Owner, 2026-10-23, on a deploy that arrives while a rollback runs: "That's a conflict where the
+              rollback must finish and then the other one can deploy...problem is if someone is trying to
+              deploy they are probably trying to use the infrastructure and code from the one we just rolled
+              back". Her decision, the same day: "We need to do a dependency check on the incoming deployment
+              to ensure that it isn't reliant on things that were just rolled back and if they are you give a
+              report to the deploying team or pipeline or whatever and let them know there is an error because
+              of a rollback and what dependencies no longer are the same or no longer exist...and then they
+              correct. If there are no dependencies on rolled back items then deploy it."
+
+              The shared per-target concurrency group (KDEC-021) already makes the deploy WAIT for the
+              rollback. Waiting is not enough: when the rollback finishes, the queued deploy -- built before
+              it -- would put straight back what was just taken out, or stand on something that is gone.
+
+          THE MARKER (`marker`, run by reusable-rollback-sequence.yml when the sequence reversed anything)
+
+              Uploaded as the artifact `kit-rollback-marker-<target key>` (the deploy evidence channel: the
+              deploys already publish `deploy-evidence-*` artifacts; the marker is read the same way). It names
+              the target, the rollback run, when it completed, the releases it rolled back (run, commit,
+              images), and every node it changed with the state it left: gone (`absent`) or `restored`, with
+              each field old -> new.
+
+          THE CHECK (`check`, run by both deploy reusables before login)
+
+              No marker for the target                    ROLLBACK_CHECK_NOT_REQUIRED
+              The deploy's base commit is newer than the  ROLLBACK_CHECK_NOT_REQUIRED (it was built after the
+                rollback completed                          rollback, knowing it)
+              Otherwise the deploy is checked for a DEPENDENCY on what was rolled back:
+                release lineage    its commit contains a rolled-back release's commit (compare API)
+                image              it deploys an image a rolled-back release deployed
+                declared           each entry of `declared_dependencies` (resource ids, entry paths, host
+                                   names: app settings, connection strings, Key Vault references, NSG / Front
+                                   Door entries, schema or migration markers recorded as nodes) that names a
+                                   node the rollback removed or changed
+              Any dependency                              DEPLOY_REFUSED_ROLLBACK_DEPENDENCY -- refused, with a
+                                                          report: which rollback, and each dependency, old ->
+                                                          new or "no longer exists". The deploying team
+                                                          corrects the deploy and deploys again. THERE IS NO
+                                                          OVERRIDE INPUT (owner): the fix is the correction.
+              None                                        DEPLOY_NO_ROLLBACK_DEPENDENCY -- the deploy proceeds,
+                                                          with the note that the check ran and found none
+              The state cannot be read (the artifact list, ROLLBACK_DEPENDENCY_CHECK_INCOMPLETE -- refused
+                the marker, the commit, the comparison)     with the reason; never blind
+
+              The report is the run summary, an annotation and `rollback-check.json` in the deploy evidence.
+
+          USAGE
+              rollback_hold.py marker --record F --evidence-root D --environment E --resource-group G --name N
+                                      --run-id I --run-attempt A [--completed-at T] --out F [--github-output F]
+              rollback_hold.py check  --environment E --resource-group G --name N --commit SHA --run-id I
+                                      [--declared-dependencies JSON] [--image REF] --out F [--summary F]
+                                      [--github-output F]
+              rollback_hold.py --self-test
+              GitHub API: $GITHUB_API_URL, $GITHUB_REPOSITORY, $GH_TOKEN. A file:// API is the local stand-in
+              (tests): one recorded answer per path, with the `name` filter applied here as the server applies it.
+
+          EXIT  check: 0 not required / no dependency   1 refused (a dependency, or the check incomplete)
+                marker: 0 written or nothing to mark   2 usage
+          """
+          import argparse
+          import hashlib
+          import io
+          import json
+          import os
+          import re
+          import sys
+          import time
+          import urllib.parse
+          import urllib.request
+          import zipfile
+
+          # rollback_dependency_check (assurance-taxonomy.yaml)
+          NOT_REQUIRED = 'ROLLBACK_CHECK_NOT_REQUIRED'
+          NO_DEPENDENCY = 'DEPLOY_NO_ROLLBACK_DEPENDENCY'
+          REFUSED = 'DEPLOY_REFUSED_ROLLBACK_DEPENDENCY'
+          INCOMPLETE = 'ROLLBACK_DEPENDENCY_CHECK_INCOMPLETE'
+          HOST = re.compile(r'https?://([A-Za-z0-9.-]+)', re.I)
+          PROVIDER_KEYS = ('vaultUri', 'defaultHostName', 'fullyQualifiedDomainName', 'hostName', 'loginServer', 'fqdn')
+
+
+          class Unreadable(Exception):
+              pass
+
+
+          def now():
+              return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+
+
+          def target_key(environment, resource_group, name):
+              slug = re.sub(r'[^A-Za-z0-9._-]', '-', name or 'target')[:40]
+              h = hashlib.sha256(('%s\n%s\n%s' % (environment, resource_group, name)).encode('utf-8')).hexdigest()
+              return '%s-%s' % (slug, h[:12])
+
+
+          def marker_name(environment, resource_group, name):
+              return 'kit-rollback-marker-' + target_key(environment, resource_group, name)
+
+
+          # ----------------------------------------------------------------------------- GitHub API
+          def _env(name, default=''):
+              return os.environ.get(name.upper(), default)
+
+
+          def _open(url):
+              req = urllib.request.Request(url, headers={'Accept': 'application/vnd.github+json',
+                                                         'X-GitHub-Api-Version': '2022-11-28'})
+              token = _env('gh_token')
+              if token and url.startswith('https://'):
+                  # Unredirected: an artifact download redirects to storage, which must not get the token.
+                  req.add_unredirected_header('Authorization', 'Bearer %s' % token)
+              with urllib.request.urlopen(req, timeout=60) as resp:
+                  return resp.read()
+
+
+          def api(path, params=None):
+              """GET /repos/<repository>/<path>. Any failure is Unreadable -- never an empty answer."""
+              base = _env('GITHUB_API_URL', 'https://api.github.com').rstrip('/')  # unset means github.com
+              repo = _env('github_repository')
+              if not repo:
+                  raise Unreadable('no repository is named ($GITHUB_REPOSITORY)')
+              url = '%s/repos/%s/%s' % (base, repo, path)
+              try:
+                  if url.startswith('file:'):
+                      doc = json.loads(_open(url).decode('utf-8'))
+                      if params and params.get('name') and isinstance(doc, dict) and 'artifacts' in doc:
+                          doc = dict(doc, artifacts=[a for a in doc['artifacts'] if a.get('name') == params['name']])
+                      return doc
+                  if params:
+                      url += '?' + urllib.parse.urlencode(params)
+                  return json.loads(_open(url).decode('utf-8'))
+              except Exception as exc:  # noqa: BLE001 -- any failure is "could not read", never a pass
+                  raise Unreadable('GET %s failed: %s' % (url.split('?')[0], type(exc).__name__))
+
+
+          def download_json(url, member_suffix='.json'):
+              try:
+                  data = _open(url)
+                  with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                      names = [n for n in zf.namelist() if n.endswith(member_suffix)]
+                      return json.loads(zf.read(names[0]).decode('utf-8'))
+              except Exception as exc:  # noqa: BLE001
+                  raise Unreadable('the marker artifact could not be downloaded or read: %s' % type(exc).__name__)
+
+
+          # ----------------------------------------------------------------------------- marker
+          def _image(v):
+              v = v if isinstance(v, str) else ''
+              v = v.split('|', 1)[-1]
+              return v if '@sha256:' in v else ''
+
+
+          def _canon(x):
+              return json.dumps(x, sort_keys=True, separators=(',', ':'))
+
+
+          def _diff(a, b, where=''):
+              if isinstance(a, dict) and isinstance(b, dict):
+                  out = []
+                  for k in sorted(set(a) | set(b)):
+                      out += _diff(a.get(k), b.get(k), '%s.%s' % (where, k) if where else k)
+                  return out
+              return [[where or '(body)', a, b]] if a != b else []
+
+
+          def _hosts(body):
+              out = set()
+              props = (body or {}).get('properties') or {} if isinstance(body, dict) else {}
+              for k in PROVIDER_KEYS:
+                  v = props.get(k)
+                  if isinstance(v, str):
+                      m = HOST.match(v)
+                      out.add((m.group(1) if m else v).lower().rstrip('/'))
+              return sorted(out)
+
+
+          def build_marker(record, evidence_root, environment, resource_group, name, run_id, run_attempt, completed):
+              rolled, changed, notes = [], [], []
+              for s in record.get('steps') or []:
+                  if ((s.get('rollback') or {}).get('result') or 'not-run') == 'not-run':
+                      continue
+                  rid, att = str(s.get('run_id') or ''), str(s.get('run_attempt') or '1')
+                  d = os.path.join(evidence_root, 'deploy-evidence-%s-%s' % (rid, att))
+                  commit = None
+                  try:
+                      commit = (api('actions/runs/%s' % rid) or {}).get('head_sha') or None
+                  except Unreadable as exc:
+                      notes.append('the commit of run %s could not be read (%s): a deploy is then checked as if '
+                                   'it were built on it' % (rid, exc))
+                  images = set()
+                  man = _read(os.path.join(d, 'manifest.json')) or {}
+                  for e in man.get('entries') or []:
+                      for v in (e.get('post'), ):
+                          if _image(v):
+                              images.add(_image(v))
+                  res = _read(os.path.join(d, 'resources.json')) or {}
+                  by_id = dict((n.get('id', '').lower(), n) for n in res.get('nodes') or [])
+                  rolled.append({'release': 'run-%s-%s' % (rid, att), 'run_id': rid, 'run_attempt': att,
+                                 'commit': commit, 'images': sorted(images), 'step_result': s.get('step_result')})
+                  rv = s.get('dependency_review') or {}
+                  for r in rv.get('reversed') or []:
+                      if not (r.get('applied') and r.get('verified')):
+                          continue
+                      n = by_id.get((r.get('id') or '').lower()) or {}
+                      gone = str(r.get('op', '')).startswith('delete')
+                      changed.append({'id': r['id'], 'release': 'run-%s-%s' % (rid, att),
+                                      'after': 'absent' if gone else 'restored',
+                                      'hosts': _hosts(n.get('post')),
+                                      'changes': [] if gone else _diff(n.get('post') or {}, n.get('prior') or {})[:20]})
+                  for x in s.get('restored') or []:
+                      if s.get('adapter') in ('appservice', 'containerapp') and x.get('held'):
+                          changed.append({'id': '%s %s' % (s.get('target') or name, x.get('slot')),
+                                          'release': 'run-%s-%s' % (rid, att), 'after': 'restored', 'hosts': [],
+                                          'changes': [['image', ', '.join(sorted(images)) or 'the release\'s image',
+                                                       x.get('want')]]})
+              if not rolled:
+                  return None
+              return {'schema_version': 1, 'kind': 'kit-rollback-marker',
+                      'target': {'environment': environment, 'resource_group': resource_group, 'name': name},
+                      'rollback_run_id': str(run_id), 'rollback_run_attempt': str(run_attempt),
+                      'completed_at': completed or now(), 'sequence_result': record.get('result'),
+                      'rollback_state': record.get('rollback_state'), 'rolled_back': rolled, 'changed': changed,
+                      'notes': notes}
+
+
+          def _read(path):
+              try:
+                  return json.load(io.open(path, encoding='utf-8'))
+              except (OSError, ValueError):
+                  return None
+
+
+          def cmd_marker(a):
+              record = _read(a.record)
+              if record is None:
+                  print('no readable rollback record at %s: nothing to mark' % a.record)
+                  _out(a.github_output, marker_written='false')
+                  return 0
+              mk = build_marker(record, a.evidence_root, a.environment, a.resource_group, a.name, a.run_id,
+                                a.run_attempt, a.completed_at)
+              if mk is None:
+                  print('the sequence reversed nothing (%s): no marker, deploys of the target are not checked '
+                        'against it' % record.get('result'))
+                  _out(a.github_output, marker_written='false')
+                  return 0
+              os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
+              io.open(a.out, 'w', encoding='utf-8').write(json.dumps(mk, indent=1, sort_keys=True))
+              name = marker_name(a.environment, a.resource_group, a.name)
+              print('rollback marker %s: %d release(s) rolled back, %d node(s) changed' % (
+                  name, len(mk['rolled_back']), len(mk['changed'])))
+              _out(a.github_output, marker_written='true', marker_name=name)
+              return 0
+
+
+          def _out(path, **kv):
+              if path:
+                  with io.open(path, 'a', encoding='utf-8') as fh:
+                      for k, v in kv.items():
+                          fh.write('%s=%s\n' % (k, str(v).replace('\n', ' ')))
+
+
+          # ----------------------------------------------------------------------------- check
+          def _short(v):
+              s = v if isinstance(v, str) else json.dumps(v, sort_keys=True)
+              return s if len(s) <= 70 else s[:67] + '...'
+
+
+          def _matches(ref, node):
+              r = ref.strip().lower().rstrip('/')
+              nid = (node.get('id') or '').lower().rstrip('/')
+              if not r:
+                  return False
+              if r == nid or nid.endswith('/' + r.lstrip('/')) or r.startswith(nid + '/') or (nid and nid in r):
+                  return True
+              return any(h and h in r for h in node.get('hosts') or [])
+
+
+          def check(a):
+              deps, notes = [], []
+              doc = {'rollback_check': None, 'why': '', 'target': {'environment': a.environment,
+                     'resource_group': a.resource_group, 'name': a.name}, 'commit': a.commit or None,
+                     'base_date': None, 'rollback': None, 'dependencies': deps, 'notes': notes}
+              try:
+                  declared = json.loads(a.declared_dependencies) if (a.declared_dependencies or '').strip() else []
+                  if not isinstance(declared, list) or not all(isinstance(x, str) for x in declared):
+                      raise ValueError('not a JSON array of strings')
+              except ValueError as exc:
+                  return finish(a, doc, INCOMPLETE, 'declared_dependencies could not be read (%s); the check '
+                                'cannot judge what this deploy depends on' % exc)
+              name = marker_name(a.environment, a.resource_group, a.name)
+              try:
+                  listing = api('actions/artifacts', {'name': name, 'per_page': 100})
+                  found = [x for x in (listing or {}).get('artifacts') or [] if not x.get('expired')]
+                  if not found:
+                      return finish(a, doc, NOT_REQUIRED, 'no rollback of this target is on record (%s)' % name)
+                  newest = sorted(found, key=lambda x: x.get('created_at') or '')[-1]
+                  mk = download_json(newest.get('archive_download_url') or '')
+                  doc['rollback'] = {'run_id': mk.get('rollback_run_id'), 'completed_at': mk.get('completed_at'),
+                                     'releases': [r.get('release') for r in mk.get('rolled_back') or []],
+                                     'sequence_result': mk.get('sequence_result')}
+                  if not a.commit:
+                      raise Unreadable('the deploy names no commit ($GITHUB_SHA)')
+                  c = api('commits/%s' % a.commit)
+                  base = (((c or {}).get('commit') or {}).get('committer') or {}).get('date')
+                  if not base:
+                      raise Unreadable('the commit %s carries no committer date' % a.commit[:12])
+                  doc['base_date'] = base
+                  if base > (mk.get('completed_at') or ''):
+                      return finish(a, doc, NOT_REQUIRED, 'this deploy\'s base (commit %s, %s) is newer than the '
+                                    'rollback of the target by run %s (completed %s): it was built after it'
+                                    % (a.commit[:12], base, mk.get('rollback_run_id'), mk.get('completed_at')))
+                  for r in mk.get('rolled_back') or []:
+                      if not r.get('commit'):
+                          raise Unreadable('the commit of rolled-back release %s is not on record' % r.get('release'))
+                      cmp_ = api('compare/%s...%s' % (r['commit'], a.commit))
+                      status = (cmp_ or {}).get('status')
+                      if status not in ('ahead', 'identical', 'behind', 'diverged'):
+                          raise Unreadable('the comparison with %s answered %r' % (r['commit'][:12], status))
+                      if status in ('ahead', 'identical'):
+                          deps.append({'kind': 'release lineage', 'ref': a.commit,
+                                       'what': 'this deploy\'s commit %s is built on commit %s of %s, which was '
+                                               'rolled back' % (a.commit[:12], r['commit'][:12], r.get('release')),
+                                       'state': 'rolled back', 'changes': []})
+                      if a.image and a.image in (r.get('images') or []):
+                          deps.append({'kind': 'image', 'ref': a.image,
+                                       'what': 'this deploy ships %s, the image %s deployed and the rollback '
+                                               'removed' % (a.image, r.get('release')),
+                                       'state': 'rolled back', 'changes': []})
+              except Unreadable as exc:
+                  return finish(a, doc, INCOMPLETE, str(exc))
+              for ref in declared:
+                  for node in mk.get('changed') or []:
+                      if _matches(ref, node):
+                          gone = node.get('after') == 'absent'
+                          deps.append({'kind': 'declared dependency', 'ref': ref, 'id': node.get('id'),
+                                       'what': '%s %s' % (node.get('id'), 'no longer exists' if gone else
+                                                          'is no longer the same'),
+                                       'state': 'no longer exists' if gone else 'changed',
+                                       'changes': node.get('changes') or []})
+              notes.append('checked: release lineage against %d rolled-back release(s), the image, and %d '
+                           'declared dependenc(ies) against %d node(s) the rollback changed'
+                           % (len(mk.get('rolled_back') or []), len(declared), len(mk.get('changed') or [])))
+              if deps:
+                  return finish(a, doc, REFUSED, 'this deploy depends on what the rollback of the target by run %s '
+                                '(completed %s) took out: %d dependenc(ies). Correct the deploy and deploy again'
+                                % (mk.get('rollback_run_id'), mk.get('completed_at'), len(deps)))
+              return finish(a, doc, NO_DEPENDENCY, 'the check ran against the rollback by run %s and found no '
+                            'dependency on what was rolled back' % mk.get('rollback_run_id'))
+
+
+          def report(doc):
+              rb = doc.get('rollback') or {}
+              out = ['### Rollback dependency check: `%s`' % doc['rollback_check'], '', doc['why'], '']
+              if rb:
+                  out.append('Rollback of `%s/%s` (environment `%s`) by run **%s**, completed %s; rolled back: %s.'
+                             % (doc['target']['resource_group'], doc['target']['name'], doc['target']['environment'],
+                                rb.get('run_id'), rb.get('completed_at'), ', '.join(rb.get('releases') or []) or 'none'))
+                  out.append('This deploy: commit `%s` (base %s).' % ((doc.get('commit') or 'none')[:12],
+                                                                    doc.get('base_date') or 'not read'))
+                  out.append('')
+              if doc['dependencies']:
+                  out += ['What this deploy would bring back, or stands on, that the rollback changed:', '',
+                          '| kind | dependency | state | old -> new |', '|---|---|---|---|']
+                  for d in doc['dependencies']:
+                      ch = '; '.join('%s %s -> %s' % (p, _short(o), _short(n)) for p, o, n in d['changes'][:4])
+                      out.append('| %s | %s | %s | %s |' % (d['kind'], d['what'].replace('|', '/'), d['state'],
+                                                             (ch or '-').replace('|', '/')))
+                  out += ['', '**Correct the deploy and deploy again**: rebuild it without the rolled-back '
+                          'release\'s changes, or restore what it depends on through its own reviewed change. '
+                          'There is no override (KDEC-023).']
+              for n in doc.get('notes') or []:
+                  out.append('_%s_' % n)
+              return '\n'.join(out) + '\n'
+
+
+          def finish(a, doc, outcome, why):
+              doc['rollback_check'], doc['why'] = outcome, why
+              if outcome == NO_DEPENDENCY:
+                  doc['why'] = why + ' (no dependency)'
+              text = report(doc)
+              os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
+              io.open(a.out, 'w', encoding='utf-8').write(json.dumps(doc, indent=1, sort_keys=True))
+              if a.summary:
+                  io.open(a.summary, 'a', encoding='utf-8').write(text)
+              print(text)
+              one = doc['why'].replace('\n', ' ').replace('::', ': :')
+              if outcome in (REFUSED, INCOMPLETE):
+                  print('::error title=Deploy refused (%s)::%s' % (outcome, one))
+              else:
+                  print('::notice title=Rollback dependency check (%s)::%s' % (outcome, one))
+              _out(a.github_output, rollback_check=outcome)
+              return 1 if outcome in (REFUSED, INCOMPLETE) else 0
+
+
+          # ----------------------------------------------------------------------------- self-test
+          def self_test():
+              fails = []
+              k1, k2 = marker_name('prod', 'rg', 'app'), marker_name('dev', 'rg', 'app')
+              if k1 == k2 or not k1.startswith('kit-rollback-marker-app-'):
+                  fails.append('the marker name does not separate targets: %s %s' % (k1, k2))
+              node = {'id': '/subscriptions/0/resourceGroups/g/providers/Microsoft.Network/networkSecurityGroups/n/securityRules/r',
+                      'hosts': ['kv.vault.example']}
+              for ref, want in (('networkSecurityGroups/n/securityRules/r', True), (node['id'].upper(), True),
+                                ('@Microsoft.KeyVault(SecretUri=https://kv.vault.example/secrets/x)', True),
+                                ('networkSecurityGroups/n/securityRules/other', False)):
+                  if _matches(ref, node) != want:
+                      fails.append('%r matched %s' % (ref, not want))
+              for f in fails:
+                  print('SELF-TEST FAILED: ' + f)
+              if fails:
+                  return 2
+              print('rollback_hold self-test ok: marker names separate targets; declared dependencies match a '
+                    'changed node by id, path suffix or host. The full proof is tests/prove_rollback_dependencies.py.')
+              return 0
+
+
+          def main(argv):
+              if argv[:1] == ['--self-test']:
+                  return self_test()
+              ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+              sub = ap.add_subparsers(dest='cmd', required=True)
+              for name in ('marker', 'check'):
+                  p = sub.add_parser(name)
+                  p.add_argument('--environment', default='')
+                  p.add_argument('--resource-group', default='')
+                  p.add_argument('--name', default='')
+                  p.add_argument('--run-id', default='')
+                  p.add_argument('--out', required=True)
+                  p.add_argument('--github-output', default='')
+                  if name == 'marker':
+                      p.add_argument('--record', required=True)
+                      p.add_argument('--evidence-root', default='')
+                      p.add_argument('--run-attempt', default='1')
+                      p.add_argument('--completed-at', default='')
+                  else:
+                      p.add_argument('--commit', default='')
+                      p.add_argument('--declared-dependencies', default='')
+                      p.add_argument('--image', default='')
+                      p.add_argument('--summary', default='')
+              a = ap.parse_args(argv)
+              return cmd_marker(a) if a.cmd == 'marker' else check(a)
+
+
+          if __name__ == '__main__':
+              sys.exit(main(sys.argv[1:]))
+          kit_rollback_hold_py
 
       - name: Bind the tier and target to the GitHub environment (refuse before login)
         id: bind
@@ -2203,6 +2937,40 @@ jobs:
             echo "This GitHub environment vends no KIT_* values: the inputs are used as given (UNBOUND)."
           fi
 
+      - name: Verify the environment's deployment protection (refuse before login)
+        id: protection
+        # Owner, 2026-10-22: uat and prod need ONE approver from a named reviewer group who is NOT
+        # the deploying developer -- the GitHub environment's required reviewers, self-review
+        # prevented. The kit cannot set that; it READS it back (read-only environments API) and,
+        # at uat and prod, refuses when the policy demands it and the environment lacks it, or when
+        # it cannot be read (NOT_ESTABLISHED is not a pass). Below uat it is recorded and warned.
+        # The body is identical in both deploy reusables. tests/prove_deploy_environment_protection.py.
+        env:
+          DEPLOY_APPROVAL: ${{ inputs.deploy_approval }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          python3 "$RUNNER_TEMP/kit-deploy/environment_protection.py" \
+            --repository "${GITHUB_REPOSITORY:-}" --environment "${DEPLOY_ENVIRONMENT:-}" \
+            --tier "${ENVIRONMENT_TIER:-}" --demand-json "${DEPLOY_APPROVAL:-}" \
+            > "$RUNNER_TEMP/environment-protection.txt" 2>&1
+          rc=$?
+          cat "$RUNNER_TEMP/environment-protection.txt"
+          outcome="$(sed -n 's/^environment_protection=\([A-Z_]*\) .*/\1/p' "$RUNNER_TEMP/environment-protection.txt" | head -1)"
+          # No outcome printed is not a pass: it is NOT_ESTABLISHED, and the exit code decides.
+          [ -n "$outcome" ] || outcome=ENVIRONMENT_PROTECTION_NOT_ESTABLISHED
+          echo "environment_protection=${outcome}" >> "$GITHUB_OUTPUT"
+          { echo "### GitHub environment protection"; echo ""
+            echo "\`${outcome:-ENVIRONMENT_PROTECTION_NOT_ESTABLISHED}\` at tier \`${ENVIRONMENT_TIER:-none}\`."; } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" != "0" ]; then
+            echo "::error title=Deploy refused before login (environment protection)::${outcome:-ENVIRONMENT_PROTECTION_NOT_ESTABLISHED}: the GitHub environment this deploy runs in does not have the required reviewers (one from the named group, self-review prevented) that ${ENVIRONMENT_TIER:-this tier} demands, or they could not be read. Set them on the environment; nothing was deployed."
+            exit 1
+          fi
+          case "$outcome" in
+            ENVIRONMENT_PROTECTION_VERIFIED|ENVIRONMENT_PROTECTION_NOT_REQUIRED) ;;
+            *) echo "::warning title=Environment protection ${outcome:-unknown}::recorded below uat; at uat and prod this deploy would be refused." ;;
+          esac
+
       - name: Gate verdict (refuse before login)
         id: verdict
         # L93. SINGLE_PIPELINE_TARGET.md section 5.2: "The deploy stage reads the verdict, not
@@ -2249,7 +3017,7 @@ jobs:
               case "$c" in
                 VERSION_GAP) gap=1 ;;
                 VERSION_GAP_UNVERIFIED) unverified=1 ;;
-                COVERAGE_PARTIAL|WEAKENING_ATTRIBUTED|FINDINGS_NOT_BLOCKED) ;;
+                COVERAGE_PARTIAL|WEAKENING_ATTRIBUTED|FINDINGS_NOT_BLOCKED|SECRET_EXCEPTION_ATTRIBUTED|KNOWN_EXPLOITED_EXCEPTION_ATTRIBUTED|KEV_UNAVAILABLE) ;;
                 *) unknown=1 ;;
               esac
             done
@@ -2265,7 +3033,7 @@ jobs:
             esac
             if [ "$unknown" = "1" ]; then
               ruling ADVISORY_CAUSE_UNKNOWN
-              refuse "KDEC-014: the gate verdict is PROCEED_WITH_ADVISORY at ${ENVIRONMENT_TIER}, and its advisory cause is absent or not a registered advisory_cause value (VERSION_GAP, VERSION_GAP_UNVERIFIED, COVERAGE_PARTIAL, WEAKENING_ATTRIBUTED, FINDINGS_NOT_BLOCKED). It cannot be shown not to be a version gap. Pass the security gate's advisory_causes output."
+              refuse "KDEC-014: the gate verdict is PROCEED_WITH_ADVISORY at ${ENVIRONMENT_TIER}, and its advisory cause is absent or not a registered advisory_cause value (VERSION_GAP, VERSION_GAP_UNVERIFIED, COVERAGE_PARTIAL, WEAKENING_ATTRIBUTED, FINDINGS_NOT_BLOCKED, SECRET_EXCEPTION_ATTRIBUTED). It cannot be shown not to be a version gap. Pass the security gate's advisory_causes output."
             fi
             if [ "$gap" != "1" ]; then
               if [ "$unverified" = "1" ]; then
@@ -2293,12 +3061,35 @@ jobs:
             elif [ "$(date -u +%Y-%m-%d)" ">" "$exp" ]; then
               why="${why:+$why; }an exception that expired on $exp"
             fi
+            # KDEC-018 item 4: THE EXCEPTION'S HISTORY AND THE RENEWAL CAP. weakening_renews lists this
+            # acceptance's PRIOR grants {ticket, approver, from, expires}; more of them than the cap --
+            # the stronger of max_exception_renewals and the kit default 2 -- is EXCEPTION_RENEWAL_LIMIT,
+            # and a history that cannot be read is not "no history". scripts/exception_history.py holds
+            # the same rules; tests/prove_exception_lifecycle.py H6.
+            cap=2
+            case "${MAX_EXCEPTION_RENEWALS:-}" in 0|1) cap="$MAX_EXCEPTION_RENEWALS" ;; esac
+            renewals=0; history="first exception"
+            if [ -n "$(printf '%s' "${WEAKENING_RENEWS:-}" | tr -d '[:space:]')" ]; then
+              if renewals=$(printf '%s' "$WEAKENING_RENEWS" | jq -e 'if type == "array" and all(.[]; type == "object" and ((keys - ["ticket","approver","from","expires"]) | length) == 0 and ((.ticket // "") | test("^[A-Z][A-Z0-9_]*-[0-9]+$")) and ((.approver // "") | test("[^ ]")) and ((.from // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")) and ((.expires // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$"))) then length else error("unreadable") end' 2>/dev/null); then
+                if [ "$renewals" -gt 0 ]; then
+                  history=$(printf '%s' "$WEAKENING_RENEWS" | jq -r 'sort_by(.from) | "previously excepted \(length) time(s) since \(.[0].from), tickets \(map(.ticket) | join(", ")), approvers \(reduce (map(.approver))[] as $a ([]; if index([$a]) then . else . + [$a] end) | join(", "))"')
+                fi
+                if [ "$renewals" -gt "$cap" ]; then
+                  why="${why:+$why; }EXCEPTION_RENEWAL_LIMIT: renewed ${renewals} time(s) and the cap is ${cap} -- endless exceptions are not a thing; close the scanner gap"
+                fi
+              else
+                renewals=unreadable; history=unreadable
+                why="${why:+$why; }a renewal history (weakening_renews) that is not a list of prior grants {ticket, approver, from, expires}"
+              fi
+            fi
+            { echo "exception_renewals=${renewals}"; echo "exception_history=${history}"; } >> "$GITHUB_OUTPUT"
             if [ -n "$why" ]; then
               ruling VERSION_GAP_REFUSED
-              refuse "KDEC-014: the gate verdict is PROCEED_WITH_ADVISORY caused by a VERSION_GAP (no carried scanner can read the target version, established by READ ranges), and ${ENVIRONMENT_TIER} is a production tier. Close the scanner gap, or record an attributed exception in the weakening record: ${why}."
+              refuse "KDEC-014: the gate verdict is PROCEED_WITH_ADVISORY caused by a VERSION_GAP (no carried scanner can read the target version, established by READ ranges), and ${ENVIRONMENT_TIER} is a production tier. Close the scanner gap, or record an attributed exception in the weakening record: ${why}. Exception history: ${history}."
             fi
             ruling VERSION_GAP_EXCEPTION_ACCEPTED
-            echo "::warning title=Version gap accepted by attributed exception (KDEC-014)::Proceeding at ${ENVIRONMENT_TIER} on a named person's exception (the weakening record), expiring ${exp}, in a GitHub environment whose required reviewers approved this job. The record is in the posture summary and outcome.json."
+            echo "::warning title=Version gap accepted by attributed exception (KDEC-014)::Proceeding at ${ENVIRONMENT_TIER} on a named person's exception (the weakening record), expiring ${exp}, in a GitHub environment whose required reviewers approved this job. Exception history: ${history}. The record is in the posture summary and outcome.json."
+            echo "Version-gap exception accepted at ${ENVIRONMENT_TIER}, expiring ${exp}. Exception history: ${history}." >> "$GITHUB_STEP_SUMMARY"
           }
           case "$ROUTING_RESULT" in
             PROCEED)
@@ -2383,6 +3174,8 @@ jobs:
           DIGEST="$IMAGE_DIGEST"
           SUBJECT="${ACR_LOGIN_SERVER}/${IMAGE_REPOSITORY}"
           RUNG="${RUNG:-run}"   # an empty rung reads as the strictest, never as a weaker one
+          # KDEC-027: gh's token goes to this run's host only (gh api / -R default to github.com).
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
           case "$RUNG" in crawl|walk|run) ;; *)
             echo "::error title=Unknown rung::'$RUNG' is not crawl, walk or run."; exit 1 ;; esac
           if ! printf '%s' "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
@@ -2465,8 +3258,41 @@ jobs:
               exit 1 ;;
           esac
 
+      - name: Check this deploy against a rollback of its target (refuse before login)
+        id: rollback_check
+        # KDEC-023 item 4 (owner, 2026-10-23): "We need to do a dependency check on the incoming
+        # deployment to ensure that it isn't reliant on things that were just rolled back and if they
+        # are you give a report to the deploying team ... If there are no dependencies on rolled back
+        # items then deploy it." The rollback reusable leaves a marker for the target (an artifact,
+        # read with actions: read). A deploy built BEFORE that rollback completed is checked: built on
+        # a rolled-back commit, shipping a rolled-back image, or declaring a dependency on something
+        # the rollback removed or changed -> DEPLOY_REFUSED_ROLLBACK_DEPENDENCY, with the report
+        # (summary, annotation, deploy evidence). None -> it proceeds, with the note. A check that
+        # cannot be completed refuses (ROLLBACK_DEPENDENCY_CHECK_INCOMPLETE). There is no override:
+        # the fix is to correct the deploy. scripts/rollback_hold.py; tests/prove_rollback_dependencies.py D7/D8.
+        env:
+          DECLARED_DEPENDENCIES: ${{ inputs.declared_dependencies }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          python3 "$RUNNER_TEMP/kit-deploy/rollback_hold.py" check \
+            --environment "${DEPLOY_ENVIRONMENT:-}" --resource-group "${RESOURCE_GROUP:-}" \
+            --name "${WEBAPP_NAME:-}" --commit "${GITHUB_SHA:-}" --run-id "${GITHUB_RUN_ID:-}" \
+            --declared-dependencies "${DECLARED_DEPENDENCIES:-}" \
+            --image "${ACR_LOGIN_SERVER:-}/${IMAGE_REPOSITORY:-}@${IMAGE_DIGEST:-}" \
+            --out "$RUNNER_TEMP/deploy-evidence/rollback-check.json" \
+            --summary "$GITHUB_STEP_SUMMARY"
+          rc=$?
+          # The outcome the check wrote, read back here so the step itself emits it; none written is
+          # INCOMPLETE, never a pass.
+          outcome="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("rollback_check") or "")' \
+            "$RUNNER_TEMP/deploy-evidence/rollback-check.json" 2>/dev/null || true)"
+          [ -n "$outcome" ] || { outcome=ROLLBACK_DEPENDENCY_CHECK_INCOMPLETE; rc=1; }
+          echo "rollback_check=${outcome}" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+
       - name: Azure login (OIDC)
-        uses: azure/login@v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         # The hand-off contract vends the identifiers as VARIABLES of this environment (the
         # identity is federated and holds no key); a secret of the same name, when one exists, wins.
         with:
@@ -2590,6 +3416,8 @@ jobs:
           SERVING_OUTCOME: ${{ steps.serving.outcome }}
           CANCELLED: ${{ job.status == 'cancelled' }}   # cancelled() is not allowed in env: (actionlint)
           VERSION_GAP_RULING: ${{ steps.verdict.outputs.version_gap_ruling }}
+          EXCEPTION_RENEWALS: ${{ steps.verdict.outputs.exception_renewals }}
+          EXCEPTION_HISTORY: ${{ steps.verdict.outputs.exception_history }}
           SWAPPED: ${{ steps.swap.outcome }}
         # Exit 0 only for DEPLOY_HEALTHY: this step's outcome IS the job's verdict (DCR gap 8).
         run: python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" report --adapter appservice
@@ -2624,6 +3452,8 @@ jobs:
           W_WEAKENING_AUTHORITY: ${{ inputs.weakening_authority }}
           W_WEAKENING_EXCEPTION_REF: ${{ inputs.weakening_exception_ref }}
           W_WEAKENING_EXPIRES: ${{ inputs.weakening_expires }}
+          W_WEAKENING_RENEWS: ${{ inputs.weakening_renews }}
+          W_MAX_EXCEPTION_RENEWALS: ${{ inputs.max_exception_renewals }}
           W_ADVISORY_CAUSES: ${{ inputs.advisory_causes }}
           W_GITHUB_ENVIRONMENT: ${{ inputs.github_environment }}
           W_ATTESTATION_RUNG: ${{ inputs.attestation_rung }}
@@ -2639,6 +3469,8 @@ jobs:
           VERDICT_OUTCOME: ${{ steps.verdict.outcome }}
           TIER_OUTCOME: ${{ steps.tier.outcome }}
           CAPABILITY_OUTCOME: ${{ steps.capability.outcome }}
+          ROLLBACK_CHECK_OUTCOME: ${{ steps.rollback_check.outcome }}
+          ROLLBACK_CHECK: ${{ steps.rollback_check.outputs.rollback_check }}
           ROLLBACK_CAPABILITY: ${{ steps.capability.outputs.rollback_capability }}
           REPORT_OUTCOME: ${{ steps.report.outcome }}
           DEPLOYMENT_OUTCOME: ${{ steps.report.outputs.deployment_outcome }}
@@ -2709,6 +3541,12 @@ jobs:
           posture image_digest            NOT_A_CONTROL_SURFACE - -
           posture cloud                   NOT_A_CONTROL_SURFACE - -
           posture environment_tier        NOT_A_CONTROL_SURFACE - -
+          # Can only TIGHTEN the environment-protection demand: the step holds the stronger of it
+          # and the kit default (tests/prove_deploy_environment_protection.py), so no value weakens.
+          posture deploy_approval         NOT_A_CONTROL_SURFACE - -
+          # What the rollback dependency check examines (KDEC-023), as the digest is what the
+          # digest guard examines; the check itself always runs and has no override.
+          posture declared_dependencies   NOT_A_CONTROL_SURFACE - -
           # slot '' deploys straight to production: the pre-traffic health check -- the probe that
           # runs BEFORE production traffic moves -- does not exist on that path. Refused at uat/prod
           # by the tier guard; at lower tiers it is a control switched off, and recorded as one.
@@ -2731,6 +3569,8 @@ jobs:
           posture weakening_authority     EXCEPTION_ATTRIBUTION - -
           posture weakening_exception_ref EXCEPTION_ATTRIBUTION - -
           posture weakening_expires       EXCEPTION_ATTRIBUTION - -
+          posture weakening_renews        EXCEPTION_ATTRIBUTION - -
+          posture max_exception_renewals  EXCEPTION_ATTRIBUTION - -
           # V1 (P-02). The signer and the plan flag say WHAT is verified and WHETHER the plan can;
           # the rung is how hard an absent attestation is refused -- run is the baseline, any other
           # rung is a change from it that someone must own.
@@ -2751,6 +3591,7 @@ jobs:
           ran attestation-verify "${ATTEST_OUTCOME:-}"
           ran tier-guard "${TIER_OUTCOME:-}"
           ran rollback-capability "${CAPABILITY_OUTCOME:-}"
+          ran rollback-check "${ROLLBACK_CHECK_OUTCOME:-}"
 
           # UNAVAILABLE IS NOT CLEAN. Reversal was REQUIRED (the caller did not switch it off)
           # and the capability step established it could not be provided -- no prior state, or a
@@ -2820,7 +3661,7 @@ jobs:
           elif [ "${ATTEST_OUTCOME:-}" = "success" ] && [ -z "${ATTEST_ROUTE:-}" ]; then
             route=EVIDENCE_UNTRUSTED   # V1 ran and answered nothing: not a verification
           elif [ "${BIND_OUTCOME:-}" = "failure" ] || [ "${TIER_OUTCOME:-}" = "failure" ] ||
-               [ "${CAPABILITY_OUTCOME:-}" = "failure" ]; then
+               [ "${CAPABILITY_OUTCOME:-}" = "failure" ] || [ "${ROLLBACK_CHECK_OUTCOME:-}" = "failure" ]; then
             route=BLOCKED
           elif [ "${REPORT_OUTCOME:-}" = "failure" ] || [ "${JOB_STATUS:-success}" != "success" ]; then
             case "${DEPLOYMENT_OUTCOME:-}" in
@@ -2876,6 +3717,7 @@ jobs:
             echo "| GitHub environment | \`${W_GITHUB_ENVIRONMENT:-none}\` — at uat/prod its required reviewers approve the deploy (KDEC-014) |"
             echo "| attestation (V1) | \`${ATTEST_RESULT:-not run}\` routes \`${ATTEST_ROUTE:-none}\`${ATTEST_DEBT:+ — held: \`$ATTEST_DEBT\`, trigger: the plan} |"
             echo "| tier and target binding (B-13) | \`${TARGET_BINDING:-not reported}\` — BOUND: held to the values this environment vends; UNBOUND: it vends none |"
+            echo "| rollback dependency check (KDEC-023) | \`${ROLLBACK_CHECK:-not reported}\` -- a deploy built before a rollback of its target, checked for what it took out |"
             if [ "${VERSION_GAP_RULING:-}" = "VERSION_GAP_EXCEPTION_ACCEPTED" ]; then
               echo "| **version-gap exception ACCEPTED** | accepted by ${W_WEAKENING_AUTHORITY}; reason ${W_WEAKENING_REASON}; expires ${W_WEAKENING_EXPIRES} (the weakening record) |"
             fi
@@ -2921,7 +3763,7 @@ jobs:
         # cancelled run does not finish"). Uploaded on every path, including refusals and
         # cancellation, so it does not die with the runner.
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: deploy-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/deploy-evidence

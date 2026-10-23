@@ -16,7 +16,14 @@ HOW
     --porcelain` must be empty. Anything else -- modified, deleted or new untracked files -- is named.
     The real working tree is never touched.
 
-EXIT  0 every test left the tree as it found it   1 one or more did not   2 could not be checked
+    A TEST THAT RAN AND FAILED FAILS THE SWEEP TOO (lane L-R3F, 2026-10-22). This sweep is the local
+    battery's one place that runs every test, and it read only the tree: an exit of 1 printed as
+    `exit=1` under a PASS. The Release 3 candidate went red hosted on a stage-register negative
+    control that no local gate saw fail. Exit 1 (refused) and a timeout now fail the sweep; exit 2
+    stays a report, because 2 is UNKNOWN -- a tool or credential this host lacks -- not a refusal.
+
+EXIT  0 every test left the tree as it found it and none failed   1 one or more did not, or one
+      failed (exit 1) or timed out   2 could not be checked
 """
 import os
 import shutil
@@ -70,7 +77,7 @@ def main():
     try:
         tests = sorted(f for f in os.listdir(os.path.join(repo, 'tests'))
                        if f.endswith('.py') and not f.startswith('_'))
-        dirty = []
+        dirty, failed = [], []
         for t in tests:
             if t in SKIP:
                 print('  skip  %-40s %s' % (t, SKIP[t]))
@@ -85,18 +92,25 @@ def main():
             status = git(['status', '--porcelain'], cwd=repo).stdout.strip()
             mark = 'DIRTY' if status else 'clean'
             print('  %-5s %-40s exit=%s' % (mark, t, rc))
+            if rc == 1 or rc == 'timeout':
+                failed.append((t, rc, (p.stdout + p.stderr) if rc == 1 else ''))
             if status:
                 dirty.append((t, status.splitlines()))
                 git(['checkout', '--', '.'], cwd=repo, check=False)
                 git(['clean', '-fdq'], cwd=repo, check=False)
-        if dirty:
+        if dirty or failed:
             print('')
             for t, lines in dirty:
                 print('FAIL: %s changed the tree:' % t)
                 for line in lines[:12]:
                     print('        %s' % line)
+            for t, rc, out in failed:
+                print('FAIL: %s %s:' % (t, 'timed out' if rc == 'timeout' else 'exited 1 (refused)'))
+                for line in out.strip().splitlines()[-12:]:
+                    print('        %s' % line)
             return 1
-        print('PASS: every test left the tracked tree exactly as it found it.')
+        print('PASS: every test left the tracked tree exactly as it found it, and none failed '
+              '(exit 2 is UNKNOWN on this host and is reported, not failed).')
         return 0
     finally:
         shutil.rmtree(work, ignore_errors=True)

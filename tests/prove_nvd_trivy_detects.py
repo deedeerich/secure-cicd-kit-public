@@ -35,6 +35,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import _step_harness as H  # noqa: E402
+import _trivy_step as ts  # noqa: E402 - the shipped Trivy step read as trivy-action's `with:`
 
 WF = '.github/workflows/reusable-nvd-cve.yml'
 JOB = 'nvd-cve-scan'
@@ -46,7 +47,7 @@ SEEDED = 'Django==2.2.0\nrequests==2.19.0\nurllib3==1.24.1\n'
 
 
 def translate(step, ctx, ws):
-    w = step.get('with') or {}
+    w = ts.trivy_with(step)
     unknown = sorted(k for k in w if k not in FLAG and k not in HANDLED)
     if unknown:
         raise ValueError('cannot translate trivy-action input(s) %s' % ', '.join(unknown))

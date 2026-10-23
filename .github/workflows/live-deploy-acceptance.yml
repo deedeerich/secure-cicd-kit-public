@@ -120,6 +120,7 @@ jobs:
       contents: read
       id-token: write
       attestations: read   # V1 runs inside the deploy (P-02)
+      actions: read        # the deploy reads its target's rollback marker (KDEC-023)
     with:
       attestation_signer_workflow: ${{ format('{0}/.github/workflows/reusable-build-docker.yml', github.repository) }}
       attestation_rung: ${{ inputs.attestation_rung }}
@@ -149,6 +150,7 @@ jobs:
       contents: read
       id-token: write
       attestations: read   # V1 runs inside the deploy (P-02)
+      actions: read        # the deploy reads its target's rollback marker (KDEC-023)
     with:
       attestation_signer_workflow: ${{ format('{0}/.github/workflows/reusable-build-docker.yml', github.repository) }}
       attestation_rung: ${{ inputs.attestation_rung }}

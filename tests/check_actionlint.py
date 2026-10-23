@@ -44,7 +44,11 @@ def main():
     if not exe:
         print('UNKNOWN: actionlint is required (set ACTIONLINT or put it on PATH).')
         return 2
-    files = sorted(glob.glob(os.path.join(ROOT, '.github', 'workflows', '*.yml')))
+    # Overlay workflows ship in a consumer's copy and are loaded by GitHub exactly as these are;
+    # a load-time defect there is the same startup failure, in someone else's repository. A
+    # neutral copy has no overlays/, so this adds nothing there.
+    files = sorted(glob.glob(os.path.join(ROOT, '.github', 'workflows', '*.yml')) +
+                   glob.glob(os.path.join(ROOT, 'overlays', '*', 'workflows', '*.yml')))
     p = subprocess.run([exe, '-no-color', '-shellcheck=', '-format', '{{range $err := .}}'
                         '{{$err.Filepath}}:{{$err.Line}}:{{$err.Column}}: {{$err.Message}} [{{$err.Kind}}]\n'
                         '{{end}}'] + files,

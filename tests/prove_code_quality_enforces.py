@@ -10,8 +10,12 @@ WHY THIS EXISTS (validation deferral `code-quality`, expired 2026-09-30; ledger 
 
     Lint is not a security control, so the kit blocks on it only when the caller opts in with
     `enforce_lint: true` (and never in advisory mode). The claim proven here is therefore exact:
-    WHEN ENFORCEMENT IS ON, a seeded violation fails the step and a clean tree does not; when it is
-    off, the same violation is reported and does not block.
+    WHEN ENFORCEMENT IS ON, a seeded violation is handed to the security gate as
+    findings_state=FINDINGS and a clean tree hands nothing; when it is off, the same violation is
+    reported and not handed. The step itself fails only when its tooling could not run: the gate is
+    the single enforcement point (lane L-S, owner ruling O-24). Before, the step failed on the
+    violation, the job wrote no SARIF, and the gate read a failed job with nothing on record --
+    a crash, EVIDENCE_UNTRUSTED -- in every mode.
 
     It also checks the job reaches Node code at all. The job used to run only when discovery found
     PYTHON, and its steps keyed on the caller's `language` input rather than on what discovery found
@@ -20,11 +24,12 @@ WHY THIS EXISTS (validation deferral `code-quality`, expired 2026-09-30; ledger 
 
 SCENARIOS (each one the shipped step, run for real)
     ruff_clean          clean .py, enforce on          -> exit 0
-    ruff_seeded         unused import, enforce on      -> exit non-zero
-    ruff_seeded_off     unused import, enforce off     -> exit 0, reported
+    ruff_seeded         unused import, enforce on      -> exit 0, findings_state=FINDINGS (handed to
+                                                          the gate: lane L-S, O-24)
+    ruff_seeded_off     unused import, enforce off     -> exit 0, reported, nothing handed
     eslint_clean        clean .js, enforce on          -> exit 0
-    eslint_seeded       unused variable, enforce on    -> exit non-zero
-    eslint_seeded_off   unused variable, enforce off   -> exit 0, reported
+    eslint_seeded       unused variable, enforce on    -> exit 0, findings_state=FINDINGS
+    eslint_seeded_off   unused variable, enforce off   -> exit 0, reported, nothing handed
     eslint_no_config    no ESLint config at all        -> exit 0, reported as not configured
 
 STATIC
@@ -60,9 +65,20 @@ PACKAGE_JSON = {'name': 'kit-lint-fixture', 'version': '0.0.0', 'private': True,
                 'devDependencies': {'eslint': '9.13.0'}}
 
 
+def _expand(doc):
+    """The workflow with every `$/` composite step expanded into its job, as the runner sees it.
+
+    Scanner job bodies live in `.github/actions/<scanner>/` (ledger L64); this reads the steps a
+    job actually runs. One rule, tests/_composite_expand.py, for every reader.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.expanded_doc(doc)
+
+
 def load():
     import yaml
-    return yaml.safe_load(io.open(pbf.WF, encoding='utf-8'))
+    return _expand(yaml.safe_load(io.open(pbf.WF, encoding='utf-8')))
 
 
 def step(doc, name):
@@ -100,9 +116,16 @@ def run(bash, script, workspace, extra_path, env_extra=None):
     env = dict(os.environ, GITHUB_OUTPUT=out, GITHUB_STEP_SUMMARY=summ,
                GITHUB_WORKSPACE=workspace,
                PATH=extra_path + os.pathsep + os.environ.get('PATH', ''), **(env_extra or {}))
-    p = subprocess.run([bash, f], capture_output=True, text=True, encoding='utf-8', errors='replace',
-                       env=env, cwd=workspace)
-    return p.returncode, (p.stdout or '') + (p.stderr or '')
+    # `bash -e`: the runner's default shell for a `run:` step with none named. Under plain `bash`
+    # a bare `eslint .; rc=$?` survived a lint exit 1 here and ended the step on the runner.
+    p = subprocess.run([bash, '-e', f], capture_output=True, text=True, encoding='utf-8',
+                       errors='replace', env=env, cwd=workspace)
+    emitted = {}
+    for line in io.open(out, encoding='utf-8', errors='replace'):
+        if '=' in line:
+            k, v = line.rstrip('\n').split('=', 1)
+            emitted[k] = v
+    return p.returncode, (p.stdout or '') + (p.stderr or ''), emitted
 
 
 def py_fixture(root, source):
@@ -174,32 +197,41 @@ def main():
             return {'inputs.paths': '.', 'inputs.enforce_lint': enforce,
                     'inputs.advisory_mode': 'false'}
 
+        # name, step, fixture, enforce_lint, handed to the gate (findings_state=FINDINGS)?
+        # Every scenario's step EXITS 0: lint findings are handed to the security gate, the single
+        # enforcement point (lane L-S, O-24), never a failed job.
         scenarios = [
-            ('ruff_clean', ruff_step, lambda r: py_fixture(r, PY_CLEAN), 'true', True),
-            ('ruff_seeded', ruff_step, lambda r: py_fixture(r, PY_SEEDED), 'true', False),
-            ('ruff_seeded_off', ruff_step, lambda r: py_fixture(r, PY_SEEDED), 'false', True),
-            ('eslint_clean', eslint_step, lambda r: js_fixture(r, JS_CLEAN), 'true', True),
-            ('eslint_seeded', eslint_step, lambda r: js_fixture(r, JS_SEEDED), 'true', False),
-            ('eslint_seeded_off', eslint_step, lambda r: js_fixture(r, JS_SEEDED), 'false', True),
+            ('ruff_clean', ruff_step, lambda r: py_fixture(r, PY_CLEAN), 'true', False),
+            ('ruff_seeded', ruff_step, lambda r: py_fixture(r, PY_SEEDED), 'true', True),
+            ('ruff_seeded_off', ruff_step, lambda r: py_fixture(r, PY_SEEDED), 'false', False),
+            ('eslint_clean', eslint_step, lambda r: js_fixture(r, JS_CLEAN), 'true', False),
+            ('eslint_seeded', eslint_step, lambda r: js_fixture(r, JS_SEEDED), 'true', True),
+            ('eslint_seeded_off', eslint_step, lambda r: js_fixture(r, JS_SEEDED), 'false', False),
             ('eslint_no_config', eslint_step,
-             lambda r: js_fixture(r, JS_SEEDED, config=False), 'true', True),
+             lambda r: js_fixture(r, JS_SEEDED, config=False), 'true', False),
         ]
-        for name, s, build, enforce, must_pass in scenarios:
+        for name, s, build, enforce, must_hand in scenarios:
             ws = os.path.join(tmp, name)
             os.makedirs(ws)
             build(ws)
             body, seen = pbf.substitute(s['run'], ctx(enforce))
             # The step's env:, resolved from the same scenario (caller inputs travel there, L38).
-            rc, log = run(bash, body, ws, extra, pbf.resolve_env(s.get('env'), ctx(enforce))[0])
-            print('  %-18s exit=%d' % (name, rc))
+            rc, log, emitted = run(bash, body, ws, extra,
+                                   pbf.resolve_env(s.get('env'), ctx(enforce))[0])
+            handed = emitted.get('findings_state', '')
+            print('  %-18s exit=%d findings_state=%s' % (name, rc, handed or '-'))
             if 'npm ERR' in log and 'ENOTFOUND' in log:
                 print('UNKNOWN: npm could not reach the registry; ESLint was never installed.')
                 return 2
-            if must_pass and rc != 0:
-                bad.append('%s: exit %d where the step must pass\n%s' % (name, rc, log[-600:]))
-            if not must_pass and rc == 0:
-                bad.append('%s: exited 0 on a seeded violation with enforcement ON -- the lint '
-                           'step cannot fail, so `enforce_lint` enforces nothing' % name)
+            if rc != 0:
+                bad.append('%s: exit %d -- a lint step fails only when its tool could not run; '
+                           'findings go to the gate\n%s' % (name, rc, log[-600:]))
+            if must_hand and handed != 'FINDINGS':
+                bad.append('%s: findings_state=%r on a seeded violation with enforcement ON -- '
+                           'nothing reaches the gate, so `enforce_lint` enforces nothing'
+                           % (name, handed))
+            if not must_hand and handed:
+                bad.append('%s: findings_state=%r where nothing is enforced' % (name, handed))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -207,9 +239,9 @@ def main():
         for b in bad:
             print('FAIL: %s' % b)
         return 1
-    print('PASS: with enforce_lint on, seeded ruff and ESLint violations fail the shipped steps and '
-          'clean fixtures pass; with it off they are reported, not blocking; Node-only repositories '
-          'are reached.')
+    print('PASS: with enforce_lint on, seeded ruff and ESLint violations are handed to the gate '
+          '(findings_state=FINDINGS) by steps that succeed, and clean fixtures hand nothing; with it '
+          'off they are reported, not handed; Node-only repositories are reached.')
     return 0
 
 

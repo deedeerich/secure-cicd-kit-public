@@ -38,8 +38,8 @@ and not built. Part 09 says exactly which.
 | 07 | `07-BUILD-PROVENANCE-DEPLOY-ROLLBACK.md` | build once, provenance, deploy gated on the verdict, rollback | deploy is the stage with the most design and the least build |
 | 08 | `08-HOW-THE-KIT-PROVES-ITSELF.md` | the proofs, validation debt, deferrals, and what "proven" means | "it compiles" and "a test exists" are not proof here |
 | 09 | `09-STATUS-BUILT-VS-DESIGNED.md` | what is built and proven, what is designed only, what needs a hosted run | building on a designed-only part as if it ran is the failure this kit exists to stop |
-| 10 | `10-CHANGE-LOG.md` | what changed since the last version you read (v1.9 onward) | read this first on every later delivery |
-| 10b | `10b-CHANGE-LOG-EARLIER.md` | the change log for v1.8 back to v1 | history only; read it to trace why a rule exists |
+| 10 | `10-CHANGE-LOG.md` | what changed since the last version you read (v1.11 onward) | read this first on every later delivery |
+| 10b | `10b-CHANGE-LOG-EARLIER.md` | the change log for v1.10 back to v1 | history only; read it to trace why a rule exists |
 | 11 | `11-INTEGRATING-WITH-THE-KIT.md` | **wiring another product to the kit**: who deploys what, what the landing zone hands over, the workflow shape, reading the verdict | it is the only part written for integration rather than understanding |
 | 12 | `12-CHANGES-SINCE-A907DC8.md` | every behavioural change since explainer v1.10 (`a907dc8`), grouped by what an integrator must do differently | a builder working from v1.10 is otherwise wiring against outdated behaviour |
 
@@ -62,6 +62,7 @@ since main). Each is under 20 KB and stands alone.
 2. **Absence is not a negative.** "Nothing found", "nothing exists", "nothing was looked at" and "the
    control is off" are four different states, and the kit never lets a tool collapse them. Part 01.
 3. **Secrets block in every mode.** Advisory mode softens inherited findings. It never softens a leaked
-   credential — in source, in history, or baked into an image. Parts 03 and 04.
+   credential — in source, in history, or baked into an image. The one way past a found secret is a
+   ticketed exception for that ONE finding in the policy register, renewed only under a cap. Parts 03–05.
 4. **A ticket is a request.** Closing, editing or approving a ticket changes nothing the gate reads. Only
    a disposition merged to the protected default branch does. Part 06.

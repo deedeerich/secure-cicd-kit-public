@@ -40,19 +40,21 @@ jobs:
   # NOT_APPLICABLE), and its step bodies run from the composite through `$/` -- inline, they took
   # the flagship to 518 KB, past the ceiling at which a workflow never starts.
   resolve:        {class: infrastructure, composite: resolve}
-  secret-scan:    {class: scanner, capability: secret-scan,    applies: always,                    composite: null}
+  secret-scan:    {class: scanner, capability: secret-scan,    applies: always,                    composite: secret-scan}
   # python OR node, as the job's own condition reads since the ESLint-behind-a-Python-gate fix.
   # `applies` is read by nothing that enforces; the resolve job's advisory plan states the same rule.
   code-quality:   {class: scanner, capability: code-quality,   applies: discover.python|discover.node, composite: null}
   sast-semgrep:   {class: scanner, capability: sast-semgrep,   applies: always,                    composite: null}
   sast-bandit:    {class: scanner, capability: sast-bandit,    applies: discover.python,           composite: null}
   codeql:         {class: scanner, capability: codeql,         applies: discover.any-codeql-lang,  composite: null}
-  deps-scan:      {class: scanner, capability: deps-scan,      applies: always,                    composite: null}
-  iac-scan:       {class: scanner, capability: iac-scan,       applies: discover.iac,              composite: null}
-  sast-dotnet:    {class: scanner, capability: sast-dotnet,    applies: discover.dotnet,           composite: null}
-  sast-java:      {class: scanner, capability: sast-java,      applies: discover.java,             composite: null}
+  deps-scan:      {class: scanner, capability: deps-scan,      applies: always,                    composite: deps-scan}
+  iac-scan:       {class: scanner, capability: iac-scan,       applies: discover.iac,              composite: iac-scan}
+  sast-dotnet:    {class: scanner, capability: sast-dotnet,    applies: discover.dotnet,           composite: sast-dotnet}
+  sast-java:      {class: scanner, capability: sast-java,      applies: discover.java,             composite: sast-java}
   sast-go:        {class: scanner, capability: sast-go,        applies: discover.go,               composite: null}
-  sast-cpp:       {class: scanner, capability: sast-cpp,       applies: discover.cpp,              composite: null}
+  sast-cpp:       {class: scanner, capability: sast-cpp,       applies: discover.cpp,              composite: sast-cpp}
+  # Android and iOS (lane L-SCAN-B, KDEC-026): mobsfscan + the kit's mobile configuration rules.
+  sast-mobile:    {class: scanner, capability: sast-mobile,    applies: discover.mobile,           composite: sast-mobile}
   image-scan:     {class: scanner, capability: image-scan,     applies: input.image_ref,           composite: null}
   malicious-deps: {class: scanner, capability: malicious-deps, applies: input.enable_malicious_pkg_scan, composite: null}
   sbom:           {class: scanner, capability: sbom,           applies: input.enable_sbom,         composite: null}
@@ -126,7 +128,7 @@ version_support:
         max_from_input: null
         unbounded: false
         compare: version
-        basis: "semgrep carries its own parser, independent of the runner interpreter. PEP 695 parsed at 1.178.0; the kit pins 1.90.0 and nothing measured that version (PO section 3.4). Per-version language support is not published."
+        basis: "semgrep carries its own parser, independent of the runner interpreter. PEP 695 parsed at 1.178.0, the release the sast-semgrep job's image pins since lane L-SG; no corpus has measured a Python range (PO section 3.4). Per-version language support is not published."
         verified: UNVERIFIED
     node:
       - tool: semgrep
@@ -163,6 +165,49 @@ version_support:
         unbounded: false
         compare: version
         basis: "own parser; per-version support not published."
+        verified: UNVERIFIED
+    # PHP (lane L-PHP, 2026-10-21). The sast-semgrep job is the only carried scanner that reads
+    # PHP source; it adds p/php to its rulesets whenever discovery finds PHP. Which PHP releases
+    # Semgrep's parser reads is not published, so the range is MEASURED on the job's own image by
+    # tests/corpora/php_corpus.py (re-measured weekly by probe-scanner-corpora.yml). The 1.90.0
+    # container the job ran until lane L-SG stopped at 7.2: 7.3, 8.1, 8.2, 8.3 and 8.4 syntax was
+    # PartialParsing (exit 3 under --strict). Lane L-SG moved the job to the 1.178.0 image, pinned
+    # by digest (KDEC-016: PHP 8.x is required), and re-measured this row on it: 5.6..8.4. PHP 8.5
+    # is in the corpus and MEASURED unread: the (void) cast and final promoted properties draw
+    # PartialParsing (exit 3 under --strict) on 1.178.0 and on 1.182.0, the newest release
+    # (2026-10-21). A PHP 8.5 target is therefore a proven VERSION_GAP.
+    php:
+      - tool: semgrep
+        min: "5.6"
+        max: "8.4"
+        max_from_input: null
+        unbounded: false
+        compare: version
+        basis: "MEASURED by the seeded PHP corpus (tests/corpora/php_corpus.py; D-VF-4): semgrep 1.178.0 read the seed, with no parse error, in every family 5.6..8.4 (families: 5.6, 7.0, 7.1, 7.2, 7.3, 7.4, 8.0, 8.1, 8.2, 8.3, 8.4, 8.5); 8.5 was PARSE_ERROR, so the ceiling is the family below it. Above it, through 8.5 (parse_evidence_max), Semgrep names each file it cannot fully parse, so a target there is handled by parse evidence, not as a version gap: the sast-semgrep job scans what parses, keeps its findings and flags the named files PARTIAL (PARSE_PARTIAL_PHP_SYNTAX, COVERAGE_PARTIAL; KDEC-016 amended 2026-10-22). Releases with no new syntax are claimed through their neighbours. Measured 2026-10-22 (locally, in the semgrep/semgrep 1.178.0 image the sast-semgrep job runs, pulled by the digest it pins (sha256:32e459968daa); families 5.6..8.4 php -l-checked under their own release and the one before by lane L-PHP, 8.5 under 8.5.12 and 8.4.27 by lane L-SG; re-measured with the parse-evidence ceiling by lane L-P85) by tests/corpora/probe_php_corpus.py."
+        verified: READ
+        corpus: tests/corpora/php_corpus.py
+        parse_evidence_max: "8.5"
+    # KOTLIN AND SWIFT (lane L-SCAN-B, KDEC-026). The sast-semgrep job adds p/kotlin whenever
+    # discovery finds Kotlin, and the shipped default carries Swift rules. Which Kotlin and Swift
+    # releases Semgrep's parsers read is not published and no corpus has measured it: UNVERIFIED,
+    # so a target is VERSION_SUPPORT_UNDETERMINED for this tool, never assumed supported.
+    kotlin:
+      - tool: semgrep
+        min: null
+        max: null
+        max_from_input: null
+        unbounded: false
+        compare: version
+        basis: "own parser; per-version Kotlin support not published, no corpus measured (KDEC-026)."
+        verified: UNVERIFIED
+    swift:
+      - tool: semgrep
+        min: null
+        max: null
+        max_from_input: null
+        unbounded: false
+        compare: version
+        basis: "own parser; per-version Swift support not published, no corpus measured (KDEC-026)."
         verified: UNVERIFIED
   sast-dotnet:
     dotnet:
@@ -240,6 +285,78 @@ version_support:
         basis: "MEASURED by the seeded Terraform corpus (tests/corpora/terraform_corpus.py; D-VF-4): trivy-config 0.71.2 (and 0.70.0) read the seed in every family 0.12..1.14 (families: 0.12, 0.13, 0.14, 0.15, 1.1, 1.2, 1.3, 1.4, 1.5, 1.7, 1.8, 1.9, 1.10, 1.11, 1.14); every family in the corpus was read; no newer family is in it, so a newer release is outside what was measured. Releases with no new .tf construct are claimed through their neighbours. Measured 2026-10-21 (locally, sha256-verified Windows release binaries; confirmed hosted for 0.71.2 and 0.70.0 by probe-scanner-corpora run 39640950138 on 37e4e77, --check PASS) by tests/corpora/probe_iac_corpus.py."
         verified: READ
         corpus: tests/corpora/terraform_corpus.py
+    # hadolint (lane L-SCAN-A, KDEC-025). Its class is the Dockerfile, which carries no version a
+    # resolver can discover: the Dockerfile syntax is read by hadolint's own parser. What it cannot
+    # parse it reports as DL1000, and the job NAMES that file as a VERSION_GAP and leaves it out of
+    # the count -- never a clean result. Measured on tests/corpora/pipeline_lint_corpus.py.
+    Dockerfile:
+      - tool: hadolint
+        min: null
+        max: null
+        max_from_input: null
+        unbounded: true
+        compare: version
+        basis: "hadolint 2.15.1 (sha256-pinned in iac-scan) parses the Dockerfile itself; no syntax version is discovered or claimed. An unparseable file is DL1000, NAMED as a VERSION_GAP by the job, not counted. Measured 2026-10-23 (DL3000/DL3002/DL3007/DL3008/DL3020 seeded and read) by tests/prove_pipeline_lint.py."
+        verified: READ
+        corpus: tests/corpora/pipeline_lint_corpus.py
+  # PIPELINE LINT (lane L-SCAN-A, KDEC-025), inside deps-scan. These classes have no discoverable
+  # version: the workflow schema is GitHub's live one, a shell script names a DIALECT, PowerShell a
+  # minimum (#Requires). Each tool's limit is enforced IN THE JOB, per file, as a named VERSION_GAP:
+  # a shebang outside sh/bash/dash/ksh/busybox is not read by shellcheck; a #Requires above the
+  # runner's pwsh is not read by PSScriptAnalyzer (measured: it returns nothing, silently, for one).
+  deps-scan:
+    GitHubActionsWorkflow:
+      - tool: actionlint
+        min: null
+        max: null
+        max_from_input: null
+        unbounded: true
+        compare: version
+        basis: "actionlint 1.7.12 (sha256-pinned) checks against the workflow syntax it ships; a key newer than it is reported as a syntax-check finding, never skipped. It shellchecks every run: block with shellcheck 0.11.0. Measured 2026-10-23 by tests/prove_pipeline_lint.py."
+        verified: READ
+        corpus: tests/corpora/pipeline_lint_corpus.py
+      - tool: zizmor
+        min: null
+        max: null
+        max_from_input: null
+        unbounded: true
+        compare: version
+        basis: "zizmor 1.30.1 (sha256-pinned), offline, --no-config: template injection, excessive permissions, unpinned uses, dangerous triggers. A workflow it cannot load is a zizmor error exit, COLLECTION_FAILED. Measured 2026-10-23 by tests/prove_pipeline_lint.py."
+        verified: READ
+        corpus: tests/corpora/pipeline_lint_corpus.py
+    Shell:
+      - tool: shellcheck
+        min: null
+        max: null
+        max_from_input: null
+        unbounded: true
+        compare: version
+        basis: "shellcheck 0.11.0 (sha256-pinned) reads the sh, bash, dash, ksh and busybox dialects; any other shebang (zsh, fish, csh) is a per-file VERSION_GAP the job names (measured: SC1071 on zsh). No shebang: .sh as POSIX sh, .bash as bash, stated. Measured 2026-10-23 by tests/prove_pipeline_lint.py."
+        verified: READ
+        corpus: tests/corpora/pipeline_lint_corpus.py
+    PowerShell:
+      - tool: psscriptanalyzer
+        min: null
+        max: "7.4"
+        max_from_input: null
+        unbounded: false
+        compare: version
+        basis: "PSScriptAnalyzer 1.25.0 (sha256-pinned nupkg) parses with the runner's pwsh, 7.4.x on ubuntu-latest at 2026-10-23; the job compares each file's #Requires -Version with the pwsh it actually ran and names a newer one as a VERSION_GAP (measured: #Requires -Version 99.0 returned no result and no error). Measured 2026-10-23 by tests/prove_pipeline_lint.py."
+        verified: READ
+        corpus: tests/corpora/pipeline_lint_corpus.py
+  # mobsfscan 1.0.1 reads Swift through Semgrep 1.172.0's parser (the release it pins) and
+  # Objective-C through its own pattern rules (lexical). The Swift range is not published and no
+  # corpus has measured it: UNVERIFIED (KDEC-026). Objective-C has no language-version axis here.
+  sast-mobile:
+    swift:
+      - tool: mobsfscan
+        min: null
+        max: null
+        max_from_input: null
+        unbounded: false
+        compare: version
+        basis: "Swift rules run on Semgrep 1.172.0's Swift parser (mobsfscan 1.0.1 pins it); per-version support not published, no corpus measured (KDEC-026)."
+        verified: UNVERIFIED
   codeql:
     python:
       - tool: codeql
@@ -294,6 +411,15 @@ version_support:
         unbounded: false
         compare: standard_year
         basis: "C89 to C23, C++98 to C++23, the 23s in beta; C++20 modules not supported (same page)."
+        verified: READ
+    kotlin:
+      - tool: codeql
+        min: "1.8.0"
+        max: "2.4.20"
+        max_from_input: null
+        unbounded: false
+        compare: version
+        basis: "Kotlin 1.8.0 to 2.4.20 (CodeQL supported languages page as fetched 2026-10-23, KDEC-026). The java-kotlin leg extracts Kotlin while autobuild compiles it; Swift is not carried (it needs a macOS runner)."
         verified: READ
   secret-scan:
     "*":
@@ -350,4 +476,20 @@ capability_selection:
   # substitute for anything and nothing substitutes for it.
   dotnet-nuget-audit: {class: dotnet, candidates: [sast-dotnet/dotnet-sdk]}
   cpp-sast:           {class: cpp,    candidates: [sast-cpp/flawfinder, sast-cpp/cppcheck, codeql/codeql]}
+  # PHP: Semgrep alone. CodeQL has no PHP extractor, so nothing substitutes; a PHP target outside
+  # what Semgrep's row establishes is a VERSION_GAP (PARTIAL, never PASS).
+  php-sast:           {class: php,    candidates: [sast-semgrep/semgrep]}
+  # Kotlin (KDEC-026): Semgrep (the p/kotlin floor) by default, CodeQL's java-kotlin leg behind it.
+  kotlin-sast:        {class: kotlin, candidates: [sast-semgrep/semgrep, codeql/codeql]}
+  # Swift (KDEC-026): mobsfscan in sast-mobile, Semgrep's default Swift rules behind it. CodeQL
+  # reads Swift only on macOS, which the kit does not run: not a candidate.
+  swift-sast:         {class: swift,  candidates: [sast-mobile/mobsfscan, sast-semgrep/semgrep]}
   iac:                {class: iac,    candidates: [iac-scan/checkov, iac-scan/trivy-config]}
+  # Pipeline lint (lane L-SCAN-A, KDEC-025): one linter per class, nothing substitutes for it. These
+  # classes carry no discoverable version, so the resolver selects nothing here; the jobs name each
+  # file a linter cannot read as a VERSION_GAP, and the coverage table counts the class as covered.
+  workflow-lint:      {class: GitHubActionsWorkflow, candidates: [deps-scan/actionlint]}
+  workflow-security:  {class: GitHubActionsWorkflow, candidates: [deps-scan/zizmor]}
+  shell-lint:         {class: Shell,      candidates: [deps-scan/shellcheck]}
+  powershell-lint:    {class: PowerShell, candidates: [deps-scan/psscriptanalyzer]}
+  dockerfile-lint:    {class: Dockerfile, candidates: [iac-scan/hadolint]}

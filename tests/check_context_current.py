@@ -160,7 +160,11 @@ def check(root, max_commits=DEFAULT_MAX_COMMITS):
                          'was reconciled on a branch this one does not contain.' % (name, sha))
             continue
 
-        behind = git(root, 'rev-list', '--count', '%s..HEAD' % sha)
+        # WORK, not release mechanics: merges, and commits that change only the release notes, are
+        # how main is assembled and never reach the trunk; counting them failed every release
+        # candidate. A path-limited count also skips commits that change nothing.
+        behind = git(root, 'rev-list', '--count', '--no-merges', '%s..HEAD' % sha, '--', '.',
+                     ':(exclude)docs/RELEASE_NOTES.md')
         behind = int(behind) if behind.isdigit() else 0
         if behind > max_commits:
             fails.append('%s: context was reconciled against %s and HEAD is %d commits ahead '
@@ -231,6 +235,31 @@ def self_test():
             fails.append('TOUCHING THE FILE MADE IT PASS -- the gate is measuring the clock, not '
                          'the work')
 
+        # RELEASE MECHANICS ARE NOT WORK (Release 3 candidate, 2026-10-21): on a release branch the
+        # context was 16 commits "behind", 12 of them main's own release merges and release-notes
+        # commits that never reach the trunk. Those must not count; a real change still must.
+        io.open(os.path.join(pdir, 'current-state.md'), 'w', encoding='utf-8').write(
+            '# s\n\n> Reconciled against commit `%s`.\n' % git(root, 'rev-parse', 'HEAD'))
+        commit('context restated')
+        os.makedirs(os.path.join(root, 'docs'), exist_ok=True)
+        for i in range(DEFAULT_MAX_COMMITS + 2):
+            io.open(os.path.join(root, 'docs', 'RELEASE_NOTES.md'), 'a').write('r%d\n' % i)
+            subprocess.run(['git', '-C', root, 'add', '-A'], capture_output=True)
+            subprocess.run(['git', '-C', root, 'commit', '-q', '-m', 'notes %d' % i],
+                           capture_output=True)
+        for i in range(DEFAULT_MAX_COMMITS + 2):
+            subprocess.run(['git', '-C', root, 'commit', '-q', '--allow-empty', '-m', 'merge-like %d'
+                            % i], capture_output=True)
+        f, _ = check(root)
+        if any('commits ahead' in x for x in f):
+            fails.append('release-notes-only and empty commits counted as work behind the context')
+        for i in range(DEFAULT_MAX_COMMITS + 2):
+            commit('real work %d' % i)
+        f, _ = check(root)
+        if not any('commits ahead' in x for x in f):
+            fails.append('real work beyond the limit was not counted once release commits were '
+                         'excluded')
+
         # A claimed commit that does not exist must be refused, not believed.
         io.open(os.path.join(pdir, 'current-state.md'), 'w', encoding='utf-8').write(
             '# s\n\n> Reconciled against commit `deadbeefdeadbeef`.\n')
@@ -269,6 +298,19 @@ def main():
     a = ap.parse_args()
     if a.self_test:
         return self_test()
+
+    # SOURCE-ONLY CONTROL (2026-10-22). The continuity record lives in the SOURCE; a neutral export
+    # never carries .context/ (tests/prove_export_scope.py E2). In an exported copy -- recognised by
+    # its watermark AND the record's absence -- there is nothing to check: say so by name and do not
+    # fail the copy's self-test. A copy that DOES carry .context/ is checked as normal. E9.
+    if (os.path.isfile(os.path.join(a.root, '.neutral-export-watermark.json'))
+            and not os.path.isdir(os.path.join(a.root, '.context'))):
+        print('SOURCE-ONLY CONTROL: check_context_current.py guards the source repository\'s '
+              'continuity record. This is an exported copy (.neutral-export-watermark.json present) '
+              'and, by design, carries no .context/, so there is nothing here for it to check; the '
+              'source ran it at the commit the watermark records. Nothing was checked here, and '
+              'nothing passed.')
+        return 0
 
     fails, notes = check(a.root, a.max_commits)
     print('')

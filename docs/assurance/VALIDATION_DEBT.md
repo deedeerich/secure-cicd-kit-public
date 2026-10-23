@@ -225,7 +225,7 @@ clothes.
 | Item | State |
 |---|---|
 | gosec repo-relative URIs | ✅ fixed `02b67f6`; re-rooting verified against real SARIF, idempotent |
-| **Trivy scope-relative URIs** | ❗ **LIVE DEFECT.** Trivy reports `infra/main.tf` where Checkov and Semgrep report `tests/consumer-fixture/full/infra/main.tf`. One file, two identities, inside one repo |
+| **Trivy scope-relative URIs** | ✅ **fixed.** Trivy reported `infra/main.tf` where Checkov and Semgrep report `tests/consumer-fixture/full/infra/main.tf`; the `iac-scan` composite now re-roots Trivy's SARIF with the kit's normaliser before counting, and refuses the run if the normaliser is absent. The collision fixture below is still owed |
 | IaC signal tool-pinning | ⚠ **absent.** `iac:checkov` and `iac:dockerfile` are not tool-pinned, which is why the Trivy defect survived. Any scanner covering for another passes |
 | Collision regression fixture | ⚠ **owed.** Two component roots containing the same filename, scanned together, asserting **two distinct identities survive normalization**. Tests the failure mode rather than the implementation that prevents it |
 

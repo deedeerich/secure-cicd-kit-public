@@ -36,8 +36,10 @@ TWO THINGS THIS COULD NOT SEE UNTIL 2026-10-14 (gap ledger L23)
     workflows verbatim as evidence of a defect (`actions/download-artifact@v4` with no run-id), and
     a quoted defect is not an instruction to this kit. Images stay compared, as before.
 
-    Set GITHUB_TOKEN (or GH_TOKEN) to lift the unauthenticated GitHub rate limit; the self-test
-    step does. Rate-limited is UNKNOWN, never PASS.
+    No token is needed. GITHUB_TOKEN (or GH_TOKEN) is used for the REST fallback ONLY when its
+    issuer -- $GITHUB_API_URL, and $PIN_CHECK_TOKEN_HOST when set -- is api.github.com; a token
+    from `api.<tenant>.ghe.com` is never sent to api.github.com (KDEC-027). Unreachable is UNKNOWN,
+    never PASS.
 
 EXIT
     0  every pin resolves and docs agree with code
@@ -53,6 +55,9 @@ import re
 import sys
 import urllib.error
 import urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _github_refs  # noqa: E402 - after the path insert
 
 WORKFLOWS = '.github/workflows/*.yml'
 # Composites are code too. Decomposition Phase 2 moves scanner steps -- and the images they pin --
@@ -81,7 +86,7 @@ SELF_TEST_GOOD = ('securego/gosec', '2.24.6')
 SELF_TEST_ACTION_BAD = ('actions/checkout', 'v0.0.0-this-tag-must-not-exist')
 SELF_TEST_ACTION_GOOD = ('actions/checkout', 'v4')
 
-GITHUB_API = 'https://api.github.com'
+GITHUB_API = _github_refs.GITHUB_API
 
 
 def uncommented(path):
@@ -124,25 +129,13 @@ def ref_kind(ref):
 
 
 def _github(path, timeout=15):
-    """-> (status, json-or-None). Network/auth trouble is a status of None, never a verdict."""
-    headers = {'User-Agent': 'secure-cicd-kit-pin-check', 'Accept': 'application/vnd.github+json'}
-    token = os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN')
-    if token:
-        headers['Authorization'] = 'Bearer ' + token
-    try:
-        req = urllib.request.Request(GITHUB_API + path, headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.getcode(), json.load(r)
-    except urllib.error.HTTPError as e:
-        return e.code, None
-    except Exception:
-        return None, None
+    """-> (status, json-or-None). Only with a token api.github.com issued (KDEC-027); otherwise
+    (None, None) and the REST path is not taken. Network/auth trouble is None, never a verdict."""
+    return _github_refs.api_get(path, 'secure-cicd-kit-pin-check', timeout)
 
 
-def action_resolves(repo, ref, timeout=15):
-    """True / False / None(unknown). An exact match on the returned ref, never a prefix."""
-    if repo.count('/') != 1:
-        return None
+def _action_resolves_api(repo, ref, timeout=15):
+    """The REST path, secondary: True / False / None."""
     if ref_kind(ref) == 'sha':
         status, _ = _github('/repos/%s/commits/%s' % (repo, ref), timeout)
         if status == 200:
@@ -159,6 +152,22 @@ def action_resolves(repo, ref, timeout=15):
             # 403 is the rate limit or a private repository; 401 a bad token. Not an observation.
             return None
     return False
+
+
+def action_resolves(repo, ref, timeout=15):
+    """True / False / None(unknown). An exact match on the ref, never a prefix.
+
+    Git first (no token, no REST rate limit); the REST API only when git could not see and the run
+    holds a token api.github.com issued. A ref git would read as an option is None, never run."""
+    if not _github_refs.valid(repo, ref):
+        return None
+    if ref_kind(ref) == 'sha':
+        r = _github_refs.commit_exists(repo, ref)
+    else:
+        r = _github_refs.ref_resolves(repo, ref)
+    if r is not None:
+        return r
+    return _action_resolves_api(repo, ref, timeout)
 
 
 def resolves(repo, tag, timeout=15):
@@ -193,8 +202,8 @@ def self_test():
     abad = action_resolves(*SELF_TEST_ACTION_BAD)
     agood = action_resolves(*SELF_TEST_ACTION_GOOD)
     if abad is None or agood is None:
-        print('SELF-TEST UNKNOWN: GitHub API unreachable or rate-limited. Reporting UNKNOWN, not PASS.')
-        print('(set GITHUB_TOKEN to lift the unauthenticated limit)')
+        print('SELF-TEST UNKNOWN: github.com unreachable by git, and the REST API unusable (no '
+              'token api.github.com issued, or rate-limited). Reporting UNKNOWN, not PASS.')
         return 2
     if abad is not False or agood is not True:
         print('SELF-TEST FAILED: action resolver said bad=%r good=%r (expected False / True).'

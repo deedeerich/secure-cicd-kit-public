@@ -1,51 +1,27 @@
 {
-  "schema_version": 1,
-  "notes": "EXAMPLE. Copy to .security/policy-registration.json on the protected default branch, put the path under CODEOWNERS, and replace every value. The numbers block carries the owner's table from ENFORCEMENT_TIERS_AND_FINDING_BASELINE.md section 8.2 as a configured value; it is policy, not architecture, and nothing in the kit defaults any of them.",
-  "team_pattern": "small_team",
-  "numbers": {
-    "promotion_consecutive_clean_runs": 5,
-    "sla_period_days": {"CRITICAL": 7, "HIGH": 30, "MEDIUM": 180, "LOW": 365},
-    "breach_grace_days": {"CRITICAL": 0, "HIGH": 7, "MEDIUM": 14, "LOW": 14},
-    "track_stall_period_days": 90,
-    "no_fix_recheck_days": 30,
-    "severity_formula_version": "severity-formula/1"
-  },
-  "environments": {
-    "development": {
-      "tier": "dev",
-      "rung": "crawl",
-      "approver_role": "security-lead",
-      "registered_on": "2026-10-14",
-      "review_trigger": "the environment set, the team pattern or the exposure of this repository changes",
-      "reachable_from_merge_without_human_gate": true
-    },
-    "production": {
-      "tier": "prod",
-      "rung": "walk",
-      "approver_role": "security-lead",
-      "registered_on": "2026-10-14",
-      "review_trigger": "the environment set, the team pattern or the exposure of this repository changes",
-      "reachable_from_merge_without_human_gate": false,
-      "promotion_evidence": {
-        "walk": {
-          "controls_executed_at_baseline": {"consecutive_clean_runs": 5, "evidence_ref": "actions runs <first>..<fifth>, no EVIDENCE_UNTRUSTED"},
-          "ledger_populated_and_owned": ".security/finding-baseline.json at <commit>, every entry owned",
-          "entries_classified": ".security/finding-baseline.json at <commit>, every entry carries finding_classification",
-          "human_controls_assessed": "review record <reference>: approval separation available at small_team"
-        }
-      },
-      "history": [
-        {"from": "crawl", "to": "walk", "date": "2026-10-14", "approver_role": "security-lead", "evidence_refs": ["see promotion_evidence.walk"]}
-      ]
-    }
-  },
-  "cherry_picks": [
+  "schema_version": 2,
+  "register_id": "example-repository-registration",
+  "notes": "EXAMPLE of a REPOSITORY's own registration. Copy to .security/policy-registration.json on the protected default branch, put that path under CODEOWNERS, and replace every value. It is read from the default branch, never from a pull request. Scopes here name only environment_tier: this file IS the repository level, above everything the central register (the kit's policy/policy-registration.json) says for this repository's org, team and product. It may TIGHTEN, never soften. With no registration anywhere the kit default applies: crawl at every tier, only secrets block.",
+  "sign_off": {"by": "Dana Example", "role": "security-lead", "date": "2026-10-22", "reference": "REVIEW-0001"},
+  "environment_names": {"development": "dev", "staging": "uat", "production": "prod"},
+  "policies": [
     {
-      "control": "deps-scan",
-      "minimum": "BLOCKED",
-      "reason": "the supply chain is this repository's exposure; a dependency finding blocks at walk",
-      "authority": "security-lead",
-      "review_trigger": "promotion to run, where new critical and high block regardless"
+      "id": "this-repo-merge-reach",
+      "scope": {},
+      "merge_reaches_tier": "dev",
+      "decision": {"authority": "Dana Example", "approver_role": "security-lead", "reason": "a merge to main deploys to development only; uat and prod are behind environment reviewers", "decided_on": "2026-10-22", "expires": "2027-04-30"}
+    },
+    {
+      "id": "this-repo-uat-supply-chain",
+      "scope": {"environment_tier": "uat"},
+      "controls": {"deps-scan": "BLOCKED"},
+      "decision": {"authority": "Dana Example", "approver_role": "security-lead", "reason": "the supply chain is this repository's exposure: a dependency finding blocks a release candidate", "decided_on": "2026-10-22", "expires": "2027-04-30", "environment_reviewers": ["release-approvers"]}
+    },
+    {
+      "id": "this-repo-prod-supply-chain",
+      "scope": {"environment_tier": "prod"},
+      "controls": {"deps-scan": "BLOCKED"},
+      "decision": {"authority": "Dana Example", "approver_role": "security-lead", "reason": "the supply chain is this repository's exposure: a dependency finding blocks a release", "decided_on": "2026-10-22", "expires": "2027-04-30", "environment_reviewers": ["release-approvers"]}
     }
   ]
 }

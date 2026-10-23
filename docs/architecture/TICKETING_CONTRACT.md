@@ -18,10 +18,16 @@ Deferred Depth: the ledger's storage model (ENFORCEMENT_TIERS_AND_FINDING_BASELI
              field model, which could not be verified here · the tracker's own UI
 ```
 
-> **Nothing described here is built.** Not the ticket classes, not the stamp, not the lookup
-> cascade, not the update path, not the budget. No workflow, script or test was changed to write
-> this. The kit's own rule applies to this file first: **registering a term is not implementing it,
-> and writing it down does not make it so.**
+> **Status, 2026-10-23 (KDEC-024, lane L-TKT): BUILT and proven locally on stateful Jira, Azure
+> DevOps and GitHub stand-ins (`tests/prove_ticket_lifecycle.py`), the Jira lifecycle also live on
+> the owner's personal site (`tests/live_ticketing_run.py --phase r3`, PP-7). No hosted run of the
+> armed workflow yet.** Section 13 says what KDEC-024 added, which rules below it amended (each
+> amended section says so where it stands), and how a consumer turns ticketing on.
+>
+> *As written on 2026-09-23, kept:* "Nothing described here is built. Not the ticket classes, not
+> the stamp, not the lookup cascade, not the update path, not the budget." The kit's own rule still
+> applies to this file first: **registering a term is not implementing it, and writing it down does
+> not make it so.**
 >
 > **Section 9 proposes two CANDIDATE namespaces.** They are marked CANDIDATE because registering
 > them would assert they had been decided, and they have not been. Section 10 lists the terms this
@@ -541,6 +547,21 @@ most one ticket (ENFORCEMENT_TIERS_AND_FINDING_BASELINE.md section 9.1). So clos
 
 **A cluster's ticket may be closed only when every member is closed on its own terms.** Each member
 needs the scanner to no longer reproduce it, over a scope shown to cover where that member lived.
+
+> **Built (KDEC-024, T-09).** The reconciler now performs that closure itself, as the recorded
+> consequence of the evidence: every member's scanner ran this run, ESTABLISHED its row (not PARTIAL,
+> not failed) in the report's `findings-coverage.json`, declared a scope covering the member's file,
+> and reported nothing unidentified there. Then each member is VALIDATED
+> (`ticket_model.check_validation_evidence`) and the parent closes under `ALL_CHILDREN_RESOLVED`, with
+> a comment citing the run and the commit that proved it absent. Anything less is `POTENTIALLY_ABSENT`
+> and closes nothing. A cleared finding detected again reopens the ticket as `RECURRED` (section 13).
+>
+> **Confirmed by the owner, 2026-10-23:** "Kit is ok to close if we follow the above with proven and which commit fixed it and the date and everything. That way we can automate cleanup and PM kinds of things that are not like larger project items because less tedious and easier to adopt."
+> The close comment and the ledger's `clearance` record therefore state: **fixed by** the first
+> commit at which every member scanner proved it absent; the last commit at which it was present
+> (`UNKNOWN`, said, when no earlier run recorded it); the date and time in UTC; the run link; each
+> verifying scanner with its version; and each finding identity with its file. Only routine finding
+> tickets close this way -- never the product epic, the calibration ticket, or a request-class ticket.
 A member that merely stopped appearing is `POTENTIALLY_ABSENT`, whose registered action is
 "establish coverage before calling it fixed — absence of the scope is not absence of the thing".
 
@@ -562,6 +583,16 @@ cluster is split, "both members return to acting on their own terms, each keepin
 machine-owned blocks reference the original, and the split is recorded. Nothing is deleted. A merge
 in the other direction never removes a ticket either: the surviving ticket references the ones it
 absorbed and those are closed **as superseded, by a human**, never by the bot (Section 5.2).
+
+> **Amended (KDEC-024, D4; owner 2026-10-23: "One ticket per finding identity across scanners. Merge
+> cross-scanner duplicates into one ticket").** When the members of ONE anchored cluster are bound to
+> several existing tickets that no other cluster claims, the bot merges them: the **oldest** ticket
+> (the lowest tracker id -- a stated rule, not a pick by pagination) survives and names every scanner
+> and member; each other ticket gets a comment naming the survivor, a kit-owned `-superseded` label,
+> and is closed; its ledger entry stays, pointing at the survivor (`merged_into`). Nothing is
+> deleted. A split, or a key with more than one ticket, is still `BINDING_AMBIGUOUS` for a person, and
+> the bot still never applies the tracker's own "duplicate" resolution. **Confirmed by the owner,
+> 2026-10-23.**
 
 **And closing the ticket still clears nothing.** Rule 7, one more time, because this is the exact
 place an implementer will be tempted to shortcut it: the cluster's members are cleared by the
@@ -700,11 +731,11 @@ Only inside the machine-owned block, or as a comment, or as a label the kit owns
 | **`first_seen`, or the flag that says the age is unestablished** | ledger entries are append-only with respect to `first_seen` (section 8.8 rule 1). Re-dating a finding is re-grandfathering it |
 | **the justification or the evidence references** | they are the requester's claim and the reviewer's basis. A bot editing either changes what was approved after it was approved |
 | **closing a ticket as a way of clearing a finding** | rule 7. The scanner clears findings |
-| **closing a ticket at all, except as the recorded consequence of a verified clearance** | a bot that can close can bury |
+| **closing a ticket at all, except as the recorded consequence of a verified clearance** (a routine finding ticket only, its close naming the fixing commit range, the UTC time, the run, the verifying scanners and versions, and the finding) -- or, since KDEC-024, as the superseded half of a cross-scanner merge (section 4.3). Both confirmed by the owner 2026-10-23 | a bot that can close can bury |
 | **reopening a ticket whose closure is backed by an unexpired approved disposition** | Section 4.2. Reopening on every run trains people to ignore the bridge, and a control people ignore is worse than none |
 | **marking a ticket as a duplicate of another** | that is the cardinality judgement Section 4.4 sends to a human |
 | **the cluster stamp, once set** | re-pointing a stamp re-points the history silently. A wrong stamp is repaired by a recorded human act |
-| **anything outside the machine-owned block** | the rest of the ticket belongs to people |
+| **anything outside the machine-owned block** -- except, since KDEC-024 (confirmed by the owner 2026-10-23), the kit-owned labels it adds and the one-step priority raise of an SLA escalation (section 13) | the rest of the ticket belongs to people |
 
 ### 5.3 The prohibition is structural, not a promise about the bot
 
@@ -1490,3 +1521,71 @@ where the bot's credential does not reach. The whole thing runs after the merge 
 never in a fork-reachable job with tracker write credentials, and costs one calibration call plus one
 paginated sweep plus one write per genuinely changed obligation, which is a cost that grows with the
 backlog that exists rather than with the findings observed.
+
+---
+
+## 13 · What KDEC-024 built, and how a consumer turns ticketing on
+
+**The owner, 2026-10-23:** "We need to finish and fully mature tickets and ticket handling." Built in
+lane L-TKT, proven by `tests/prove_ticket_lifecycle.py` (stateful Jira, Azure DevOps and GitHub
+stand-ins, no network), `tests/prove_ticket_reconcile_workflow.py` and, for Jira, live
+(`tests/live_ticketing_run.py --phase r3` on the personal site, 2026-10-23: PP-7).
+
+| item | what is built | where |
+|---|---|---|
+| T-19 | the report's records reach the reconciler (both field spellings read); `templates/ticket-reconcile.yml` runs it after the scan, in the same run, from the scan's evidence artifact, then proposes the ticket ledger | `normalise_record`; the template |
+| T-17 | mode `resurface`: the clock WITH writes, ONE job (the guard rule is the job's own `if:`), daily in the template, no scan | `resurface()`; `reusable-ticket-reconcile.yml` job `resurface` |
+| T-09 | closure on verified clearance with the run and commit cited; `POTENTIALLY_ABSENT` otherwise | `clearance_pass`; `scan_report.py` writes `findings-coverage.json` |
+| D5 | `NEW`, `RECURRED`, `REOPENED_BY_LAPSE` (assurance-taxonomy.yaml `ticket_trigger`) on all three backends; `close()` and `mark()` on each | `reconcile`, `resurface` |
+| D4 / L48 | one cluster-key function (`finding_correlation.cluster_key`), byte-identical to live stamps; cross-scanner duplicates merged into the oldest ticket | `merge_plan` |
+| FW-3a | `CONTESTED_ANCHORED` (finding_confidence) when a same-class peer covered the file and stayed silent -- dependency, container and secret classes only; severity disagreement recorded, worst taken; a person asked once (`DECISION_REQUIRED`) | `annotate` |
+| SLA | due date from `numbers.sla_period_days.<SEVERITY>` (remediation_sla), clock from the kit's first observation; overdue escalated once: comment, priority one step, `<stamp>-sla-overdue` label | `sla_for`, `escalate_overdue` |
+| LINK | run, commit, file:line and secret exception on the ticket; `exception_due.py --ticket-ledger` names the finding ticket on the exception's comment | `annotate`; `exception_due.finding_tickets` |
+| bounds | `TICKET_CALL_BUDGET` (kit default 1000 calls per run), `TICKET_RETRY_CEILING` (kit default 3) with no single wait over 120 s; `TICKETING_UNAVAILABLE` (assurance-taxonomy.yaml `ticketing_availability`) in the record, the summary and exit 3 | `HttpBackend._http`, `finish_state` |
+| FW-3b | the correlation-triage skill | `skills/tools/correlation-triage/SKILL.md` |
+
+**What it still never does:** write a disposition, an approver, an expiry, a due date or SLA deadline,
+`first_seen`, or the tracker's "duplicate" resolution; close a ticket on absence without coverage;
+reopen a closure an unexpired approved disposition backs; let any ticketing outcome reach the gate.
+The scheduled clock's own ledger changes are not proposed (no scan, no propose-ledger in that run):
+its escalations and lapse reopens are kept idempotent by the tracker itself (the overdue label; the
+ticket's open state).
+
+### 13.1 Turning it on
+
+1. **Copy `templates/ticket-reconcile.yml`** to `.github/workflows/security.yml` in place of
+   `templates/security.yml`, pin the kit by commit SHA in every `uses:` and in `kit_ref`, and set
+   `backend` (`jira`, `azdo` or `github`) in both ticket jobs.
+2. **Create a protected environment** (`ticketing` in the template) whose deployment branch policy
+   allows the default branch only. Its secrets and variables are the only place the tracker
+   credential lives.
+3. **Provision the tracker once, by hand** (TICKETING_BACKENDS.md 3 and 4): the product epic, the
+   single-line stamp field (Jira `customfield_<id>` / Azure DevOps `Custom.<name>` in an inherited
+   process; GitHub uses the body block), the umbrella label, and a calibration ticket this credential
+   did not create.
+4. **Secrets, in the environment**:
+
+   | backend | secrets |
+   |---|---|
+   | jira | `JIRA_EMAIL`, `JIRA_TOKEN` |
+   | azdo | `AZDO_PAT` (Work Items read & write, one organisation) |
+   | github | `GH_TICKET_TOKEN` (issues read & write on the one repository `TICKET_REPO` names) |
+
+5. **Variables, in the environment**:
+
+   | backend | required | optional |
+   |---|---|---|
+   | every | `TICKET_CREATE_CEILING` (jira, azdo) | `TICKET_STAMP_LABEL`, `TICKET_CALL_BUDGET`, `TICKET_RETRY_CEILING`, `TICKET_INSTANCE_THRESHOLD`, `TICKET_DEGRADED_RUN_THRESHOLD` |
+   | jira | `JIRA_HOST`, `JIRA_PROJECT`, `JIRA_STAMP_FIELD`, `JIRA_EPIC_ID`, `JIRA_CALIBRATION_ISSUE` | `JIRA_TYPE_CLUSTER`, `JIRA_TYPE_INSTANCE`, `JIRA_TRANSITION_REOPEN`, `JIRA_TRANSITION_DONE` (unset: the one transition into a done status), `JIRA_PRIORITY_LADDER` (default `Lowest,Low,Medium,High,Highest`) |
+   | azdo | `AZDO_ORG_URL`, `AZDO_PROJECT`, `AZDO_STAMP_FIELD`, `AZDO_EPIC_ID`, `AZDO_CALIBRATION_ITEM` | `AZDO_TYPE_CLUSTER`, `AZDO_TYPE_INSTANCE`, `AZDO_STATE_REOPEN`, `AZDO_STATE_DONE` |
+   | github | `TICKET_REPO`, `TICKET_STAMP_LABEL`, `TICKET_CALIBRATION_REF` | -- |
+
+6. **The register** (`.security/policy-registration.json`, protected branch): `numbers.sla_period_days`
+   with `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` in days turns SLA due dates and escalation on; without it
+   the run says SLA is not evaluated (or `POLICY_NUMBER_NOT_CONFIGURED`) and never invents one.
+   `secret_exceptions` are linked on the finding tickets automatically.
+7. **Permissions**, as the template grants them: the scan's `contents: read`, `security-events:
+   write`, `actions: read`; the ticket jobs `contents: read` only (the tracker credential is the
+   environment's); the ledger job `contents: write` and `pull-requests: write`, to open the ledger
+   pull request -- it never pushes to the default branch.
+8. **Run `apply: false` first.** The run prints its plan and writes nothing; then set `apply: true`.

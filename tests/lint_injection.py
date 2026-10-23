@@ -133,9 +133,21 @@ HOSTILE_TRIGGERS = {'pull_request_target', 'issue_comment', 'issues', 'pull_requ
 BLOCKING = ['.github/workflows/reusable-*.yml', '.github/workflows/reusable-*.yaml',
             '.github/workflows/workflow-policy-check.yml', 'overlays/*/workflows/*.yml',
             'overlays/*/workflows/*.yaml', '.github/actions/*/action.yml',
+            'overlays/*/actions/*/action.yml', 'overlays/*/templates/*.yml',
             '.github/actions/*/action.yaml']
 
 UNTRUSTED_RE = [re.compile(p) for p in UNTRUSTED]
+
+
+def _expand(doc):
+    """The workflow with every `$/` composite step expanded into its job, as the runner sees it.
+
+    Scanner job bodies live in `.github/actions/<scanner>/` (ledger L64); this reads the steps a
+    job actually runs. One rule, tests/_composite_expand.py, for every reader.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.expanded_doc(doc)
 
 
 def is_blocking(path, root):
@@ -145,7 +157,7 @@ def is_blocking(path, root):
 
 def is_workflow_dir(dp):
     d = dp.replace('\\', '/').rstrip('/')
-    return d.endswith('.github/workflows') or bool(re.search(r'(^|/)overlays/[^/]+/workflows$', d))
+    return d.endswith('.github/workflows') or bool(re.search(r'(^|/)overlays/[^/]+/(workflows|templates)$', d))
 
 
 def shown(path):
@@ -188,7 +200,7 @@ def triggers_of(doc):
 def scan_file(path):
     """-> (findings, error). A file that cannot be parsed is reported, never skipped."""
     try:
-        doc = yaml.safe_load(io.open(path, encoding='utf-8', errors='replace'))
+        doc = _expand(yaml.safe_load(io.open(path, encoding='utf-8', errors='replace')))
     except Exception as e:
         return ([], '%s: %s' % (type(e).__name__, str(e)[:120]))
     if not isinstance(doc, dict):

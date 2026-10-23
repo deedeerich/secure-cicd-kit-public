@@ -460,6 +460,27 @@ namespaces:
           is labelled a substitution and is never presented as equivalent coverage.
 
   # ─────────────────────────────────────────────────────────────────────────────
+  corpus_family_outcome:
+    description: >-
+      What a seeded-corpus probe (tests/corpora/probe_php_corpus.py) observed for one version
+      family's file: READ (the seed reported, no error), MISSED (no seed and no error -- a silent
+      drop), COLLECTION_FAILED (no report it can be held to), or PARSE_ERROR, below. Only READ
+      families extend a measured range; the range is contiguous from the oldest family.
+    consumers: [tests/corpora/probe_php_corpus.py, tests/prove_php_corpus.py, scanner-registry.yaml version_support basis]
+    rule: >-
+      A FAMILY THE SCANNER SAID IT COULD NOT FULLY PARSE IS NOT READ, even when the seed came back
+      through error recovery. Measured on Semgrep 1.90.0: such a file exits 3 under --strict, which
+      the job reads as COLLECTION_FAILED, so counting it as read would claim a range the job fails on.
+    values:
+      PARSE_ERROR:
+        definition: >-
+          The scanner reported an error naming the family's file (a syntax error, or Semgrep's
+          PartialParsing): by its own account it did not read all of the file.
+        rule: >-
+          Never READ and never MISSED: it is loud where MISSED is silent, and it caps the range at
+          the family below it exactly as a silent drop does.
+
+  # ─────────────────────────────────────────────────────────────────────────────
   toolchain_currency:
     description: >-
       Whether the tools the pipeline itself runs are current, supported and safe to keep running.
@@ -1938,6 +1959,74 @@ namespaces:
           created a fresh duplicate set on every run.
 
   # ─────────────────────────────────────────────────────────────────────────
+  ticket_trigger:
+    description: >-
+      WHY a finding's ticket was raised or reopened (FUTURE_WORK.md D5; KDEC-024). Three triggers,
+      and they are not variations of one thing: two come from the scan, the third from the
+      calendar.
+    consumers: [scripts/reconcile_tickets.py, tests/prove_ticket_lifecycle.py, triage]
+    rule: >-
+      A TRIGGER NEVER SUPPRESSES ANYTHING AND IS NEVER INHERITED. A RECURRED finding does not
+      inherit the earlier clearance, and a lapse does not renew the disposition that lapsed: each
+      is CONTEXT on the ticket, never a suppression.
+    values:
+      NEW:
+        definition: A fingerprint never seen before -- nobody has decided about this yet.
+        rule: Raised only from ticket_lookup_outcome.BINDING_ABSENT.
+      RECURRED:
+        definition: >-
+          A finding the kit VERIFIED ABSENT (its ticket closed on a clearance citing the run and
+          commit) is detected again. A fix did not hold -- a revert, a merge, a dependency bump.
+        rule: >-
+          NOT the `falsified` reopen, which is an APPROVED REMEDIATED disposition the scanner still
+          reproduces; RECURRED follows the kit's own evidenced closure. The earlier clearance is
+          context, never a suppression.
+      REOPENED_BY_LAPSE:
+        definition: >-
+          The finding never changed; the disposition that backed its closed ticket expired. Comes
+          from the CALENDAR -- the scheduled clock (`--resurface`) -- because on the day an
+          acceptance expires the scan is byte-identical to yesterday's.
+        rule: Silence must never renew a disposition (finding_classification.REOPENED_BY_LAPSE).
+
+  # ─────────────────────────────────────────────────────────────────────────
+  ticketing_availability:
+    description: >-
+      Whether the TRACKER could be read and written this run (KDEC-024). Stated in every ticket
+      run record, its summary and the reusable workflow's `ticketing_state` output.
+    consumers: [scripts/reconcile_tickets.py, .github/workflows/reusable-ticket-reconcile.yml,
+                tests/prove_ticket_lifecycle.py]
+    rule: >-
+      NEVER A SILENT PASS AND NEVER A GATE INPUT. TICKETING_UNAVAILABLE exits 3 and routes the
+      ticketing claim EVIDENCE_UNTRUSTED; the security gate ran before ticketing and does not
+      wait for it, so a tracker outage changes no verdict -- in either direction.
+    values:
+      TICKETING_AVAILABLE:
+        definition: Every lookup, creation and update this run attempted completed.
+      TICKETING_TEST_TARGETS_REAL_PROJECT:
+        definition: >-
+          A TEST ticketing run (any branch but the default one, in the sandbox environment; the
+          mode is derived from the ref, never set by a variable -- KDEC-028) would write to a real
+          project: its JIRA_PROJECT is one of JIRA_REAL_PROJECTS or a project the register's
+          ticket_routing names, or JIRA_REAL_PROJECTS is unset so that cannot be ruled out.
+        rule: >-
+          Refused before anything is sent: configuration refuses it, run-start validation refuses
+          it, and create refuses it. Nothing is written, the claim is EVIDENCE_UNTRUSTED (exit 3),
+          and the remedy is to point the ticketing-test environment at a sandbox project. Test
+          tickets that are written carry the label kit-test and a [TEST] summary prefix, and test
+          ledger bindings are kept apart from real ones (test:<cluster key>), in both directions.
+      TICKETING_UNAVAILABLE:
+        definition: >-
+          The tracker could not be reached, refused the credential, failed run-start validation,
+          throttled past the retry ceiling, exhausted the per-run call budget, or a write failed.
+        rule: >-
+          Obligations are CARRIED in the ledger with their cause; nothing is concluded from what
+          was not read. Never rendered as "no tickets were needed".
+      TICKETING_NOT_CONFIGURED:
+        definition: No tracker is configured (or two are, which is refused) -- the control is off.
+        rule: >-
+          Not "nothing to ticket" -- nothing was checked. The claim is EVIDENCE_UNTRUSTED.
+
+  # ─────────────────────────────────────────────────────────────────────────
   ticket_state:
     description: >-
       The lifecycle of a PARENT ticket — the object coordinating one cluster's remediation.
@@ -2306,6 +2395,17 @@ namespaces:
         rule: >-
           NOT DOUBT ABOUT THE FINDING — only the absence of a second observation. Reading it as
           weak evidence is how a real finding gets deprioritised for being seen once.
+      CONTESTED_ANCHORED:
+        definition: >-
+          Anchored, and a scanner of the SAME detection class (dependency, container or secret --
+          classes whose detectors match shared identifiers) ran this run, established its row,
+          covered the file, and did NOT report it (KDEC-024, FW-3a).
+        rule: >-
+          DISAGREEMENT ESCALATES, NEVER AVERAGES. The finding stays ticketed -- a peer's silence
+          suppresses nothing -- its ticket names the silent peer and carries a disagreement label,
+          and a person is asked once (DECISION_REQUIRED on the ticket run). It changes no gate
+          input. SAST and IaC are never contested this way: their rule sets differ, so a peer's
+          silence observes nothing about another tool's rule.
       CONFIDENCE_NOT_ESTABLISHED:
         definition: >-
           No durable identity was established, or the evidence channel was degraded so the
@@ -2334,6 +2434,10 @@ namespaces:
       ROLLBACK_REQUIRES_HUMAN_DECISION:
         definition: >-
           Prior state unknown, or reversal has consequences a machine should not weigh.
+        emitted_by: >-
+          scripts/rollback_sequence.py as the record's rollback_state (and the rollback reusable's
+          rollback_state output) whenever a person must decide: a dependency conflict (KDEC-023), a
+          halt, an ineligible step. Before KDEC-023 the census found it was never emitted.
         produced_by: >-
           A cancelled or TIMED-OUT mutation. A timeout is a cancellation nobody chose and nobody is
           watching, which is why mutating jobs are deliberately unbounded pending this design.
@@ -2472,6 +2576,220 @@ namespaces:
         rule: >-
           NOT "failed" -- failure implies nothing changed. The honest report is mutated,
           unreconciled, untrusted; it is never resolved by assuming the attempt took or did not.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Registered 2026-10-22 (KDEC-019 item 4, lane L-RB) with the mechanism: scripts/rollback_sequence.py,
+  # .github/workflows/reusable-rollback-sequence.yml, ROLLBACK_CONTRACT.md "Sequential rollback".
+  # Checked first: rollback_state says what MAY be done about ONE failed change and deployment_outcome
+  # what ONE run did; neither can say what happened to an ORDERED SET of reversals with tests between
+  # them, nor why a step was or was not reversed. rollback_state's two refusals are reused unchanged
+  # as the disposition of an ineligible step.
+  rollback_sequence:
+    description: >-
+      What a sequential rollback did: several standing deployments reversed in REVERSE deployment
+      order, each step eligible, reversed by the deploy contract, probed and end-to-end tested
+      before the next. Exactly one value per sequence.
+    consumers: [scripts/rollback_sequence.py, reusable-rollback-sequence, tests/prove_rollback_sequence.py]
+    rule: >-
+      VERIFIED ONLY WHEN EVERY STEP IS ROLLBACK_STEP_VERIFIED. A halt never rounds up, and the
+      sequence never continues past a step whose rollback, health probe or end-to-end tests did not
+      hold. No end-to-end tests is a refusal, not a pass (owner, 2026-10-22: tests between each
+      rollback). KDEC-021 (owner, 2026-10-23): the tests run over a TEST PERIOD after every step
+      (start, interval, end), and a failure at any check halts; a kit deployment that landed
+      mid-sequence is rolled back first; an App Service sequence ends on the version it requested.
+    values:
+      ROLLBACK_SEQUENCE_VERIFIED:
+        definition: >-
+          Every step was eligible, reversed and ROLLBACK_VERIFIED by the deploy contract, and
+          answered its health probe and passed the application's end-to-end tests at every check of
+          its test period, newest first; production is on the requested version when one was named.
+      ROLLBACK_SEQUENCE_REFUSED_NO_TEST_PERIOD:
+        definition: >-
+          The end-to-end test period was 0. Refused before login and before the first step; nothing
+          was touched. Registered 2026-10-23 (KDEC-021, lane L-RB2).
+        rule: >-
+          THE SAME FAMILY AS ROLLBACK_SEQUENCE_REFUSED_NO_E2E: one instant is not a period, and the
+          owner's rule is "There needs to be an end to end test period." A period past the bound
+          (240 minutes) is ROLLBACK_SEQUENCE_REFUSED_INPUT.
+      ROLLBACK_SEQUENCE_REFUSED_NO_E2E:
+        definition: >-
+          No end-to-end test command was supplied. Refused before login and before the first step;
+          nothing was touched.
+        rule: >-
+          THE FAIL-SAFE, CHOSEN OVER "RUN AND RECORD THE GAP": running the reversals untested is the
+          broken intermediate state the rule forbids, and a record after the fact cannot un-break a
+          user path. Each deploy's own single-run reversal is unaffected.
+      ROLLBACK_SEQUENCE_REFUSED_INPUT:
+        definition: >-
+          The sequence, or a step's deploy evidence, could not be read whole or was inconsistent (an
+          unknown field, a run named twice, a manifest belonging to another run, a step outside the
+          target whose lock is held, an App Service sequence naming no target_version, a
+          target_version the target did not hold before the deployments, a test period past its
+          bound). Refused before anything was touched.
+      ROLLBACK_SEQUENCE_STOPPED_INELIGIBLE:
+        definition: >-
+          A step was not eligible (rollback_step_eligibility) and the sequence stopped BEFORE it.
+          The steps before it are reversed and verified; it and the steps after it are untouched.
+      ROLLBACK_SEQUENCE_HALTED_ROLLBACK_UNVERIFIED:
+        definition: >-
+          A step's reversal ended ROLLBACK_PARTIAL or STATUS_UNTRUSTED. The sequence halts; a partial
+          rollback is never verified and no test is run on it.
+      ROLLBACK_SEQUENCE_HALTED_HEALTH_FAILED:
+        definition: >-
+          A step was reversed and verified, but at a check of its test period the health probe on the
+          consumer-facing name never answered 200. The end-to-end tests are not run on it; the
+          sequence halts.
+      ROLLBACK_SEQUENCE_HALTED_E2E_FAILED:
+        definition: >-
+          A step was reversed, verified and healthy, but at a check of its test period (start,
+          interval or end) the application's end-to-end tests failed or exceeded their bound. The
+          sequence halts for a human decision; a pass at the start is not the period.
+        rule: A hung test is a failed test, never a pass.
+      ROLLBACK_SEQUENCE_STOPPED_DEPENDENCY_CONFLICT:
+        definition: >-
+          An ARM step's dependency review (rollback_dependency_outcome) found a node another actor
+          changed: the full rollback was refused, and either the independent nodes were reversed,
+          verified and given their test period (ROLLBACK_STEP_PARTIAL) or nothing was touched. The
+          sequence stops there for a human, with the dependency graph; the steps after it are
+          untouched. Registered 2026-10-23 (KDEC-023, lane L-RB3).
+
+  rollback_sequence_step:
+    description: What happened to ONE step of a sequential rollback. Exactly one value per step.
+    consumers: [scripts/rollback_sequence.py, tests/prove_rollback_sequence.py]
+    rule: >-
+      A STEP IS COMPLETE ONLY WHEN ELIGIBLE, ROLLBACK_VERIFIED, HEALTHY AND ITS END-TO-END TESTS
+      PASSED. A step that was never reached says so; silence about a step is indistinguishable from
+      a step that was reversed.
+    values:
+      ROLLBACK_STEP_VERIFIED:
+        definition: Eligible, reversed and verified, healthy, end-to-end tests passed.
+      ROLLBACK_STEP_HALTED:
+        definition: The step ran and its reversal, health probe or end-to-end tests did not hold.
+      ROLLBACK_STEP_INELIGIBLE:
+        definition: >-
+          Judged not eligible from a fresh live read; nothing of it was touched. Its disposition is
+          ROLLBACK_REQUIRES_HUMAN_DECISION or ROLLBACK_PROHIBITED (rollback_state).
+      ROLLBACK_STEP_NOT_REACHED:
+        definition: The sequence was refused, stopped or halted before this step; it is untouched.
+      ROLLBACK_STEP_PARTIAL:
+        definition: >-
+          KDEC-023. The dependency review refused the full rollback of the step; the nodes
+          independent of the cross-edit were reversed, verified (every other entry read back
+          byte-identical) and passed the test period. The rest is left with its reasons for a human.
+        rule: NEVER ROUNDS UP TO ROLLBACK_STEP_VERIFIED; the sequence stops after it.
+
+  rollback_step_eligibility:
+    description: >-
+      Why a step of a sequential rollback was eligible, judged from a fresh live read just before it
+      against what the deploying run recorded. The two bases the owner named (KDEC-019 item 4).
+    consumers: [scripts/rollback_sequence.py, tests/prove_rollback_sequence.py]
+    rule: >-
+      EVERY UNKNOWN RESOLVES TO A HUMAN DECISION, NEVER TO THE REVERSAL. Revisions created by steps
+      this sequence already reversed are its own, not another actor's. A change with no kit stamp is
+      another actor's and always a human decision; a KIT release that landed after the sequence
+      started is not judged here -- it is rolled back first (KDEC-021).
+    values:
+      ELIGIBLE_UNTOUCHED:
+        definition: >-
+          Nothing else touched the resource: every object the run's manifest names holds what the
+          run left (P1 stamp, P2 version), no later release stands on it (P6), nothing labels it
+          (P5), and nothing else on the resource moved.
+      ELIGIBLE_OWNED_PART_SEPARABLE:
+        definition: >-
+          The resource is shared and something else on it moved, but this deployment's own part (on
+          a Container App: its revision and its traffic) is intact and is reversed on its own -- DCR
+          section 8.1, "the unit of conflict is the mutation".
+        rule: >-
+          Container Apps only. An App Service reversal is verified across every slot it captured,
+          so a moved slot makes the step ineligible rather than certainly partial.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Registered 2026-10-23 (KDEC-023, owner; lane L-RB3) with the mechanism: rollback-resource-classes.yaml,
+  # scripts/rollback_dependencies.py, scripts/rollback_hold.py, tests/prove_rollback_dependencies.py.
+  # Checked first: rollback_step_eligibility says why a step MAY be reversed and reversal_disposition
+  # what one object's reversal is; neither classes a resource as shared or whole, says what a
+  # release that touched SEVERAL resources may still reverse once one is cross-edited, nor what an
+  # incoming deploy may do after a rollback.
+  rollback_resource_class:
+    description: >-
+      How a rollback treats one Azure resource type (rollback-resource-classes.yaml). A type the
+      registry does not name is never guessed: a human decision.
+    consumers: [scripts/rollback_dependencies.py, rollback-resource-classes.yaml, tests/prove_rollback_dependencies.py]
+    rule: >-
+      Owner, 2026-10-23: shared, multi-configurable resources (Front Door, NSGs, firewall and WAF rules,
+      routing) roll back only the product's configs; a solid stable resource changed by something else
+      gets the dependency review and a partial or no rollback.
+    values:
+      SHARED_MULTI_CONFIG:
+        definition: >-
+          Many products keep their own config ENTRIES in one resource (Front Door routes, origin
+          groups and rule sets; NSG security rules; firewall policy rule collections; Application
+          Gateway listeners and rules and WAF custom rules; route-table routes; DNS record sets; API
+          Management APIs and products). Only the product's entries are reversed; every other entry
+          and the parent are read back byte-identical before and after.
+      STABLE:
+        definition: >-
+          One product's whole resource (App Service and Function apps, Container Apps and AKS,
+          Container Instances, SQL, PostgreSQL, Cosmos DB, storage accounts, Key Vaults, VMs). Changed
+          by anything but the release being rolled back, it is not reversed; the dependency review
+          decides what else may be.
+
+  rollback_dependency_outcome:
+    description: >-
+      What the dependency review of one release decided, from a fresh live read of every node it
+      changed (marks: unchanged, changed-by-this-release, changed-by-other, unknown, not-judged) and
+      the graph of who depends on what. Exactly one value per reviewed step.
+    consumers: [scripts/rollback_dependencies.py, scripts/rollback_sequence.py, tests/prove_rollback_dependencies.py]
+    rule: >-
+      THE UNIT OF CONFLICT IS THE MUTATION, AND ITS DEPENDENCIES. A node another actor changed (or that
+      cannot be read) is never reversed, and neither is any node that depends on it, that it depends on,
+      or that is evaluated together with it. Partial and refused are ROLLBACK_REQUIRES_HUMAN_DECISION,
+      with the graph (JSON and Mermaid) in the record, the evidence and the summary.
+    values:
+      ROLLBACK_DEPENDENCY_CLEAR:
+        definition: Nothing else changed what the release changed (stable resources only); the full rollback runs.
+      ROLLBACK_SCOPED_TO_PRODUCT_CONFIG:
+        definition: >-
+          Nothing else changed the product's part; shared resources were reversed entry by entry, only
+          the product's entries, and every other entry read back byte-identical. Other products moving
+          their own entries since does not matter (the basis is then ELIGIBLE_OWNED_PART_SEPARABLE).
+      ROLLBACK_PARTIAL_DEPENDENCY_CONFLICT:
+        definition: >-
+          A node was changed by another actor: the FULL rollback is refused; the nodes independent of
+          every cross-edit are reversed and verified; the rest is left, each with its reason.
+      ROLLBACK_REFUSED_DEPENDENCY_CONFLICT:
+        definition: >-
+          Every node the release changed is cross-edited or tied to one that is: nothing is reversed.
+
+  rollback_dependency_check:
+    description: >-
+      What the deploy reusables decided, before login, about an incoming deploy of a target that was
+      rolled back (scripts/rollback_hold.py check, against the target's rollback marker). Exactly one
+      value per deploy.
+    consumers: [scripts/rollback_hold.py, reusable-deploy-appservice, reusable-deploy-containerapp,
+                tests/prove_rollback_dependencies.py]
+    rule: >-
+      Owner, 2026-10-23: "We need to do a dependency check on the incoming deployment to ensure that it
+      isn't reliant on things that were just rolled back ... If there are no dependencies on rolled back
+      items then deploy it." No override input: the fix is to correct the deploy. A check that cannot be
+      completed never lets the deploy proceed blind.
+    values:
+      ROLLBACK_CHECK_NOT_REQUIRED:
+        definition: >-
+          No rollback of the target is on record, or the deploy's base commit is newer than the
+          rollback's completion (it was built after it).
+      DEPLOY_NO_ROLLBACK_DEPENDENCY:
+        definition: >-
+          The deploy was built before the rollback finished and was checked -- release lineage, image,
+          declared dependencies -- and depends on nothing the rollback took out. It proceeds, with the note.
+      DEPLOY_REFUSED_ROLLBACK_DEPENDENCY:
+        definition: >-
+          The deploy is built on a rolled-back commit, ships a rolled-back image, or declares a
+          dependency on something the rollback removed or changed. Refused before login, with a report
+          naming the rollback and each dependency (old -> new, or no longer exists).
+      ROLLBACK_DEPENDENCY_CHECK_INCOMPLETE:
+        definition: >-
+          The marker, the commit or the comparison could not be read: refused before login, with the reason.
 
   # ─────────────────────────────────────────────────────────────────────────
   evidence_confidence:
@@ -2796,7 +3114,14 @@ namespaces:
       COVERAGE_PARTIAL:
         definition: >-
           A claim is unestablished at PARTIAL for a reason the gate did not record as a version
-          gap. Unreachable from a hosted job result today; named so it can never be read as one.
+          gap. Reached by a job that publishes its own PARTIAL state: sast-semgrep's scan_state
+          PARTIAL (scan_partial_reason.PARSE_PARTIAL_PHP_SYNTAX -- PHP files Semgrep could not
+          fully parse, named; everything else scanned and its findings kept; KDEC-016 amended
+          2026-10-22), and sast-cpp's scan_state PARTIAL (scan_partial_reason.CPP_ANALYSIS_PARTIAL --
+          C/C++ source with no compilation database, analysed source-only; KDEC-026).
+        rule: >-
+          Not a version gap, so not refused at uat/prod by KDEC-014: the deploy records it
+          (version_gap_ruling.VERSION_GAP_NOT_ENGAGED). It is advisory in every enforcement mode.
       WEAKENING_ATTRIBUTED:
         definition: A weakening is in force, with a reason and a named authority, unexpired.
         reuses: control_weakening.WEAKENING_ATTRIBUTED
@@ -2804,6 +3129,237 @@ namespaces:
         definition: >-
           Findings were established and the gate did not block them (enforcement ADVISORY, or a
           job that succeeded with findings on record).
+      SECRET_EXCEPTION_ATTRIBUTED:
+        definition: >-
+          The secret scan found secrets and EVERY one is excepted by a policy-register entry's
+          secret_exceptions item in force: one finding by its fingerprint, a work-item ticket, an
+          explanation, a named approver, an unexpired date, and environment reviewers at uat/prod
+          (owner ruling 2026-10-22; lane L-S). The gate's secret_gate is EXCEPTED, and the run
+          record lists each exception.
+        rule: >-
+          Never a clean secret scan. Not a version gap, so not refused at uat/prod by KDEC-014; the
+          deploy records it. Any secret not covered, or any exception refused, and the run is
+          BLOCKED.
+      KNOWN_EXPLOITED_EXCEPTION_ATTRIBUTED:
+        definition: >-
+          Every dependency/image CVE found on the CISA KEV catalog is excepted by a register
+          known_exploited_exceptions item in force -- one finding by fingerprint and CVE, ticketed,
+          explained, approved, unexpired, reviewers at uat/prod, history checked against git
+          (KDEC-022 item 3). The gate's kev_verdict is EXCEPTED.
+        rule: >-
+          Never a clean result. Not a version gap, so the deploy records it. Any catalogued CVE not
+          excepted and the run is BLOCKED (known_exploited.FINDING_KNOWN_EXPLOITED).
+      KEV_UNAVAILABLE:
+        definition: >-
+          The CISA KEV catalog could not be read on this run (unreachable, malformed, or the check
+          did not report): KEV_STATE UNAVAILABLE (KDEC-022 item 3).
+        rule: >-
+          VISIBLE AND NEVER A PASS: a run that is otherwise PROCEED routes PROCEED_WITH_ADVISORY
+          with this cause. It does not block -- nothing was observed -- and the deploy records it.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  secret_exception_refusal:
+    description: >-
+      Why the policy register refused ONE secret exception (owner ruling 2026-10-22: exceptions
+      "must be requested and logged with tickets that have explanations"). A refused exception was
+      never in force: the secret it named still blocks. The rest of the register resolves.
+    consumers: [scripts/policy_registration.py, security-gate, tests/prove_gate_policy_enforcement.py]
+    rule: >-
+      A class-wide or scanner-wide softening of secrets is not an exception at all: it stays
+      CHERRY_PICK_BELOW_FLOOR (policy_resolution), refusing the register.
+    values:
+      SECRET_EXCEPTION_NOT_FINDING_SCOPED:
+        definition: The item names no single finding fingerprint (12 lowercase hex, the report's fp).
+      SECRET_EXCEPTION_UNTICKETED:
+        definition: >-
+          No ticket, or one that is not a <PROJECT>-<digits> work-item key within the register's
+          numbers.ticket_min_digits..ticket_max_digits (scripts/ticket_reference.py, KDEC-013).
+      SECRET_EXCEPTION_UNATTRIBUTED:
+        definition: >-
+          No explanation, approver or readable expiry; or it applies at uat/prod and names no
+          environment reviewers.
+      SECRET_EXCEPTION_EXPIRED:
+        definition: Its expiry, or its entry's decision, has passed. Silence never renews it.
+      EXCEPTION_RENEWAL_LIMIT:
+        definition: The exception was renewed more often than the authority's cap.
+        reuses: exception_lifecycle.EXCEPTION_RENEWAL_LIMIT
+      EXCEPTION_HISTORY_TAMPERED:
+        definition: Its declared renewal history is shorter than git shows (KDEC-022 item 2).
+        reuses: exception_lifecycle.EXCEPTION_HISTORY_TAMPERED
+      EXCEPTION_HISTORY_UNVERIFIED:
+        definition: Git cannot show its register's history, so its renewals cannot be verified.
+        reuses: exception_lifecycle.EXCEPTION_HISTORY_UNVERIFIED
+
+  # ─────────────────────────────────────────────────────────────────────────
+  known_exploited:
+    description: >-
+      KDEC-022 item 3 (owner, 2026-10-23: "confirmed malicious packages should block if we know there
+      is an exploit in the wild right?"). What the known-exploited check (scripts/known_exploited.py,
+      .github/actions/known-exploited) established about the CISA Known Exploited Vulnerabilities
+      catalog and the CVEs this run found in dependencies and images. kev_state is whether the
+      catalog was read; kev_verdict is what it says about the findings. The gate enforces it.
+    consumers: [scripts/known_exploited.py, security-gate, reusable-nvd-cve, tests/prove_known_exploited.py]
+    rule: >-
+      A KNOWN-MALICIOUS PACKAGE (OSV MAL-) STILL BLOCKS ON ITS OWN, in the secret class. A CVE on the
+      catalog joins that every-mode class: BLOCKED at every rung, crawl and advisory_mode included.
+      The catalog is read once per run (a date-keyed cache) and pinned in the evidence by
+      catalogVersion, dateReleased and sha256. Unreadable is never CLEAR.
+    values:
+      AVAILABLE:
+        definition: The catalog was read (fetched today, or today's cached copy) and parsed.
+      UNAVAILABLE:
+        definition: >-
+          The catalog could not be fetched or parsed, the check did not report, or a SARIF it was
+          handed could not be read. As kev_state and as kev_verdict.
+        rule: Never CLEAR and never a pass -- the run routes at least PROCEED_WITH_ADVISORY (KEV_UNAVAILABLE).
+      CLEAR:
+        definition: The catalog was read and no CVE this run found is on it.
+      EXCEPTED:
+        definition: >-
+          Every catalogued CVE found is excepted by a register known_exploited_exceptions item in
+          force (advisory_cause.KNOWN_EXPLOITED_EXCEPTION_ATTRIBUTED).
+        rule: Never CLEAR. Each exception is listed with its ticket, approver, expiry and history.
+      FINDING_KNOWN_EXPLOITED:
+        definition: >-
+          A dependency or image finding whose CVE is on the CISA KEV catalog and that no exception in
+          force covers. kev_verdict BLOCKED.
+        rule: >-
+          BLOCKED at every rung, crawl included, and under advisory_mode: the gate's every-mode class
+          (secret_gate FAIL, cause known-exploited). On the NVD path, which resolves no policy, no
+          exception is honoured and the run routes BLOCKED.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  known_exploited_exception_refusal:
+    description: >-
+      Why the policy register refused ONE known_exploited_exceptions item (KDEC-022 item 3: "a
+      ticketed, finding-scoped exception is allowed, with the same rules as secret exceptions"). A
+      refused exception was never in force: the known-exploited finding still blocks.
+    consumers: [scripts/policy_registration.py, security-gate, tests/prove_known_exploited.py]
+    rule: The same rules, in the same order, as secret_exception_refusal.
+    values:
+      KEV_EXCEPTION_NOT_FINDING_SCOPED:
+        definition: >-
+          The item names no single finding fingerprint (12 lowercase hex), or no CVE: a CVE
+          everywhere, a package, a scanner or a wildcard is never excepted.
+      KEV_EXCEPTION_UNTICKETED:
+        definition: No ticket, or one that is not a <PROJECT>-<digits> key within the register's digit range.
+      KEV_EXCEPTION_UNATTRIBUTED:
+        definition: >-
+          No explanation, approver or readable expiry; or it applies at uat/prod and names no
+          environment reviewers; or its declared history cannot be read.
+      KEV_EXCEPTION_EXPIRED:
+        definition: Its expiry, or its entry's decision, has passed.
+      EXCEPTION_RENEWAL_LIMIT:
+        definition: The exception was renewed more often than the authority's cap.
+        reuses: exception_lifecycle.EXCEPTION_RENEWAL_LIMIT
+      EXCEPTION_HISTORY_TAMPERED:
+        definition: Its declared renewal history is shorter than git shows.
+        reuses: exception_lifecycle.EXCEPTION_HISTORY_TAMPERED
+      EXCEPTION_HISTORY_UNVERIFIED:
+        definition: Git cannot show its register's history.
+        reuses: exception_lifecycle.EXCEPTION_HISTORY_UNVERIFIED
+
+  # ─────────────────────────────────────────────────────────────────────────
+  exception_lifecycle:
+    description: >-
+      KDEC-018 item 4 (owner, 2026-10-22): "We still need to make sure we are dealing with
+      exceptions … and have a timing mechanism to resurface the tickets when those come due. And
+      when they resurface it needs to be clear they were exempted previously and shown. Because
+      endless exemptions/exceptions are not a thing." Every dated exception the kit honours -- a
+      register secret_exceptions item, a register decision (the authority's softening), the deploy's
+      version-gap exception (KDEC-014's weakening record) -- may carry `renews`, its PRIOR grants
+      {ticket, approver, from, expires}; the count is capped. scripts/exception_history.py.
+    consumers: [scripts/exception_history.py, scripts/policy_registration.py, security-gate,
+                reusable-deploy-appservice, reusable-deploy-containerapp, scripts/run_record.py,
+                tests/prove_exception_lifecycle.py]
+    rule: >-
+      A history the kit cannot read is not "no history": the exception is refused as unattributed.
+      The cap is numbers.max_exception_renewals in the CENTRAL register (kit default 2), an integer
+      from 0 to 5 -- never unlimited. The deploy holds the stronger of the cap it is passed and the
+      kit default.
+    values:
+      EXCEPTION_RENEWAL_LIMIT:
+        definition: >-
+          An exception's history holds more prior grants than the cap: it was renewed more often
+          than the authority allows.
+        rule: >-
+          Refused by name and never in force; the finding reverts to its normal routing -- a secret
+          BLOCKS, a register softening reverts (the run routes DECISION_REQUIRED), a version-gap
+          deploy at uat/prod is VERSION_GAP_REFUSED. Fix the cause, or the authority raises the cap
+          (at most 5).
+      EXCEPTION_HISTORY_TAMPERED:
+        definition: >-
+          KDEC-022 item 2 (owner 2026-10-23, option D, "B plus C"): the git history of the protected
+          register file shows more prior grants of a register exception (a secret or known-exploited
+          exception by its finding, a softening decision by its entry) than its declared `renews`
+          lists -- the history was erased. Derived by scripts/exception_history.py from `git log
+          --follow` of the file on the default branch.
+        rule: >-
+          BLOCKED (policy_resolution), and the exception is refused: the finding reverts to its
+          normal routing and a softening does not apply. The renewal cap binds the DERIVED count.
+      EXCEPTION_HISTORY_UNVERIFIED:
+        definition: >-
+          Git cannot show the register file's history -- a shallow clone, a file in no git history,
+          a central register whose delivered copy is not the newest committed version, a blob the
+          fetch cannot supply -- so a register exception's renewal count cannot be verified.
+        rule: >-
+          Refused exactly as an unreadable history is -- never read as zero renewals: a secret or
+          known-exploited finding still blocks, and a softening decision reverts (the run routes
+          DECISION_REQUIRED, the rest of the policy stands). The workflow fetches the default branch
+          blob-less with its history so this is not the everyday case.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  exception_resurfacing:
+    description: >-
+      What the scheduled exception check found and did (KDEC-018 item 4; scripts/exception_due.py,
+      .github/workflows/reusable-exception-due.yml, templates/exception-due.yml). It reads the central
+      register, the repository's register and the caller's workflows, lists every exception coming
+      due or expired with its full history, and raises each on its Jira ticket (Jira only, KDEC-017
+      item 5).
+    consumers: [scripts/exception_due.py, reusable-exception-due, tests/prove_exception_due.py]
+    rule: >-
+      A register or workflow that could not be read is REGISTRATION_UNAVAILABLE (policy_resolution),
+      never NOTHING_DUE. No Jira credential is NOT_CONFIGURED -- the list still stands -- never a
+      silent pass.
+    values:
+      EXCEPTION_DUE_SOON:
+        definition: An exception expires within the window (default 14 days).
+      EXCEPTION_OVERDUE:
+        definition: An exception has expired, or its expiry cannot be read.
+        rule: An expiry nobody can read has not "not arrived".
+      EXCEPTIONS_DUE:
+        definition: The listing found at least one exception due or overdue.
+      NOTHING_DUE:
+        definition: Every source was read and no exception is due or overdue within the window.
+      NOT_REQUESTED:
+        definition: Only the listing was asked for; nothing was to be resurfaced.
+      NOTHING_TO_RESURFACE:
+        definition: Resurfacing was asked for and nothing is due.
+      NOT_ATTEMPTED:
+        definition: Resurfacing was asked for and not attempted, because a source could not be read.
+      PLANNED:
+        definition: Plan only (apply off) -- the actions are named and nothing was written.
+      NOT_CONFIGURED:
+        definition: No Jira credential is configured; the due list is emitted and nothing is written.
+        rule: Never read as "nothing due" -- the list beside it says what is.
+      RESURFACED:
+        definition: Every due exception was raised on its Jira ticket (reopened if closed, commented, or created once).
+      RESURFACE_FAILED:
+        definition: >-
+          A tracker other than Jira was configured, the Jira configuration was refused, or a write
+          failed. Named per exception; the job fails.
+      CHECKED:
+        definition: >-
+          The Jira cross-check (--cross-check, KDEC-022 item 2 C) read the ticket of every ticketed
+          exception; each disagreement is listed as EXCEPTION_TICKET_MISMATCH.
+      EXCEPTION_TICKET_MISMATCH:
+        definition: >-
+          An exception's Jira ticket does not exist, does not name the approver the register records,
+          or does not show (by a link, a mention or a comment) a renewal the register lists.
+        rule: >-
+          REPORTED, NEVER GATING: in the JSON, the run summary and -- with --apply -- a comment on the
+          ticket. The gate never depends on Jira being reachable; the register and its git history
+          decide the run.
 
   # ─────────────────────────────────────────────────────────────────────────
   version_gap_ruling:
@@ -2966,27 +3522,130 @@ namespaces:
     consumers: [scripts/policy_registration.py, tests/prove_policy_registration.py,
                 security-gate (wiring owed), the posture record]
     rule: >-
-      NOTHING RESOLVES TO crawl BECAUSE IT COULD NOT READ THE FILE. An unregistered repository is
-      not a repository at the bottom rung; it is a run whose input to enforcement is missing, and
-      it routes EVIDENCE_UNTRUSTED. A policy DEFECT observed by this check -- a supplied
-      policy_mode, a cherry-pick below the floor, non-monotone cells -- is an observed refusal and
-      routes BLOCKED. Both stop a gate; the difference tells a person which problem they have.
+      NOTHING RESOLVES TO THE DEFAULT BECAUSE IT COULD NOT READ A FILE. An unreadable,
+      unparseable or schema-violating register, or a protected ref that cannot be fetched, is a run
+      whose input to enforcement is missing, and it routes EVIDENCE_UNTRUSTED. Only a register that
+      is genuinely ABSENT -- read successfully, nothing there -- resolves to the documented kit
+      default (crawl: only secrets block), recorded as policy_source KIT_DEFAULT on every run (owner
+      requirement 2026-10-22, the crawl phase; this supersedes the O-03 recommendation that uat
+      and prod refuse). A policy DEFECT observed by this check -- a supplied policy_mode, a
+      conflict, an unattributed decision, a softened secret, a repository file that softens,
+      non-monotone tiers -- is an observed refusal and routes BLOCKED. Both stop a gate; the
+      difference tells a person which problem they have.
     values:
       POLICY_RESOLVED:
         definition: >-
-          The rung, tier, team pattern and cherry-picks were read from the registration on the
-          protected branch; the effective minimum per control was computed; policy_mode was derived.
+          The register (central and repository, read from places a pull request cannot write) was
+          valid; every matching entry was applied in precedence order; the effective minimum per
+          control was computed; policy_mode was derived. Also the state of the kit default.
+      POLICY_REGISTER_CONFLICT:
+        definition: >-
+          Two registrations say different things about one thing: two entries with one scope, an
+          entry id or a JSON key that appears twice, one environment name mapped to two tiers, or
+          the repository file and the central register both registering one repository tier.
+        rule: >-
+          A POLICY DEFECT, BLOCKED, naming both. Which one governs must never be an accident of
+          file order -- the reader that keeps "the last one" has silently chosen for the owner.
+      POLICY_DECISION_UNATTRIBUTED:
+        definition: >-
+          A register nobody signed off, or an entry whose decision lacks authority, reason,
+          decided_on or expires, or a uat/prod departure whose decision does not name the
+          environment's required reviewers.
+        rule: >-
+          BLOCKED. Every registration is a decision a named person made; a tightening or a
+          softening with no name on it is a decision nobody made.
+      POLICY_DECISION_EXPIRED:
+        definition: An entry applied to this run carries a decision whose expiry has passed.
+        rule: >-
+          Routes DECISION_REQUIRED. AN EXPIRY NEVER SOFTENS ANYTHING: the entry's tightening stays
+          in force and its softening reverts to what the scope inherited. Silence never renews it.
+      REPOSITORY_FILE_SOFTENING:
+        definition: >-
+          The repository's own registration left a control, the rung or the deploy approval weaker
+          than the central register gave that repository.
+        rule: >-
+          BLOCKED, and the softening is not applied. A repository may tighten its own policy; it
+          may never loosen what it inherits.
+      POLICY_BELOW_AUTHORITY_FLOOR:
+        definition: >-
+          A central register entry left the rung, a control's routing or a deploy approval weaker
+          than what a registered entry above it in precedence set -- an org beneath its
+          enterprise, a team, product, team+product or repository entry beneath its org, or a
+          tier-qualified entry beneath the tier-less entry of its own scope -- or a scope narrower
+          than the authority (enterprise or org) softened the kit default's deploy approval.
+          KDEC-018 (owner, 2026-10-22): "whatever is allocated at the org or enterprise ... must be
+          the level we run at across the entire enterprise. So if they say walk everyone is at
+          walk."
+        rule: >-
+          BLOCKED, WITH OR WITHOUT A DECISION, and the softening is not applied: the entry's
+          tightening (if any) stays and the floor holds in the record. Narrower scopes may only
+          tighten. Raising the rung is a tightening even where the ladder routes one class
+          differently. Per-finding exceptions (secret_exceptions) are not rung changes and are not
+          this. Crawl itself is the absolute floor: no rung is below it and secrets never soften
+          (CHERRY_PICK_BELOW_FLOOR).
+      ORG_NOT_UNDER_ENTERPRISE:
+        definition: >-
+          RETIRED 2026-10-23, NO LONGER EMITTED. Built 2026-10-22 (lane L-RB, 26ca9e8) as a refusal
+          of a run in an org the central `orgs` map does not name -- a misreading of the owner's
+          "No run with the enterprise floor even if unmapped previously", which meant "No -- RUN
+          with the enterprise floor". KDEC-020 supersedes KDEC-019 item 1: such an org runs at the
+          enterprise floor with the notice policy_notice.ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR.
+        rule: >-
+          Kept registered only because earlier records and the explainer's change history name it.
+          Nothing in the kit refuses with it; tests/prove_authority_floor.py A11 proves the resolver
+          no longer carries it.
+      EXCEPTION_RENEWAL_LIMIT:
+        definition: >-
+          A register entry SOFTENS (the authority's softening of the kit default deploy approval)
+          on a decision whose `renews` history exceeds the renewal cap (KDEC-018 item 4).
+        reuses: exception_lifecycle.EXCEPTION_RENEWAL_LIMIT
+        rule: >-
+          Routes DECISION_REQUIRED, like an expired decision: the softening does not apply, any
+          tightening stays, and someone must fix the cause rather than renew again.
+      EXCEPTION_HISTORY_TAMPERED:
+        definition: >-
+          A register exception -- a secret or known-exploited exception, or a softening decision --
+          declares a shorter renewal history than the git history of its register file shows
+          (KDEC-022 item 2).
+        reuses: exception_lifecycle.EXCEPTION_HISTORY_TAMPERED
+        rule: BLOCKED. The exception is refused and the softening does not apply.
+      EXCEPTION_HISTORY_UNVERIFIED:
+        definition: >-
+          A register SOFTENING decision's renewal history cannot be read from git (KDEC-022 item 2).
+          (An unverified secret or known-exploited exception is refused per item and is not a
+          resolution state: its finding simply blocks.)
+        reuses: exception_lifecycle.EXCEPTION_HISTORY_UNVERIFIED
+        rule: >-
+          Routes DECISION_REQUIRED, like EXCEPTION_RENEWAL_LIMIT: the softening does not apply, the
+          rest of the policy stands.
       POLICY_MODE_SUPPLIED:
         definition: The run received policy_mode as an input, in any spelling, with any value.
         rule: >-
           REFUSED EVEN WHEN THE VALUE IS THE ONE THE DERIVATION WOULD PRODUCE. A derived value a
           caller can still override is not derived.
+      TICKET_ROUTING_BELOW_FLOOR:
+        definition: >-
+          An entry's ticket_routing sends a secret, a KEV-listed vulnerability or a known-malicious
+          package (the floor classes) to project "none" -- no ticket (KDEC-028,
+          scripts/ticket_routing.py). Routing is otherwise free at every scope: the most specific
+          wins and narrower scopes override broader ones in either direction.
+        rule: >-
+          A POLICY DEFECT, named, routing BLOCKED like CHERRY_PICK_BELOW_FLOOR: a register may route
+          a floor-class finding to any project but may never switch its ticketing off. At run time
+          the same rule holds where a register could not see it coming -- a none-rule or
+          none-default that matches a floor-class finding is skipped for it, with this name in the
+          run notes, and the finding is ticketed by the next target or JIRA_PROJECT.
       CHERRY_PICK_BELOW_FLOOR:
-        definition: A registered cherry-pick asks for a weaker result than the rung's floor for that control.
+        definition: >-
+          A registered control asks for less than the kit permits at all: a secret-class control
+          (secrets, secret-scan, malicious-deps) below BLOCKED, or any control set to PROCEED; or
+          the run RECEIVED an input that switches a crawl-floor scan off -- enable_malicious_pkg_scan
+          false (KDEC-020: the malicious-package scan is part of the crawl floor).
         rule: >-
           A POLICY DEFECT, named. Not applied-then-overridden and not silently dropped: a
           silently-dropped override reads as applied to everyone who wrote it. The effective set
-          never contains the defective value.
+          never contains the defective value. (A control below the RUNG's floor, with an
+          attributed decision, is a softening and a weakening row -- not this.)
       CELLS_NOT_MONOTONE:
         definition: >-
           rung(sandbox) <= rung(dev) <= rung(test) <= rung(uat) = rung(prod) is violated, or two
@@ -3001,12 +3660,12 @@ namespaces:
         rule: Routes EVIDENCE_UNTRUSTED. An unregistered cell has no floor to apply.
       REGISTRATION_UNAVAILABLE:
         definition: >-
-          The registration is absent at the protected ref, unparseable, malformed, or the ref
-          cannot be resolved.
+          A register is unparseable, violates the schema (schema_version 2), cannot be read, or
+          the protected ref cannot be resolved. NOT an absent one: absent is the kit default.
         rule: >-
-          Routes EVIDENCE_UNTRUSTED, with the reason. Unreadable is not crawl, and the working tree
-          is never consulted as a fallback -- a registration read from the PR under evaluation is
-          a self-signed demotion.
+          Routes EVIDENCE_UNTRUSTED, with the reason. Unreadable is not the default, and the
+          working tree is never consulted as a fallback -- a registration read from the PR under
+          evaluation is a self-signed demotion.
       POLICY_NUMBER_NOT_CONFIGURED:
         definition: >-
           A number the mechanism needs -- a promotion run count, an SLA period, a grace period --
@@ -3023,6 +3682,96 @@ namespaces:
           NOT A REFUSAL. The record carries both values and the gate obeys the effective one --
           never the reverse, and never a single number that hides which it is. A dashboard
           showing run over an estate running at crawl is the most expensive artefact in the design.
+
+  policy_notice:
+    description: >-
+      Something stage 1 did that a person must see but that is NOT a refusal: the run resolves and
+      proceeds, and the notice travels with it -- in the resolution's `notices` and `notes`, the
+      policy_notices output, a workflow warning annotation and the gate's policy summary.
+    consumers: [scripts/policy_registration.py, .github/actions/resolve-policy,
+                reusable-security.yml (policy summary), tests/prove_authority_floor.py]
+    rule: >-
+      NEVER SILENT, NEVER A REFUSAL. A notice names what happened and the remedy; it does not
+      change the rung, the routing or the verdict.
+    values:
+      ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR:
+        definition: >-
+          The central register defines an enterprise (its `orgs` map is non-empty) and the run's org
+          is not named in that map. The org ran at the enterprise floor: the one enterprise's
+          entries, or with several enterprises the STRICTEST of them at the evaluated tier (higher
+          rung, then stronger controls, then stronger deploy approval; never the lower). KDEC-020
+          (owner, 2026-10-23): "I thought we agreed unmapped orgs would be rolled in at whatever
+          level the enterprise or other orgs are at."
+        rule: >-
+          The run resolves at that floor; the org's own entries may tighten above it and an entry
+          that goes below it is POLICY_BELOW_AUTHORITY_FLOOR. The notice names the org, the
+          enterprise and rung used, and says "add it to the orgs map". With no enterprise ENTRY in the
+          register, KDEC-022 item 1 governs instead (ORG_UNMAPPED_RAN_AT_STRICTEST_ORG).
+      ORG_UNMAPPED_RAN_AT_STRICTEST_ORG:
+        definition: >-
+          The central register has an `orgs` map or org entries but NO enterprise entry, and the run's
+          org is not known to it (not in the map, named by no entry, owning no registered
+          repository). The org ran at the STRICTEST registered org, judged tier by tier on each
+          org's org-level entries by KDEC-020's comparison (higher rung, then stronger controls,
+          then stronger deploy approval; a tie goes to the first name). KDEC-022 item 1 (owner,
+          2026-10-23): "Yes you should get the strictest from the orgs."
+        rule: >-
+          The run resolves at that floor and never below crawl; its own repository file may tighten
+          above it, and one that goes below it is REPOSITORY_FILE_SOFTENING. The floor org's
+          per-finding exceptions never travel. The notice names the org, the floor org, the rung and
+          the tier, and says to register the org.
+
+  environment_protection:
+    description: >-
+      What a deploy read back about the GitHub environment it runs in: whether its required
+      reviewers give what the policy demands at this tier (one approver, from the named groups,
+      self-review prevented). Emitted by the deploy reusables' `protection` step, before login.
+    consumers: [scripts/environment_protection.py, reusable-deploy-appservice.yml,
+                reusable-deploy-containerapp.yml, tests/prove_deploy_environment_protection.py]
+    rule: >-
+      AT uat AND prod ONLY VERIFIED AND NOT_REQUIRED PROCEED. The kit cannot set an environment's
+      reviewers; it can read them, so an unprotected production environment is a refusal, not a
+      hand-off note. A rule that could not be read is not a rule that was satisfied. Below uat every
+      outcome is recorded and warned, never refused. The demand is the stronger of the gate's
+      deploy_approval and the kit default: a value handed to the deploy can tighten, never weaken.
+    values:
+      ENVIRONMENT_PROTECTION_VERIFIED:
+        definition: The environment's required reviewers satisfy the demand.
+      ENVIRONMENT_PROTECTION_NOT_REQUIRED:
+        definition: Nothing is demanded at this tier (below uat, by default); the rules were not consulted.
+      ENVIRONMENT_REVIEWERS_ABSENT:
+        definition: No required-reviewer rule, or one with no reviewers -- anyone who can run the workflow deploys.
+      ENVIRONMENT_SELF_REVIEW_ALLOWED:
+        definition: Self-review must be prevented and the environment lets the deployer approve their own deploy.
+      ENVIRONMENT_APPROVER_GROUP_MISSING:
+        definition: >-
+          Named approver groups are demanded and a reviewer outside them could approve, or none of
+          the reviewers is one of them.
+      ENVIRONMENT_PROTECTION_NOT_ESTABLISHED:
+        definition: >-
+          The environment API could not be read, the demand could not be read, or the tier is not
+          a registered one.
+        rule: Refused at uat and prod. Unknown is not protected.
+
+  policy_source:
+    description: >-
+      Where this run's enforcement policy came from: a registered decision, or the kit's documented
+      default. Emitted by the security gate beside policy_resolution.
+    consumers: [scripts/policy_registration.py, security-gate (policy step and posture record)]
+    rule: >-
+      THE DEFAULT IS NAMED, NEVER IMPLIED. A run at crawl because nobody registered anything and
+      a run at crawl because a person decided crawl read the same on the floor table and differ in
+      who answers for them; the record says which.
+    values:
+      KIT_DEFAULT:
+        definition: >-
+          No central register entry and no repository registration matched this run (each was
+          read successfully and held nothing for it). The kit default applies: crawl at every
+          tier, only secrets block, every other control PROCEED_WITH_ADVISORY; uat and prod
+          deploys need one environment reviewer with self-review prevented.
+        rule: Never the result of a read that failed -- that is REGISTRATION_UNAVAILABLE.
+      REGISTER:
+        definition: At least one signed-off register entry matched this run and was applied.
 
   human_control_availability:
     description: >-
@@ -3208,6 +3957,45 @@ namespaces:
   # produces a job that truthfully declares COMPLETE over a run that read nothing.
   #
   # Folding this into execution_state would mean asking the caller whether the caller was right.
+  scan_partial_reason:
+    description: >-
+      WHY a scanner job that ran and kept its findings published scan_state PARTIAL rather than a
+      complete scan. The job names the reason beside the state (`scan_reason`) and the evidence
+      (for Semgrep, `parse_partial_files`); the gate reads the state as scanner_state.PARTIAL and
+      the posture names the advisory cause COVERAGE_PARTIAL.
+    consumers: [sast-semgrep, sast-cpp, security-gate, tests/prove_semgrep_php.py,
+                tests/prove_version_gap_production.py, tests/prove_cpp_build_aware.py]
+    rule: >-
+      A REGISTERED REASON OR NOTHING. A partial scan with a reason nobody registered is not a
+      partial scan: it is the strict refusal (COLLECTION_FAILED). PARTIAL is never PASS.
+    values:
+      PARSE_PARTIAL_PHP_SYNTAX:
+        definition: >-
+          Semgrep exited 3 under --strict and its own JSON names ONLY parse errors (error_type
+          PartialParsing, Syntax error, Lexical error, Other syntax error, AST builder error) on
+          .php files, having examined files. Everything else was scanned and the parsed rest of
+          those files too; the findings are kept; the files are named with the lines Semgrep
+          reported. PHP 8.5's `(void)` cast and `final` promoted constructor properties are the
+          measured case (Semgrep 1.178.0 and 1.182.0).
+        rule: >-
+          Owner, 2026-10-22: "scan what parses, flag the rest" (KDEC-016 amended). Any OTHER
+          error class -- a non-PHP file that did not parse, a rule that did not load, a timeout,
+          a crash, nothing examined -- stays COLLECTION_FAILED.
+      CPP_ANALYSIS_PARTIAL:
+        definition: >-
+          At least one C/C++ translation unit in scope had no compilation database -- none
+          committed that names files present here, no top-level CMakeLists.txt whose configure-only
+          export succeeded, no top-level Makefile for which `make -n` works and bear recorded a
+          build -- so cppcheck analysed it source-only: includes and macros unresolved. Measured
+          2026-10-23: a write past a buffer sized by a header on the build's include path is
+          invisible source-only and reported through the database. Findings are kept; the files
+          are counted and named in the job summary.
+        rule: >-
+          FUTURE_WORK section 5 (owner): "never synthesise a build system to make a scanner happy".
+          The kit writes no build file; it reads the build the repository already has, or says
+          PARTIAL. Read by the gate as scanner_state.PARTIAL (COVERAGE_PARTIAL), never PASS
+          (KDEC-026).
+
   scan_examination:
     description: >-
       WHETHER THE SCAN ACTUALLY READ ANYTHING, derived from the SARIF rather than declared by the

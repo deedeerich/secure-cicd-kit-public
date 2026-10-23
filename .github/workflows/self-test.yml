@@ -37,8 +37,8 @@ jobs:
     # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: yamllint
@@ -62,6 +62,13 @@ jobs:
             indentation: {spaces: consistent, indent-sequences: whatever}
           EOF
           yamllint -c .yamllint.kit.yml .github/ profiles/
+      - name: yamllint as the local battery runs it (same config, read from the step above)
+        # Release 3 went red here with 27 errors no local gate could see: the config existed only
+        # in the heredoc above. tests/check_yamllint.py extracts that heredoc, so the two cannot drift.
+        run: python3 tests/check_yamllint.py
+      - name: Action manifests load on GitHub's parser (no unquoted colon in a flow-mapping value)
+        # Run 40007007260: PyYAML read known-exploited/action.yml, GitHub's runner refused it.
+        run: python3 tests/check_action_manifest_flow_scalars.py
 
   actionlint:
     name: actionlint
@@ -73,7 +80,7 @@ jobs:
     # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Run actionlint
         run: |
           set -uo pipefail
@@ -136,8 +143,8 @@ jobs:
     # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Validate reusable/action contracts
@@ -214,8 +221,8 @@ jobs:
     # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Validate profiles against schema
@@ -245,9 +252,20 @@ jobs:
     # run 38811959160 took 7m29s, and the three install/registry proofs added that day (real pip
     # venvs, npm, a local registry with a syft download) are estimated at 2-3 minutes more. Still a
     # bound, not a budget: a job that needs the full fifteen has a stalled dependency.
-    timeout-minutes: 15
+    # RAISED 15 -> 30 on 2026-10-21, from measurements, not estimates: the job grew with every
+    # proof wired that day (L-E census, L-B composite equivalence, L-C1 corpora, L-D deploy, L-PHP).
+    # 12m52s on a re-run of 39658855303, 14m09s on 39659025182, then cut off at 15m06s on
+    # 39694056635 (cancelled, every step that had run had passed). Thirty is twice the measured
+    # time; if it needs more, split the job rather than raise it again.
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the clean-tree sweep below runs check_context_current.py, which resolves
+          # the commit .context says it was reconciled against. A depth-1 checkout holds only the
+          # PR merge commit, so the check refused on the private repo (Release 3 re-cut, run
+          # 39985896367, job 120524861777) while passing locally and on the source-only mirror.
+          fetch-depth: 0
       - name: Inlined normalizer must match the canonical source
         run: |
           set -euo pipefail
@@ -290,14 +308,29 @@ jobs:
           # Decomposition Phase 2 moves scanner steps, and the images they pin, into composites.
           # A pin checker that reads only workflows would lose every one of them in the move.
           python3 tests/prove_pin_scope_covers_composites.py
+          # The resolver writes the EXACT release beside each SHA and pins every owner by default,
+          # so its output passes check_action_pins.py (offline: a local API stand-in).
+          python3 -m pip install --quiet PyYAML
+          python3 tests/prove_pin_actions_names_release.py
 
       - name: Every pinned image and action ref must resolve
         env:
-          # Lifts the unauthenticated GitHub rate limit; the resolver reports a limit as UNKNOWN,
-          # never PASS, and an UNKNOWN step is a red step. Read-only lookups of public refs.
+          # Refs resolve by git against github.com with no token (KDEC-027). The token is used for
+          # the REST fallback ONLY when GITHUB_API_URL is api.github.com: on a GHE.com data-residency
+          # tenant it was issued by api.<tenant>.ghe.com and is never sent to api.github.com.
+          # UNKNOWN is never PASS, and an UNKNOWN step is a red step.
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # The run's token stays on the host that issued it; refs resolve through git (no network).
+          python3 tests/prove_github_token_stays_on_its_host.py
+          # No step writes external text into $GITHUB_OUTPUT/$GITHUB_ENV unsanitised: an API error
+          # body crashed the resolve step on a GHE.com tenant, and a newline is output injection.
+          python3 tests/check_output_writes.py
+          # The whole kit on a simulated GHE.com host: GH_HOST on every gh step, no api.github.com
+          # with a token, no github.com/<repo> links, no trivy-action/setup-trivy, and the resolve
+          # step degrades on a tenant API error instead of crashing (H6 runs it under bash).
+          python3 tests/prove_ghe_host.py
           # A Go scanner image tag that never existed was pinned for two weeks behind a green job
           # (FUTURE_WORK §11); an action ref that never existed shipped the same way (§9). This
           # checker was written for the first and could not see `v`-prefixed tags or `uses:` refs
@@ -308,6 +341,19 @@ jobs:
           # The pin checker's own scope proof: v-prefixed tags and third-party action refs are in
           # it; ./, $/, docker:// and comments are not. Existed and ran nowhere (ledger G-03).
           python3 tests/prove_pin_check_sees_v_tags_and_action_refs.py
+
+      - name: Every remote uses is a commit SHA naming its exact release (L82)
+        env:
+          # --online resolves the tag each comment names by git (KDEC-027); the token is used only
+          # as a REST fallback on a github.com run. UNKNOWN is a red step.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The kit's own tree carried 161 remote `uses:` by tag until the L-H sweep. Workflows,
+          # job-level reusable calls, composites and templates; no owner exempt; the `# vX.Y.Z`
+          # comment must be the release that SHA is. A Dependabot bump moves both together.
+          python3 -m pip install --quiet PyYAML
+          python3 tests/check_action_pins.py --online
 
       - name: A bootstrap failure must not read as thirteen inapplicable scanners
         run: |
@@ -330,6 +376,15 @@ jobs:
           # image-scan once sat in the gate's needs and was never read. Decomposition Phase 2
           # moves jobs into composites one at a time, and this must stay green after each move.
           python3 tests/check_scanner_registry.py
+
+      - name: A scanner job moved into a composite must expand to exactly the job it replaced
+        run: |
+          set -euo pipefail
+          # Ledger L64: each moved job's `$/` composite, expanded back into the job with its
+          # inputs substituted, has the canonical digest the job had before the move -- every
+          # step, condition, artefact name and SARIF category -- and nothing in the composite
+          # reads a context a composite does not have.
+          python3 tests/prove_composite_move_equivalence.py
 
       - name: The reporter must run where the report job runs it, with only what reaches that job
         run: |
@@ -460,7 +515,7 @@ jobs:
       - name: The sast-java job must find, count and enforce a seeded Java flaw
         run: |
           set -euo pipefail
-          python3 -m pip install --quiet semgrep
+          python3 -m pip install --quiet semgrep==1.178.0
           python3 tests/prove_sast_java_detects.py
 
       - name: Image scan must fail on CVEs (advisory off) and on a credential in every mode
@@ -480,6 +535,9 @@ jobs:
           # L17: Trivy reports every severity; fail_on_severity alone decides the block, in
           # deps-scan and image-scan, run the way trivy-action runs it.
           python3 tests/prove_trivy_threshold.py
+          # PHP (lane L-PHP): a vulnerable Composer package in composer.lock blocks deps-scan, a
+          # clean lock passes, and a composer.json with no lock is a declared gap, never a pass.
+          python3 tests/prove_deps_scan_composer.py
 
       - name: A known-malicious package must block in every mode, and no evidence must not read as clean
         run: |
@@ -517,6 +575,17 @@ jobs:
           # cppcheck: the distribution package the job itself installs.
           sudo apt-get -o DPkg::Lock::Timeout=60 install -y --no-install-recommends cppcheck
           python3 tests/prove_cppcheck_collects.py
+
+      - name: Pipeline linters run where their files are, detect the seeds, and are free where not (KDEC-025)
+        run: |
+          set -euo pipefail
+          # Lane L-SCAN-A. Runs the deps-scan and iac-scan lint steps as shipped: their install steps
+          # fetch actionlint, zizmor, shellcheck, PSScriptAnalyzer and hadolint by exact version and
+          # sha256, then each linter must detect tests/corpora/pipeline_lint_corpus.py, name the zsh
+          # script and the future-#Requires script as VERSION_GAPs, hand error-level findings to the
+          # gate, do nothing when discovery found none, and fail the job only when it cannot scan.
+          # The runner image carries bash, python3, jq, curl, xz, unzip and pwsh.
+          python3 tests/prove_pipeline_lint.py
 
       - name: Every published SARIF has a producer, and the SAST jobs that once ran nothing still run (W4C-001)
         run: |
@@ -560,12 +629,17 @@ jobs:
           python3 tests/prove_codeql_build_outcome.py
           # Real tools: .NET static analysis finds a seeded C# flaw; every configured Semgrep
           # ruleset loads and tests/ + fixtures/ are scanned; flawfinder runs and cppcheck's
-          # output reaches the uploads.
-          python3 -m pip install --quiet semgrep
+          # output reaches the uploads. Semgrep is pinned to the release the sast-semgrep job's
+          # image is (lane L-SG): prove_semgrep_strict P4 and prove_semgrep_php S6 hold them equal.
+          python3 -m pip install --quiet semgrep==1.178.0
           python3 tests/prove_sast_dotnet_detects.py
           python3 tests/prove_semgrep_rulesets.py
           # An unparseable file is exit 3 under --strict, and COLLECTION_FAILED -- never a zero.
           python3 tests/prove_semgrep_strict.py
+          # PHP (lane L-PHP): the seeded SQL injection, XSS and command injection are reported at
+          # ERROR even under a narrowed semgrep_config (p/php is a floor whenever discovery finds
+          # PHP), and a PHP scan that examined no PHP is COLLECTION_FAILED.
+          python3 tests/prove_semgrep_php.py
           # The weekly validation probes the SHIPPED Semgrep and gosec, and its negative
           # control fails without a scanner or with a lying one (W4K-116).
           python3 tests/prove_validate_scanners.py
@@ -624,7 +698,7 @@ jobs:
       - name: Semgrep and Checkov must count findings by their effective SARIF level
         run: |
           set -euo pipefail
-          python3 -m pip install --quiet semgrep
+          python3 -m pip install --quiet semgrep==1.178.0
           python3 tests/prove_sarif_effective_level.py
 
       - name: The build must record its base image digests, lockfile hashes and toolchain
@@ -868,15 +942,47 @@ jobs:
         run: |
           set -euo pipefail
           # L32 / ETFB sections 1-4, 10, 13; SINGLE_PIPELINE_TARGET.md stage 1, section 8.3. The
-          # derivation table is ETFB 1.1 cell for cell; a cherry-pick strengthens or is a named
-          # policy defect; a run that received policy_mode as an input is refused whatever the
-          # value; against a real git repository a PR's own demotion is never read; an
-          # unreadable registration is EVIDENCE_UNTRUSTED, never crawl; every number is read
-          # from the registration and a missing one refuses.
+          # derivation table is ETFB 1.1 cell for cell; the policy register (schema_version 2)
+          # resolves per org, team, product, repository and tier by a stated precedence; a run
+          # that received policy_mode as an input is refused whatever the value; against a real
+          # git repository a PR's own registration is never read; no register is the kit default
+          # (crawl, only secrets block) and an unreadable one is EVIDENCE_UNTRUSTED, never the
+          # default; conflicts, unattributed and expired decisions are refused by name.
           python3 scripts/rung_ladder.py --self-test
           python3 scripts/policy_registration.py --self-test
           python3 tests/prove_rung_ladder.py
           python3 tests/prove_policy_registration.py
+          # The register is wired into the gate (wiring/gate-rung.patch.md) and enforced: with no
+          # register only secrets block; a registered tightening or softening changes exactly what
+          # it says; a refused or unreadable policy is never the default.
+          python3 tests/prove_gate_reads_rung.py
+          python3 tests/prove_gate_policy_enforcement.py
+          # KDEC-028 (lane L-AM): a caller's own scanner delivered as external evidence is adopted
+          # by the report by contract, fingerprinted by its declared subject, routed by the rung,
+          # and its secret/KEV/malicious class (external-floor) blocks at every rung.
+          python3 tests/prove_external_evidence.py
+          # KDEC-018 (lane L-FX): the highest authority's rung is the floor -- narrower scopes only
+          # tighten (POLICY_BELOW_AUTHORITY_FLOOR) -- and crawl is the absolute floor: no input,
+          # weakening or entry lets a secret or an untrusted scan through, the secret scan included.
+          python3 tests/prove_authority_floor.py
+          python3 tests/prove_crawl_floor.py
+          # KDEC-018 item 4: every exception shows its history and renewals are capped -- secret
+          # exceptions, register softenings, and the deploy's version-gap exception.
+          python3 scripts/exception_history.py --self-test
+          python3 tests/prove_exception_lifecycle.py
+          # ... and every exception resurfaces as it comes due, onto its Jira ticket (a recording
+          # fake here; no real Jira), saying plainly it was excepted before.
+          python3 tests/prove_exception_due.py
+          # KDEC-022 item 2: renewal histories derived from git (erased is TAMPERED, unshowable is
+          # UNVERIFIED), and the weekly Jira cross-check (a fake Jira here).
+          python3 tests/prove_exception_history_derived.py
+          # KDEC-022 item 3: a CVE on the CISA KEV catalog blocks at every rung (a fixture feed here).
+          python3 scripts/known_exploited.py --self-test
+          python3 tests/prove_known_exploited.py
+          # L36: the gate emits the run record, schema-valid, and refuses to emit an invalid one.
+          python3 tests/prove_gate_run_record.py
+          python3 scripts/policy_registration.py --validate templates/policy-register.central.example.json --origin central
+          python3 scripts/policy_registration.py --validate templates/policy-registration.example.json --origin repository
 
       - name: A pre-existing finding gets a schedule, not amnesty, and nothing extends a deadline
         run: |
@@ -947,6 +1053,27 @@ jobs:
           # TICKETING_BACKENDS.md R-1/R-2, run by a person with a transcript.
           python3 tests/prove_ticket_backends.py
 
+      - name: The ticket lifecycle, end to end on every backend (KDEC-024)
+        run: |
+          set -euo pipefail
+          # Stateful Jira, Azure DevOps and GitHub stand-ins, no network: the report's findings
+          # reach the reconciler; verified clearance closes citing the run and commit, a return is
+          # RECURRED; NEW and REOPENED_BY_LAPSE; one cluster key and cross-scanner merges;
+          # contested confidence; SLA due dates and one escalation; links both ways; no
+          # duplicates, a bounded call budget, TICKETING_UNAVAILABLE exits 3; the template caller.
+          python3 -m pip install --quiet PyYAML
+          python3 tests/prove_ticket_lifecycle.py
+
+      - name: Jira bearer auth, ticket routing and test ticketing (KDEC-028)
+        run: |
+          set -euo pipefail
+          # No network: bearer through the gateway with a credential-free cloud id lookup; basic
+          # stays the default; every Jira caller takes it; ticket_routing precedence, the
+          # TICKET_ROUTING_BELOW_FLOOR refusal, a rule change that never moves or duplicates a
+          # ticket; test ticketing chosen by the ref, refused against a real project.
+          python3 -m pip install --quiet PyYAML
+          python3 tests/prove_jira_auth_and_routing.py
+
       - name: The live R-1/R-2 runner is safe before anyone runs it live
         run: |
           set -euo pipefail
@@ -975,6 +1102,16 @@ jobs:
           # event NOT ASSESSED rather than passed.
           python3 -m pip install --quiet PyYAML
           python3 tests/prove_ticket_reference_gate.py
+
+      - name: Dependabot triage, run as shipped, auto-merges only what cannot change behaviour
+        run: |
+          set -euo pipefail
+          # FUTURE_WORK section 6 (owner, 2026-10-22). The evidence, decision and action steps are
+          # EXTRACTED from reusable-dependabot-triage.yml and run under bash with a gh shim: patch and
+          # minor merge with --auto --squash; majors, protected packages, lockfile drift, breaking
+          # signals and an unguarded base branch go to a human; excluded paths are closed.
+          python3 -m pip install --quiet PyYAML
+          python3 tests/prove_dependabot_triage.py
 
       - name: A cluster is one obligation to coordinate and several to discharge
         run: |
@@ -1030,6 +1167,25 @@ jobs:
           # L107 / KDEC-008 OD-10: no overlay passes, every overlay and ledger is checked, and an
           # overlay calls the kit owner/repo/...@<sha>, never ./ -- against constructed trees.
           python3 tests/prove_custody_overlays.py
+
+      - name: Every overlay this copy carries proves itself
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet PyYAML
+          # An overlay's own proofs ran nowhere: its Jira caller and its crawl behaviour were a
+          # reading of the YAML. Each overlay ships its proofs under overlays/<name>/tests/; every
+          # one is run here, by glob, so this file names no overlay. A neutral copy carries none,
+          # and says so rather than passing silently.
+          shopt -s nullglob
+          n=0
+          for t in overlays/*/tests/*.py; do
+            case "$(basename "$t")" in _*) continue ;; esac
+            echo "::group::$t"
+            python3 "$t"
+            echo "::endgroup::"
+            n=$((n+1))
+          done
+          echo "overlay proofs run: $n (zero means this copy carries no overlay)"
 
       - name: Generated registers are current, and the capability census can tell a name from a call
         run: |
@@ -1214,6 +1370,9 @@ jobs:
           # B-11: the architecture and assurance documents, the roadmap and the continuity record are
           # in scope; claims are code predicates; a known-stale entry holds only until its date.
           python3 tests/prove_doc_currency_scope.py
+          # Every FUTURE_WORK section is cited by a completion-ledger row, or exempted with a reason:
+          # section 6 (auto-merge) was designed, asked for and never planned (lane L-FWA).
+          python3 tests/check_future_work_traceability.py
 
       - name: A documented credential-free path must not authenticate
         run: |
@@ -1278,6 +1437,11 @@ jobs:
           # live acceptance passes version metadata and the rollback setting (DCR-3/9 enablers).
           python3 tests/prove_deploy_template.py
           python3 tests/prove_deploy_environment_binding.py
+          # Owner 2026-10-22: a uat/prod deploy reads back the environment's required reviewers
+          # (self-review prevented, named groups) and refuses before login when they are absent
+          # or cannot be read.
+          python3 scripts/environment_protection.py --self-test
+          python3 tests/prove_deploy_environment_protection.py
           python3 tests/prove_deploy_attestation.py
           python3 tests/prove_deploy_now_serving.py
           python3 tests/prove_deploy_ownership_stamp.py
@@ -1310,6 +1474,23 @@ jobs:
           # stubbed cloud and checking the report against the stub's final state. STUBBED: the
           # live acceptance matrix (DCR 7.8) is a hosted run and is owed.
           python3 tests/prove_deploy_outcome.py
+
+      - name: Sequential rollback reverses newest first and tests end to end between steps
+        run: |
+          set -euo pipefail
+          # KDEC-019 item 4 (lane L-RB). Real deploy evidence from the shipped deploy reusables, one
+          # stub cloud, scripts/rollback_sequence.py driving the deploy contract's own reversal: a
+          # failing e2e test, an ineligible step, a partial rollback or a failed probe halts before
+          # anything later is touched; no e2e command is a refusal. STUBBED: the live run is owed.
+          python3 scripts/rollback_sequence.py --self-test
+          python3 tests/prove_rollback_sequence.py
+          # KDEC-023 (lane L-RB3): shared multi-config resources roll back only the product's entries;
+          # a cross-edited stable resource gets a dependency review (partial or no rollback, with the
+          # graph); an incoming deploy built before a rollback of its target is checked for
+          # dependencies on what it took out, and refused with a report when it has any.
+          python3 scripts/rollback_dependencies.py --self-test
+          python3 scripts/rollback_hold.py --self-test
+          python3 tests/prove_rollback_dependencies.py
 
       - name: Harness teardown only behind PRE and POST zero-count assertions
         run: |
@@ -1487,6 +1668,9 @@ jobs:
           # The IaC corpus probe (KDEC-014): every outcome and refusal of the probe that writes the
           # READ ranges, against a stub scanner; seeds stay Python data, never committed IaC.
           python3 tests/prove_iac_corpus.py
+          # The PHP corpus probe (lane L-PHP): the same, for sast-semgrep's PHP range -- measured on
+          # the job's own Semgrep image, a partial parse and a silent drop told from a read.
+          python3 tests/prove_php_corpus.py
           # Real checkov and trivy SARIF: a real finding counts, a real clean run is never hollow.
           python3 tests/prove_real_sarif_corpus.py
 
@@ -1638,6 +1822,34 @@ jobs:
           fi
           echo "provenance stamp carries the identity chain and claims nothing it cannot see"
 
+  # Lane L-SCAN-B (KDEC-026): Kotlin/Android, Swift/Objective-C, build-aware C/C++ and a real-shaped
+  # .NET solution. Its own job, in parallel with normalizer-drift (already 14 of its 30 minutes):
+  # the two container proofs build small images and install mobsfscan by digest (~4 min measured
+  # locally). Bounded at 20.
+  platform-scanners:
+    name: Platform scanners (mobile, Kotlin, build-aware C/C++, .NET solution)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Discovery routes Kotlin, Swift, Objective-C and mobile configuration to scanners
+        run: |
+          set -euo pipefail
+          python3 tests/prove_platform_discovery.py
+      - name: Kotlin is scanned under a narrowed config, and a .NET solution is audited per project
+        run: |
+          set -euo pipefail
+          # The release the sast-semgrep image pins (prove_semgrep_php S6 holds them equal).
+          python3 -m pip install --quiet semgrep==1.178.0
+          python3 tests/prove_semgrep_kotlin.py
+          # The runner's preinstalled .NET SDK, restoring from nuget.org.
+          python3 tests/prove_dotnet_solution_detects.py
+      - name: sast-mobile and build-aware sast-cpp, run as shipped in Linux containers
+        run: |
+          set -euo pipefail
+          python3 tests/prove_sast_mobile_detects.py
+          python3 tests/prove_cpp_build_aware.py
+
   validation-coverage:
     name: Validation coverage
     runs-on: ubuntu-latest
@@ -1648,8 +1860,8 @@ jobs:
     # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Reconcile implementation / capability / validation registries
@@ -1726,6 +1938,21 @@ jobs:
       tracker_host: jira.example.net
       project_key: WORK
 
+  exception-due-lists-on-push:
+    name: Exception check lists without a credential (hosted control)
+    # KDEC-018 item 4 (lane L-FX). On push and dispatch the list job must START and read the kit's own
+    # workflows; an unreadable source turns it red. The resurface job is never armed here (not a
+    # schedule or dispatch on the default branch, and no environment), so no credential is requested.
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/reusable-exception-due.yml
+    with:
+      kit_repository: ${{ github.repository }}
+      kit_ref: ${{ github.sha }}
+      default_branch: main
+      apply: false
+
   ticket-reference-outcome-asserted:
     name: Ticket reference gate's outcome off a pull request is NOT_A_PULL_REQUEST
     needs: ticket-reference-not-assessed-off-pr
@@ -1761,23 +1988,13 @@ jobs:
 
   dogfood-policy:
     name: Policy gate (dogfood)
-    # The kit runs its own governance gate against itself. Pinning is reported rather
-    # than enforced here until the third-party actions carry real SHA pins — see docs/assurance/PINNING.md.
-    #
-    # AND THE WEAKENING IS NOW ATTRIBUTED, because the kit does not get to exempt itself from
-    # the rule it just shipped. Two controls are weakened here: action-pinning is disabled and
-    # workflow-policy is softened to reporting. Before this, both were silent and this job was
-    # reported exactly like one that passed the full gate. With the attribution recorded the
-    # run routes PROCEED_WITH_ADVISORY instead of DECISION_REQUIRED — and when the expiry
-    # passes it routes back to DECISION_REQUIRED, because silence must never renew a weakening.
+    # The kit runs its own governance gate against itself, AT BASELINE: pinning enforced, the
+    # gate blocking. Until 2026-10-22 this ran `require_sha_pinning: false` / `soft_fail: true`
+    # under an attributed weakening dated to expire 2026-10-31. The pin sweep (lane L-H, ledger
+    # L82, owner decision O-23) SHA-pinned every remote `uses:` instead of re-dating it, and the
+    # weakening record was removed with it -- docs/assurance/PINNING.md.
+    # tests/prove_workflow_policy_rules.py (DOGFOOD) refuses this job carrying a weakening again.
     uses: ./.github/workflows/workflow-policy-check.yml
     with:
-      require_sha_pinning: false
-      soft_fail: true
-      weakening_reason: >-
-        The kit's own third-party actions carry tag refs rather than full SHA pins, so enforcing
-        the pinning rule against itself would block every run before the pins exist. Reported
-        rather than enforced while that migration is outstanding.
-      weakening_authority: kit-maintainer
-      weakening_exception_ref: docs/assurance/PINNING.md
-      weakening_expires: "2026-10-31"
+      require_sha_pinning: true
+      soft_fail: false

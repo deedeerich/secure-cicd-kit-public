@@ -1,9 +1,116 @@
 # 10 · Change log
 
 Newest first. On every later delivery, read this file first: it says which parts changed and why.
-Commit ids are on the build trunk `fix/normalization-and-discovery`. Versions 1.8 and earlier are in
+Commit ids are on the build trunk `fix/normalization-and-discovery`. Versions 1.10 and earlier are in
 `10b-CHANGE-LOG-EARLIER.md`. A reader whose last copy was v1.10 (`a907dc8`) reads
 `12-CHANGES-SINCE-A907DC8.md` first: it groups every change since by what an integrator must do.
+
+## Unreleased — strictest org, exception history from git, exploited in the wild (lane L-POL, 2026-10-23)
+
+KDEC-022 (owner, 2026-10-23). Proven locally, each failed first (`prove_authority_floor.py` A12,
+`prove_exception_history_derived.py`, `prove_known_exploited.py`); no hosted run.
+
+| change | parts affected |
+|---|---|
+| No enterprise entry: an unknown org runs at the strictest registered org (`ORG_UNMAPPED_RAN_AT_STRICTEST_ORG`) | 03, 05 |
+| Renewals counted from git: `EXCEPTION_HISTORY_TAMPERED` (`BLOCKED`), `EXCEPTION_HISTORY_UNVERIFIED`; resolve-policy clones blob-less; weekly Jira cross-check (`EXCEPTION_TICKET_MISMATCH`) | 03, 05, 06 |
+| A CVE on the CISA KEV catalog blocks at every rung (`FINDING_KNOWN_EXPLOITED`); `known_exploited_exceptions`; `KEV_UNAVAILABLE` advisory | 03, 04, 05 |
+
+## Unreleased — rollback test period, requested version, per-target freeze (lane L-RB2, 2026-10-23)
+
+KDEC-021 (owner, 2026-10-23; `a0c93c4`). Proven against the stub cloud (`prove_rollback_sequence.py`
+S13..S19, failed first on `19b5e1d`); no hosted or live run. Corrects the L-RB entry below, where the
+e2e command ran once per step.
+
+| change | parts affected |
+|---|---|
+| **A test period after every step, the last included**: `e2e_test_period_minutes` (default 15, 0 < m ≤ 240; 0 → `ROLLBACK_SEQUENCE_REFUSED_NO_TEST_PERIOD`; under 15 a recorded weakening), checks at start, every `e2e_check_interval_minutes`, and end; any failure halts | 07, 09 |
+| **App Service back to the requested version**: `target_version` required for App Service steps, checked first; every affected slot read back live after each reversal, swaps included; a non-kit slot change halts for a human | 07 |
+| **Deploys frozen per target**: deploys and rollback share `kit-target-<env>-<rg>-<app>`; one target per rollback run; a kit deploy landing mid-sequence is prepended and rolled back first with its own period (more than five halts). Record v2 adds `test_period`, `restored`, `inserted`, `lock`, `final_version` | 07, 09 |
+
+## Unreleased — unmapped orgs run at the enterprise floor; malicious-package scan in the floor (lane L-UO, 2026-10-23)
+
+KDEC-020 (owner, 2026-10-23; `c8b3fc2`, merged `5c1b090`), superseding KDEC-019 item 1, which lane
+L-RB built backwards (the L-RB entry below). Proven locally (`prove_authority_floor.py` A1/A11,
+`prove_crawl_floor.py` K6/K7, each failed first); no hosted run.
+
+| change | parts affected |
+|---|---|
+| **An unmapped org runs at the enterprise floor** (the strictest enterprise at each tier when several; tighten-only, `POLICY_BELOW_AUTHORITY_FLOOR` below it), with the notice `ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR` (`policy_notice`; `policy_notices` output, a warning, the gate summary). `ORG_NOT_UNDER_ENTERPRISE` retired, no longer emitted | 03, 05 |
+| **`enable_malicious_pkg_scan: false` is refused** below crawl, `CHERRY_PICK_BELOW_FLOOR` (`BLOCKED`), every tier and on pull requests; no longer a recordable weakening | 02, 04, 05 |
+
+## Unreleased — explainer made current at source (lane L-DOC, 2026-10-23)
+
+Every part re-read against the code at `19b5e1d` and KDEC-017..019, then brought to KDEC-020/021 above.
+Cost: `validate-scanners.yml` runs on a push only to `main` (M12, failed first on `19b5e1d`).
+
+| change | parts affected |
+|---|---|
+| secrets: a ticketed one-finding exception is the only way past a found secret; `secret_gate` `EXCEPTED`; cause `SECRET_EXCEPTION_ATTRIBUTED` listed; "nothing below crawl" a principle; the gate, not an enforce step, decides | 00, 01, 03, 04, 06, 09, 11 |
+| the rung and register are wired (stage 1, built), not Release 2; deploy refusal follows the rung | 07, 09, 11 |
+| actions are SHA-pinned (L82), not by tag; `fail_on_cvss` ships 9.0 (O-12), not 11; counts at `19b5e1d`: 27 inputs, 26 routing and 64 policy scenarios, 12 recorded workflows, 5 deferrals (ratchet 5/5), OIDC exemption to 2026-12-31; `check_stage_phase` runs in self-test | 03, 04, 05, 08, 09 |
+| exception resurfacing described in the ticketing part; new proofs listed; KDEC range 001..019 | 06, 08, 11 |
+| V1 attestation verification runs inside both deploy reusables (P-02, `ae04403`), not template-only; five outcomes, not four | 07, 09, 11 |
+| v1.9 and v1.10 moved to `10b` (size) | 00, 10, 10b |
+
+## Unreleased — unmapped orgs refused; sequential rollback (lane L-RB, 2026-10-22)
+
+KDEC-019 items 1 and 4 (owner, 2026-10-22). Proven locally, each proof failed first; no hosted run.
+
+| change | parts affected |
+|---|---|
+| **No run outside the enterprise floor**: once the central `orgs` map defines an enterprise, a run in an org it does not name is `ORG_NOT_UNDER_ENTERPRISE` (`BLOCKED`, the org named), at every tier and on pull requests, even if it ran before; no map, nothing changes; `--validate` names every org the register mentions that the map leaves out | 03, 05 |
+| **Sequential rollback, tested end to end between steps**: `reusable-rollback-sequence.yml` + `scripts/rollback_sequence.py` + `templates/rollback-sequence.yml` reverse several deploy runs newest first; each step must be eligible from a fresh live read (`ELIGIBLE_UNTOUCHED`, or `ELIGIBLE_OWNED_PART_SEPARABLE` on a shared Container App), `ROLLBACK_VERIFIED` by the deploy contract, healthy, and pass the caller's `e2e_test_command`; anything else stops or halts by name (`ROLLBACK_SEQUENCE_HALTED_E2E_FAILED`, ...) before later steps are touched; no e2e command is `ROLLBACK_SEQUENCE_REFUSED_NO_E2E`; record `schemas/rollback-sequence.schema.json`. Stub cloud only | 07 |
+
+## Unreleased — crawl is the floor; the authority binds; exceptions resurface (lane L-FX, 2026-10-22)
+
+KDEC-018 (owner, 2026-10-22). Proven locally, each proof failed first; no hosted run.
+
+| change | parts affected |
+|---|---|
+| **Enterprise scope and the authority floor**: the central `orgs` map places each org in an enterprise; precedence kit default < enterprise < org < ... < repository. A narrower entry (org under its enterprise, team, product, repository, a tier beneath its tier-less entry) that leaves anything weaker is `POLICY_BELOW_AUTHORITY_FLOOR` (`BLOCKED`), decision or not; only the authority may soften the kit default deploy approval. Per-finding exceptions are unaffected | 03, 05 |
+| **Crawl is absolute**: the secret scan always covers the repository root (`paths` narrowed it below crawl); every weakening input, attributed, still blocks a secret and a scan the kit could not run or trust (`tests/prove_crawl_floor.py`) | 02, 05 |
+| **Exception history and the renewal cap**: `renews` (prior grants) on secret exceptions, register decisions and the deploy's version-gap exception (`weakening_renews`); shown as "first exception" or "previously excepted N time(s) since ..." in the gate summary, the run record (`policy_exceptions` new), the deploy summary and `outcome.json`; over `numbers.max_exception_renewals` (central only, default 2, 0..5) → `EXCEPTION_RENEWAL_LIMIT`. New outputs/inputs: security `max_exception_renewals` → deploy `max_exception_renewals` | 03, 05, 07 |
+| **Resurfacing**: `scripts/exception_due.py` + `reusable-exception-due.yml` + `templates/exception-due.yml` (weekly): every exception due within 14 days or expired is listed with its history, and raised on its Jira ticket (reopen, comment, or one new issue), saying it was excepted before and is now due; `NOT_CONFIGURED` without Jira credentials; an unreadable register is never "nothing due" | 05, 06 |
+| **Ticket keys end where their number ends**: `ticket_reference.py` refuses `WORK-123abc`, `WORK-1234_`, `WORK-0123` (after lane L-W's G10), so a malformed key never excepts a secret | 06 |
+
+## Unreleased — the gate is the single enforcement point (lane `lane/L-S`, 2026-10-22)
+
+Owner ruling O-24 ("only secrets block at this time"). Proven locally; the proof failed first on
+`7515088` (every scanner job failed on an ordinary finding at crawl, so the workflow was red and a
+caller's `needs: security` skipped build and deploy); no hosted run (Actions minutes blocked).
+
+| change | parts affected |
+|---|---|
+| **Scanner jobs report, the gate enforces**: each non-secret scanner job hands findings over its threshold to the gate as the job output `findings_state=FINDINGS` and fails only when it could not scan or trust its count; the gate enforces by the resolved policy, so the workflow concludes as its verdict. The secret scan hands its secrets over too (the gate blocks them at every tier unless excepted, below); an image's secrets step and a known-malicious package still fail their own job | 02, 03, 04 |
+| **Secret exceptions, one finding each** (owner ruling 2026-10-22: "requested and logged with tickets that have explanations"): a register entry's `secret_exceptions` item names the finding's fingerprint, a `<PROJECT>-<digits>` ticket, an explanation, a named approver, an expiry, and reviewers at uat/prod; anything missing is refused by name (`SECRET_EXCEPTION_NOT_FINDING_SCOPED`, `_UNTICKETED`, `_UNATTRIBUTED`, `_EXPIRED`) and the secret blocks; a class-wide softening stays `CHERRY_PICK_BELOW_FLOOR`. Every secret covered → `PROCEED_WITH_ADVISORY` (`SECRET_EXCEPTION_ATTRIBUTED`), `secret_gate` `EXCEPTED`, logged in the summary and the run record (`secret_exceptions`); the report publishes `secret_findings`; both deploys accept the new cause | 02, 03, 05 |
+| **A non-secret job that fails beside findings on record is untrusted** (`EVIDENCE_UNTRUSTED`), no longer "the control fired"; `advisory_mode` no longer softens a crash in the gate step, nor Checkov's `COLLECTION_FAILED` (it passed under advisory_mode at `7515088`) | 03 |
+| **ESLint under `bash -e`**: a lint finding no longer ends the step, enforce_lint on or off | 04 |
+| **Consumer path**: the full negative asserts the secret scan and the gate fail while Semgrep and Trivy succeed; the PHP-only leg asserts the verdict it records (crawl: `PROCEED_WITH_ADVISORY`, green; above crawl: `BLOCKED`) | 08 |
+
+## Unreleased — the policy register and crawl (lane `lane/L-A`, 2026-10-22)
+
+Owner requirements 2026-10-22 (relayed by the coordinator) and ruling O-24. Proven locally, each
+proof failed first on `2cd078e`; no hosted run (Actions minutes blocked).
+
+| change | parts affected |
+|---|---|
+| **The policy register** (`schema_version 2`): per org, team, product, repository and environment tier, signed off, every entry an attributed decision; precedence kit default < org < team < product < team+product < repository; conflicts, unattributed and expired decisions refused by name; the repository's own file only tightens. `docs/adoption/POLICY_REGISTER.md` | 03, 05, 11 |
+| **The gate resolves it first** (`resolve-policy`, rung patch applied): no register = crawl, only secrets block, other findings `PROCEED_WITH_ADVISORY` (`FINDINGS_NOT_BLOCKED`); walk owes a decision, run blocks; new outputs (`policy_resolution`, `rung_*`, `effective_minimum`, `deploy_approval`, ...); input `target_environment`; a `verdict` step | 03, 05 |
+| **O-24**: the kit unable to run or trust its own scan blocks at every tier, crawl included; a coverage gap stays advisory | 03 |
+| **Deploy reads the environment's reviewers back**: at uat/prod both deploys refuse before login unless required reviewers exist with self-review prevented (and from the named groups); new input `deploy_approval`, output `environment_protection` | 03, 07 |
+
+## Unreleased — Release 3 (next): PHP (lane `lane/L-PHP`, 2026-10-21)
+
+Owner: "I need php and we need it now". Proven locally (each proof failed first on `75d935c`);
+hosted runs owed: the consumer path at 24 seeded signals, its `scope=php` negative, self-test, the
+corpus probe.
+
+| commit | change | parts affected |
+|---|---|---|
+| `f880b80` | **PHP a supported ecosystem**: discovery `php` (`*.php`, `composer.json`, `composer.lock`); a `composer.json` without its lock is the named gap `PHPDependenciesUnlocked` (Trivy reads only the lock); PHP target versions in resolve; `p/php` a floor in `sast-semgrep` with a hollow-PHP witness (Semgrep's own `paths.scanned`); a vulnerable Composer lock blocks `deps-scan`; fixture 20 → 24 signals and a PHP-only negative | 02, 04, 08, 09 |
+| lane L-PHP, corpus commit | **the PHP range Semgrep reads, MEASURED** on the job's own image by a seeded corpus whose families are `php -l`-checked: 1.90.0 reads 5.6–7.2 (7.3+ syntax is exit 3 under `--strict`); 1.178.0 read 5.6–8.4. Registry row READ 5.6–7.2; weekly probe job | 04, 09 |
+| lane L-SG | **one Semgrep release, pinned by digest** (ledger L03; KDEC-016, PHP 8.x required): `sast-semgrep` runs the Semgrep 1.178.0 image by digest, not the 1.90.0 tag; the PHP row re-measured on it, READ 5.6–8.4; validate-scanners probes the same digest and gains a `semgrep-php` probe; self-test pins Semgrep 1.178.0, and the local Semgrep proofs fail if their release is not the job's. A push no longer cancels a dispatched or scheduled run of validate-scanners or the corpus probe. A PHP 8.5 corpus family, MEASURED unread on 1.178.0 and 1.182.0 (`(void)` cast, `final` promotion): the row stays READ 5.6–8.4 and an 8.5 target is a proven VERSION_GAP. Proven locally, each proof failed first on `7fe3d54`; hosted runs owed | 04, 09 |
 
 ## Version 1.12 — 2026-10-21 (trunk `078ef90`, lane `lane/L-G2`)
 
@@ -40,32 +147,4 @@ track is neither scanned nor exported (proof E8, failed first); self-test 396223
 
 Deferrals: 3, none blocking — attestation-verify, change-detection, toolchain-terraform (all 2026-12-31).
 
-## Version 1.10 — 2026-10-16 (trunk `af8672c`)
-
-| commit / run | change | parts affected |
-|---|---|---|
-| `4360aeb` | **live ticketing proven on a real Jira**: every broken setting refused by name with zero writes; a repeat run creates nothing; a closed ticket with no reopen setting gets a successor that references it; with the reopen transition named, the closed ticket is reopened; two tickets carrying the same stamp are reported AMBIGUOUS and neither is written. Azure DevOps live is not yet run | 06, 09 |
-| runs 38912063363, 38912546778 | **App Service staging-slot swap proven live**: a healthy release is deployed to the slot, checked there and swapped in; an unhealthy one is caught on the slot, never swapped, production untouched, the slot restored and verified | 07, 09 |
-
-Deferrals: 3, none blocking — attestation signing (needs a public repository; being wired) and two
-capabilities not yet in use.
-
-## Version 1.9 — 2026-10-16 (trunk `c140fe6`)
-
-Live on the owner's personal Azure test subscription (KDEC-012), from the trunk branch the `test`
-environment admits, through `live-deploy-acceptance.yml` calling the deploy workflows as a consumer does.
-
-| commit / run | change | parts affected |
-|---|---|---|
-| runs 38832628162, 38832634828, 38850408850 | **authorization boundary proven on the real tenant**: the kit's own and shared groups reachable; a sibling product's group, an empty opposite-tier group and the subscription REFUSED with their AuthorizationFailed bodies printed; a reachable scope placed in a refused position fails the run | 07 |
-| runs 38857011286–38857024014 | **build once, push to a cloud registry**: the kit's own build pushed three images over OIDC and read each digest back (REGISTRY_IDENTITY_PROVEN); those exact digests were deployed | 05, 07 |
-| runs 38857259257, 38858033863, 38855929525 | **Container Apps deploy proven live**: a kit-built digest pulled with the app's own identity and served healthy; an unhealthy one never received traffic and was rolled back and verified; a later release created mid-run made the reversal defer rather than reverse out of order | 07 |
-| runs 38878189985, 38886279650 | **App Service deploy proven live** (direct path): an unhealthy image rolled back and verified; a second person's change during the health check was detected and NOT overwritten — the run reports ROLLBACK_PARTIAL naming what it refused. The staging-slot swap path is not yet live (needs a Standard tier slot the owner creates) | 07, 09 |
-| `ece9d00`, `fe606ae`, `6ee04c3`, `6e40dad`, `95bd5cc` | **five deploy defects found only by running live, each fixed test-first**: a Container App moved all traffic to an unverified revision; the reversal missed inactive revisions; App Service read a 200 from the PREVIOUS container as the new one's health; an idle free-tier site never started until requested; a refused reversal was summarised as verified | 07 |
-| `72102ad` | eleven places where a caller's input reached a shell script directly now pass through `env:`, and the lint blocks that pattern in every shared workflow | 05 |
-| `e509d6c` | self-test had been intermittently red; a proof crashed when a test registry dropped its connection on Linux. Fixed test-first; self-test green since | 08 |
-
-Deferrals: 4, none blocking. Owed: live ticketing's person-only steps (expires 2026-10-23),
-attestation signing (public repository or Enterprise Cloud), two capabilities not yet in use.
-
-Versions 1.8 and earlier: `10b-CHANGE-LOG-EARLIER.md`.
+Versions 1.10 and earlier: `10b-CHANGE-LOG-EARLIER.md`.

@@ -3,7 +3,7 @@
 Source: `docs/assurance/COMPLETION_LEDGER.md` (202 rows, audited at `53d2962`) and
 `docs/assurance/RELEASE_1_EVIDENCE_MANIFEST.md` with `_PART2.md` and `_PART3.md` (one row per
 capability, each with its run or proof),
-updated to trunk `078ef90`. Completion-ledger rows closed after its audit are stated here from the
+updated to trunk `19b5e1d` (the hosted status below is as of `078ef90`). Completion-ledger rows closed after its audit are stated here from the
 fixing commit and its proof. **Release 1** is what the owner decided must be complete and proven end
 to end now (KDEC-007); **Release 2** is the rest, dated.
 
@@ -16,21 +16,21 @@ cited transcript. "Hosted" means a GitHub runner run id.
 
 | stage | what it is | state | release |
 |---|---|---|---|
-| 1 policy resolution | rung per (repo, environment), registration file, derived `policy_mode` | BUILT as libraries, proven; gate wiring is a written patch, not applied | 2 |
-| 2 discovery | presence probes, could-not-look ≠ not-present, coverage gaps; beyond the 8-level bound is UNDETERMINED, never NOT_APPLICABLE (`11db350`) | BUILT, proven hosted (consumer path, before the bound fix); the bound proven locally | 1 |
+| 1 policy resolution | the policy register per enterprise, org, team, product, repository and tier; derived `policy_mode`; crawl the default and the floor; the authority's rung binds narrower scopes; ticketed finding-scoped exceptions with history, a renewal cap and weekly resurfacing (KDEC-017..019) | BUILT and wired: the gate resolves the policy first (lanes L-A, L-S, L-FX, L-RB), proven locally; no hosted run | 1 (pulled forward from 2) |
+| 2 discovery | presence probes, could-not-look ≠ not-present, coverage gaps; beyond the 8-level bound is UNDETERMINED, never NOT_APPLICABLE (`11db350`); `php` an ecosystem since lane L-PHP, a lock-less `composer.json` a named gap | BUILT, proven hosted (consumer path, before the bound fix); the bound and PHP proven locally | 1 (PHP: 3) |
 | 3 version discovery | the version each root targets | BUILT, proven locally | 2 |
-| 4 capability selection | the capability picks the scanner; a substitute is labelled; no capable scanner = PARTIAL, never PASS (KDEC-010) | BUILT, proven locally; many ranges UNVERIFIED until seeded test sets exist, so those read PARTIAL | 2 |
+| 4 capability selection | the capability picks the scanner; a substitute is labelled; no capable scanner = PARTIAL, never PASS (KDEC-010) | BUILT, proven locally; Checkov and Trivy-config READ for Terraform 0.12–1.14 by a seeded corpus (`tests/corpora/terraform_corpus.py`, hosted probe run 39640950138), Semgrep PHP READ 5.6–8.4; the other Semgrep legs, gosec, eslint and cppcheck UNVERIFIED until seeded test sets exist, so those read PARTIAL | 2 |
 | 5 execution planning | the job set as data before anything runs | DESIGNED (owner review, EP-1..EP-4) + an advisory plan output nothing enforces | 2 |
-| 6 scanning | 14 scanner jobs | BUILT, proven hosted (20/20 seeded signals on `main` `ef4b15d`, run 38934329462); every count site refuses no-evidence-as-zero; malware and secrets block in every mode | 1 |
+| 6 scanning | 14 scanner jobs | BUILT, proven hosted (20/20 seeded signals on `main` `ef4b15d`, run 38934329462); every count site refuses no-evidence-as-zero; malware and secrets block in every mode; since lane L-S a scanner job fails only when it could not scan or trust its result, and the gate is the single enforcement point (proven locally) | 1 |
 | 7 evidence validity | a report that read nothing is never clean | BUILT at every count site; the report and the runner now agree on a hollow scan (ledger L01, `fa19c02`); Semgrep `--strict` and the CodeQL autobuild outcome read (`1542c05`); sidecar rows 8–10 not built | 1 |
 | 8 normalisation + redaction | redaction before every publication | BUILT, proven locally | 1 |
 | 9 identity + baseline | durable identity, ledger read, cascade, propose-ledger job | BUILT and wired into the report; a ledger is established only by an approved ESTABLISH pull request under CODEOWNERS (F-01 fixed, `a636f5e`), proven locally, no hosted run; one move record, scanner-generation hold; the gate does not read the baseline yet | 1 |
 | 10 severity + disposition | schema-true dispositions on the durable key | BUILT, proven (legacy key honoured until 2026-11-13); severity/SLA libraries Release 2 | 1 |
 | 11 correlation | anchored clusters only | BUILT, wired, proven locally | 1 |
-| 12 gate + verdict | `routing_result`, `advisory_causes`, posture record | BUILT, proven locally (21 routing scenarios) and live in the consumer path (caller blocked); rung floor Release 2 | 1 |
-| 13 ticketing | Jira first, Azure DevOps second | BUILT; the reconciler proven LIVE on a personal Jira; Azure DevOps against stand-ins only; the armed workflow has no hosted run and no template calls it; updates keep human text (T-02 fixed, `795d13c`) and write only on a delta | 1 |
+| 12 gate + verdict | `routing_result`, `advisory_causes`, posture record, the resolved policy | BUILT, proven locally (26 routing scenarios; 64 policy scenarios) and live in the consumer path before the policy was wired (caller blocked); the policy-driven verdict has no hosted run | 1 |
+| 13 ticketing | Jira first, Azure DevOps second, GitHub wired | BUILT; the reconciler proven LIVE on a personal Jira, the KDEC-024 lifecycle too (R-3: NEW, SLA escalation, close on verified clearance, RECURRED); Azure DevOps and GitHub against stand-ins only; `templates/ticket-reconcile.yml` calls it after the scan and runs its clock daily; the armed workflow has no hosted run; updates keep human text (T-02 fixed, `795d13c`) and write only on a delta | 1 |
 | 14 reporting | 25 rows, findings counts, findings JSON, evidence artifact | BUILT, proven; the run record `assurance-result.json` its schema describes is emitted nowhere (L36) | 1 |
-| 15 deploy + verification | verdict-gated, digest-bound, reversible | BUILT, proven LIVE on Azure for Container Apps and App Service: refusal, healthy deploy, verified rollback, a second actor refused, the slot swap. KDEC-014 (prod refuses a proven version gap without a named acceptance) built, stub-proven; since `078ef90` an absent ruling is EVIDENCE_UNTRUSTED | 1 |
+| 15 deploy + verification | verdict-gated, digest-bound, reversible | BUILT, proven LIVE on Azure for Container Apps and App Service: refusal, healthy deploy, verified rollback, a second actor refused, the slot swap. KDEC-014 (prod refuses a proven version gap without a named acceptance) built, stub-proven; since `078ef90` an absent ruling is EVIDENCE_UNTRUSTED. Sequential rollback with an e2e test period after every step, App Service slots returned to the requested version, and a per-target concurrency lock the deploys share with the rollback (KDEC-019, KDEC-021) built, stub-proven only: no hosted or live run | 1 |
 
 ## Hosted and live status (trunk `078ef90`)
 
@@ -63,8 +63,9 @@ person-only cases (duplicate, close, reopen). `main` is at Release 1 (`ef4b15d`,
 - The verdict (`routing_result`) and its routing, including unreadable expiries and the shipped defaults
   (a caller who changes nothing gets `PROCEED` on a clean run), and `advisory_causes` naming why an
   advisory is advisory.
-- Secrets block in every mode — source, history, image — and **known-malicious packages block in every
-  mode**. A secret scan that read nothing is `COLLECTION_FAILED`.
+- Secrets block in every mode — source, history, image — unless a ticketed exception covers that one
+  finding, and **known-malicious packages block in every mode**. A secret scan that read nothing is
+  `COLLECTION_FAILED`.
 - No scanner turns a missing, empty or unparseable report into zero; Semgrep and Checkov count by the
   effective SARIF level; Trivy keeps every severity in the evidence and blocks only at `fail_on_severity`.
 - No caller input reaches any script except as data (`env:`), and a lint refuses otherwise.
@@ -79,30 +80,61 @@ person-only cases (duplicate, close, reopen). `main` is at Release 1 (`ef4b15d`,
 - **A real gate verdict carried into a deploy in one pipeline**: every live deploy received a typed
   verdict. The starter template that composes them has not run on a runner.
 - **Attestation signing and verification (V1)**: built; held until a public repository or Enterprise
-  Cloud. V1 runs only in the starter template, not inside the deploy reusables.
+  Cloud. V1 runs inside both deploy reusables before login (P-02, `ae04403`), proven against recorded
+  answers only.
 - **A baseline ledger established on a runner**: the shipped path (an approved ESTABLISH pull request,
-  F-01) is proven locally only, and no starter template calls it; until one is merged nothing is
-  grandfathered.
-- **Live ticketing on Azure DevOps**, and an armed hosted run of `reusable-ticket-reconcile.yml`.
+  F-01) is proven locally only; `templates/ticket-reconcile.yml` calls it for proposals (KDEC-024),
+  none for establishment; until one is merged nothing is grandfathered.
+- **Live ticketing on Azure DevOps or GitHub**, and an armed hosted run of
+  `reusable-ticket-reconcile.yml` or its template.
 - **EMPTY or UNKNOWN prior state, PARTIAL_APPLY / STATUS_UNTRUSTED, provenance tags, a prod-tier
   capability refusal, KDEC-014** on a live target: stub-proven only.
-- **The rung ladder, SLA and severity derivation in the gate** — Release 2. Version fitness is consumed
+- **SLA and severity derivation in the gate** — Release 2. The rung and the policy register are wired
+  (stage 1) and proven locally only: no hosted run has carried a register-driven verdict yet. Version fitness is consumed
   (KDEC-010): a scanner that cannot read the code at its version never carries a PASS.
-- **The NVD workflow blocking anything**: `fail_on_cvss` defaults to 11.
-- **SHA-pinned actions**: the kit's own third-party actions are referenced by tag.
+- **PHP 8.x on a runner**: lane L-SG moved the `sast-semgrep` job to the Semgrep 1.178.0 image,
+  pinned by digest, which reads PHP 5.6–8.4 (measured locally in that image). No hosted run of the
+  job on that image exists yet.
+- **PHP 8.5 on a runner**: Semgrep cannot fully parse the `(void)` cast or `final` promoted
+  properties (1.178.0 and the newest, 1.182.0). Since lane L-P85 (owner, 2026-10-22: scan what
+  parses, flag the rest) such a file makes the Semgrep scan `PARTIAL` with the file named and every
+  other finding kept, routed `COVERAGE_PARTIAL` -- proven locally, including in the job's image; no
+  hosted run yet.
+- **The NVD workflow's currency against a live NVD feed**: its CVSS gate ships at 9.0 (owner ruling
+  O-12), so it blocks by default, and detection is proven on seeded fixtures; feed currency without a
+  sustained key-backed run is not established.
+- **Every install pinned**: every remote action is SHA-pinned (L82, `4dfd858`), but detect-secrets
+  and ruff/mypy are still installed unpinned (L84).
 - **The kit as a landing-zone deploy engine** — there is no plan/apply/destroy/vend pipeline.
 
 ## Release 2 (dated, owned; see completion ledger section 4)
 
-Seeded corpora for the UNVERIFIED scanner ranges (semgrep, gosec, checkov, trivy-config, cppcheck,
+Seeded corpora for the scanner ranges still UNVERIFIED (semgrep outside PHP, gosec, cppcheck,
 eslint — D-VF-4; until then those scanners are never *selected* and the capabilities only they serve go
-PARTIAL), rung-ladder gate wiring, severity/SLA in the gate and ledger, execution-plan enforcement, cost
+PARTIAL; checkov and trivy-config are already READ for Terraform 0.12–1.14, measured by
+`tests/corpora/probe_iac_corpus.py` on 2026-10-21 and confirmed hosted, run 39640950138), severity/SLA in the gate and ledger, execution-plan enforcement, cost
 packing, scheduled revalidation (PROV V3), the retirement register, overlays B and C beyond their docs.
+
+## Release 3 (next)
+
+**PHP, a supported ecosystem** (owner, 2026-10-21: "I need php and we need it now"; lane L-PHP).
+BUILT and PROVEN LOCALLY, hosted runs owed (consumer path at 24 seeded signals, the PHP-only
+negative, self-test, validate-scanners, the corpus probe):
+
+| piece | state |
+|---|---|
+| discovery `php` (`*.php`, `composer.json`, `composer.lock`), the same could-not-look and depth rules | PROVEN LOCALLY (`test_discovery.py`) |
+| PHP target versions (`.php-version`, `config.platform.php`, `require.php`, the lock, `FROM php:`) | PROVEN LOCALLY (`test_resolve.py`) |
+| SAST: `p/php` a floor in `sast-semgrep`; SQL injection, XSS, command injection detected; a hollow PHP scan is `COLLECTION_FAILED` | PROVEN LOCALLY (`prove_semgrep_php.py`) |
+| dependencies: a vulnerable `composer.lock` blocks `deps-scan`; a lock-less `composer.json` is a named gap | PROVEN LOCALLY (`prove_deps_scan_composer.py`) |
+| the PHP range Semgrep reads, MEASURED on the job's image | **READ 5.6–8.4** on the job's 1.178.0 image, pinned by digest (lane L-SG; re-measured locally in that image 2026-10-21; `prove_php_corpus.py`). The weekly corpus probe and the validate-scanners `semgrep-php` probe run the same digest; their hosted runs are owed. **8.5 measured not fully read** on 1.178.0 and 1.182.0, and measured as parse evidence (`parse_evidence_max` 8.5, lane L-P85): an 8.5 target is not a `VERSION_GAP` -- the job's parse evidence decides. Before L-SG: READ 5.6–7.2 on the 1.90.0 container |
+| PHP 8.5: scan what parses, flag the rest (owner, 2026-10-22; KDEC-016 amended) | PROVEN LOCALLY (`prove_semgrep_php.py` S7-S10, `prove_version_gap_production.py`, `test_resolve.py`, `prove_php_corpus.py` P11): an 8.5 file Semgrep partly parses is `PARTIAL` (`PARSE_PARTIAL_PHP_SYNTAX`), named, every other finding kept; the gate routes `PROCEED_WITH_ADVISORY` / `COVERAGE_PARTIAL`; a non-PHP parse failure is still `COLLECTION_FAILED`. Hosted owed |
+| one Semgrep release (ledger L03) | the job's image, the C# and Java jobs and self-test all at 1.178.0; the local Semgrep proofs fail if the release they run is not the job's | PROVEN LOCALLY (`prove_semgrep_strict.py` P4, `prove_semgrep_php.py` S6) |
 
 ## Open owner decisions
 
-The full list with recommended defaults is completion ledger section 6 (O-01..O-23). Among them:
+The full list with recommended defaults is completion ledger section 6 (O-01..O-26). Among them:
 OD-3 (packing endpoint), OD-8 (runner version), OD-9 (private unlicensed repositories), `symbol_path`
 in identity, the rung table, every placeholder number, whether DCR closes rollback gate 2, the
-`fail_on_cvss` default, the landing-zone contract's open items, attestation on a public repository,
+landing-zone contract's open items, attestation on a public repository,
 and moving the personal Azure DevOps project to its inherited process.

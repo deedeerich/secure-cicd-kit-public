@@ -48,7 +48,7 @@ secret, because the identity is federated (OIDC) and holds no key.
 | `KIT_IMAGE_REPOSITORY` | variable | input `image_repository` | |
 | `KIT_ENVIRONMENT_TIER` | variable | input `environment_tier` | `dev` / `test` / `uat` / `prod`. At uat and prod the kit refuses an irreversible deploy |
 | `KIT_CLOUD` | variable | input `cloud` | `commercial` or `gov` |
-| environment protection rules | GitHub setting | — | **REQUIRED on uat/prod:** required reviewers and a branch policy (the protected default branch only). The reviewers are the approval half of a version-gap exception (KDEC-014); the kit cannot set or read them, so the vending must, and the deploy records which environment it ran in |
+| environment protection rules | GitHub setting | — | **REQUIRED on uat/prod:** required reviewers and a branch policy (the protected default branch only). The reviewers are the approval half of a version-gap exception (KDEC-014) and, at uat/prod, a control in their own right: **prevent self-review ON**. The kit cannot set them, so the vending must; the deploy reads them back before login and refuses at uat/prod when they are absent, allow self-review, or (when the policy names approver groups) include anyone outside the groups (lane L-A, `environment_protection`) |
 | the federated credential subject | Entra setting | — | `repo:<owner>/<repo>:environment:<env>` — so only a job running in **that** environment of **that** repository can mint the token |
 
 The vending also records, in its own output for the platform team (not in the repository): the

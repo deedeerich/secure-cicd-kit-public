@@ -296,7 +296,10 @@ def main():
         # The deny list never ships (E2), so in a copy the controls that guard the SOURCE have
         # nothing to read. Each must say so by name -- not fail the copy's self-test (third
         # failure of the first public Release 2 PR), and not pretend to have checked anything.
-        for tool in ('check_export_safety.py', 'prove_deny_samples.py', 'prove_export_scope.py'):
+        # check_context_current.py joined 2026-10-22: the export ships no .context (E2), and once
+        # the sweep refused any exit 1 the copy's self-test went red on it (public run 39840692734).
+        for tool in ('check_export_safety.py', 'prove_deny_samples.py', 'prove_export_scope.py',
+                     'check_context_current.py'):
             q = subprocess.run([sys.executable, os.path.join(out, 'tests', tool)], cwd=out,
                                capture_output=True, text=True, encoding='utf-8', errors='replace',
                                env=env)

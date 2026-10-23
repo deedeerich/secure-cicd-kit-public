@@ -76,7 +76,21 @@ EXPR = re.compile(r'\$\{\{\s*(.*?)\s*\}\}')
 
 SCANNERS = ['secret-scan', 'code-quality', 'sast-semgrep', 'sast-bandit', 'sast-dotnet',
             'sast-java', 'sast-go', 'sast-cpp', 'deps-scan', 'iac-scan', 'malicious-deps',
-            'sbom', 'codeql', 'image-scan']
+            'sbom', 'codeql', 'image-scan', 'sast-mobile']
+# The scanner jobs that hand the gate a findings_state output (lane L-S).
+FINDINGS_STATE_JOBS = ['code-quality', 'sast-semgrep', 'sast-bandit', 'sast-dotnet', 'sast-java',
+                       'sast-go', 'sast-cpp', 'deps-scan', 'iac-scan', 'image-scan', 'sast-mobile']
+
+
+def _expand(doc):
+    """The workflow with every `$/` composite step expanded into its job, as the runner sees it.
+
+    Scanner job bodies live in `.github/actions/<scanner>/` (ledger L64); this reads the steps a
+    job actually runs. One rule, tests/_composite_expand.py, for every reader.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.expanded_doc(doc)
 
 
 def ctx(scanner='success', kit='success', report='success', advisory='false',
@@ -124,7 +138,28 @@ def ctx(scanner='success', kit='success', report='success', advisory='false',
          # The sbom job's licence verdict (PASS | FINDINGS | NOT_APPLICABLE | COLLECTION_FAILED)
          # and denied count. '' when the job did not run.
          'needs.sbom.outputs.licence_state': '',
-         'needs.sbom.outputs.licence_denied': ''}
+         'needs.sbom.outputs.licence_denied': '',
+         # The sast-semgrep job's scan state (COMPLETE | PARTIAL, KDEC-016 2026-10-22) and the PHP
+         # files Semgrep could not fully parse. '' when the job did not run.
+         'needs.sast-semgrep.outputs.scan_state': '',
+         'needs.sast-semgrep.outputs.parse_partial_files': '',
+         # The known-exploited check (KDEC-022 item 3) over the report's CVEs: the CISA KEV catalog
+         # was read and nothing found is on it. tests/prove_known_exploited.py varies it (BLOCKED,
+         # EXCEPTED, UNAVAILABLE).
+         'needs.report.outputs.cve_findings': '',
+         'steps.kev.outputs.kev_state': 'AVAILABLE', 'steps.kev.outputs.kev_verdict': 'CLEAR',
+         'steps.kev.outputs.kev_blocking': '', 'steps.kev.outputs.kev_excepted': '',
+         'steps.kev.outputs.kev_catalog_version': '2026.10.22',
+         'steps.kev.outputs.kev_date_released': '2026-10-22T17:00:00.0000Z',
+         'steps.kev.outputs.kev_why': '', 'steps.kev.outputs.known_exploited': '[]',
+         # The sast-cpp job's build-metadata state (KDEC-026): PARTIAL / CPP_ANALYSIS_PARTIAL when
+         # any C/C++ source had no compilation database. '' when the job did not run.
+         'needs.sast-cpp.outputs.scan_state': '',
+         'needs.sast-cpp.outputs.scan_reason': ''}
+    # What each scanner job HANDS the gate (lane L-S, O-24: the gate is the single enforcement
+    # point): FINDINGS when its own threshold fired unsoftened, '' otherwise -- '' here, nothing.
+    for s in FINDINGS_STATE_JOBS:
+        d['needs.%s.outputs.findings_state' % s] = ''
     for s in SCANNERS:
         d['needs.%s.result' % s] = scanner
     return d
@@ -243,7 +278,7 @@ SCENARIOS = [
 
 def gate_step():
     import yaml
-    doc = yaml.safe_load(io.open(WF, encoding='utf-8'))
+    doc = _expand(yaml.safe_load(io.open(WF, encoding='utf-8')))
     for s in (doc['jobs'][GATE_JOB].get('steps') or []):
         if s.get('name') == GATE_STEP:
             return s
@@ -293,7 +328,7 @@ def env_for_run(run_text, values):
     unset and prove a step nobody ships. Unknown text resolves to no extra environment.
     """
     import yaml
-    doc = yaml.safe_load(io.open(WF, encoding='utf-8'))
+    doc = _expand(yaml.safe_load(io.open(WF, encoding='utf-8')))
     for job in (doc.get('jobs') or {}).values():
         for s in (job or {}).get('steps') or []:
             if s.get('run') == run_text:

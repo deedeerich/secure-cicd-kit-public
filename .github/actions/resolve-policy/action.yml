@@ -1,0 +1,150 @@
+name: resolve-policy
+description: >-
+  Stage 1. Resolves this run's enforcement policy -- rung, per-control minimums, environment tier,
+  team pattern, deploy approval -- from the policy register: the central copy inside the kit
+  (policy/policy-registration.json, delivered by $/) and the repository's own
+  .security/policy-registration.json on its PROTECTED DEFAULT BRANCH, never the checkout. Neither
+  present is the kit default (crawl: only secrets block). Unreadable, defective or conflicting is
+  refused by name. scripts/policy_registration.py; tests/prove_gate_reads_rung.py.
+inputs:
+  default-branch:
+    description: The protected default branch. The repository registration is read from it, by ref.
+    required: true
+  environment:
+    description: >-
+      The environment this run targets (target_environment). Empty means the tier a merge reaches
+      without a human gate; a pull request is always evaluated there.
+    required: false
+    default: ''
+  event:
+    description: github.event_name.
+    required: true
+  supplied-inputs:
+    description: >-
+      toJSON(inputs) of the calling workflow -- every input the run RECEIVED. Any spelling of
+      policy_mode among them refuses the run, and so does enable_malicious_pkg_scan false (below
+      crawl, KDEC-020).
+    required: true
+  token:
+    description: Read-only token used to fetch the default branch (contents read).
+    required: false
+    default: ${{ github.token }}
+outputs:
+  policy_state: {description: policy_resolution value, value: "${{ steps.r.outputs.policy_state }}"}
+  policy_routes_to: {description: the resolution's own routing, value: "${{ steps.r.outputs.policy_routes_to }}"}
+  policy_environment: {description: the named environment, value: "${{ steps.r.outputs.policy_environment }}"}
+  policy_environment_tier: {description: the tier evaluated, value: "${{ steps.r.outputs.policy_environment_tier }}"}
+  policy_team_pattern: {description: team_pattern, value: "${{ steps.r.outputs.policy_team_pattern }}"}
+  policy_rung_declared: {description: the registered rung, value: "${{ steps.r.outputs.policy_rung_declared }}"}
+  policy_rung_effective: {description: the rung the gate obeys, value: "${{ steps.r.outputs.policy_rung_effective }}"}
+  policy_rung_divergence: {description: declared versus effective, value: "${{ steps.r.outputs.policy_rung_divergence }}"}
+  policy_policy_mode: {description: derived policy_mode, value: "${{ steps.r.outputs.policy_policy_mode }}"}
+  policy_policy_mode_source: {description: always derived, value: "${{ steps.r.outputs.policy_policy_mode_source }}"}
+  policy_effective_minimum: {description: JSON per control class, value: "${{ steps.r.outputs.policy_effective_minimum }}"}
+  policy_divergences: {description: JSON departures from the rung floor, value: "${{ steps.r.outputs.policy_divergences }}"}
+  policy_weakenings: {description: JSON attributed softenings in force, value: "${{ steps.r.outputs.policy_weakenings }}"}
+  policy_unvalidated_human_workflow_paths: {description: comma list, value: "${{ steps.r.outputs.policy_unvalidated_human_workflow_paths }}"}
+  policy_stops_on_evidence_untrusted: {description: true at uat and prod, value: "${{ steps.r.outputs.policy_stops_on_evidence_untrusted }}"}
+  policy_source: {description: KIT_DEFAULT or REGISTER, value: "${{ steps.r.outputs.policy_source }}"}
+  policy_chain: {description: register entry ids applied, value: "${{ steps.r.outputs.policy_chain }}"}
+  policy_job_minimums: {description: job=ROUTE per scanner job, value: "${{ steps.r.outputs.policy_job_minimums }}"}
+  policy_refusals: {description: every refusal that fired, value: "${{ steps.r.outputs.policy_refusals }}"}
+  policy_deploy_approval: {description: JSON per tier, value: "${{ steps.r.outputs.policy_deploy_approval }}"}
+  policy_registration_ref: {description: the default-branch commit read, value: "${{ steps.r.outputs.policy_registration_ref }}"}
+  policy_secret_exceptions: {description: JSON secret exceptions in force (finding ticket approver expires entry), value: "${{ steps.r.outputs.policy_secret_exceptions }}"}
+  policy_secret_exception_refusals: {description: JSON secret exceptions refused by name, value: "${{ steps.r.outputs.policy_secret_exception_refusals }}"}
+  policy_known_exploited_exceptions: {description: JSON known-exploited exceptions in force (finding cve ticket approver expires entry; KDEC-022), value: "${{ steps.r.outputs.policy_known_exploited_exceptions }}"}
+  policy_known_exploited_exception_refusals: {description: JSON known-exploited exceptions refused by name, value: "${{ steps.r.outputs.policy_known_exploited_exception_refusals }}"}
+  policy_history_state: {description: JSON per register - VERIFIED from git or UNVERIFIED (KDEC-022), value: "${{ steps.r.outputs.policy_history_state }}"}
+  policy_max_exception_renewals: {description: the authority's exception renewal cap (KDEC-018), value: "${{ steps.r.outputs.policy_max_exception_renewals }}"}
+  policy_notices: {description: JSON visible notices that are not refusals (policy_notice; e.g. ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR), value: "${{ steps.r.outputs.policy_notices }}"}
+runs:
+  using: composite
+  steps:
+    - name: Resolve the enforcement policy from the register and the protected default branch
+      id: r
+      shell: bash
+      env:
+        # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
+        DEFAULT_BRANCH: ${{ inputs.default-branch }}
+        TARGET_ENVIRONMENT: ${{ inputs.environment }}
+        EVENT_NAME: ${{ inputs.event }}
+        SUPPLIED_INPUTS: ${{ inputs.supplied-inputs }}
+        FETCH_TOKEN: ${{ inputs.token }}
+      run: |
+        set -uo pipefail
+        kit_root="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)"
+        resolver="${kit_root}/scripts/policy_registration.py"
+        # A MISSING RESOLVER IS NOT A RESOLVED POLICY, and not the kit default either.
+        if [ ! -s "$resolver" ]; then
+          echo "::error title=Policy resolver absent::scripts/policy_registration.py is not in the kit delivered by \$/."
+          { echo "policy_state=REGISTRATION_UNAVAILABLE"; echo "policy_routes_to=EVIDENCE_UNTRUSTED"
+            echo "policy_stops_on_evidence_untrusted=true"; } >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        # THE REPOSITORY REGISTRATION COMES FROM THE PROTECTED DEFAULT BRANCH, NEVER THIS CHECKOUT:
+        # on a pull_request run the workspace IS the PR's tree. Fetched into an empty repository of
+        # its own, so no checkout is needed and the workspace is never read. The token travels in
+        # git's environment configuration, never in argv or a URL. A failed fetch leaves no
+        # FETCH_HEAD and the resolver says REGISTRATION_UNAVAILABLE -- never a local-file fallback,
+        # and never the kit default. An unknown default branch is not guessed.
+        #
+        # WITH ITS HISTORY, BLOB-LESS (KDEC-022 item 2). Every exception's renewal count is derived
+        # from the git history of the register file, so a depth-1 fetch would make every exception
+        # EXCEPTION_HISTORY_UNVERIFIED (refused). A blob-less partial clone of the default branch
+        # brings every commit and tree but no file contents; the resolver's `git log --follow` then
+        # fetches only the register's own blobs, on demand. The size is printed on every run.
+        ref_repo="${RUNNER_TEMP:-/tmp}/policy-ref-$$"
+        kit_hist="${RUNNER_TEMP:-/tmp}/policy-kit-history-$$"
+        rm -rf "$ref_repo" "$kit_hist"
+        if [ -n "${FETCH_TOKEN:-}" ]; then
+          basic="$(printf 'x-access-token:%s' "$FETCH_TOKEN" | base64 | tr -d '\n')"
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${basic}"
+        fi
+        if [ -n "${DEFAULT_BRANCH:-}" ]; then
+          git clone --quiet --filter=blob:none --no-checkout --single-branch --no-tags \
+              --branch "${DEFAULT_BRANCH}" "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" "$ref_repo" ||
+            echo "::warning title=Default branch not fetched::the repository registration cannot be read; the policy is REGISTRATION_UNAVAILABLE."
+        else
+          echo "::warning title=Default branch unknown::the event names no default branch; the repository registration cannot be read."
+        fi
+        [ -d "$ref_repo/.git" ] || git init -q "$ref_repo"
+        echo "default-branch history fetched blob-less: $(du -sk "$ref_repo/.git" 2>/dev/null | cut -f1) KiB"
+        # THE CENTRAL REGISTER'S HISTORY is the kit's own. The kit delivered by \$/ is not a git
+        # checkout, so its history is cloned blob-less from the action's repository at the action's
+        # ref when GitHub names them. Without it the central register's exceptions are
+        # EXCEPTION_HISTORY_UNVERIFIED -- refused, and said so -- never trusted on their own say-so.
+        central_hist=()
+        if [ -s "${kit_root}/policy/policy-registration.json" ] && [ ! -d "${kit_root}/.git" ]; then
+          if [ -n "${GITHUB_ACTION_REPOSITORY:-}" ] && [ -n "${GITHUB_ACTION_REF:-}" ] &&
+             git clone --quiet --filter=blob:none --no-checkout --no-tags \
+               "${GITHUB_SERVER_URL}/${GITHUB_ACTION_REPOSITORY}.git" "$kit_hist" 2>/dev/null; then
+            central_hist=(--central-history-repo "$kit_hist" --central-history-ref "${GITHUB_ACTION_REF}"
+                          --central-history-path policy/policy-registration.json)
+          else
+            echo "::warning title=Central register history not fetched::the kit's history could not be read, so the central register's exceptions are EXCEPTION_HISTORY_UNVERIFIED (refused) on this run."
+          fi
+        fi
+        supplied="${SUPPLIED_INPUTS:-}"
+        [ -n "$supplied" ] || supplied='{}'
+        python3 "$resolver" --repo "$ref_repo" --default-ref HEAD \
+          --central "${kit_root}/policy/policy-registration.json" "${central_hist[@]}" \
+          --repository "${GITHUB_REPOSITORY:-}" \
+          --environment "${TARGET_ENVIRONMENT:-}" --event "${EVENT_NAME:-}" \
+          --supplied-json "$supplied" \
+          --out "${RUNNER_TEMP:-/tmp}/policy-resolution.json" \
+          --github-output "$GITHUB_OUTPUT"
+        rc=$?
+        unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+        rm -rf "$ref_repo" "$kit_hist"
+        # The resolver's exit says resolved (0) or refused (1). The posture record folds a refusal
+        # into routing_result and the verdict step exits on it; this step does not fail the job, so
+        # the record is still written. suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE --
+        # discards: the exit code; preserved_by: policy_state and policy_routes_to in $GITHUB_OUTPUT.
+        echo "resolver exit $rc (0 resolved, 1 refused by name -- see policy_state)"
+        if [ "$rc" -gt 1 ]; then
+          { echo "policy_state=REGISTRATION_UNAVAILABLE"; echo "policy_routes_to=EVIDENCE_UNTRUSTED"
+            echo "policy_stops_on_evidence_untrusted=true"; } >> "$GITHUB_OUTPUT"
+        fi
+        exit 0

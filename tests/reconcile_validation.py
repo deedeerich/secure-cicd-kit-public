@@ -29,6 +29,8 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
         # validation census could not see them at all, and nothing could ever report them unproven.
         # Found by tests/check_scanner_registry.py on its first run (N55).
         "codeql", "image-scan",
+        # Android and iOS (lane L-SCAN-B, KDEC-026).
+        "sast-mobile",
     ],
     "reusable-nvd-cve.yml": ["nvd-dependency-check", "nvd-trivy", "nvd-dockerfile"],
     # The kit invoking its own reusable NVD workflow. It exercises the same capabilities
@@ -48,8 +50,24 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # KDEC-013 (2026-10-16): the pull-request Jira reference gate, moved from one consumer's overlay
     # into the core with NO default issue-number range. Reads the PR description; writes nothing.
     "reusable-ticket-reference.yml": ["ticket-reference"],
+    # KDEC-018 item 4 (lane L-FX, 2026-10-22): exceptions resurface when they come due, onto their
+    # Jira ticket, with their history. Lists without a credential; resurfaces from the protected
+    # environment on a schedule. Self-test calls it on push (list only; the resurface job is not armed).
+    "reusable-exception-due.yml": ["exception-resurfacing"],
+    # FUTURE_WORK section 6, owner 2026-10-22: Dependabot PRs auto-merge (`--auto --squash`, so
+    # branch protection still decides) only when every section 6 criterion the kit can establish
+    # holds; the rest go to a human with the reason, and excluded fixture paths are closed.
+    # TWO CAPABILITIES, because the halves have different evidence: the DECISION (and the gh
+    # commands it issues) is proven locally; the GITHUB half -- the token scopes suffice, and
+    # branch protection really holds an armed auto-merge until the checks pass -- needs a hosted run.
+    "reusable-dependabot-triage.yml": ["dependabot-triage", "dependabot-merge-hosted"],
     "reusable-deploy-appservice.yml": ["deploy-appservice"],
     "reusable-deploy-containerapp.yml": ["deploy-containerapp"],
+    # KDEC-019 item 4 (lane L-RB, 2026-10-22): several deployments reversed newest first, the
+    # application's end-to-end tests after each step. TWO CAPABILITIES, as the Dependabot triage has:
+    # the sequencing, eligibility and halting are proven locally against the stub cloud with real
+    # deploy evidence; the same against Azure, with a real e2e command, needs a live run.
+    "reusable-rollback-sequence.yml": ["rollback-sequence", "rollback-sequence-live"],
     "workflow-policy-check.yml": ["workflow-policy"],
     # `authorization-boundary-isolation` SPLIT OUT 2026-09-22, when the probe was rewritten from
     # an authentication check into a boundary check. It is NOT azure-oidc-auth at a finer grain:
@@ -83,6 +101,18 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # proof is tests/prove_report_runs_as_shipped.py, and its failure is read by the gate as
     # `needs.report.result`.
     "action:scan-report": [],
+    # STAGE 1 RESOLUTION, NOT AN ASSURANCE CLAIM. Same reasoning as scan-report: it reads the policy
+    # register and emits what it found; it establishes nothing about the code. Its proofs are
+    # tests/prove_gate_reads_rung.py (wiring), tests/prove_gate_policy_enforcement.py (behaviour)
+    # and tests/prove_policy_registration.py (the reader).
+    "action:resolve-policy": [],
+    # KDEC-022 item 3: the CISA KEV match over findings OTHER scanners established (the report's
+    # cve_findings, or the NVD path's SARIF). It scans nothing itself, so it names no capability;
+    # it feeds the gate's verdict. Proof: tests/prove_known_exploited.py.
+    "action:known-exploited": [],
+    # THE RUN RECORD (ledger L36): evidence assembly, not an assurance claim -- it restates what the
+    # gate established, validated against the schema. Proof: tests/prove_gate_run_record.py.
+    "action:run-record": [],
     # THE LEDGER'S WRITE PATH, NOT AN ASSURANCE CLAIM, by the same rule as scan-report: it
     # establishes nothing about the code. Its behaviour is proven by tests/prove_propose_ledger.py
     # (the payload) and tests/prove_propose_ledger_job_scope.py (the job can push one ref and
@@ -103,6 +133,17 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # Proven as shipped by tests/test_discovery.py, which runs its steps from this composite; its
     # failure is read by the gate as `needs.discover.result` (tooling, never NOT_APPLICABLE).
     "action:discover": [],
+    # SCANNER COMPOSITES (ledger L64; decomposition plan §6.5): a composite is an IMPLEMENTATION of
+    # the job's capability, never a new one, so it carries the job's own name and adds no debt
+    # (deferrals are deduplicated by capability). The job still runs it, the gate still reads
+    # `needs.<job>.result`; tests/prove_composite_move_equivalence.py holds the move.
+    "action:secret-scan": ["secret-scan"],
+    "action:sast-cpp": ["sast-cpp"],
+    "action:sast-java": ["sast-java"],
+    "action:sast-mobile": ["sast-mobile"],
+    "action:sast-dotnet": ["sast-dotnet"],
+    "action:deps-scan": ["deps-scan"],
+    "action:iac-scan": ["iac-scan"],
     # D-VF-4 (ledger V-02), lane L-C1: re-measures the IaC scanners' version ranges over the seeded
     # Terraform corpus and fails when scanner-registry.yaml claims more than was measured. A
     # MEASUREMENT OF WHAT A SCANNER CAN READ, not an assurance claim about code -- the same rule as
@@ -227,6 +268,12 @@ VALIDATION_REGISTRY: dict[str, dict] = {
                        "level": "tool"},
     "sast-java": {"probe": "tests/prove_sast_java_detects.py", "state": "observed",
                   "level": "tool"},
+    # OBSERVED 2026-10-23, locally (lane L-SCAN-B, KDEC-026): the composite's own mobsfscan and
+    # mobile-configuration steps, run as shipped with mobsfscan 1.0.1 / Semgrep 1.172.0 by digest in
+    # a container, find every planted Android and iOS condition and stay silent on the clean trees.
+    # The hosted proof is the validate-scanners mobsfscan leg.
+    "sast-mobile": {"probe": "tests/prove_sast_mobile_detects.py", "state": "observed",
+                    "level": "tool"},
     # OBSERVED 2026-10-14, locally: the job's trivy-action `with:` blocks, read as shipped and
     # translated flag for flag, run by the real Trivy against images built byte by byte (outdated
     # openssl; a credential; nothing). CVEs fail with advisory off and are reported with it on; a
@@ -413,6 +460,26 @@ VALIDATION_REGISTRY: dict[str, dict] = {
     # dispatch, where it must answer NOT ASSESSED; a pull-request run on a consumer is the end-to-end.
     "ticket-reference": {"probe": "tests/prove_ticket_reference_gate.py", "state": "observed",
                          "level": "tool"},
+    # OBSERVED 2026-10-22, locally, by running the workflow's OWN evidence, decision and action steps
+    # extracted from .github/workflows/reusable-dependabot-triage.yml under bash with a gh shim:
+    # tests/prove_dependabot_triage.py (D1..D8, 42 decisions). Level `tool`: nothing here has run on
+    # a runner against a real Dependabot PR; the hosted plan is docs/adoption/DEPENDABOT_TRIAGE.md
+    # section 6. Provenance/signature checking (a section 6 criterion) is NOT built and is recorded
+    # in every decision as NOT_ESTABLISHED.
+    "dependabot-triage": {"probe": "tests/prove_dependabot_triage.py", "state": "observed",
+                          "level": "tool"},
+    # OBSERVED 2026-10-22, locally (lane L-FX): scripts/exception_due.py against fixture registers and
+    # caller workflows, its Jira path against a RECORDING FAKE (comment, reopen, create once, refuse a
+    # non-Jira tracker, NOT_CONFIGURED without credentials), and the workflow's own list step run as
+    # shipped: tests/prove_exception_due.py (E1..E11). Level `tool`: no hosted run, no real Jira.
+    "exception-resurfacing": {"probe": "tests/prove_exception_due.py", "state": "observed",
+                              "level": "tool"},
+    # OBSERVED 2026-10-22, locally (lane L-RB): scripts/rollback_sequence.py driving the deploy
+    # contract's own reversal against the stub cloud, over evidence written by the shipped deploy
+    # reusables run step by step: tests/prove_rollback_sequence.py (S1..S12). Level `tool`: the
+    # reusable workflow has not run on a runner, and nothing has run against Azure.
+    "rollback-sequence": {"probe": "tests/prove_rollback_sequence.py", "state": "observed",
+                          "level": "tool"},
     "version-metadata-wired": {"probe": "tests/prove_build_push_round_trip.py",
                                "state": "observed", "level": "tool"},
     }
@@ -595,6 +662,35 @@ DEFERRALS: dict[str, dict] = {
     # nor verify an attestation. The step's five-outcome classification and rung routing are proven
     # locally by tests/prove_attestation_verify.py against recorded gh answers; what no local run can
     # show is a real `gh attestation verify oci://<acr>/...@sha256` lookup (section 11.2).
+    # FUTURE_WORK section 6 (owner, 2026-10-22). Proven locally by running the shipped steps; nothing
+    # in this repository invokes it, by design: its caller must trigger on pull_request_target and
+    # grant write scopes, and the kit's self-test is no place for either. The proof that is owed is a
+    # hosted run on the owner's public test repository (Actions minutes there are free), planned in
+    # docs/adoption/DEPENDABOT_TRIAGE.md section 6.
+    "dependabot-merge-hosted": {"reason": "a hosted run needs a repository receiving Dependabot PRs, "
+                                      "with auto-merge allowed and required checks; Actions minutes "
+                                      "on the kit's own account are blocked by billing",
+                            "owner": "kit-maintainer",
+                            "proves": "on a public test repository: a patch dev update is armed with "
+                                      "--auto --squash and merges only after the required checks "
+                                      "pass; a major is labelled, commented and left open; an "
+                                      "excluded-path update is closed with its reason; a "
+                                      "pull_request caller is refused",
+                            "trigger": "the coordinator's hello-world run (DEPENDABOT_TRIAGE.md "
+                                       "section 6)",
+                            "expires": "2026-12-31"},
+    "rollback-sequence-live": {"reason": "a live run needs the owner's sandbox subscription with "
+                                         "several kit deploys standing on one target, and an "
+                                         "application with end-to-end tests; Actions minutes on the "
+                                         "kit's own account are blocked by billing",
+                               "owner": "kit-maintainer",
+                               "proves": "reusable-rollback-sequence.yml on the sandbox: three "
+                                         "stacked Container App deploys reversed newest first with "
+                                         "an e2e command after each, ROLLBACK_SEQUENCE_VERIFIED; a "
+                                         "failing e2e command halting at step 2 with step 3 "
+                                         "untouched; an empty command refused before login",
+                               "trigger": "the next live deploy acceptance run (KDEC-012)",
+                               "expires": "2026-12-31"},
     "attestation-verify":  {"reason": "IMPLEMENTATION_HELD -- the owner's plan (Pro) offers no "
                                       "attestations on private repositories, so V1 cannot be armed "
                                       "there; classification and routing are proven locally only",
@@ -705,7 +801,16 @@ DEFERRALS: dict[str, dict] = {
 
 # Ratchet. Accepted debt may shrink, never grow. A new deferral must displace an old one or
 # raise this number deliberately, in a reviewable diff, with a reason in the commit message.
-MAX_ACCEPTED_DEBT = 3    # LOWERED 4 -> 3 on 2026-10-16: ticket-reconciliation observed live on Jira
+MAX_ACCEPTED_DEBT = 5    # RAISED 4 -> 5 on 2026-10-22 for rollback-sequence-live (KDEC-019 item 4,
+                         # lane L-RB): a NEW capability -- sequential rollback against Azure -- whose
+                         # local half is observed; nothing existing became provable in this change,
+                         # so nothing could be displaced. Ratchet it back when it closes.
+                         # RAISED 3 -> 4 on 2026-10-22 for dependabot-merge-hosted (FUTURE_WORK 6): a
+                         # NEW capability -- the GitHub half of the Dependabot triage (token scopes,
+                         # auto-merge held by branch protection) -- whose proof needs a hosted run on
+                         # a repository receiving Dependabot PRs. Nothing existing became provable in
+                         # this change, so nothing could be displaced. Ratchet it back when it closes.
+                         # LOWERED 4 -> 3 on 2026-10-16: ticket-reconciliation observed live on Jira
                          # (R-1, R-2 T-1/T-2, T-6, T-7, T-8).
                          # LOWERED 5 -> 4 on 2026-10-16: deploy-appservice observed live (runs
                          # 38878189985, 38886279650 and the rest cited in its entry).

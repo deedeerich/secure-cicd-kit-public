@@ -12,9 +12,30 @@ name: Consumer path — negative (EXPECTED TO FAIL)
 #
 # Why a separate workflow at all: GitHub does not permit `continue-on-error` on a job that
 # calls a reusable workflow, so an "expected failure" cannot be absorbed inline.
+#
+# WHAT ENDS IT RED (lane L-S, owner ruling O-24). The security gate is the single enforcement
+# point: scanner jobs REPORT findings and fail only when they could not scan, and the gate
+# enforces by the resolved policy. This repository registers no policy, so it runs at the kit
+# default, crawl: only a secret (or a scan the kit could not run or trust) blocks. The full
+# fixture carries three generated credential seeds: the secret scan hands them to the gate (a
+# secret may be excepted only by a ticketed register entry, owner ruling 2026-10-22, and this
+# repository registers none), and the gate is BLOCKED -- red, as designed. The PHP-only leg carries no secret: at crawl its findings are
+# handed to the gate and routed PROCEED_WITH_ADVISORY, so that leg ends GREEN, and its
+# `php-verdict` job publishes the verdict for consumer-path-test.yml to assert. It blocks only
+# where a register raises this repository above crawl (run: BLOCKED).
 
 on:
   workflow_dispatch:
+    inputs:
+      # ONE REUSABLE CALL PER RUN, ON PURPOSE. Two calls in one run publish artifacts under the
+      # same names (sarif-semgrep-1, ...), and the grader downloads this run's sarif-* by name. So
+      # the PHP-only proof (lane L-PHP) is its own dispatch of this file, selected here, and the
+      # full fixture -- the graded one -- stays the default.
+      scope:
+        description: "full = the graded multi-language fixture; php = the PHP subtree alone"
+        type: choice
+        options: [full, php]
+        default: full
 
 permissions:
   contents: read
@@ -31,6 +52,7 @@ jobs:
   # committed and already in the checkout the scan reads.
   seed:
     name: Generate the never-committed secret seeds
+    if: inputs.scope != 'php'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -38,7 +60,7 @@ jobs:
     outputs:
       artifact: ${{ steps.stage.outputs.artifact }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Generate the fixture and stage only its secrets/
         id: stage
         run: |
@@ -54,7 +76,7 @@ jobs:
           fi
           find "$RUNNER_TEMP/seeds" -type f | sort
           echo "artifact=test-only-seeds-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.stage.outputs.artifact }}
           path: ${{ runner.temp }}/seeds
@@ -64,6 +86,7 @@ jobs:
   seeded:
     name: Seeded findings MUST block the caller
     needs: seed
+    if: inputs.scope != 'php'
     uses: ./.github/workflows/reusable-security.yml
     permissions:
       contents: read
@@ -72,8 +95,9 @@ jobs:
     with:
       # The FULL multi-language fixture, so one run proves two things at once: that the gate
       # blocks, and that every seeded signal is actually detected through the consumer path.
-      # 20 expected signals — Python, Node, .NET/C#, Java, Go, C/C++, Terraform, Dockerfile,
-      # three Azure/Entra credential classes — and a negative control that must NOT fire.
+      # 24 expected signals — Python, Node, .NET/C#, Java, Go, C/C++, PHP (SQL injection, XSS,
+      # command injection, a vulnerable Composer lock), Terraform, Dockerfile, three Azure/Entra
+      # credential classes — and a negative control that must NOT fire.
       language: multi
       paths: tests/consumer-fixture/full
       enable_iac: true
@@ -86,3 +110,64 @@ jobs:
       # secret scan. The artifact belongs to this run; the name is the `seed` job's output.
       test_only_seed_artifact: ${{ needs.seed.outputs.artifact }}
     secrets: inherit
+
+  # ── PHP ALONE: DETECTED, HANDED TO THE GATE, ROUTED BY THE POLICY (lane L-PHP, L-S) ──────
+  #
+  # The full fixture blocks on its secrets, so its failure cannot show what PHP findings do by
+  # themselves. This call scans ONLY the PHP subtree -- three Semgrep seeds and a Composer lock
+  # with a CRITICAL advisory -- with `language: auto`, so discovery alone decides that PHP is
+  # here. It runs only when dispatched with scope=php; consumer-path-test.yml asserts, by job
+  # name, that this call's Semgrep job and dependency scan each SUCCEEDED (they report; they do
+  # not enforce), and asserts the gate by the verdict `php-verdict` records: at crawl
+  # PROCEED_WITH_ADVISORY with FINDINGS_NOT_BLOCKED and a green gate; above crawl BLOCKED and red.
+  seeded-php:
+    name: Seeded PHP MUST block the caller
+    if: inputs.scope == 'php'
+    uses: ./.github/workflows/reusable-security.yml
+    permissions:
+      contents: read
+      security-events: write
+      actions: read   # the CodeQL job reads workflow metadata on private repositories
+    with:
+      language: auto
+      paths: tests/consumer-fixture/full/php
+      soft_fail_sast: false
+      enable_sbom: false
+      # enable_malicious_pkg_scan stays at its default (true): turning it off is below crawl and
+      # refused (KDEC-020), which would turn this leg's crawl verdict into BLOCKED.
+    secrets: inherit
+
+  # THE PHP LEG'S VERDICT, KEPT AS EVIDENCE (lane L-S). A job conclusion cannot say WHY the gate
+  # passed or failed; the assertion in consumer-path-test.yml reads what the gate emitted.
+  php-verdict:
+    name: Record the PHP leg's verdict
+    needs: seeded-php
+    if: always() && inputs.scope == 'php'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Write the verdict the security gate emitted
+        env:
+          V_ROUTE: ${{ needs.seeded-php.outputs.routing_result }}
+          V_CAUSES: ${{ needs.seeded-php.outputs.advisory_causes }}
+          V_RUNG: ${{ needs.seeded-php.outputs.rung_effective }}
+          V_SOURCE: ${{ needs.seeded-php.outputs.policy_source }}
+          V_STATES: ${{ needs.seeded-php.outputs.scanner_states }}
+          V_RESULT: ${{ needs.seeded-php.result }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/verdict"
+          jq -n --arg route "$V_ROUTE" --arg causes "$V_CAUSES" --arg rung "$V_RUNG" \
+                --arg source "$V_SOURCE" --arg states "$V_STATES" --arg result "$V_RESULT" \
+            '{routing_result:$route, advisory_causes:$causes, rung_effective:$rung,
+              policy_source:$source, scanner_states:$states, call_result:$result}' \
+            > "$RUNNER_TEMP/verdict/php-verdict.json"
+          cat "$RUNNER_TEMP/verdict/php-verdict.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: php-verdict-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/verdict
+          retention-days: 7
+          if-no-files-found: error
