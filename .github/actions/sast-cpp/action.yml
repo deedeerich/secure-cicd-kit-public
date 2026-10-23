@@ -26,6 +26,14 @@ outputs:
   findings_state:
     description: FINDINGS when this scan's own threshold fired unsoftened; '' otherwise.
     value: ${{ steps.cppcheck_enforce.outputs.findings_state || steps.flawfinder_enforce.outputs.findings_state }}
+  # KDEC-026 (lane L-SCAN-B): COMPLETE when every C/C++ source was analysed through a compilation
+  # database; PARTIAL with scan_reason CPP_ANALYSIS_PARTIAL when any was analysed source-only.
+  scan_state:
+    description: COMPLETE or PARTIAL (build metadata); '' when the step did not run.
+    value: ${{ steps.cpp_build.outputs.scan_state }}
+  scan_reason:
+    description: CPP_ANALYSIS_PARTIAL beside a PARTIAL scan_state; '' otherwise.
+    value: ${{ steps.cpp_build.outputs.scan_reason }}
 
 runs:
   using: composite
@@ -108,6 +116,161 @@ runs:
           echo "::notice title=flawfinder SARIF unsupported::This build predates --sarif; the"
           echo "CSV path will be used and converted. Coverage is unaffected."
         fi
+    # BUILD-AWARE C/C++, WITHOUT INVENTING A BUILD (lane L-SCAN-B, KDEC-026). FUTURE_WORK section 5:
+    # "Report CPP_ANALYSIS_PARTIAL when source exists without build metadata -- and never
+    # synthesise a build system to make a scanner happy." Measured 2026-10-23 (cppcheck 2.13.0,
+    # tests/prove_cpp_build_aware.py): a write past a buffer whose size comes from a header on the
+    # build's include path is INVISIBLE source-only and reported through the compilation database.
+    # A compilation database is taken from, in order: one committed in the tree (trusted only when
+    # the files it names exist here); CMake CONFIGURE ONLY (-DCMAKE_EXPORT_COMPILE_COMMANDS=ON)
+    # for each top-level CMakeLists.txt, into a build tree OUTSIDE the checkout; bear over make for
+    # each top-level Makefile, only when `make -n` already works. Nothing else: no CMakeLists, no
+    # Makefile and no flags are ever written for code that has none. Configure and make run the
+    # repository's own build scripts -- the trust CodeQL's autobuild already extends to them.
+    # Any source file no database covers is analysed source-only and the scan is PARTIAL
+    # (scan_reason CPP_ANALYSIS_PARTIAL): read by the gate as COVERAGE_PARTIAL, never PASS.
+    - name: C/C++ build metadata
+      id: cpp_build
+      env:
+        IN_PATHS: ${{ inputs.paths }}
+      shell: bash -e {0}
+      run: |
+        set -uo pipefail
+        scope="${IN_PATHS:-.}"; [ -d "$scope" ] || scope="."
+        work="$RUNNER_TEMP/cpp-build"
+        rm -rf "$work"; mkdir -p "$work"
+        : > "$work/dbs.txt"; : > "$work/notes.txt"
+        note() { printf '%s\n' "$1" >> "$work/notes.txt"; echo "$1"; }
+        absdb() { printf '%s/%s\n' "$(cd "$(dirname "$1")" && pwd)" "$(basename "$1")"; }
+        # suppression: PRESENTATION_ONLY -- find's stderr is noise on unreadable subtrees; a root it
+        # cannot see contributes no database, and its sources are then counted as uncovered below.
+        # discards: find's stderr on unreadable subtrees
+        # preserved_by: the coverage count, which makes any source without a database PARTIAL
+        find "$scope" -maxdepth 8 -type f -name compile_commands.json -not -path '*/node_modules/*' \
+          -not -path '*/vendor/*' -not -path '*/.git/*' 2>/dev/null | sort > "$work/committed.txt" || true
+        while IFS= read -r db; do
+          [ -n "$db" ] || continue
+          absdb "$db" >> "$work/dbs.txt"; note "committed compilation database: $db"
+        done < "$work/committed.txt"
+        # CMake: configure only, for each TOP-LEVEL CMakeLists.txt (its parent directory has none).
+        i=0
+        find "$scope" -maxdepth 8 -type f -name CMakeLists.txt -not -path '*/node_modules/*' \
+          -not -path '*/vendor/*' -not -path '*/.git/*' 2>/dev/null | sort > "$work/cmake.txt" || true
+        while IFS= read -r cm; do
+          [ -n "$cm" ] || continue
+          d="$(dirname "$cm")"
+          if [ "$d" != "$scope" ] && [ -f "$(dirname "$d")/CMakeLists.txt" ]; then continue; fi
+          if ! command -v cmake >/dev/null 2>&1; then note "cmake is not on this runner: $d is analysed source-only"; continue; fi
+          i=$((i + 1)); b="$work/cmake-$i"
+          if timeout 300 cmake -S "$d" -B "$b" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON > "$b.log" 2>&1 \
+             && [ -s "$b/compile_commands.json" ]; then
+            echo "$b/compile_commands.json" >> "$work/dbs.txt"
+            note "cmake configure-only export for $d (build tree outside the checkout)"
+          else
+            note "cmake configure FAILED for $d: its sources are analysed source-only (last lines: $(tail -n 3 "$b.log" | tr '\n|' ' /'))"
+          fi
+        done < "$work/cmake.txt"
+        # make: bear over the repository's own Makefile, for each TOP-LEVEL Makefile in a directory
+        # with no CMakeLists.txt, and only when `make -n` already works there.
+        j=0
+        find "$scope" -maxdepth 8 -type f \( -name Makefile -o -name makefile -o -name GNUmakefile \) \
+          -not -path '*/node_modules/*' -not -path '*/vendor/*' -not -path '*/.git/*' 2>/dev/null | sort > "$work/make.txt" || true
+        while IFS= read -r mk; do
+          [ -n "$mk" ] || continue
+          d="$(dirname "$mk")"
+          [ -f "$d/CMakeLists.txt" ] && continue
+          if [ "$d" != "$scope" ] && { [ -f "$(dirname "$d")/Makefile" ] || [ -f "$(dirname "$d")/makefile" ] || [ -f "$(dirname "$d")/GNUmakefile" ]; }; then continue; fi
+          if ! timeout 60 make -n -C "$d" > /dev/null 2>&1; then
+            note "make -n does not work in $d: no database is invented, its sources are analysed source-only"
+            continue
+          fi
+          if ! command -v bear >/dev/null 2>&1; then
+            timeout 300 sudo apt-get -o DPkg::Lock::Timeout=60 install -y --no-install-recommends bear > /dev/null 2>&1 || true
+          fi
+          if ! command -v bear >/dev/null 2>&1; then note "bear could not be installed: $d is analysed source-only"; continue; fi
+          j=$((j + 1)); out="$work/make-$j.json"
+          if timeout 600 bear --output "$out" -- make -k -C "$d" > "$work/make-$j.log" 2>&1 || [ -s "$out" ]; then
+            if [ -s "$out" ]; then echo "$out" >> "$work/dbs.txt"; note "bear over make in $d"; else note "bear recorded nothing in $d"; fi
+          else
+            note "bear over make FAILED in $d: its sources are analysed source-only"
+          fi
+        done < "$work/make.txt"
+        # WHAT THE DATABASES COVER, from the files they name that EXIST HERE. A database naming none
+        # (built on another machine) is not trusted. Every C/C++ translation unit no trusted
+        # database covers is listed for the source-only pass, and makes the scan PARTIAL.
+        SCOPE="$scope" WORK="$work" python3 - <<'CPPDB_PY'
+        import io, json, os
+        scope, work = os.environ["SCOPE"], os.environ["WORK"]
+        def out(**kv):
+            with io.open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as o:
+                for k, v in kv.items():
+                    o.write("%s=%s\n" % (k, v))
+        notes = [l.rstrip("\n") for l in io.open(os.path.join(work, "notes.txt"), encoding="utf-8")]
+        covered, trusted = set(), []
+        for db in [l.strip() for l in io.open(os.path.join(work, "dbs.txt"), encoding="utf-8") if l.strip()]:
+            try:
+                entries = json.load(io.open(db, encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                notes.append("database %s unreadable (%s): not used" % (db, exc)); continue
+            here = set()
+            for e in entries if isinstance(entries, list) else []:
+                f = e.get("file") or ""
+                f = f if os.path.isabs(f) else os.path.join(e.get("directory") or "", f)
+                if os.path.isfile(f):
+                    here.add(os.path.realpath(f))
+            if here:
+                trusted.append(db); covered |= here
+            else:
+                notes.append("database %s names no file that exists here: not trusted" % db)
+        exts = (".c", ".cc", ".cpp", ".cxx", ".c++")
+        sources = []
+        for root, dirs, files in os.walk(scope):
+            dirs[:] = [d for d in dirs if d not in ("node_modules", "vendor", ".git")]
+            if os.path.relpath(root, scope).count(os.sep) >= 8:
+                dirs[:] = []
+            sources += [os.path.join(root, f) for f in files if f.lower().endswith(exts)]
+        uncovered = sorted(s for s in sources if os.path.realpath(s) not in covered)
+        io.open(os.path.join(work, "dbs-trusted.txt"), "w", encoding="utf-8").write("".join(d + "\n" for d in trusted))
+        io.open(os.path.join(work, "uncovered.txt"), "w", encoding="utf-8").write("".join(u + "\n" for u in uncovered))
+        state = "COMPLETE" if not uncovered else "PARTIAL"
+        out(compile_dbs=len(trusted), uncovered=len(uncovered), sources=len(sources))
+        io.open(os.path.join(work, "scan_state"), "w", encoding="utf-8").write(state)
+        with io.open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as s:
+            s.write("### C/C++ build metadata\n\n")
+            for n in notes:
+                s.write("- %s\n" % n.replace("|", "/"))
+            if not sources:
+                s.write("- no C/C++ translation unit in scope\n\n")
+            elif uncovered:
+                io.open(os.path.join(work, "scan_reason"), "w", encoding="utf-8").write("CPP_ANALYSIS_PARTIAL")
+                s.write("\n**PARTIAL -- CPP_ANALYSIS_PARTIAL**: %d of %d C/C++ source file(s) had no build "
+                        "metadata and were analysed source-only (includes and macros unresolved; a "
+                        "silence there is not clean). No build system was synthesised.\n\n"
+                        % (len(uncovered), len(sources)))
+                for u in uncovered[:20]:
+                    s.write("- `%s`\n" % os.path.relpath(u, ".").replace(os.sep, "/"))
+                s.write("\n")
+                print("::warning title=PARTIAL (CPP_ANALYSIS_PARTIAL)::%d of %d C/C++ source file(s) had no "
+                      "compilation database and were analysed source-only. Findings stand; the rest of "
+                      "those files' behaviour under their real includes and macros was NOT analysed. "
+                      "PARTIAL, never PASS." % (len(uncovered), len(sources)))
+            else:
+                s.write("\nEvery C/C++ source file was analysed through a compilation database (%d).\n\n"
+                        % len(trusted))
+        print("build metadata: %d database(s), %d of %d source file(s) uncovered -> %s"
+              % (len(trusted), len(uncovered), len(sources), state))
+        CPPDB_PY
+        # The state is written HERE, by name, and only once the coverage was computed: a step that
+        # failed above publishes no state, and the gate reads '' as unknown, never as COMPLETE.
+        # One line each (KDEC-027): a value is read into a variable and its newlines flattened.
+        if [ -s "$work/scan_state" ]; then
+          v="$(cat "$work/scan_state")"
+          echo "scan_state=${v//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
+        fi
+        if [ -s "$work/scan_reason" ]; then
+          v="$(cat "$work/scan_reason")"
+          echo "scan_reason=${v//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
+        fi
     - name: cppcheck
       id: cppcheck
       env:
@@ -125,11 +288,35 @@ runs:
         # file it cannot write ALSO exits 0, with no XML; a scope with no C/C++ exits 1 with
         # "could not find or open any of the paths given". So the code is recorded for the
         # converter, which reads it beside the XML.
-        rm -f cppcheck.xml cppcheck.sarif
+        rm -f cppcheck.xml cppcheck.sarif cppcheck-db-*.xml cppcheck-db-*.out
         rc=0
-        cppcheck --enable=warning,style,performance,portability --inline-suppr \
-          --xml --output-file=cppcheck.xml "$scope" > cppcheck.out 2>&1 || rc=$?
-        tail -n 20 cppcheck.out
+        # BUILD-AWARE FIRST (KDEC-026): one pass per trusted compilation database, then the
+        # source-only pass over only what no database covers. With no database the source-only pass
+        # is the whole scan, exactly as before.
+        dbs="${RUNNER_TEMP:-/tmp}/cpp-build/dbs-trusted.txt"; unc="${RUNNER_TEMP:-/tmp}/cpp-build/uncovered.txt"
+        passes=""
+        if [ -s "$dbs" ]; then
+          k=0
+          while IFS= read -r db; do
+            [ -n "$db" ] || continue
+            k=$((k + 1)); rcp=0
+            cppcheck --enable=warning,style,performance,portability --inline-suppr --project="$db" \
+              --xml --output-file="cppcheck-db-$k.xml" > "cppcheck-db-$k.out" 2>&1 || rcp=$?
+            tail -n 5 "cppcheck-db-$k.out"
+            passes="$passes cppcheck-db-$k:$rcp"
+          done < "$dbs"
+          if [ -s "$unc" ]; then
+            cppcheck --enable=warning,style,performance,portability --inline-suppr --file-list="$unc" \
+              --xml --output-file=cppcheck.xml > cppcheck.out 2>&1 || rc=$?
+            tail -n 20 cppcheck.out
+            passes="$passes cppcheck:$rc"
+          fi
+        else
+          cppcheck --enable=warning,style,performance,portability --inline-suppr \
+            --xml --output-file=cppcheck.xml "$scope" > cppcheck.out 2>&1 || rc=$?
+          tail -n 20 cppcheck.out
+          passes="cppcheck:$rc"
+        fi
         # suppression: PRESENTATION_ONLY -- a human-readable listing for the log; the XML run
         # above is the evidence.
         # discards: this listing's exit code, which repeats the XML run's
@@ -146,44 +333,61 @@ runs:
         # A FAILED CONVERSION WRITES NOTHING (ledger L08). An absent or unparseable XML used to
         # produce `results: []` anyway -- a well-formed, clean-looking report from a scan that
         # produced nothing. Now it is COLLECTION_FAILED and no SARIF is written at all.
-        CPPCHECK_RC="$rc" python3 - <<'CC_PY'
+        CPPCHECK_RC="$rc" CPPCHECK_PASSES="$passes" python3 - <<'CC_PY'
         import io, os, xml.etree.ElementTree as ET, json
         SEV = {"error": "error", "warning": "warning", "portability": "warning",
                "performance": "note", "style": "note", "information": "note"}
         def out(**kv):
             with io.open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as o:
                 for k, v in kv.items():
-                    o.write("%s=%s\n" % (k, v))
+                    o.write("%s=%s\n" % (k, " ".join(str(v).splitlines())))  # one line (KDEC-027)
         def failed(why):
             print("::error title=COLLECTION_FAILED::cppcheck: %s. No SARIF was written: an empty report "
                   "from a scan that produced nothing would read as clean." % why)
             out(collection="COLLECTION_FAILED", sarif="false")
             raise SystemExit(1)
         rc = os.environ.get("CPPCHECK_RC", "")
-        said = io.open("cppcheck.out", encoding="utf-8", errors="replace").read() if os.path.exists("cppcheck.out") else ""
-        if not os.path.isfile("cppcheck.xml") or os.path.getsize("cppcheck.xml") == 0:
-            if rc == "1" and "could not find or open any of the paths" in said:
-                print("::notice title=No C/C++ sources::cppcheck found no sources under the scope. NOT_APPLICABLE.")
-                out(collection="NOT_APPLICABLE", count=0, sarif="false")
-                raise SystemExit(0)
-            failed("no XML report (exit %s)" % (rc or "unset"))
-        try:
-            root = ET.parse("cppcheck.xml").getroot()
-        except ET.ParseError as e:
-            failed("the XML report does not parse (%s)" % e)
-        if root.tag != "results" or root.find("errors") is None:
-            failed("the XML report has no <results><errors> element")
-        rows = []
-        for err in root.iter("error"):
-            loc = err.find("location")
-            rows.append({
-                "ruleId": f"cppcheck.{err.get('id','unknown')}",
-                "level": SEV.get(err.get("severity", ""), "note"),
-                "message": {"text": (err.get("msg") or "").strip()},
-                "locations": [{"physicalLocation": {
-                    "artifactLocation": {"uri": (loc.get("file") if loc is not None else "unknown").lstrip("./")},
-                    "region": {"startLine": max(1, int((loc.get("line") if loc is not None else 1) or 1))}}}],
-            })
+        # Every pass that ran, as name:exit (KDEC-026: one per compilation database, and the
+        # source-only pass). Each one's XML must exist and parse, or nothing is written.
+        passes = [p.rsplit(":", 1) for p in os.environ.get("CPPCHECK_PASSES", "cppcheck:" + rc).split()]
+        ws = os.getcwd()
+        def rel(f):
+            if os.path.isabs(f):
+                r = os.path.relpath(f, ws)
+                f = r if not r.startswith("..") else f
+            f = f.replace(os.sep, "/")
+            return f[2:] if f.startswith("./") else f
+        rows, seen = [], set()
+        for name, prc in passes:
+            said = io.open(name + ".out", encoding="utf-8", errors="replace").read() if os.path.exists(name + ".out") else ""
+            if not os.path.isfile(name + ".xml") or os.path.getsize(name + ".xml") == 0:
+                if len(passes) == 1 and prc == "1" and "could not find or open any of the paths" in said:
+                    print("::notice title=No C/C++ sources::cppcheck found no sources under the scope. NOT_APPLICABLE.")
+                    out(collection="NOT_APPLICABLE", count=0, sarif="false")
+                    raise SystemExit(0)
+                failed("no XML report from %s (exit %s)" % (name, prc or "unset"))
+            try:
+                root = ET.parse(name + ".xml").getroot()
+            except ET.ParseError as e:
+                failed("the XML report of %s does not parse (%s)" % (name, e))
+            if root.tag != "results" or root.find("errors") is None:
+                failed("the XML report of %s has no <results><errors> element" % name)
+            for err in root.iter("error"):
+                loc = err.find("location")
+                uri = rel(loc.get("file") if loc is not None else "unknown")
+                line = max(1, int((loc.get("line") if loc is not None else 1) or 1))
+                key = (err.get("id"), uri, line, err.get("msg"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append({
+                    "ruleId": f"cppcheck.{err.get('id','unknown')}",
+                    "level": SEV.get(err.get("severity", ""), "note"),
+                    "message": {"text": (err.get("msg") or "").strip()},
+                    "locations": [{"physicalLocation": {
+                        "artifactLocation": {"uri": uri},
+                        "region": {"startLine": line}}}],
+                })
         json.dump({"version": "2.1.0",
                    "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
                    "runs": [{"tool": {"driver": {"name": "cppcheck"}}, "results": rows}]},
@@ -415,7 +619,7 @@ runs:
           echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
           exit 1
         fi
-        echo "count=$n" >> "$GITHUB_OUTPUT"
+        echo "count=${n//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
         echo "flawfinder findings: $n"
 
     - name: flawfinder — enforce

@@ -9,11 +9,19 @@
 # when it has no ticket), saying it was excepted before and is now due.
 #
 # Jira only. In the protected environment named below (branch policy: the default branch only):
-#   secrets   JIRA_EMAIL, JIRA_TOKEN
+#   secrets   JIRA_TOKEN, and JIRA_EMAIL for basic auth (none with JIRA_AUTH_MODE=bearer: a service
+#             account's token through Atlassian's gateway; JIRA_CLOUD_ID optional, looked up)
 #   variables JIRA_HOST, JIRA_PROJECT, JIRA_STAMP_FIELD, JIRA_EPIC_ID, TICKET_CREATE_CEILING
 #             (and JIRA_TRANSITION_REOPEN to reopen closed tickets) -- the same ones the ticket
 #             reconciler uses (docs/architecture/TICKETING_BACKENDS.md).
 # With no Jira credential the run still lists everything (NOT_CONFIGURED) in its summary and artifact.
+#
+# TEST TICKETING IS CHOSEN BY THE BRANCH, NEVER BY A VARIABLE (KDEC-028). A dispatch on the default
+# branch uses `ticketing` (the real project); a dispatch on any other branch uses `ticketing-test`
+# (deployment branches: dev/feature; JIRA_PROJECT = a SANDBOX project such as SECTEST). Test tickets
+# carry the label kit-test and a [TEST] summary prefix. The org/repository variable
+# JIRA_REAL_PROJECTS lists the real project keys; a test run whose project is one of them, or one
+# the register's ticket_routing names, is refused TICKETING_TEST_TARGETS_REAL_PROJECT.
 
 name: Exceptions coming due
 
@@ -32,7 +40,8 @@ jobs:
       kit_repository: YOUR_ORG/secure-cicd-kit
       kit_ref: "0000000000000000000000000000000000000000"   # the same commit as the pin above
       default_branch: main
-      environment: ticketing
+      environment: ticketing            # the default branch: the real project
+      test_environment: ticketing-test  # any other branch: the sandbox project
       days: 14
       apply: true
     secrets:

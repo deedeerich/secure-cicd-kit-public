@@ -53,6 +53,9 @@ outputs:
   policy_registration_ref: {description: the default-branch commit read, value: "${{ steps.r.outputs.policy_registration_ref }}"}
   policy_secret_exceptions: {description: JSON secret exceptions in force (finding ticket approver expires entry), value: "${{ steps.r.outputs.policy_secret_exceptions }}"}
   policy_secret_exception_refusals: {description: JSON secret exceptions refused by name, value: "${{ steps.r.outputs.policy_secret_exception_refusals }}"}
+  policy_known_exploited_exceptions: {description: JSON known-exploited exceptions in force (finding cve ticket approver expires entry; KDEC-022), value: "${{ steps.r.outputs.policy_known_exploited_exceptions }}"}
+  policy_known_exploited_exception_refusals: {description: JSON known-exploited exceptions refused by name, value: "${{ steps.r.outputs.policy_known_exploited_exception_refusals }}"}
+  policy_history_state: {description: JSON per register - VERIFIED from git or UNVERIFIED (KDEC-022), value: "${{ steps.r.outputs.policy_history_state }}"}
   policy_max_exception_renewals: {description: the authority's exception renewal cap (KDEC-018), value: "${{ steps.r.outputs.policy_max_exception_renewals }}"}
   policy_notices: {description: JSON visible notices that are not refusals (policy_notice; e.g. ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR), value: "${{ steps.r.outputs.policy_notices }}"}
 runs:
@@ -85,32 +88,56 @@ runs:
         # git's environment configuration, never in argv or a URL. A failed fetch leaves no
         # FETCH_HEAD and the resolver says REGISTRATION_UNAVAILABLE -- never a local-file fallback,
         # and never the kit default. An unknown default branch is not guessed.
+        #
+        # WITH ITS HISTORY, BLOB-LESS (KDEC-022 item 2). Every exception's renewal count is derived
+        # from the git history of the register file, so a depth-1 fetch would make every exception
+        # EXCEPTION_HISTORY_UNVERIFIED (refused). A blob-less partial clone of the default branch
+        # brings every commit and tree but no file contents; the resolver's `git log --follow` then
+        # fetches only the register's own blobs, on demand. The size is printed on every run.
         ref_repo="${RUNNER_TEMP:-/tmp}/policy-ref-$$"
-        rm -rf "$ref_repo"; git init -q "$ref_repo"
+        kit_hist="${RUNNER_TEMP:-/tmp}/policy-kit-history-$$"
+        rm -rf "$ref_repo" "$kit_hist"
+        if [ -n "${FETCH_TOKEN:-}" ]; then
+          basic="$(printf 'x-access-token:%s' "$FETCH_TOKEN" | base64 | tr -d '\n')"
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${basic}"
+        fi
         if [ -n "${DEFAULT_BRANCH:-}" ]; then
-          if [ -n "${FETCH_TOKEN:-}" ]; then
-            basic="$(printf 'x-access-token:%s' "$FETCH_TOKEN" | base64 | tr -d '\n')"
-            export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader
-            export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${basic}"
-          fi
-          ( cd "$ref_repo" && git fetch --quiet --depth=1 --no-tags \
-              "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" "refs/heads/${DEFAULT_BRANCH}" ) ||
+          git clone --quiet --filter=blob:none --no-checkout --single-branch --no-tags \
+              --branch "${DEFAULT_BRANCH}" "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" "$ref_repo" ||
             echo "::warning title=Default branch not fetched::the repository registration cannot be read; the policy is REGISTRATION_UNAVAILABLE."
-          unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
         else
           echo "::warning title=Default branch unknown::the event names no default branch; the repository registration cannot be read."
         fi
+        [ -d "$ref_repo/.git" ] || git init -q "$ref_repo"
+        echo "default-branch history fetched blob-less: $(du -sk "$ref_repo/.git" 2>/dev/null | cut -f1) KiB"
+        # THE CENTRAL REGISTER'S HISTORY is the kit's own. The kit delivered by \$/ is not a git
+        # checkout, so its history is cloned blob-less from the action's repository at the action's
+        # ref when GitHub names them. Without it the central register's exceptions are
+        # EXCEPTION_HISTORY_UNVERIFIED -- refused, and said so -- never trusted on their own say-so.
+        central_hist=()
+        if [ -s "${kit_root}/policy/policy-registration.json" ] && [ ! -d "${kit_root}/.git" ]; then
+          if [ -n "${GITHUB_ACTION_REPOSITORY:-}" ] && [ -n "${GITHUB_ACTION_REF:-}" ] &&
+             git clone --quiet --filter=blob:none --no-checkout --no-tags \
+               "${GITHUB_SERVER_URL}/${GITHUB_ACTION_REPOSITORY}.git" "$kit_hist" 2>/dev/null; then
+            central_hist=(--central-history-repo "$kit_hist" --central-history-ref "${GITHUB_ACTION_REF}"
+                          --central-history-path policy/policy-registration.json)
+          else
+            echo "::warning title=Central register history not fetched::the kit's history could not be read, so the central register's exceptions are EXCEPTION_HISTORY_UNVERIFIED (refused) on this run."
+          fi
+        fi
         supplied="${SUPPLIED_INPUTS:-}"
         [ -n "$supplied" ] || supplied='{}'
-        python3 "$resolver" --repo "$ref_repo" --default-ref FETCH_HEAD \
-          --central "${kit_root}/policy/policy-registration.json" \
+        python3 "$resolver" --repo "$ref_repo" --default-ref HEAD \
+          --central "${kit_root}/policy/policy-registration.json" "${central_hist[@]}" \
           --repository "${GITHUB_REPOSITORY:-}" \
           --environment "${TARGET_ENVIRONMENT:-}" --event "${EVENT_NAME:-}" \
           --supplied-json "$supplied" \
           --out "${RUNNER_TEMP:-/tmp}/policy-resolution.json" \
           --github-output "$GITHUB_OUTPUT"
         rc=$?
-        rm -rf "$ref_repo"
+        unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+        rm -rf "$ref_repo" "$kit_hist"
         # The resolver's exit says resolved (0) or refused (1). The posture record folds a refusal
         # into routing_result and the verdict step exits on it; this step does not fail the job, so
         # the record is still written. suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE --

@@ -171,6 +171,8 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -uo pipefail   # not -e: every read records its own outcome, and a failed read is evidence
+          # KDEC-027: gh's token goes to this run's host only (gh api / -R default to github.com).
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
           dir="$RUNNER_TEMP/dependabot-triage"
           mkdir -p "$dir"
           # Each read leaves a .rc file. A missing or non-zero rc is UNKNOWN to the decision step,
@@ -185,7 +187,7 @@ jobs:
           rc=0
           gh api "repos/${REPO}/rules/branches/${BASE_REF}" > "$dir/rules.json" 2> "$dir/rules.err" || rc=$?
           echo "$rc" > "$dir/rules.rc"
-          echo "files_rc=$(cat "$dir/files.rc")" >> "$GITHUB_OUTPUT"
+          echo "files_rc=$(tr -d '\r\n' < "$dir/files.rc")" >> "$GITHUB_OUTPUT"
 
       - name: Decide
         id: decide
@@ -766,6 +768,8 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
           set -uo pipefail
+          # KDEC-027: gh's token goes to this run's host only (gh api / -R default to github.com).
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
           # --auto: GitHub merges when the required checks and reviews allow, never before.
           # --squash: one commit, so the update reverts with one `git revert`.
           err="$RUNNER_TEMP/merge.err"
@@ -811,6 +815,8 @@ jobs:
           REVIEW_TEAM: ${{ inputs.review_team }}
         run: |
           set -uo pipefail
+          # KDEC-027: gh's token goes to this run's host only (gh api / -R default to github.com).
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
           fail=0
           note() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
           note "### Dependabot triage: human review requested"
@@ -880,5 +886,7 @@ jobs:
           COMMENT: ${{ needs.classify.outputs.comment }}
         run: |
           set -uo pipefail
+          # KDEC-027: gh's token goes to this run's host only (gh api / -R default to github.com).
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
           gh pr close "$PR_URL" --comment "$COMMENT"
           echo "### Dependabot triage: closed -- it changes an excluded path" >> "$GITHUB_STEP_SUMMARY"

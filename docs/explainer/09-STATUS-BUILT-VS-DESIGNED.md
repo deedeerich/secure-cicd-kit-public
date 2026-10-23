@@ -19,7 +19,7 @@ cited transcript. "Hosted" means a GitHub runner run id.
 | 1 policy resolution | the policy register per enterprise, org, team, product, repository and tier; derived `policy_mode`; crawl the default and the floor; the authority's rung binds narrower scopes; ticketed finding-scoped exceptions with history, a renewal cap and weekly resurfacing (KDEC-017..019) | BUILT and wired: the gate resolves the policy first (lanes L-A, L-S, L-FX, L-RB), proven locally; no hosted run | 1 (pulled forward from 2) |
 | 2 discovery | presence probes, could-not-look ≠ not-present, coverage gaps; beyond the 8-level bound is UNDETERMINED, never NOT_APPLICABLE (`11db350`); `php` an ecosystem since lane L-PHP, a lock-less `composer.json` a named gap | BUILT, proven hosted (consumer path, before the bound fix); the bound and PHP proven locally | 1 (PHP: 3) |
 | 3 version discovery | the version each root targets | BUILT, proven locally | 2 |
-| 4 capability selection | the capability picks the scanner; a substitute is labelled; no capable scanner = PARTIAL, never PASS (KDEC-010) | BUILT, proven locally; many ranges UNVERIFIED until seeded test sets exist, so those read PARTIAL | 2 |
+| 4 capability selection | the capability picks the scanner; a substitute is labelled; no capable scanner = PARTIAL, never PASS (KDEC-010) | BUILT, proven locally; Checkov and Trivy-config READ for Terraform 0.12–1.14 by a seeded corpus (`tests/corpora/terraform_corpus.py`, hosted probe run 39640950138), Semgrep PHP READ 5.6–8.4; the other Semgrep legs, gosec, eslint and cppcheck UNVERIFIED until seeded test sets exist, so those read PARTIAL | 2 |
 | 5 execution planning | the job set as data before anything runs | DESIGNED (owner review, EP-1..EP-4) + an advisory plan output nothing enforces | 2 |
 | 6 scanning | 14 scanner jobs | BUILT, proven hosted (20/20 seeded signals on `main` `ef4b15d`, run 38934329462); every count site refuses no-evidence-as-zero; malware and secrets block in every mode; since lane L-S a scanner job fails only when it could not scan or trust its result, and the gate is the single enforcement point (proven locally) | 1 |
 | 7 evidence validity | a report that read nothing is never clean | BUILT at every count site; the report and the runner now agree on a hollow scan (ledger L01, `fa19c02`); Semgrep `--strict` and the CodeQL autobuild outcome read (`1542c05`); sidecar rows 8–10 not built | 1 |
@@ -28,7 +28,7 @@ cited transcript. "Hosted" means a GitHub runner run id.
 | 10 severity + disposition | schema-true dispositions on the durable key | BUILT, proven (legacy key honoured until 2026-11-13); severity/SLA libraries Release 2 | 1 |
 | 11 correlation | anchored clusters only | BUILT, wired, proven locally | 1 |
 | 12 gate + verdict | `routing_result`, `advisory_causes`, posture record, the resolved policy | BUILT, proven locally (26 routing scenarios; 64 policy scenarios) and live in the consumer path before the policy was wired (caller blocked); the policy-driven verdict has no hosted run | 1 |
-| 13 ticketing | Jira first, Azure DevOps second | BUILT; the reconciler proven LIVE on a personal Jira; Azure DevOps against stand-ins only; the armed workflow has no hosted run and no template calls it; updates keep human text (T-02 fixed, `795d13c`) and write only on a delta | 1 |
+| 13 ticketing | Jira first, Azure DevOps second, GitHub wired | BUILT; the reconciler proven LIVE on a personal Jira, the KDEC-024 lifecycle too (R-3: NEW, SLA escalation, close on verified clearance, RECURRED); Azure DevOps and GitHub against stand-ins only; `templates/ticket-reconcile.yml` calls it after the scan and runs its clock daily; the armed workflow has no hosted run; updates keep human text (T-02 fixed, `795d13c`) and write only on a delta | 1 |
 | 14 reporting | 25 rows, findings counts, findings JSON, evidence artifact | BUILT, proven; the run record `assurance-result.json` its schema describes is emitted nowhere (L36) | 1 |
 | 15 deploy + verification | verdict-gated, digest-bound, reversible | BUILT, proven LIVE on Azure for Container Apps and App Service: refusal, healthy deploy, verified rollback, a second actor refused, the slot swap. KDEC-014 (prod refuses a proven version gap without a named acceptance) built, stub-proven; since `078ef90` an absent ruling is EVIDENCE_UNTRUSTED. Sequential rollback with an e2e test period after every step, App Service slots returned to the requested version, and a per-target concurrency lock the deploys share with the rollback (KDEC-019, KDEC-021) built, stub-proven only: no hosted or live run | 1 |
 
@@ -83,9 +83,10 @@ person-only cases (duplicate, close, reopen). `main` is at Release 1 (`ef4b15d`,
   Cloud. V1 runs inside both deploy reusables before login (P-02, `ae04403`), proven against recorded
   answers only.
 - **A baseline ledger established on a runner**: the shipped path (an approved ESTABLISH pull request,
-  F-01) is proven locally only, and no starter template calls it; until one is merged nothing is
-  grandfathered.
-- **Live ticketing on Azure DevOps**, and an armed hosted run of `reusable-ticket-reconcile.yml`.
+  F-01) is proven locally only; `templates/ticket-reconcile.yml` calls it for proposals (KDEC-024),
+  none for establishment; until one is merged nothing is grandfathered.
+- **Live ticketing on Azure DevOps or GitHub**, and an armed hosted run of
+  `reusable-ticket-reconcile.yml` or its template.
 - **EMPTY or UNKNOWN prior state, PARTIAL_APPLY / STATUS_UNTRUSTED, provenance tags, a prod-tier
   capability refusal, KDEC-014** on a live target: stub-proven only.
 - **SLA and severity derivation in the gate** — Release 2. The rung and the policy register are wired
@@ -108,9 +109,10 @@ person-only cases (duplicate, close, reopen). `main` is at Release 1 (`ef4b15d`,
 
 ## Release 2 (dated, owned; see completion ledger section 4)
 
-Seeded corpora for the UNVERIFIED scanner ranges (semgrep, gosec, checkov, trivy-config, cppcheck,
+Seeded corpora for the scanner ranges still UNVERIFIED (semgrep outside PHP, gosec, cppcheck,
 eslint — D-VF-4; until then those scanners are never *selected* and the capabilities only they serve go
-PARTIAL), severity/SLA in the gate and ledger, execution-plan enforcement, cost
+PARTIAL; checkov and trivy-config are already READ for Terraform 0.12–1.14, measured by
+`tests/corpora/probe_iac_corpus.py` on 2026-10-21 and confirmed hosted, run 39640950138), severity/SLA in the gate and ledger, execution-plan enforcement, cost
 packing, scheduled revalidation (PROV V3), the retirement register, overlays B and C beyond their docs.
 
 ## Release 3 (next)

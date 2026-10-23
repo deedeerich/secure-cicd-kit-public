@@ -154,6 +154,12 @@ on:
       steps_verified:
         description: "How many steps were reversed, verified, healthy and passed the e2e tests."
         value: ${{ jobs.rollback.outputs.steps_verified }}
+      rollback_state:
+        description: >-
+          rollback_state (assurance-taxonomy.yaml): ROLLBACK_VERIFIED, ROLLBACK_PROHIBITED, empty for a
+          refusal that touched nothing, or ROLLBACK_REQUIRES_HUMAN_DECISION -- a person decides what is
+          left (KDEC-023: a dependency conflict, a halt, an ineligible step).
+        value: ${{ jobs.rollback.outputs.rollback_state }}
       routing_result:
         description: "PROCEED only for a verified sequence; see the posture step."
         value: ${{ jobs.rollback.outputs.routing_result }}
@@ -199,6 +205,7 @@ jobs:
     outputs:
       sequence_result: ${{ steps.sequence.outputs.sequence_result }}
       steps_verified: ${{ steps.sequence.outputs.steps_verified }}
+      rollback_state: ${{ steps.sequence.outputs.rollback_state }}
       routing_result: ${{ steps.posture.outputs.routing_result }}
       controls_required: ${{ steps.posture.outputs.controls_required }}
       controls_executed: ${{ steps.posture.outputs.controls_executed }}
@@ -235,6 +242,8 @@ jobs:
           KIT_DIR: ${{ github.workspace }}/.kit
         run: |
           set -uo pipefail
+          # KDEC-027: gh's token goes to this run's host only (gh api / -R default to github.com).
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
           root="$RUNNER_TEMP/rollback-evidence"
           mkdir -p "$root"
           if ! python3 "$KIT_DIR/scripts/rollback_sequence.py" list-runs --sequence-env sequence > "$RUNNER_TEMP/rollback-runs.txt"; then
@@ -273,6 +282,8 @@ jobs:
           KIT_DIR: ${{ github.workspace }}/.kit
         run: |
           set -uo pipefail
+          # KDEC-027: gh's token goes to this run's host only (gh api / -R default to github.com).
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
           kv="$RUNNER_TEMP/rollback-sequence.out"
           : > "$kv"
           rc=0
@@ -289,12 +300,46 @@ jobs:
             --summary "$GITHUB_STEP_SUMMARY" --github-output "$kv" || rc=$?
           sequence_result="$(sed -n 's/^sequence_result=//p' "$kv" | tail -1)"
           steps_verified="$(sed -n 's/^steps_verified=//p' "$kv" | tail -1)"
+          rollback_state="$(sed -n 's/^rollback_state=//p' "$kv" | tail -1)"
           {
             echo "rc=$rc"
-            echo "sequence_result=$sequence_result"
-            echo "steps_verified=$steps_verified"
+            echo "sequence_result=${sequence_result//[$'\r\n']/ }"
+            echo "steps_verified=${steps_verified//[$'\r\n']/ }"
+            echo "rollback_state=${rollback_state//[$'\r\n']/ }"
           } >> "$GITHUB_OUTPUT"
           exit "$rc"
+
+      - name: Mark the target as rolled back (what an incoming deploy is checked against)
+        id: marker
+        # KDEC-023 item 4 (owner, 2026-10-23): a deploy that waited behind this rollback, or any
+        # deploy built before it finished, is checked for dependencies on what it took out. The
+        # marker names this run, the releases it rolled back (commit, images) and every node it
+        # changed (gone, or restored old -> new); the deploy reusables read it before login
+        # (scripts/rollback_hold.py check). Written whenever ANY step reversed something, a halted
+        # or partial sequence included. tests/prove_rollback_dependencies.py D6/D8.
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MARK_ENVIRONMENT: ${{ inputs.github_environment }}
+          MARK_RESOURCE_GROUP: ${{ inputs.target_resource_group }}
+          MARK_NAME: ${{ inputs.target_name }}
+          KIT_DIR: ${{ github.workspace }}/.kit
+        run: |
+          set -u
+          python3 "$KIT_DIR/scripts/rollback_hold.py" marker --record "$RUNNER_TEMP/rollback-sequence.json" \
+            --evidence-root "$RUNNER_TEMP/rollback-evidence" --environment "$MARK_ENVIRONMENT" \
+            --resource-group "$MARK_RESOURCE_GROUP" --name "$MARK_NAME" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --out "$RUNNER_TEMP/rollback-marker/marker.json" --github-output "$GITHUB_OUTPUT"
+
+      - name: Keep the rollback marker for the target
+        if: always() && steps.marker.outputs.marker_written == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.marker.outputs.marker_name }}
+          path: ${{ runner.temp }}/rollback-marker/marker.json
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Keep the sequence record and each step's reversal evidence
         if: always()

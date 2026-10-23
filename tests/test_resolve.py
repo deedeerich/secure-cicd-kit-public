@@ -58,7 +58,7 @@ USES = "$/.github/actions/resolve"
 JOB = "resolve"
 STEP = "r"
 SCANNERS = ["secret-scan", "code-quality", "sast-semgrep", "sast-bandit", "codeql", "deps-scan",
-            "iac-scan", "sast-dotnet", "sast-java", "sast-go", "sast-cpp", "image-scan",
+            "iac-scan", "sast-dotnet", "sast-java", "sast-go", "sast-cpp", "sast-mobile", "image-scan",
             "malicious-deps", "sbom", "report", "security-gate"]
 
 
@@ -119,7 +119,9 @@ def make_tree(spec, base):
 
 # Lower-case on purpose: a harness constant, not vocabulary.
 discover_all_false = {"python": "false", "node": "false", "go": "false", "dotnet": "false",
-                      "java": "false", "cpp": "false", "php": "false", "iac": "false"}
+                      "java": "false", "cpp": "false", "php": "false", "iac": "false",
+                      # lane L-SCAN-B (KDEC-026)
+                      "kotlin": "false", "swift": "false", "mobile": "false"}
 
 
 def run_case(shell, files, discover=None, inputs=None, event="push", break_python=False,
@@ -1063,6 +1065,18 @@ def coverage_checks(shell):
     ok &= check("L24 workflow YAML is a counted class",
                 cov(r, "GitHubActionsWorkflow").get("files_in_scope") == 1,
                 "row=%s" % cov(r, "GitHubActionsWorkflow"))
+    # LANE L-SCAN-A (KDEC-025): workflows, shell and PowerShell are no longer gaps. A class with no
+    # version to discover is covered by the registry's READ rows for it, on scope inference.
+    r2 = run_case(shell, dict(tree, **{"ops/a.sh": "x\n", "ops/b.ps1": "x\n"}),
+                  discover={"python": "true", "iac": "true", "workflows": "true", "shell": "true",
+                            "powershell": "true"}, inputs={"python_version": "3.12"})
+    for cls, tools in (("GitHubActionsWorkflow", ["deps-scan/actionlint", "deps-scan/zizmor"]),
+                       ("Shell", ["deps-scan/shellcheck"]),
+                       ("PowerShell", ["deps-scan/psscriptanalyzer"])):
+        row = cov(r2, cls)
+        ok &= check("L-SCAN-A %s covered by %s, scope inference, never a COVERAGE_GAP" % (cls, tools),
+                    row.get("covered_by") == tools and row.get("coverage_basis") == "scope-inference"
+                    and "COVERAGE_GAP" not in (row.get("note") or ""), "row=%s" % row)
     ok &= check("L24 iac counts .tf and Dockerfile", cov(r, "iac").get("files_in_scope") == 2,
                 "row=%s" % cov(r, "iac"))
     rows = jload(r, "coverage") or []

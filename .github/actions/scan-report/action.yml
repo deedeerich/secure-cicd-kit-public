@@ -63,6 +63,11 @@ outputs:
       Space-separated fingerprints (`fp`) of the secret scan's blocking findings, one per finding --
       what a policy-register secret exception names (owner ruling 2026-10-22). A hash, never text.
     value: ${{ steps.r.outputs.secret_findings }}
+  cve_findings:
+    description: >-
+      Space-separated job:fingerprint:CVE for every CVE a finding of an established, non-secret row
+      names -- every severity, before dispositions -- for the gate's known-exploited check (KDEC-022).
+    value: ${{ steps.r.outputs.cve_findings }}
   findings:
     description: >-
       Path of the machine-readable findings file (L52): one identify() record per finding, with

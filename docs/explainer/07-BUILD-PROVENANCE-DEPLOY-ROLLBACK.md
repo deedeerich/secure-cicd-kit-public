@@ -114,7 +114,7 @@ summary and in the `deploy-evidence-<run_id>-<attempt>` artifact (`outcome.json`
 `manifest.json`, `capability.json`, `verification.json`, `reversal.json`, and `provenance.json` when
 a stamp was written). Their shape is defined in code (`scripts/deploy_contract.py`), not by a schema.
 
-## Sequential rollback (BUILT, lanes L-RB and L-RB2; proven locally against the stub cloud, NOT live)
+## Sequential rollback (BUILT, lanes L-RB, L-RB2 and L-RB3; proven locally against the stub cloud, NOT live)
 
 KDEC-019 item 4 and KDEC-021: when several deployments must be rolled back, they are reversed
 **newest first**, and the application's **end-to-end tests run over a test period after each step**,
@@ -150,9 +150,30 @@ the last included (`reusable-rollback-sequence.yml`,
   (`ROLLBACK_SEQUENCE_HALTED_E2E_FAILED`).
 - **No end-to-end tests is a refusal** (`ROLLBACK_SEQUENCE_REFUSED_NO_E2E`), before login: running the
   reversals untested is the broken intermediate state the rule forbids.
-- The record (`schemas/rollback-sequence.schema.json`, v2) lists every step — deployment, eligibility
+- **Cross-edited resources (KDEC-023, lane L-RB3; stub-proven, NOT live).** Every resource a rollback
+  touches has a class (`rollback-resource-classes.yaml`). **`SHARED_MULTI_CONFIG`** (Front Door, NSG,
+  firewall, Application Gateway / WAF, route tables, DNS, API Management): only the product's own
+  entries are rolled back, and every other entry is read back byte-identical before and after
+  (`ROLLBACK_SCOPED_TO_PRODUCT_CONFIG`). **`STABLE`** (App Service, Container App, database, storage,
+  Key Vault, VM…) changed by another actor — or a cross-edit of one of the product's own shared
+  entries — gets a **dependency review**: a graph of who depends on what, each node marked unchanged /
+  changed by this release / changed by other; the **full rollback is refused**, and either the parts
+  independent of the foreign change are rolled back (`ROLLBACK_PARTIAL_DEPENDENCY_CONFLICT`) or
+  nothing is (`ROLLBACK_REFUSED_DEPENDENCY_CONFLICT`), each node with its reason, the graph as JSON and
+  Mermaid in the record, the evidence and the run summary, and **`ROLLBACK_REQUIRES_HUMAN_DECISION`**
+  emitted. The ARM path reads a deployer's `resources.json`; the kit's own deploy adapters do not
+  write one yet.
+- **A deploy after a rollback is dependency-checked (KDEC-023, the owner's decision).** The rollback
+  leaves a marker for its target; both deploy reusables check, **before login**, any deploy built
+  before the rollback finished: built on a rolled-back commit, shipping a rolled-back image, or
+  declaring (`declared_dependencies`) something the rollback removed or changed →
+  **`DEPLOY_REFUSED_ROLLBACK_DEPENDENCY`**, with a report of the rollback and each dependency (old →
+  new, or no longer exists); the team corrects the deploy — there is no override. No dependency →
+  it deploys, with a note. A check that cannot be completed refuses. The deploys now need
+  `actions: read`.
+- The record (`schemas/rollback-sequence.schema.json`, v3) lists every step — deployment, eligibility
   basis, rollback, health, e2e, the test period's checks, what it `restored`, whether it was
   `inserted`, timestamps — plus the `lock` held and the requested and `final_version`, and reads
   `ROLLBACK_SEQUENCE_VERIFIED` only when every step is verified (`tests/prove_rollback_sequence.py`
-  S1..S19). Never run against Azure (risks R-04); the shared concurrency group is proven by resolving
+  S1..S19, `tests/prove_rollback_dependencies.py` D1..D8). Never run against Azure (risks R-04); the shared concurrency group is proven by resolving
   its expressions, not by a hosted queue.

@@ -1,171 +1,706 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://secure-cicd-kit/schemas/rollback-sequence.schema.json",
-  "title": "Sequential rollback record (schema_version 2)",
-  "description": "What scripts/rollback_sequence.py did to an ordered sequence of deployments, reversed newest first with a TEST PERIOD after each step in which the health probe and the application's end-to-end tests run at its start, at each interval and at its end (KDEC-019 item 4; KDEC-021). App Service sequences return to the version the request names (target_version), read back live; kit deployments that landed mid-sequence are rolled back first and listed in `inserted`. ROLLBACK_SEQUENCE_VERIFIED only when every step is ROLLBACK_STEP_VERIFIED and production is on the requested version. Version 2 (2026-10-23) added test_period, lock, target_version, final_version, baseline, inserted, and per step inserted, inserted_because, restored, test_period. Vocabulary: assurance-taxonomy.yaml rollback_sequence, rollback_sequence_step, rollback_state.",
+  "title": "Sequential rollback record (schema_version 3)",
+  "description": "What scripts/rollback_sequence.py did to an ordered sequence of deployments, reversed newest first with a TEST PERIOD after each step in which the health probe and the application's end-to-end tests run at its start, at each interval and at its end (KDEC-019 item 4; KDEC-021). App Service sequences return to the version the request names (target_version), read back live; kit deployments that landed mid-sequence are rolled back first and listed in `inserted`. ROLLBACK_SEQUENCE_VERIFIED only when every step is ROLLBACK_STEP_VERIFIED and production is on the requested version. Version 2 (2026-10-23) added test_period, lock, target_version, final_version, baseline, inserted, and per step inserted, inserted_because, restored, test_period. Version 3 (2026-10-23, KDEC-023) added rollback_state, the ARM adapter's dependency_review per step (outcome, the nodes with their resource class and mark, the edges, a Mermaid graph, what was and was not reversed and why, every other entry read back), ROLLBACK_SEQUENCE_STOPPED_DEPENDENCY_CONFLICT and ROLLBACK_STEP_PARTIAL. Vocabulary: rollback_dependency_outcome, rollback_resource_class, assurance-taxonomy.yaml rollback_sequence, rollback_sequence_step, rollback_state.",
   "type": "object",
-  "required": ["schema_version", "sequence_id", "started_at", "finished_at", "result", "why", "order", "e2e", "test_period", "lock", "target_version", "final_version", "baseline", "inserted", "steps", "escalation"],
+  "required": [
+    "schema_version",
+    "sequence_id",
+    "rollback_state",
+    "started_at",
+    "finished_at",
+    "result",
+    "why",
+    "order",
+    "e2e",
+    "test_period",
+    "lock",
+    "target_version",
+    "final_version",
+    "baseline",
+    "inserted",
+    "steps",
+    "escalation"
+  ],
   "additionalProperties": false,
   "properties": {
-    "schema_version": {"const": 2},
-    "sequence_id": {"type": ["string", "null"]},
-    "started_at": {"type": "string"},
-    "finished_at": {"type": "string"},
-    "result": {"enum": ["ROLLBACK_SEQUENCE_VERIFIED", "ROLLBACK_SEQUENCE_REFUSED_NO_E2E", "ROLLBACK_SEQUENCE_REFUSED_NO_TEST_PERIOD", "ROLLBACK_SEQUENCE_REFUSED_INPUT", "ROLLBACK_SEQUENCE_STOPPED_INELIGIBLE", "ROLLBACK_SEQUENCE_HALTED_ROLLBACK_UNVERIFIED", "ROLLBACK_SEQUENCE_HALTED_HEALTH_FAILED", "ROLLBACK_SEQUENCE_HALTED_E2E_FAILED"]},
-    "why": {"type": "string"},
-    "order": {"const": "reverse of deployment order (newest first)"},
+    "schema_version": {
+      "const": 3
+    },
+    "sequence_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "rollback_state": {
+      "enum": [
+        "ROLLBACK_VERIFIED",
+        "ROLLBACK_REQUIRES_HUMAN_DECISION",
+        "ROLLBACK_PROHIBITED",
+        null
+      ],
+      "description": "rollback_state for the sequence: VERIFIED when it is; null for a refusal that touched nothing; PROHIBITED for a forward-fix-only stop; otherwise a person decides."
+    },
+    "started_at": {
+      "type": "string"
+    },
+    "finished_at": {
+      "type": "string"
+    },
+    "result": {
+      "enum": [
+        "ROLLBACK_SEQUENCE_VERIFIED",
+        "ROLLBACK_SEQUENCE_REFUSED_NO_E2E",
+        "ROLLBACK_SEQUENCE_REFUSED_NO_TEST_PERIOD",
+        "ROLLBACK_SEQUENCE_REFUSED_INPUT",
+        "ROLLBACK_SEQUENCE_STOPPED_INELIGIBLE",
+        "ROLLBACK_SEQUENCE_HALTED_ROLLBACK_UNVERIFIED",
+        "ROLLBACK_SEQUENCE_HALTED_HEALTH_FAILED",
+        "ROLLBACK_SEQUENCE_HALTED_E2E_FAILED",
+        "ROLLBACK_SEQUENCE_STOPPED_DEPENDENCY_CONFLICT"
+      ]
+    },
+    "why": {
+      "type": "string"
+    },
+    "order": {
+      "const": "reverse of deployment order (newest first)"
+    },
     "e2e": {
       "type": "object",
-      "required": ["supplied", "command_sha256", "timeout_seconds"],
+      "required": [
+        "supplied",
+        "command_sha256",
+        "timeout_seconds"
+      ],
       "additionalProperties": false,
       "properties": {
-        "supplied": {"type": "boolean"},
-        "command_sha256": {"type": ["string", "null"]},
-        "timeout_seconds": {"type": "integer", "minimum": 1}
+        "supplied": {
+          "type": "boolean"
+        },
+        "command_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "test_period": {
       "type": "object",
-      "required": ["seconds", "interval_seconds", "checks_at"],
+      "required": [
+        "seconds",
+        "interval_seconds",
+        "checks_at"
+      ],
       "additionalProperties": false,
       "description": "The period after EVERY step (the final one included). 0 is refused (ROLLBACK_SEQUENCE_REFUSED_NO_TEST_PERIOD).",
       "properties": {
-        "seconds": {"type": "number", "minimum": 0},
-        "interval_seconds": {"type": "number"},
-        "checks_at": {"type": "string"}
+        "seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "interval_seconds": {
+          "type": "number"
+        },
+        "checks_at": {
+          "type": "string"
+        }
       }
     },
     "lock": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "description": "The target (resource group/name) whose concurrency group the reusable holds, shared with the deploy reusables; null when run outside the reusable.",
-      "required": ["target"],
-      "additionalProperties": false,
-      "properties": {"target": {"type": "string"}}
-    },
-    "target_version": {"type": ["string", "null"], "description": "The version the request names to return to (image reference or digest)."},
-    "final_version": {
-      "type": ["object", "null"],
-      "required": ["requested", "live", "held", "targets"],
+      "required": [
+        "target"
+      ],
       "additionalProperties": false,
       "properties": {
-        "requested": {"type": "string"},
-        "live": {"type": ["string", "null"]},
-        "held": {"type": "boolean"},
-        "targets": {"type": "array", "items": {
-          "type": "object", "required": ["target", "live", "held"], "additionalProperties": false,
-          "properties": {"target": {"type": "string"}, "live": {"type": ["string", "null"]}, "held": {"type": "boolean"}}}}
+        "target": {
+          "type": "string"
+        }
       }
     },
-    "baseline": {"type": "object", "description": "Per target, the kit releases standing on it when the sequence started."},
-    "inserted": {"type": "array", "items": {"type": "string"}, "description": "Kit releases that landed mid-sequence and were put at the front of what remained."},
+    "target_version": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The version the request names to return to (image reference or digest)."
+    },
+    "final_version": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "requested",
+        "live",
+        "held",
+        "targets"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "requested": {
+          "type": "string"
+        },
+        "live": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "held": {
+          "type": "boolean"
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "target",
+              "live",
+              "held"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "target": {
+                "type": "string"
+              },
+              "live": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "held": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "description": "Per target, the kit releases standing on it when the sequence started."
+    },
+    "inserted": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Kit releases that landed mid-sequence and were put at the front of what remained."
+    },
     "steps": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["position", "executed_as", "deployment", "run_id", "run_attempt", "adapter", "target", "inserted", "inserted_because", "started_at", "finished_at", "eligibility", "rollback", "restored", "health", "e2e", "test_period", "step_result"],
+        "required": [
+          "position",
+          "executed_as",
+          "deployment",
+          "run_id",
+          "run_attempt",
+          "adapter",
+          "target",
+          "inserted",
+          "inserted_because",
+          "started_at",
+          "finished_at",
+          "eligibility",
+          "rollback",
+          "restored",
+          "health",
+          "e2e",
+          "test_period",
+          "dependency_review",
+          "step_result"
+        ],
         "additionalProperties": false,
         "properties": {
-          "position": {"type": "integer", "minimum": 1, "description": "The step's place in DEPLOYMENT order (1 = oldest); an inserted deployment is newer than every listed one."},
-          "executed_as": {"type": ["integer", "null"], "description": "The step's place in EXECUTION order (1 = first reversed); null when it was never reached."},
-          "deployment": {"type": "string"},
-          "run_id": {"type": "string"},
-          "run_attempt": {"type": "string"},
-          "adapter": {"type": "string"},
-          "target": {"type": ["string", "null"]},
-          "inserted": {"type": "boolean"},
-          "inserted_because": {"type": ["string", "null"]},
-          "started_at": {"type": ["string", "null"]},
-          "finished_at": {"type": ["string", "null"]},
+          "position": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The step's place in DEPLOYMENT order (1 = oldest); an inserted deployment is newer than every listed one."
+          },
+          "executed_as": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "The step's place in EXECUTION order (1 = first reversed); null when it was never reached."
+          },
+          "deployment": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "run_attempt": {
+            "type": "string"
+          },
+          "adapter": {
+            "type": "string"
+          },
+          "target": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "inserted": {
+            "type": "boolean"
+          },
+          "inserted_because": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "eligibility": {
-            "type": ["object", "null"],
-            "required": ["eligible", "basis", "disposition", "why", "checks"],
+            "type": [
+              "object",
+              "null"
+            ],
+            "required": [
+              "eligible",
+              "basis",
+              "disposition",
+              "why",
+              "checks"
+            ],
             "additionalProperties": false,
             "properties": {
-              "eligible": {"type": "boolean"},
-              "basis": {"enum": ["ELIGIBLE_UNTOUCHED", "ELIGIBLE_OWNED_PART_SEPARABLE", null]},
-              "disposition": {"enum": ["ROLLBACK_REQUIRES_HUMAN_DECISION", "ROLLBACK_PROHIBITED", null]},
-              "why": {"type": "string"},
+              "eligible": {
+                "type": "boolean"
+              },
+              "basis": {
+                "enum": [
+                  "ELIGIBLE_UNTOUCHED",
+                  "ELIGIBLE_OWNED_PART_SEPARABLE",
+                  null
+                ]
+              },
+              "disposition": {
+                "enum": [
+                  "ROLLBACK_REQUIRES_HUMAN_DECISION",
+                  "ROLLBACK_PROHIBITED",
+                  null
+                ]
+              },
+              "why": {
+                "type": "string"
+              },
               "checks": {
                 "type": "array",
                 "items": {
                   "type": "object",
-                  "required": ["check", "held", "detail"],
+                  "required": [
+                    "check",
+                    "held",
+                    "detail"
+                  ],
                   "additionalProperties": false,
-                  "properties": {"check": {"type": "string"}, "held": {"type": "boolean"}, "detail": {"type": "string"}}
+                  "properties": {
+                    "check": {
+                      "type": "string"
+                    },
+                    "held": {
+                      "type": "boolean"
+                    },
+                    "detail": {
+                      "type": "string"
+                    }
+                  }
                 }
               }
             }
           },
           "rollback": {
             "type": "object",
-            "required": ["result", "reversal_path", "not_reversed"],
+            "required": [
+              "result",
+              "reversal_path",
+              "not_reversed"
+            ],
             "additionalProperties": false,
             "properties": {
-              "result": {"enum": ["not-run", "ROLLBACK_VERIFIED", "ROLLBACK_PARTIAL", "STATUS_UNTRUSTED"]},
-              "reversal_path": {"type": ["string", "null"]},
-              "not_reversed": {"type": "array"}
+              "result": {
+                "enum": [
+                  "not-run",
+                  "ROLLBACK_VERIFIED",
+                  "ROLLBACK_PARTIAL",
+                  "STATUS_UNTRUSTED"
+                ]
+              },
+              "reversal_path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "not_reversed": {
+                "type": "array"
+              }
             }
           },
           "restored": {
             "type": "array",
             "description": "The live read-back after a verified reversal: each slot (App Service) or the serving traffic (Container Apps) against what it held before this deployment.",
             "items": {
-              "type": "object", "required": ["slot", "want", "live", "held"], "additionalProperties": false,
-              "properties": {"slot": {"type": "string"}, "want": {"type": "string"}, "live": {"type": ["string", "null"]}, "held": {"type": "boolean"}}
+              "type": "object",
+              "required": [
+                "slot",
+                "want",
+                "live",
+                "held"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "slot": {
+                  "type": "string"
+                },
+                "want": {
+                  "type": "string"
+                },
+                "live": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "held": {
+                  "type": "boolean"
+                }
+              }
             }
           },
           "health": {
             "type": "object",
-            "required": ["result", "url"],
+            "required": [
+              "result",
+              "url"
+            ],
             "additionalProperties": false,
-            "properties": {"result": {"enum": ["not-run", "passed", "failed"]}, "url": {"type": ["string", "null"]}}
+            "properties": {
+              "result": {
+                "enum": [
+                  "not-run",
+                  "passed",
+                  "failed"
+                ]
+              },
+              "url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
           },
           "e2e": {
             "type": "object",
-            "required": ["result", "exit_code"],
-            "additionalProperties": false,
-            "properties": {"result": {"enum": ["not-run", "passed", "failed", "timed-out"]}, "exit_code": {"type": ["integer", "null"]}}
-          },
-          "test_period": {
-            "type": ["object", "null"],
-            "required": ["seconds", "interval_seconds", "started_at", "ended_at", "checks"],
+            "required": [
+              "result",
+              "exit_code"
+            ],
             "additionalProperties": false,
             "properties": {
-              "seconds": {"type": "number"},
-              "interval_seconds": {"type": "number"},
-              "started_at": {"type": "string"},
-              "ended_at": {"type": ["string", "null"]},
+              "result": {
+                "enum": [
+                  "not-run",
+                  "passed",
+                  "failed",
+                  "timed-out"
+                ]
+              },
+              "exit_code": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            }
+          },
+          "test_period": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "required": [
+              "seconds",
+              "interval_seconds",
+              "started_at",
+              "ended_at",
+              "checks"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "seconds": {
+                "type": "number"
+              },
+              "interval_seconds": {
+                "type": "number"
+              },
+              "started_at": {
+                "type": "string"
+              },
+              "ended_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "checks": {
                 "type": "array",
                 "items": {
                   "type": "object",
-                  "required": ["phase", "at", "offset_seconds", "health", "e2e", "exit_code"],
+                  "required": [
+                    "phase",
+                    "at",
+                    "offset_seconds",
+                    "health",
+                    "e2e",
+                    "exit_code"
+                  ],
                   "additionalProperties": false,
                   "properties": {
-                    "phase": {"enum": ["start", "interval", "end"]},
-                    "at": {"type": "string"},
-                    "offset_seconds": {"type": "number", "minimum": 0},
-                    "health": {"enum": ["not-run", "passed", "failed"]},
-                    "e2e": {"enum": ["not-run", "passed", "failed", "timed-out"]},
-                    "exit_code": {"type": ["integer", "null"]}
+                    "phase": {
+                      "enum": [
+                        "start",
+                        "interval",
+                        "end"
+                      ]
+                    },
+                    "at": {
+                      "type": "string"
+                    },
+                    "offset_seconds": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "health": {
+                      "enum": [
+                        "not-run",
+                        "passed",
+                        "failed"
+                      ]
+                    },
+                    "e2e": {
+                      "enum": [
+                        "not-run",
+                        "passed",
+                        "failed",
+                        "timed-out"
+                      ]
+                    },
+                    "exit_code": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    }
                   }
                 }
               }
             }
           },
-          "step_result": {"enum": ["ROLLBACK_STEP_VERIFIED", "ROLLBACK_STEP_HALTED", "ROLLBACK_STEP_INELIGIBLE", "ROLLBACK_STEP_NOT_REACHED"]}
+          "dependency_review": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "KDEC-023: the dependency review of an ARM step (or the one-node review of an App Service / Container App step changed outside the kit).",
+            "required": [
+              "outcome",
+              "rollback_state",
+              "basis",
+              "full_rollback",
+              "why",
+              "nodes",
+              "edges",
+              "mermaid",
+              "reversed",
+              "not_reversed",
+              "others_untouched",
+              "graph_path"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "enum": [
+                  "ROLLBACK_DEPENDENCY_CLEAR",
+                  "ROLLBACK_SCOPED_TO_PRODUCT_CONFIG",
+                  "ROLLBACK_PARTIAL_DEPENDENCY_CONFLICT",
+                  "ROLLBACK_REFUSED_DEPENDENCY_CONFLICT"
+                ]
+              },
+              "rollback_state": {
+                "enum": [
+                  "AUTO_ROLLBACK_ALLOWED",
+                  "ROLLBACK_REQUIRES_HUMAN_DECISION"
+                ]
+              },
+              "basis": {
+                "enum": [
+                  "ELIGIBLE_UNTOUCHED",
+                  "ELIGIBLE_OWNED_PART_SEPARABLE",
+                  null
+                ]
+              },
+              "full_rollback": {
+                "enum": [
+                  "eligible",
+                  "performed",
+                  "refused"
+                ]
+              },
+              "why": {
+                "type": "string"
+              },
+              "nodes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "name",
+                    "type",
+                    "class",
+                    "mark",
+                    "decision",
+                    "reason"
+                  ],
+                  "properties": {
+                    "class": {
+                      "enum": [
+                        "SHARED_MULTI_CONFIG",
+                        "STABLE",
+                        null
+                      ]
+                    },
+                    "mark": {
+                      "enum": [
+                        "unchanged",
+                        "changed-by-this-release",
+                        "changed-by-other",
+                        "unknown",
+                        "not-judged"
+                      ]
+                    }
+                  }
+                }
+              },
+              "edges": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "from",
+                    "to",
+                    "kind"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "from": {
+                      "type": "string"
+                    },
+                    "to": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "enum": [
+                        "declared",
+                        "references",
+                        "entry-of",
+                        "evaluated-together"
+                      ]
+                    }
+                  }
+                }
+              },
+              "mermaid": {
+                "type": "string"
+              },
+              "reversed": {
+                "type": "array"
+              },
+              "not_reversed": {
+                "type": "array"
+              },
+              "others_untouched": {
+                "type": "array"
+              },
+              "graph_path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "problems": {
+                "type": "array"
+              }
+            }
+          },
+          "step_result": {
+            "enum": [
+              "ROLLBACK_STEP_VERIFIED",
+              "ROLLBACK_STEP_HALTED",
+              "ROLLBACK_STEP_INELIGIBLE",
+              "ROLLBACK_STEP_NOT_REACHED",
+              "ROLLBACK_STEP_PARTIAL"
+            ]
+          }
         }
       }
     },
     "escalation": {
-      "type": ["object", "null"],
-      "required": ["resolution_owner", "next_action", "required_artefacts", "permitted_agent_action"],
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "resolution_owner",
+        "next_action",
+        "required_artefacts",
+        "permitted_agent_action"
+      ],
       "additionalProperties": false,
       "properties": {
-        "resolution_owner": {"type": "string"},
-        "next_action": {"type": "string"},
-        "required_artefacts": {"type": "array"},
-        "permitted_agent_action": {"type": "object"}
+        "resolution_owner": {
+          "type": "string"
+        },
+        "next_action": {
+          "type": "string"
+        },
+        "required_artefacts": {
+          "type": "array"
+        },
+        "permitted_agent_action": {
+          "type": "object"
+        }
       }
     }
   }

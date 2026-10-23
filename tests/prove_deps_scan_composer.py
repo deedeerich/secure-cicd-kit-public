@@ -48,6 +48,7 @@ import _scan_step_harness as h  # noqa: E402
 import prove_bootstrap_failure as pbf  # noqa: E402
 import prove_trivy_threshold as ptt  # noqa: E402
 import test_discovery as td  # noqa: E402
+import _trivy_step as ts  # noqa: E402 - the shipped Trivy step read as trivy-action's `with:`
 
 JOB = 'deps-scan'
 CFG = ptt.JOBS[JOB]
@@ -98,8 +99,8 @@ def main():
         print('UNKNOWN: no usable bash (%s).' % why)
         return 2
     steps = h.steps_by_name(JOB)
-    prod = [s for s in h.job(JOB).get('steps', []) if 'trivy-action' in str(s.get('uses'))
-            and str((s.get('with') or {}).get('output')) == CFG['producer_output']]
+    prod = [s for s in h.job(JOB).get('steps', []) if ts.is_trivy(s)
+            and ts.output_of(s) == CFG['producer_output']]
     if not prod or CFG['count'] not in steps or CFG['enforce'] not in steps:
         print('UNKNOWN: deps-scan does not carry the Trivy, count and enforce steps this reproduces.')
         return 2

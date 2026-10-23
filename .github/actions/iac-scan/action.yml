@@ -20,13 +20,21 @@ inputs:
   paths:
     description: The workflow's `paths` input (string), passed through unchanged.
     required: true
+  dockerfile:
+    description: needs.discover.outputs.dockerfile -- 'true' runs hadolint (lane L-SCAN-A, KDEC-025).
+    required: false
+    default: 'false'
 
 # What the security gate enforces (lane L-S, O-24): FINDINGS when Checkov's threshold fired and
 # advisory_mode did not soften it, '' otherwise. The job reads it through the call's id.
 outputs:
   findings_state:
     description: FINDINGS when this scan's own threshold fired unsoftened; '' otherwise.
-    value: ${{ steps.checkov_enforce.outputs.findings_state }}
+    value: ${{ steps.checkov_enforce.outputs.findings_state || steps.hadolint_enforce.outputs.findings_state }}
+  # Dockerfiles hadolint could not parse and NAMED (VERSION_GAP), for the report.
+  lint_version_gaps:
+    description: Dockerfiles hadolint could not parse (DL1000), space-separated.
+    value: ${{ steps.hadolint.outputs.version_gaps }}
 
 runs:
   using: composite
@@ -117,8 +125,8 @@ runs:
         # preserved_by: collection=COMPLETE/COLLECTION_FAILED state emitted either way
         total=$(jq '[.runs[].results[]] | length' "$f" 2>/dev/null || echo "$n")
         echo "collection=COMPLETE" >> "$GITHUB_OUTPUT"
-        echo "count=$n" >> "$GITHUB_OUTPUT"
-        echo "total=$total" >> "$GITHUB_OUTPUT"
+        echo "count=${n//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
+        echo "total=${total//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
         echo "Checkov ERROR-level findings: $n (of $total result(s))"
     # THE POLICY LAYER. The ONLY step in this job permitted to decide whether truth blocks.
     #
@@ -242,15 +250,47 @@ runs:
     # housekeeping step) skipped Trivy config entirely -- so the job reported a Checkov failure
     # AND silently established nothing about the half of the IaC surface Trivy covers. A gate
     # decision is not a reason to stop looking.
+    # TRIVY IS INSTALLED, NOT SET UP BY AN ACTION (KDEC-027): aquasecurity/trivy-action's
+    # setup-trivy checks out `aquasecurity/trivy` against github.server_url, which on a GHE.com
+    # tenant does not have it. Release binary from github.com, pinned by version and sha256.
+    - name: Install Trivy (pinned release binary)
+      id: trivy_install
+      if: always()
+      shell: bash
+      run: |
+        set -euo pipefail
+        v=0.71.2
+        if [ "$(trivy --version 2>/dev/null | sed -n 's/^Version: //p' | head -n 1)" != "$v" ]; then
+          t="trivy_${v}_Linux-64bit.tar.gz"
+          d="$(mktemp -d)"
+          curl -sSfL --retry 3 --connect-timeout 20 -o "$d/$t" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${v}/$t"
+          echo "0510e71e2fd39bf863856d499c8dc19feb4e7336546394c502a8f5cc7ab27460  $d/$t" | sha256sum -c -
+          tar -xzf "$d/$t" -C "$d" trivy
+          sudo install -m 0755 "$d/trivy" /usr/local/bin/trivy
+          rm -rf "$d"
+        fi
+        trivy --version | head -n 1
+        echo "TRIVY_CACHE_DIR=$RUNNER_TEMP/trivy-cache" >> "$GITHUB_ENV"
+        echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+    - name: Trivy database cache
+      if: always()
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/trivy-cache
+        key: trivy-db-${{ runner.os }}-${{ steps.trivy_install.outputs.day }}
+        restore-keys: trivy-db-${{ runner.os }}-
     - name: Trivy IaC misconfig
       if: always()
-      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-      with:
-        scan-type: config
-        scan-ref: ${{ inputs.paths }}
-        severity: ${{ inputs.fail_on_severity }}
-        format: sarif
-        output: trivy-iac.sarif
+      shell: bash
+      env:
+        # Each TRIVY_* is the option trivy-action@v0.36.0 passed for the `with:` key it replaces.
+        # Its `severity:` was dropped for a SARIF (entrypoint.sh), so none is set here: every
+        # severity is reported and the count step applies fail_on_severity (ledger L17).
+        SCAN_REF: ${{ inputs.paths }}
+        TRIVY_FORMAT: sarif
+        TRIVY_OUTPUT: trivy-iac.sarif
+      run: trivy config --quiet "$SCAN_REF"
     # Findings must survive whether or not this repo has code scanning. Uploading to the
     # Security tab is a PUBLICATION channel, not the finding itself — free on public repos,
     # otherwise Advanced Security. Treating it as mandatory turned successful scans into
@@ -327,7 +367,7 @@ runs:
           cf "$REPORT could not be counted: $n"
         fi
         echo "collection=COMPLETE" >> "$GITHUB_OUTPUT"
-        echo "count=$n" >> "$GITHUB_OUTPUT"
+        echo "count=${n//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
         echo "Trivy IaC findings at ${FAIL_ON}: $n of $(jq '[.runs[].results[]] | length' "$REPORT") reported"
 
     - name: Trivy (IaC) — is there anything to publish?
@@ -392,3 +432,145 @@ runs:
         echo "unavailable here (free on public repos, otherwise GitHub Advanced Security)."
         echo "The scan SUCCEEDED and the gate still enforces on these findings."
         echo "Retrieve them from the 'sarif-trivy-iac' artifact."
+
+    # ── DOCKERFILE LINT (lane L-SCAN-A, KDEC-025) ───────────────────────────────────────────────
+    #
+    # hadolint, inside the IaC job that already runs wherever a Dockerfile is (a Dockerfile is IaC
+    # to discovery), and only where discovery found one: no job, no minute of its own. Checkov and
+    # Trivy config read Dockerfile POSTURE; hadolint adds the build-correctness rules (unpinned apt
+    # packages, ADD for local files, relative WORKDIR) and shellchecks every RUN. Pinned by exact
+    # version and sha256, written here (tests/prove_pipeline_lint.py P2). It REPORTS: error-level
+    # findings go to the gate; the job fails only when hadolint could not run. A Dockerfile hadolint
+    # cannot parse (DL1000) is NAMED as a VERSION_GAP and left out of the count -- not scanned, not clean.
+    - name: Dockerfile lint (hadolint)
+      id: hadolint
+      if: always()
+      env:
+        APPLIES: ${{ inputs.dockerfile }}
+        IN_PATHS: ${{ inputs.paths }}
+      shell: bash -e {0}
+      run: |
+        set -uo pipefail
+        # SKIPPED -- FREE -- WHERE DISCOVERY FOUND NONE. Discovery's answer arrives as data (env:),
+        # never as a bare composite input inside `if:`, where the string 'false' would be truthy.
+        if [ "${APPLIES:-false}" != "true" ]; then
+          echo "collection=NOT_APPLICABLE" >> "$GITHUB_OUTPUT"
+          echo "NOT_APPLICABLE: discovery found none of this class here; nothing fetched, nothing run."
+          exit 0
+        fi
+        scope="${IN_PATHS:-.}"; [ -d "$scope" ] || scope="."
+        cf() {
+          echo "::error title=COLLECTION_FAILED::$1 Dockerfiles ARE present (discovery), so this is not zero findings."
+          echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"; rm -f hadolint.sarif; exit 0
+        }
+        # Outside the scanned tree. The release and its sha256 together; bump both or neither.
+        bin="${RUNNER_TEMP:-/tmp}/kit-hadolint"; mkdir -p "$bin"
+        set -- "https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-linux-x86_64" c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507
+        for i in 1 2 3; do
+          curl -sSfL --retry 2 -o "$bin/hadolint" "$1" && break
+          sleep $((i * 5))
+        done
+        echo "$2  $bin/hadolint" | sha256sum -c - >/dev/null 2>&1 \
+          || cf "hadolint 2.15.1 is absent or does not match its pinned sha256 (DEPENDENCY_ACQUISITION_UNAVAILABLE)."
+        chmod 0755 "$bin/hadolint"
+        mapfile -t files < <(find "$scope" -maxdepth 8 -type f \( -name 'Dockerfile*' -o -name '*.dockerfile' -o -name '*.Dockerfile' -o -name Containerfile \) \
+          -not -path '*/node_modules/*' -not -path '*/vendor/*' -not -path '*/.git/*' | sed 's|^\./||' | sort)
+        [ "${#files[@]}" -gt 0 ] || cf "discovery found a Dockerfile and this step found none."
+        # --no-fail: the exit code is not the verdict; the SARIF is. Any other failure is a crash.
+        rc=0; "$bin/hadolint" --no-fail -f sarif "${files[@]}" > "$RUNNER_TEMP/hadolint.sarif" 2> "$RUNNER_TEMP/hadolint.err" || rc=$?
+        [ "$rc" -eq 0 ] || cf "hadolint exited $rc: $(tail -3 "$RUNNER_TEMP/hadolint.err")"
+        jq -e '(.runs | type == "array") and all(.runs[]; (.results | type) == "array")' "$RUNNER_TEMP/hadolint.sarif" >/dev/null 2>&1 \
+          || cf "hadolint's report is not SARIF with a results array."
+        gaps="$(jq -r '[.runs[].results[] | select(.ruleId == "DL1000") | .locations[0].physicalLocation.artifactLocation.uri | sub("^\\./"; "")] | unique | join(" ")' "$RUNNER_TEMP/hadolint.sarif")"
+        if [ -n "$gaps" ]; then
+          echo "version_gaps=$gaps" >> "$GITHUB_OUTPUT"
+          echo "::warning title=VERSION_GAP (hadolint)::not read -- hadolint could not parse (DL1000): $gaps. These Dockerfiles were NOT linted; this is not a clean result for them."
+          echo "| (coverage) | VERSION_GAP — hadolint | unparseable (DL1000), not linted: $gaps |" >> "$GITHUB_STEP_SUMMARY"
+        fi
+        # Repository-relative paths; parse failures out of the findings (named above); levels effective.
+        jq '.runs |= map(.results |= map(select(.ruleId != "DL1000")
+              | .level = (.level // "warning")
+              | .locations |= map(.physicalLocation.artifactLocation.uri |= sub("^\\./"; ""))))' \
+          "$RUNNER_TEMP/hadolint.sarif" > hadolint.sarif || cf "hadolint's report did not normalise."
+        _v=$(python3 /tmp/sarif_validity.py hadolint.sarif 2>&1) || cf "$_v"
+        n=$(jq '[.runs[].results[] | select(.level == "error")] | length' hadolint.sarif)
+        echo "collection=COMPLETE" >> "$GITHUB_OUTPUT"
+        echo "count=$n" >> "$GITHUB_OUTPUT"
+        echo "hadolint 2.15.1: $(jq '[.runs[].results[]] | length' hadolint.sarif) result(s), $n at error, over ${#files[@]} Dockerfile(s)"
+    - name: hadolint — enforce
+      id: hadolint_enforce
+      if: always()
+      env:
+        APPLIES: ${{ inputs.dockerfile }}
+        N: ${{ steps.hadolint.outputs.count }}
+        COLLECTION: ${{ steps.hadolint.outputs.collection }}
+        ADVISORY_MODE: ${{ inputs.advisory_mode }}
+      shell: bash -e {0}
+      run: |
+        if [ "${APPLIES:-false}" != "true" ]; then
+          echo "hadolint: NOT_APPLICABLE -- no Dockerfile here."
+          exit 0
+        fi
+        if [ "${COLLECTION:-}" != "COMPLETE" ] || [ -z "${N:-}" ]; then
+          echo "::error title=COLLECTION_FAILED::No hadolint count. An ABSENT measurement is not a measurement of zero."
+          exit 1
+        fi
+        if [ "$N" -gt 0 ] && [ "$ADVISORY_MODE" != "true" ]; then
+          echo "findings_state=FINDINGS" >> "$GITHUB_OUTPUT"
+          echo "::warning title=hadolint::${N} error-level Dockerfile finding(s) -- handed to the security gate, which decides by the resolved policy."
+          exit 0
+        fi
+        echo "hadolint: ${N} error-level finding(s) (advisory=${ADVISORY_MODE})"
+    - name: hadolint — is there anything to publish?
+      id: sarif_hadolint
+      if: always()
+      shell: bash -e {0}
+      run: |
+        if [ -s hadolint.sarif ]; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
+    # BEGIN REDACT_STEP — generated by scripts/inline_normalizer.py. DO NOT EDIT HERE.
+    - name: Redact credential material before upload
+      if: always()
+      shell: bash
+      run: |
+        # ORDER IS THE WHOLE CONTROL: this runs immediately before an upload, and
+        # again before every later upload that follows a step which may have written
+        # output -- a redactor after the upload protects nothing while looking exactly
+        # like protection (N24/WP19). The sweep itself is ONE canonical script --
+        # scripts/redact_all.sh, written by the `kit-scripts` job and fetched into
+        # /tmp by every other -- because fourteen copies of one wrapper are how this
+        # file reached 608.8 KB and stopped starting.
+        #
+        # A MISSING TOOL IS NOT A CLEAN RESULT. If the bundle did not arrive,
+        # publication must not proceed on the strength of a scrub that never ran.
+        if [ ! -s /tmp/redact_all.sh ]; then
+          echo "::error title=Redaction could not be guaranteed::/tmp/redact_all.sh is absent."
+          echo "The kit-scripts artifact did not reach this job, so no SARIF was scrubbed"
+          echo "and none may be published. A MISSING TOOL IS NOT A CLEAN RESULT."
+          exit 1
+        fi
+        bash /tmp/redact_all.sh
+    # END REDACT_STEP
+    - name: hadolint — keep SARIF as an artifact
+      if: always() && steps.sarif_hadolint.outputs.exists == 'true'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: sarif-hadolint-${{ github.run_attempt }}
+        path: hadolint.sarif
+        retention-days: 30
+        if-no-files-found: warn
+    - name: hadolint — publish to the Security tab where available
+      id: cs_hadolint
+      if: always() && steps.sarif_hadolint.outputs.exists == 'true'
+      continue-on-error: true
+      uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+      with:
+        sarif_file: hadolint.sarif
+        category: hadolint
+    - name: hadolint — state plainly if publication degraded
+      if: always() && steps.sarif_hadolint.outputs.exists == 'true' && steps.cs_hadolint.outcome != 'success'
+      shell: bash -e {0}
+      run: |
+        echo "::warning title=hadolint: NOT published to the Security tab::Code scanning is"
+        echo "unavailable here (free on public repos, otherwise GitHub Advanced Security)."
+        echo "The scan SUCCEEDED and the gate still enforces on these findings."
+        echo "Retrieve them from the 'sarif-hadolint' artifact."

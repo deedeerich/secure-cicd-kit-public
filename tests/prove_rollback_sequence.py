@@ -159,6 +159,7 @@ class World(object):
         api = os.path.join(self.dir, 'api', 'repos', 'o', 'r', 'environments')
         os.makedirs(api)
         io.open(os.path.join(api, 'env'), 'w', encoding='utf-8').write(json.dumps(getattr(W, 'protected_environment'.upper())))
+        W.write_default_api(os.path.join(self.dir, 'api'))   # no rollback marker (KDEC-023)
         self.write(state)
         io.open(self.log, 'w').close()
         self.bin = W.stub_bin(self.state, self.log)

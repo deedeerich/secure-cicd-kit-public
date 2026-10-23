@@ -349,23 +349,53 @@ jobs:
             echo "::error title=Image identity disagreement::build-push-action reported $ACTION_ID; the daemon reports $CONFIG_DIGEST for the same tag. The tag moved. Refusing to scan."
             exit 1
           fi
-          echo "config_digest=$CONFIG_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "config_digest=${CONFIG_DIGEST//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
           echo "Scanning and pushing config digest: $CONFIG_DIGEST"
 
       # TRIVY_IMAGE_SRC pins the gate to the DOCKER DAEMON. Without it Trivy's source order is
       # docker, containerd, podman, remote — and after `az acr login` a same-tagged image in the
       # registry is reachable. A gate that might have scanned a registry image instead of the one
       # just built is not a gate, it is a coincidence.
+      # TRIVY IS INSTALLED, NOT SET UP BY AN ACTION (KDEC-027): aquasecurity/trivy-action's
+      # setup-trivy checks out `aquasecurity/trivy` against github.server_url, which on a GHE.com
+      # tenant does not have it -- the build-only consumer path failed there. Release binary from
+      # github.com, pinned by version and sha256 (ledger L84); the database cached per day.
+      - name: Install Trivy (pinned release binary)
+        id: trivy_install
+        shell: bash
+        run: |
+          set -euo pipefail
+          v=0.71.2
+          if [ "$(trivy --version 2>/dev/null | sed -n 's/^Version: //p' | head -n 1)" != "$v" ]; then
+            t="trivy_${v}_Linux-64bit.tar.gz"
+            d="$(mktemp -d)"
+            curl -sSfL --retry 3 --connect-timeout 20 -o "$d/$t" \
+              "https://github.com/aquasecurity/trivy/releases/download/v${v}/$t"
+            echo "0510e71e2fd39bf863856d499c8dc19feb4e7336546394c502a8f5cc7ab27460  $d/$t" | sha256sum -c -
+            tar -xzf "$d/$t" -C "$d" trivy
+            sudo install -m 0755 "$d/trivy" /usr/local/bin/trivy
+            rm -rf "$d"
+          fi
+          trivy --version | head -n 1
+          echo "TRIVY_CACHE_DIR=$RUNNER_TEMP/trivy-cache" >> "$GITHUB_ENV"
+          echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+      - name: Trivy database cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/trivy-cache
+          key: trivy-db-${{ runner.os }}-${{ steps.trivy_install.outputs.day }}
+          restore-keys: trivy-db-${{ runner.os }}-
       - name: Trivy image scan (gate before push)
         id: trivy
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        shell: bash
         env:
           TRIVY_IMAGE_SRC: docker
-        with:
-          image-ref: ${{ env.IMAGE }}
-          severity: ${{ inputs.trivy_severity }}
-          exit-code: "1"
-          ignore-unfixed: "true"
+          # Each TRIVY_* is the option trivy-action@v0.36.0 passed for the `with:` key it replaces.
+          IMAGE_REF: ${{ env.IMAGE }}
+          TRIVY_SEVERITY: ${{ inputs.trivy_severity }}
+          TRIVY_EXIT_CODE: "1"
+          TRIVY_IGNORE_UNFIXED: "true"
+        run: trivy image --quiet "$IMAGE_REF"
 
       # `docker:` prefix for the same reason: it forces the local daemon and removes Syft's
       # source guessing. An SBOM of the wrong source is worse than no SBOM — it is confident.

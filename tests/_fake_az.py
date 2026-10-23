@@ -266,10 +266,64 @@ def wa(s, args):
     fail('unmodelled webapp command: %s' % ' '.join(args), 2)
 
 
+ARM_HOST = 'https://management.azure.com'
+
+
+def _arm_key(store, path):
+    low = path.lower()
+    for k in store:
+        if k.lower() == low:
+            return k
+    return None
+
+
+def arm(s, args):
+    """ARM through `az rest` (KDEC-023): GET / PUT / DELETE of a resource id, over state['arm'] =
+    {resource id: body}. A GET of a path that is not a resource but whose parent is (a child
+    collection: `.../securityRules`) lists the direct children as {"value": [...]}, as ARM does. A
+    missing resource answers the way `az rest` does: exit 1, "(ResourceNotFound) ... Not Found"."""
+    method = (opt(args, '--method', '-m') or 'get').lower()
+    url = opt(args, '--url', '--uri', '-u') or ''
+    path = url.split('?', 1)[0]
+    if path.startswith(ARM_HOST):
+        path = path[len(ARM_HOST):]
+    path = path.rstrip('/')
+    store = s.setdefault('arm', {})
+    k = _arm_key(store, path)
+    if method == 'get':
+        if k is not None:
+            return emit(store[k])
+        low = path.lower() + '/'
+        kids = [v for kk, v in store.items()
+                if kk.lower().startswith(low) and '/' not in kk[len(low):]]
+        if kids or _arm_key(store, path.rsplit('/', 1)[0]) is not None:
+            return emit({'value': sorted(kids, key=lambda v: str(v.get('id', '')).lower())})
+        fail('(ResourceNotFound) The Resource \'%s\' was not found. Not Found' % path)
+    if method == 'put':
+        body = opt(args, '--body', '-b') or '{}'
+        if body.startswith('@'):
+            body = io.open(body[1:], encoding='utf-8').read()
+        doc = json.loads(body)
+        store[k if k is not None else path] = doc
+        s['mutated'] = True
+        return emit(doc)
+    if method == 'delete':
+        if k is None:
+            fail('(ResourceNotFound) The Resource \'%s\' was not found. Not Found' % path)
+        low = k.lower() + '/'
+        for kk in [kk for kk in store if kk == k or kk.lower().startswith(low)]:
+            del store[kk]
+        s['mutated'] = True
+        return emit({})
+    fail('unmodelled rest method %s' % method, 2)
+
+
 def rest(s, args):
     """`az rest --method get --url https://<scm host>/api/logs/docker` (a JSON listing) and the log
     file it names (raw text) -- the App Service container log, read with an Entra token."""
     url = opt(args, '--url', '-u') or ''
+    if url.startswith('/subscriptions/') or url.startswith(ARM_HOST):
+        return arm(s, args)
     host = url.split('://', 1)[-1].split('/', 1)[0]
     for sl in (s.get('webapp') or {}).get('slots', {}).values():
         h = sl['host']
@@ -363,6 +417,10 @@ def curl(s, args):
                 '%s.1000000Z Creating container with image: %s from registry: x'
                 % (now, sl.pop('pending_start')))
             sl['docker_log'].append('%s.2000000Z Site started.' % now)
+    if host in (s.get('healthy_hosts') or []):
+        # A host the scenario declares answering (an ARM-modelled app with no image model).
+        sys.stdout.write('200')
+        return
     imgs = serving_image(s, host)
     if host in (s.get('unhealthy_hosts') or []):
         # The consumer-facing name fails while the revision's own name answers: serving fails

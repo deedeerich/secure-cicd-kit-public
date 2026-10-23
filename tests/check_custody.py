@@ -95,8 +95,10 @@ MARKERS = {
     # manifest row nothing can check is a claim, not a control.
     'CodeQL taint tracking (security-extended)': [r'security-extended', r'security-and-quality'],
     'XSS ruleset (semgrep p/xss)': [r'p/xss'],
-    'Trivy (filesystem: vuln + secret + licence)': [r'scanners:\s*vuln,secret,license'],
-    'Trivy (container image)': [r'scan-type:\s*image'],
+    # trivy-action's `with:` keys, or (KDEC-027, trivy-action gone) the TRIVY_* env and the CLI.
+    'Trivy (filesystem: vuln + secret + licence)': [r'scanners:\s*vuln,secret,license',
+                                                     r'TRIVY_SCANNERS:\s*vuln,secret,license'],
+    'Trivy (container image)': [r'scan-type:\s*image', r'\brun:\s*trivy\s+image\b'],
     'SBOM licence inventory': [r'sbom_licenses\.py'],
 }
 

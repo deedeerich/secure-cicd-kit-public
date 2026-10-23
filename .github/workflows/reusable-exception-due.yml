@@ -41,6 +41,10 @@ on:
         description: "The protected deployment environment holding JIRA_EMAIL and JIRA_TOKEN (variables JIRA_HOST, JIRA_PROJECT, ...). Empty requests none."
         type: string
         default: ""
+      test_environment:
+        description: "KDEC-028: the SANDBOX environment (e.g. ticketing-test) a workflow_dispatch on any branch but the default one uses, automatically: sandbox JIRA_PROJECT, label kit-test, [TEST] prefix, refused TICKETING_TEST_TARGETS_REAL_PROJECT if it is a real project. The REF chooses, never a variable. Empty: such runs are not armed."
+        type: string
+        default: ""
       central_register_path:
         description: "The central register, relative to the kit checkout. Absent there means no central register."
         type: string
@@ -83,7 +87,7 @@ on:
         default: ""
     secrets:
       JIRA_EMAIL:
-        description: "Jira: the account email (basic auth is email:token). From the protected environment."
+        description: "Jira: the account email (basic auth is email:token). From the protected environment. Not needed with vars.JIRA_AUTH_MODE=bearer (KDEC-028)."
         required: false
       JIRA_TOKEN:
         description: "Jira: API token. From the protected environment."
@@ -169,10 +173,10 @@ jobs:
           esac
           {
             echo "rc=$rc"
-            echo "state=$state"
-            echo "due_count=$due_count"
-            echo "overdue_count=$overdue_count"
-            echo "over_cap_count=$over_cap_count"
+            echo "state=${state//[$'\r\n']/ }"
+            echo "due_count=${due_count//[$'\r\n']/ }"
+            echo "overdue_count=${overdue_count//[$'\r\n']/ }"
+            echo "over_cap_count=${over_cap_count//[$'\r\n']/ }"
           } >> "$GITHUB_OUTPUT"
           if [ -s "$summ" ]; then cat "$summ" >> "$GITHUB_STEP_SUMMARY"; fi
           case "$rc" in
@@ -255,6 +259,7 @@ jobs:
           posture kit_ref                  NOT_A_CONTROL_SURFACE - -
           posture default_branch           NOT_A_CONTROL_SURFACE - -
           posture environment              NOT_A_CONTROL_SURFACE - -
+          posture test_environment         NOT_A_CONTROL_SURFACE - -
           posture central_register_path    TARGET_NOT_SUPPLIED NONEMPTY exception-listing "$W_CENTRAL_REGISTER_PATH"
           posture repository_register_path TARGET_NOT_SUPPLIED NONEMPTY exception-listing "$W_REPOSITORY_REGISTER_PATH"
           posture workflows_dir            TARGET_NOT_SUPPLIED NONEMPTY exception-listing "$W_WORKFLOWS_DIR"
@@ -352,9 +357,16 @@ jobs:
     needs: list
     # Armed only on a schedule or a dispatch on the protected default branch, and only when something
     # is due. Never by a pull request: the credential stays out of reach of code under review.
-    if: needs.list.outputs.due_count != '0' && needs.list.outputs.due_count != '' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == format('refs/heads/{0}', inputs.default_branch)
+    # KDEC-028: a dispatch on any OTHER branch is a TEST run, armed only when a sandbox
+    # environment is named, and it runs in that environment -- the ref chooses, nothing is swapped.
+    if: >-
+      needs.list.outputs.due_count != '0' && needs.list.outputs.due_count != '' &&
+      ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      github.ref == format('refs/heads/{0}', inputs.default_branch) ||
+      github.event_name == 'workflow_dispatch' && inputs.test_environment != '' &&
+      github.ref != format('refs/heads/{0}', inputs.default_branch))
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
+    environment: ${{ github.ref != format('refs/heads/{0}', inputs.default_branch) && inputs.test_environment || inputs.environment }}
     permissions:
       contents: read
     timeout-minutes: ${{ inputs.timeout_minutes }}
@@ -403,6 +415,12 @@ jobs:
           JIRA_TRANSITION_REOPEN: ${{ vars.JIRA_TRANSITION_REOPEN }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+          # KDEC-028: bearer auth for a service account, the cloud id, and test ticketing derived
+          # from the ref (the default branch is real; any other is a sandbox TEST run).
+          JIRA_AUTH_MODE: ${{ vars.JIRA_AUTH_MODE }}
+          JIRA_CLOUD_ID: ${{ vars.JIRA_CLOUD_ID }}
+          JIRA_REAL_PROJECTS: ${{ vars.JIRA_REAL_PROJECTS }}
+          TICKETING_MODE: ${{ github.ref == format('refs/heads/{0}', inputs.default_branch) && 'real' || 'test' }}
           TICKET_STAMP_LABEL: ${{ vars.TICKET_STAMP_LABEL }}
           TICKET_CREATE_CEILING: ${{ vars.TICKET_CREATE_CEILING }}
           TICKET_RETRY_CEILING: ${{ vars.TICKET_RETRY_CEILING }}
@@ -413,11 +431,17 @@ jobs:
           summ="${RUNNER_TEMP}/exception-resurface.md"
           kv="${RUNNER_TEMP}/exception-resurface.out"
           : > "$kv"
-          args=(--today "$today" --days "$DAYS" --out "$out" --summary "$summ" --github-output "$kv" --resurface)
+          # --cross-check (KDEC-022 item 2, C): every ticketed exception's Jira ticket must exist, name
+          # the register's approver and show each renewal; a disagreement is EXCEPTION_TICKET_MISMATCH,
+          # in the summary and (applied) on the ticket. Reported only: the gate never reads Jira.
+          args=(--today "$today" --days "$DAYS" --out "$out" --summary "$summ" --github-output "$kv" --resurface
+                --cross-check)
           if [ "$APPLY" = "true" ]; then args+=(--apply); fi
           if [ -n "$CENTRAL_REGISTER_PATH" ]; then args+=(--central "$KIT_DIR/$CENTRAL_REGISTER_PATH"); fi
           if [ -n "$REPOSITORY_REGISTER_PATH" ]; then args+=(--repository-register "$REPOSITORY_REGISTER_PATH"); fi
           if [ -n "$WORKFLOWS_DIR" ]; then args+=(--workflows-dir "$WORKFLOWS_DIR"); fi
+          # KDEC-024 (LINK): the finding ticket for a secret exception, named on its comment.
+          if [ -f .security/ticket-ledger.json ]; then args+=(--ticket-ledger .security/ticket-ledger.json); fi
           rc=0
           python3 "$KIT_DIR/scripts/exception_due.py" "${args[@]}" > /dev/null || rc=$?
           if [ -s "$summ" ]; then cat "$summ" >> "$GITHUB_STEP_SUMMARY"; fi
@@ -426,7 +450,12 @@ jobs:
           case "$state" in
             '') state=RESURFACE_FAILED ;;
           esac
-          echo "resurface_state=$state" >> "$GITHUB_OUTPUT"
+          echo "resurface_state=${state//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
+          mismatches="$(sed -n 's/^ticket_mismatch_count=//p' "$kv" | tail -1)"
+          mismatches="${mismatches//[!0-9]/}"
+          if [ -n "$mismatches" ] && [ "$mismatches" != "0" ]; then
+            echo "::warning title=EXCEPTION_TICKET_MISMATCH x${mismatches}::the register and the exceptions' Jira tickets disagree (listed in the summary). The gate does not read Jira; fix whichever record is wrong."
+          fi
           case "$state" in
             NOT_CONFIGURED)
               echo "::warning title=Exceptions not resurfaced (NOT_CONFIGURED)::no Jira credential in this environment. The due list is in the list job's summary and artifact." ;;

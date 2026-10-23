@@ -46,6 +46,8 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+import _trivy_step as ts  # noqa: E402 - the shipped Trivy step read as trivy-action's `with:`
 WF = os.path.join(ROOT, '.github', 'workflows', 'reusable-security.yml')
 JOB = 'image-scan'
 
@@ -121,7 +123,7 @@ def trivy_step():
     import yaml
     doc = _expand(yaml.safe_load(io.open(WF, encoding='utf-8')))
     for s in (doc['jobs'][JOB].get('steps') or []):
-        if 'trivy-action' in str(s.get('uses', '')):
+        if ts.is_trivy(s):
             return s
     return None
 
@@ -187,7 +189,7 @@ def main():
             del HANDED[:]
             # Every trivy-action step the job ships runs; the job fails if any of them fails.
             for i, s in enumerate(trivy_steps(), 1):
-                w = s.get('with') or {}
+                w = ts.trivy_with(s)
                 unknown = sorted(k for k in w if k not in FLAG and k not in HANDLED)
                 if unknown:
                     print('FAIL: the probe cannot translate input(s) %s; refusing to prove a '
@@ -298,7 +300,7 @@ def trivy_steps():
     import yaml
     doc = _expand(yaml.safe_load(io.open(WF, encoding='utf-8')))
     return [s for s in (doc['jobs'][JOB].get('steps') or [])
-            if 'trivy-action' in str(s.get('uses', ''))]
+            if ts.is_trivy(s)]
 
 
 if __name__ == '__main__':

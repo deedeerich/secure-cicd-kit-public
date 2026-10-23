@@ -22,8 +22,10 @@ WHAT IT REQUIRES, over `.github/workflows/*`, `.github/actions/**/action.y*ml` a
       P2  the line carries a trailing `# vX.Y.Z` comment: the EXACT release, never a moving major
       P3  where the (action, SHA) pair is in the recorded table below, the comment names the version
           recorded for it; and a comment naming a recorded version must carry that version's SHA
-      P4  `--online`: every pin is checked against the GitHub API -- the tag the comment names,
-          peeled through annotated tags, is that commit. Rate limit or no network is UNKNOWN (2).
+      P4  `--online`: every pin is checked against github.com -- the tag the comment names, peeled
+          through annotated tags, is that commit. By `git ls-remote` (no token); the REST API only
+          as a fallback with a token api.github.com issued, never a ghe.com run's (KDEC-027).
+          Rate limit or no network is UNKNOWN (2).
       P5  .github/dependabot.yml's github-actions entry reads `/` and every composite directory
           (so the pins stay current everywhere they are), and still excludes
           tests/consumer-fixture/**. On 2cd078e it read `/` only: every composite unread.
@@ -49,8 +51,8 @@ THE RECORDED TABLE
     the default branch is identical to or ahead of it) or the target of a published release tag
     (azure/login v3.1.0 and actions/setup-java v5.7.0 are cut from release branches). Dependabot's
     github-actions ecosystem updates a SHA and its version comment together; a pin it moves leaves
-    this table and P3 no longer spot-checks it, so P4 (`--online`, run by the self-test with a
-    token) is what checks every pin. A row is evidence of one resolution, not a list of allowed
+    this table and P3 no longer spot-checks it, so P4 (`--online`, run by the self-test) is what
+    checks every pin. A row is evidence of one resolution, not a list of allowed
     versions.
 
 SELF-TEST
@@ -73,13 +75,18 @@ import tempfile
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _github_refs  # noqa: E402 - after the path insert
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
 SCOPE = ['.github/workflows/*.yml', '.github/workflows/*.yaml',
          '.github/actions/**/action.yml', '.github/actions/**/action.yaml',
          'templates/*.yml', 'templates/*.yaml',
-         'overlays/*/workflows/*.yml', 'overlays/*/workflows/*.yaml']
+         'overlays/*/workflows/*.yml', 'overlays/*/workflows/*.yaml',
+         # KDEC-028: an overlay's composite actions and its consumer template ship the same way.
+         'overlays/*/actions/**/action.yml', 'overlays/*/templates/*.yml']
 SHA40 = re.compile(r'^[0-9a-f]{40}$')
 EXACT = re.compile(r'^v\d+\.\d+\.\d+$')
 ZERO = '0' * 40
@@ -248,22 +255,11 @@ def dependabot_problems(root):
 
 
 def _github(path, timeout=15):
-    headers = {'User-Agent': 'secure-cicd-kit-action-pins', 'Accept': 'application/vnd.github+json'}
-    token = os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN')
-    if token:
-        headers['Authorization'] = 'Bearer ' + token
-    try:
-        req = urllib.request.Request('https://api.github.com' + path, headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.getcode(), json.load(r)
-    except urllib.error.HTTPError as e:
-        return e.code, None
-    except Exception:  # noqa: BLE001
-        return None, None
+    """REST, secondary: only with a token api.github.com issued (KDEC-027), else (None, None)."""
+    return _github_refs.api_get(path, 'secure-cicd-kit-action-pins', timeout)
 
 
-def tag_commit(repo, tag):
-    """-> commit SHA the tag names (annotated tags peeled), False if no such tag, None if unknown."""
+def _tag_commit_api(repo, tag):
     status, body = _github('/repos/%s/git/ref/tags/%s' % (repo, tag))
     if status == 404:
         return False
@@ -280,6 +276,18 @@ def tag_commit(repo, tag):
             return None
         obj = body.get('object') or {}
     return None
+
+
+def tag_commit(repo, tag):
+    """-> commit SHA the tag names (annotated tags peeled), False if no such tag, None if unknown.
+    Git first (`git ls-remote`, no token, no REST limit); the REST API only when git could not see
+    and the run holds a token api.github.com issued (tests/_github_refs.py)."""
+    if not _github_refs.valid(repo, tag):
+        return None
+    got = _github_refs.tag_commit(repo, tag)
+    if got is not None:
+        return got
+    return _tag_commit_api(repo, tag)
 
 
 def online(pins):
@@ -407,7 +415,7 @@ def main(argv):
     for r, s, v in unrecorded:
         print('  not in the recorded table (checked by --online only): %s@%s # %s' % (r, s, v))
     print('PASS: every remote `uses:` is a full commit SHA with its exact release named%s.'
-          % (', each verified against the GitHub API' if '--online' in argv else
+          % (', each verified against github.com' if '--online' in argv else
              '; the table spot-checks %d' % (len(distinct) - len(unrecorded))))
     return 0
 

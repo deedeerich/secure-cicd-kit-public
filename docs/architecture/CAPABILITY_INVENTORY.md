@@ -50,8 +50,19 @@ with an identical 14-tool set. That is one canonical workflow plus drift, not th
 | A2 | SAST — Python (bandit) | embedded widely | ✅ |
 | A3 | SAST — generic (semgrep) | `semgrep-security-scan` ×3, `_reusable-security-semgrep` | ✅ |
 | A4 | SAST — CodeQL | `codeql-analysis`, `codeql`, `_reusable-security-codeql` | ✅ the flagship's `codeql` job, up to six languages; proven at Level 2 (runs 38817782084, 38820564939) |
-| A5 | Shell (shellcheck) | `shell-scanning` | ❌ gap |
-| A6 | Dockerfile (hadolint) | embedded in comprehensive/infra scans | ❌ gap |
+| A5 | Shell (shellcheck) | `shell-scanning` | ✅ CLOSED 2026-10-23 (KDEC-025): shellcheck 0.11.0 (and PSScriptAnalyzer 1.25.0 for PowerShell) in `deps-scan`, discovery-gated; `tests/prove_pipeline_lint.py`; no hosted run yet |
+| A6 | Dockerfile (hadolint) | embedded in comprehensive/infra scans | ✅ CLOSED 2026-10-23 (KDEC-025): hadolint 2.15.1 in `iac-scan`, discovery-gated; `tests/prove_pipeline_lint.py`; no hosted run yet |
+
+Coverage the reference estate does not have (FUTURE_WORK section 5; lane L-SCAN-B, KDEC-026, 2026-10-23
+-- outside the 27 counted below, so the summary counts are unchanged by it):
+
+| # | Capability | Kit | Evidence |
+|---|---|---|---|
+| A7 | Kotlin SAST | ✅ CLOSED: `sast-semgrep` `p/kotlin` floor + witness; CodeQL `java-kotlin` starts on Kotlin | `prove_semgrep_kotlin.py`, `prove_platform_discovery.py` (local); hosted `semgrep-kotlin` probe owed |
+| A8 | Android configuration + Kotlin/Java mobile rules | ✅ CLOSED: `sast-mobile` (mobsfscan 1.0.1 by digest + kit rules) | `prove_sast_mobile_detects.py` (Linux container); hosted `mobile` probe owed |
+| A9 | Swift / Objective-C / iOS configuration | ✅ CLOSED from source on ubuntu (`.m`/`.mm` now probed); CodeQL Swift left out -- macOS runners cost 10x, a recorded decision | `prove_sast_mobile_detects.py`; hosted `mobile` probe owed |
+| A10 | Build-aware C/C++ | ✅ CLOSED: compilation database from the build the repo has; `CPP_ANALYSIS_PARTIAL` otherwise | `prove_cpp_build_aware.py` (Ubuntu container); hosted `cppcheck-build` probe owed |
+| A11 | .NET on a real-shaped solution | ✅ CLOSED: multi-project fixture; per-project attribution fixed | `prove_dotnet_solution_detects.py` (host SDK); hosted `dotnet-solution` probe owed |
 
 ### B · Dependency & supply chain
 
@@ -59,8 +70,8 @@ with an identical 14-tool set. That is one canonical workflow plus drift, not th
 |---|---|---|---|
 | B1 | Dependency CVE (trivy fs) | many | ✅ |
 | B2 | NVD deep scan (Dependency-Check) | `nvd-cve-scanning` ×2 | ✅ observed on seeded fixtures; live-feed currency unproven |
-| B3 | Python deps (safety, pip-audit) | `code-quality-scans`, `security-scanning` | ⚠️ partial |
-| B4 | Node deps (npm audit) | `frontend-security-scanning`, `json-validation` | ⚠️ partial |
+| B3 | Python deps (safety, pip-audit) | `code-quality-scans`, `security-scanning` | ✅ CLOSED-BY-EXISTING (KDEC-025, measured 2026-10-23): OSV-Scanner + Trivy reported all 57 of pip-audit's advisories on pinned requirements; an unpinned requirement neither reads is a named `PythonDependenciesUnpinned` gap |
+| B4 | Node deps (npm audit) | `frontend-security-scanning`, `json-validation` | ✅ CLOSED-BY-EXISTING (KDEC-025, measured 2026-10-23): all 8 of npm audit's GHSA ids on a lockfile were in OSV-Scanner's report (7 in Trivy's) |
 | B5 | Dependabot integration | `dependabot-security-check`, `dependency-review` | ⚠️ partial: `reusable-dependabot-triage.yml` built locally, no hosted run |
 | B6 | SBOM generation (syft) | the image build workflow | ✅ the flagship's `sbom` job (Syft, CycloneDX, licence verdict) and the build |
 
@@ -69,7 +80,7 @@ with an identical 14-tool set. That is one canonical workflow plus drift, not th
 | # | Capability | Source | Kit |
 |---|---|---|---|
 | C1 | IaC security (checkov, terrascan) | `infrastructure-scans` ×3, `scan-pack` | ✅ |
-| C2 | Terraform lint (tflint) | same | ⚠️ partial |
+| C2 | Terraform lint (tflint) | same | ✅ CLOSED-BY-EXISTING (KDEC-025, measured 2026-10-23): tflint found none of 3 seeded misconfigurations, Trivy config 2 of them among 8 (Checkov runs beside it); tflint is hygiene, not a security control |
 | C3 | Terraform plan/apply | `terraform-plan-apply`, `deploy-infrastructure` | ❌ gap |
 | C4 | PR-scoped terraform scan | `terraform-scan-on-pr` | ❌ gap |
 | C5 | Teardown | `destroy-shared-services` | ❌ gap |
@@ -105,7 +116,7 @@ after the duplicate consolidation** — and the part with genuine portfolio valu
 | # | Capability | Source | Kit |
 |---|---|---|---|
 | F1 | Workflow policy check | `workflow-policy-check` ×3 | ✅ |
-| F2 | GitHub Actions lint (actionlint) | `github-actions-lint` ×2, `self-test` | ✅ |
+| F2 | GitHub Actions lint (actionlint) | `github-actions-lint` ×2, `self-test` | ✅ the kit's own (self-test) and, since 2026-10-23, every consumer's: actionlint + zizmor in `deps-scan` (KDEC-025) |
 | F3 | **Invariant gate** | `invariant-gate` (ui, 124) | ❌ **gap — investigate** |
 | F4 | ADO mirror push | `push-to-azure-devops` | ❌ gap (org-coupled) |
 

@@ -72,6 +72,9 @@ def writes(step, name):
     ]
     if any(re.search(p, run) for p in pats):
         return True
+    # A Trivy step configured by environment (KDEC-027: trivy-action is gone) writes TRIVY_OUTPUT.
+    if run and str((step.get('env') or {}).get('TRIVY_OUTPUT', '')).strip() == name:
+        return True
     uses = str(step.get('uses') or '')
     if uses and 'upload-sarif' not in uses and 'upload-artifact' not in uses:
         w = step.get('with') or {}
@@ -95,6 +98,8 @@ def writes_any_sarif(step):
     run = str(step.get('run') or '')
     if re.search(OUT_FLAG + r'(?:\s+|=)\S*\.sarif|>\s*\S*\.sarif|open\(\s*["\'][^"\']*\.sarif["\']\s*,'
                  r'\s*["\'][wa]', run):
+        return True
+    if run and str((step.get('env') or {}).get('TRIVY_OUTPUT', '')).endswith('.sarif'):
         return True
     w = step.get('with') or {}
     uses = str(step.get('uses') or '')

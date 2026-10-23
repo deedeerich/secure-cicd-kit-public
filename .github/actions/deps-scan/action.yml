@@ -20,13 +20,30 @@ inputs:
   paths:
     description: The workflow's `paths` input (string), passed through unchanged.
     required: true
+  # Discovery's artefact answers (lane L-SCAN-A, KDEC-025): each linter runs only on 'true'.
+  workflows:
+    description: needs.discover.outputs.workflows -- 'true' runs actionlint + zizmor.
+    required: false
+    default: 'false'
+  shell:
+    description: needs.discover.outputs.shell -- 'true' runs shellcheck.
+    required: false
+    default: 'false'
+  powershell:
+    description: needs.discover.outputs.powershell -- 'true' runs PSScriptAnalyzer.
+    required: false
+    default: 'false'
 
 # What the security gate enforces (lane L-S, O-24): FINDINGS when the threshold fired and
 # advisory_mode did not soften it, '' otherwise. The job reads it through the call's id.
 outputs:
   findings_state:
     description: FINDINGS when this scan's own threshold fired unsoftened; '' otherwise.
-    value: ${{ steps.trivy_deps_enforce.outputs.findings_state }}
+    value: ${{ steps.trivy_deps_enforce.outputs.findings_state || steps.lint_enforce.outputs.findings_state }}
+  # The files each pipeline linter could not read and NAMED (VERSION_GAP), for the report.
+  lint_version_gaps:
+    description: shellcheck and PSScriptAnalyzer files not read (unsupported dialect or #Requires), space-separated.
+    value: ${{ steps.sarif_lint.outputs.version_gaps }}
 
 runs:
   using: composite
@@ -52,26 +69,58 @@ runs:
         sha256sum -c kit-scripts.sha256
     # END FETCH_KIT_SCRIPTS
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-    - name: Trivy filesystem (vuln + secret)
-      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+    # TRIVY IS INSTALLED, NOT SET UP BY AN ACTION (KDEC-027). aquasecurity/trivy-action runs
+    # aquasecurity/setup-trivy, whose inner actions/checkout of `aquasecurity/trivy` resolves
+    # against github.server_url: on a GHE.com tenant that repository does not exist and every
+    # Trivy step failed to install. The release binary comes from github.com, pinned by version
+    # and sha256 (ledger L84), and the vulnerability database is cached per day as the action did.
+    - name: Install Trivy (pinned release binary)
+      id: trivy_install
+      shell: bash
+      run: |
+        set -euo pipefail
+        v=0.71.2
+        if [ "$(trivy --version 2>/dev/null | sed -n 's/^Version: //p' | head -n 1)" != "$v" ]; then
+          t="trivy_${v}_Linux-64bit.tar.gz"
+          d="$(mktemp -d)"
+          curl -sSfL --retry 3 --connect-timeout 20 -o "$d/$t" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${v}/$t"
+          echo "0510e71e2fd39bf863856d499c8dc19feb4e7336546394c502a8f5cc7ab27460  $d/$t" | sha256sum -c -
+          tar -xzf "$d/$t" -C "$d" trivy
+          sudo install -m 0755 "$d/trivy" /usr/local/bin/trivy
+          rm -rf "$d"
+        fi
+        trivy --version | head -n 1
+        echo "TRIVY_CACHE_DIR=$RUNNER_TEMP/trivy-cache" >> "$GITHUB_ENV"
+        echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+    - name: Trivy database cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        scan-type: fs
-        scan-ref: ${{ inputs.paths }}
+        path: ${{ runner.temp }}/trivy-cache
+        key: trivy-db-${{ runner.os }}-${{ steps.trivy_install.outputs.day }}
+        restore-keys: trivy-db-${{ runner.os }}-
+    - name: Trivy filesystem (vuln + secret)
+      shell: bash
+      env:
+        # Each TRIVY_* is the CLI option trivy-action@v0.36.0 passed for the `with:` key it
+        # replaces (tests/_trivy_step.py reads them back the same way).
+        SCAN_REF: ${{ inputs.paths }}
         # ALL OF TRIVY, not a third of it. `license` was available the whole time and simply
         # never requested -- the same shape as CodeQL's twelve upload-sarif calls: the tool
         # was present, one capability of it was wired, and "we run Trivy" read as all of them.
-        scanners: vuln,secret,license
+        TRIVY_SCANNERS: vuln,secret,license
         # REPORTING AND BLOCKING ARE TWO DECISIONS (ledger L17). For a SARIF, trivy-action
-        # v0.36.0 UNSETS the severity filter (entrypoint.sh: "Building SARIF report with all
+        # v0.36.0 UNSET the severity filter (entrypoint.sh: "Building SARIF report with all
         # severities") -- so `severity: fail_on_severity` here never filtered the report, it
         # was silently ignored, and `exit-code` then fired on EVERY severity: one LOW finding
-        # failed the build and a CRITICAL-only threshold changed nothing. Trivy now reports
-        # every severity and never decides; the count step below applies fail_on_severity to
-        # the SARIF and the enforce step blocks. Detection is never what gets turned off.
-        # tests/prove_trivy_threshold.py runs this configuration the way the action does.
-        exit-code: '0'
-        format: sarif
-        output: trivy-deps.sarif
+        # failed the build and a CRITICAL-only threshold changed nothing. Trivy reports every
+        # severity (no TRIVY_SEVERITY) and never decides; the count step below applies
+        # fail_on_severity to the SARIF and the enforce step blocks. Detection is never what gets
+        # turned off. tests/prove_trivy_threshold.py runs this configuration.
+        TRIVY_EXIT_CODE: '0'
+        TRIVY_FORMAT: sarif
+        TRIVY_OUTPUT: trivy-deps.sarif
+      run: trivy fs --quiet "$SCAN_REF"
     # Findings must survive whether or not this repo has code scanning. Uploading to the
     # Security tab is a PUBLICATION channel, not the finding itself — free on public repos,
     # otherwise Advanced Security. Treating it as mandatory turned successful scans into
@@ -142,7 +191,7 @@ runs:
         if ! n=$(jq --arg want "$want" '[.runs[] | ((.tool.driver.rules // []) | map({key: .id, value: ([(.properties.tags // [])[] | select(. == "CRITICAL" or . == "HIGH" or . == "MEDIUM" or . == "LOW" or . == "UNKNOWN")] | first // "UNKNOWN")}) | from_entries) as $sev | .results[] | ($sev[.ruleId] // "UNKNOWN") as $s | select($want | contains("," + $s + ","))] | length' "$REPORT" 2>&1); then
           cf "$REPORT could not be counted: $n"
         fi
-        echo "count=$n" >> "$GITHUB_OUTPUT"
+        echo "count=${n//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
         echo "Trivy findings at ${FAIL_ON}: $n of $(jq '[.runs[].results[]] | length' "$REPORT") reported"
     - name: Trivy (deps) — enforce
       id: trivy_deps_enforce
@@ -230,3 +279,504 @@ runs:
         echo "unavailable here (free on public repos, otherwise GitHub Advanced Security)."
         echo "The scan SUCCEEDED and the gate still enforces on these findings."
         echo "Retrieve them from the 'sarif-trivy-deps' artifact."
+
+    # ── PIPELINE LINT (lane L-SCAN-A, KDEC-025) ─────────────────────────────────────────────────
+    #
+    # GitHub Actions workflows, shell and PowerShell were COVERAGE_GAP rows: present in the
+    # repository and read by nothing. They are read here, inside a job that already runs on every
+    # consumer, because a job of their own would bill a minimum minute on nearly every one of them
+    # (nearly every repository has a workflow). Each linter runs only where discovery found its
+    # files, so a repository without them pays nothing. They REPORT: error-level findings are handed
+    # to the security gate as findings_state=FINDINGS; the job fails only when a linter could not
+    # run or its report cannot be trusted.
+    #
+    # EVERY TOOL BY EXACT VERSION AND SHA256, written here, never fetched beside the binary. Bump the
+    # version and the digest together (tests/prove_pipeline_lint.py P2 reads both from this step).
+    - name: Pipeline lint — install pinned tools
+      id: lint_tools
+      if: always()
+      env:
+        APPLIES: ${{ inputs.workflows }}${{ inputs.shell }}${{ inputs.powershell }}
+        IN_WORKFLOWS: ${{ inputs.workflows }}
+        IN_SHELL: ${{ inputs.shell }}
+        IN_POWERSHELL: ${{ inputs.powershell }}
+      shell: bash -e {0}
+      run: |
+        set -uo pipefail
+        # SKIPPED -- FREE -- WHERE DISCOVERY FOUND NONE. Discovery's answer arrives as data (env:),
+        # never as a bare composite input inside `if:`, where the string 'false' would be truthy.
+        if [ "${APPLIES#*true}" = "$APPLIES" ]; then
+          echo "collection=NOT_APPLICABLE" >> "$GITHUB_OUTPUT"
+          echo "NOT_APPLICABLE: discovery found none of this class here; nothing fetched, nothing run."
+          exit 0
+        fi
+        # OUTSIDE THE SCANNED TREE: nothing the kit fetches may land in the consumer's workspace.
+        base="${RUNNER_TEMP:-/tmp}/kit-lint"
+        bin="$base/bin"; dl="$base/dl"
+        mkdir -p "$bin" "$dl"
+        failed=""
+        # fetch <name> <url> <sha256>: three attempts; a digest mismatch is never retried into a pass.
+        fetch() {
+          for i in 1 2 3; do
+            if curl -sSfL --retry 2 -o "$dl/$1" "$2"; then break; fi
+            echo "::warning title=Download refused::attempt $i of 3 for $2"; sleep $((i * 5))
+          done
+          if [ -s "$dl/$1" ] && echo "$3  $dl/$1" | sha256sum -c - >/dev/null 2>&1; then return 0; fi
+          echo "::error title=DEPENDENCY_ACQUISITION_UNAVAILABLE::$1 from $2 is absent or does not match its pinned sha256. Not installed; the linter that needs it will report COLLECTION_FAILED, never clean."
+          rm -f "$dl/$1"; failed="$failed $1"; return 1
+        }
+        # The shellcheck binary is fetched for workflows too: actionlint lints every `run:` block with it.
+        if [ "$IN_SHELL" = "true" ] || [ "$IN_WORKFLOWS" = "true" ]; then
+          fetch shellcheck.tar.xz "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz" 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198 \
+            && tar -xJf "$dl/shellcheck.tar.xz" -C "$dl" && install -m 0755 "$dl/shellcheck-v0.11.0/shellcheck" "$bin/shellcheck"
+        fi
+        if [ "$IN_WORKFLOWS" = "true" ]; then
+          fetch actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz" 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 \
+            && tar -xzf "$dl/actionlint.tar.gz" -C "$bin" actionlint
+          fetch zizmor.tar.gz "https://github.com/zizmorcore/zizmor/releases/download/v1.30.1/zizmor-x86_64-unknown-linux-gnu.tar.gz" e65324f4430c2717591937edcec90ccbefaf14c174f8ec9415e03ca875b46e1a \
+            && tar -xzf "$dl/zizmor.tar.gz" -C "$bin" zizmor
+        fi
+        if [ "$IN_POWERSHELL" = "true" ]; then
+          # The PowerShell Gallery package, verified here; the gallery's own SHA512 for 1.25.0 agreed.
+          fetch pssa.nupkg "https://www.powershellgallery.com/api/v2/package/PSScriptAnalyzer/1.25.0" 14e634c828eb98efb9f40b2918ba90f139ed5eccdf663a2a747736d996995d60 \
+            && mkdir -p "$base/modules/PSScriptAnalyzer/1.25.0" \
+            && unzip -q -o "$dl/pssa.nupkg" -d "$base/modules/PSScriptAnalyzer/1.25.0"
+        fi
+        echo "kit_lint_bin=$bin" >> "$GITHUB_ENV"
+        echo "kit_lint_dir=$base" >> "$GITHUB_ENV"
+        # ONE CONVERTER, FOUR TOOLS. Every report leaves here as SARIF 2.1.0 with repository-relative
+        # paths and a fingerprint over (tool, rule, path, snippet-or-message) -- never a line number,
+        # so a finding keeps its identity when code above it moves.
+        cat > "$base/lint_sarif.py" <<'LINT_PY'
+        import hashlib, io, json, os, re, sys
+        LEVEL = {'error': 'error', 'warning': 'warning', 'info': 'note', 'style': 'note',
+                 'information': 'note', 'parseerror': 'error', 'note': 'note'}
+        def rel(p, root='.'):
+            p = (p or '').replace('\\', '/')
+            r = os.path.realpath(root).replace('\\', '/').rstrip('/') + '/'
+            q = os.path.realpath(p).replace('\\', '/') if os.path.isabs(p) else p
+            if q.startswith(r):
+                q = q[len(r):]
+            while q.startswith('./'):
+                q = q[2:]
+            return q.lstrip('/')
+        def result(tool, rule, level, msg, path, line, col, snippet=''):
+            fp = hashlib.sha256('|'.join([tool, rule, path, (snippet or msg).strip()]).encode()).hexdigest()
+            reg = {'startLine': max(1, int(line or 1)), 'startColumn': max(1, int(col or 1))}
+            if snippet:
+                reg['snippet'] = {'text': snippet}
+            return {'ruleId': rule, 'level': level, 'message': {'text': msg},
+                    'locations': [{'physicalLocation': {'artifactLocation': {'uri': path}, 'region': reg}}],
+                    'partialFingerprints': {'kitLintIdentity/v1': fp}}
+        def write(out, tool, version, results, uri):
+            rules = sorted({r['ruleId'] for r in results})
+            doc = {'version': '2.1.0', '$schema': 'https://json.schemastore.org/sarif-2.1.0.json',
+                   'runs': [{'tool': {'driver': {'name': tool, 'version': version, 'informationUri': uri,
+                                                 'rules': [{'id': r} for r in rules]}},
+                             'invocations': [{'executionSuccessful': True}], 'results': results}]}
+            json.dump(doc, io.open(out, 'w', encoding='utf-8'), indent=1)
+        def main(kind, src, out, version):
+            res = []
+            if kind == 'actionlint':
+                for e in json.load(io.open(src, encoding='utf-8')) or []:
+                    rule, lvl = 'actionlint/' + e.get('kind', 'unknown'), 'error'
+                    m = re.match(r'shellcheck reported issue in this script: (SC\d+):(\w+):', e.get('message', ''))
+                    if m:
+                        rule, lvl = 'actionlint/shellcheck/' + m.group(1), LEVEL.get(m.group(2), 'warning')
+                    elif e.get('kind') == 'pyflakes':
+                        lvl = 'warning'
+                    res.append(result('actionlint', rule, lvl, e.get('message', ''), rel(e.get('filepath')),
+                                      e.get('line'), e.get('column'), e.get('snippet', '')))
+                uri = 'https://github.com/rhysd/actionlint'
+            elif kind == 'shellcheck':
+                for c in json.load(io.open(src, encoding='utf-8')).get('comments') or []:
+                    res.append(result('shellcheck', 'SC%s' % c.get('code'), LEVEL.get(c.get('level'), 'warning'),
+                                      c.get('message', ''), rel(c.get('file')), c.get('line'), c.get('column')))
+                uri = 'https://www.shellcheck.net'
+            elif kind == 'psscriptanalyzer':
+                doc = json.load(io.open(src, encoding='utf-8-sig')) if os.path.getsize(src) else []
+                for d in (doc if isinstance(doc, list) else [doc]):
+                    res.append(result('psscriptanalyzer', d.get('RuleName', 'unknown'),
+                                      LEVEL.get(str(d.get('Severity', '')).lower(), 'warning'), d.get('Message', ''),
+                                      rel(d.get('ScriptPath')), d.get('Line'), d.get('Column'), d.get('Text') or ''))
+                uri = 'https://github.com/PowerShell/PSScriptAnalyzer'
+            elif kind == 'native':
+                # zizmor and hadolint write SARIF themselves: paths re-rooted, levels made effective.
+                doc = json.load(io.open(src, encoding='utf-8'))
+                for run in doc.get('runs') or []:
+                    rl = {r.get('id'): (r.get('defaultConfiguration') or {}).get('level')
+                          for r in (run.get('tool', {}).get('driver', {}).get('rules') or [])}
+                    for r in run.get('results') or []:
+                        r['level'] = r.get('level') or rl.get(r.get('ruleId')) or 'warning'
+                        for loc in r.get('locations') or []:
+                            al = (loc.get('physicalLocation') or {}).get('artifactLocation') or {}
+                            if 'uri' in al:
+                                al['uri'] = rel(al['uri'])
+                                al.pop('uriBaseId', None)
+                json.dump(doc, io.open(out, 'w', encoding='utf-8'), indent=1)
+                return
+            write(out, kind, version, res, uri)
+        if __name__ == '__main__':
+            # lint_sarif.py KIND SOURCE -o OUT VERSION
+            a = sys.argv[1:]
+            main(a[0], a[1], a[3], a[4])
+        LINT_PY
+        if [ -n "$failed" ]; then
+          echo "tools=INCOMPLETE" >> "$GITHUB_OUTPUT"
+          echo "::error title=Pipeline lint tools incomplete::not installed:$failed"
+        else
+          echo "tools=COMPLETE" >> "$GITHUB_OUTPUT"
+        fi
+        # The install itself never fails the job: each linter that lacks its binary records
+        # COLLECTION_FAILED below, and the enforce step fails the job for it -- so every linter
+        # that COULD run still runs and keeps its evidence.
+        exit 0
+
+    # actionlint (workflow syntax, expressions, untrusted input in `run:`, and shellcheck over every
+    # `run:` block) and zizmor (template injection, excessive permissions, unpinned `uses:`,
+    # dangerous triggers such as pull_request_target), offline: zizmor's online audits would need a
+    # token and the network inside a scan, and their answers would move under a fixed commit.
+    # zizmor runs --no-config: a suppression belongs in the kit's ticketed exception register, where
+    # the gate can see it, not in a file the scanned repository writes for itself.
+    - name: Workflow lint (actionlint + zizmor)
+      id: wf_lint
+      if: always()
+      env:
+        APPLIES: ${{ inputs.workflows }}
+        IN_PATHS: ${{ inputs.paths }}
+      shell: bash -e {0}
+      run: |
+        set -uo pipefail
+        # SKIPPED -- FREE -- WHERE DISCOVERY FOUND NONE. Discovery's answer arrives as data (env:),
+        # never as a bare composite input inside `if:`, where the string 'false' would be truthy.
+        if [ "${APPLIES:-false}" != "true" ]; then
+          echo "collection=NOT_APPLICABLE" >> "$GITHUB_OUTPUT"
+          echo "NOT_APPLICABLE: discovery found none of this class here; nothing fetched, nothing run."
+          exit 0
+        fi
+        scope="${IN_PATHS:-.}"; [ -d "$scope" ] || scope="."
+        cf() {
+          echo "::error title=COLLECTION_FAILED::$1 Workflows ARE present (discovery), so this is not zero findings."
+          echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"; rm -f "$2"; exit 0
+        }
+        mapfile -t files < <(find "$scope" -maxdepth 8 -type f -path '*/.github/workflows/*' \( -name '*.yml' -o -name '*.yaml' \) \
+          -not -path '*/node_modules/*' -not -path '*/vendor/*' -not -path '*/.git/*' | sed 's|^\./||' | sort)
+        [ "${#files[@]}" -gt 0 ] || cf "discovery found workflows and this step found none." actionlint.sarif
+        echo "workflows=${#files[@]}" >> "$GITHUB_OUTPUT"
+        b="${kit_lint_bin:-}"; d="${kit_lint_dir:-}"
+        [ -x "$b/actionlint" ] && [ -x "$b/zizmor" ] && [ -s "$d/lint_sarif.py" ] || { rm -f zizmor.sarif; cf "actionlint/zizmor are not installed." actionlint.sarif; }
+        # actionlint: exit 1 = findings, 0 = none; anything else is a crash, never a count.
+        rc=0; "$b/actionlint" -shellcheck "$b/shellcheck" -pyflakes= -format '{{json .}}' "${files[@]}" > "$RUNNER_TEMP/actionlint.json" 2> "$RUNNER_TEMP/actionlint.err" || rc=$?
+        if [ "$rc" -gt 1 ]; then rm -f zizmor.sarif; cf "actionlint exited $rc: $(tail -3 "$RUNNER_TEMP/actionlint.err")" actionlint.sarif; fi
+        python3 "$d/lint_sarif.py" actionlint "$RUNNER_TEMP/actionlint.json" -o actionlint.sarif 1.7.12 || { rm -f zizmor.sarif; cf "actionlint's report did not convert." actionlint.sarif; }
+        rc=0; "$b/zizmor" --offline --no-config --no-progress --format sarif "${files[@]}" > "$RUNNER_TEMP/zizmor.sarif" 2> "$RUNNER_TEMP/zizmor.err" || rc=$?
+        # zizmor exits 0, or 10-14 for findings by severity; 1-3 are its own errors.
+        case "$rc" in 0|1[0-4]) ;; *) cf "zizmor exited $rc: $(tail -3 "$RUNNER_TEMP/zizmor.err")" zizmor.sarif ;; esac
+        python3 "$d/lint_sarif.py" native "$RUNNER_TEMP/zizmor.sarif" -o zizmor.sarif 1.30.1 || cf "zizmor's report did not convert." zizmor.sarif
+        for f in actionlint.sarif zizmor.sarif; do
+          _v=$(python3 /tmp/sarif_validity.py "$f" 2>&1) || cf "$_v" "$f"
+        done
+        a=$(jq '[.runs[].results[] | select(.level == "error")] | length' actionlint.sarif)
+        z=$(jq '[.runs[].results[] | select(.level == "error")] | length' zizmor.sarif)
+        echo "collection=COMPLETE" >> "$GITHUB_OUTPUT"
+        echo "count=$((a + z))" >> "$GITHUB_OUTPUT"
+        echo "actionlint: $(jq '[.runs[].results[]] | length' actionlint.sarif) result(s), $a at error; zizmor: $(jq '[.runs[].results[]] | length' zizmor.sarif), $z at error -- over ${#files[@]} workflow file(s)"
+
+    # shellcheck over *.sh / *.bash. Its dialects are sh, bash, dash, ksh and busybox sh; a script
+    # whose shebang names another shell (zsh, fish, csh...) is NOT read and is NAMED as a VERSION_GAP
+    # -- never passed as clean. A script with no shebang is read as POSIX sh (.sh) or bash (.bash),
+    # and the summary says so: an assumption stated is not an assumption hidden.
+    - name: Shell lint (shellcheck)
+      id: sh_lint
+      if: always()
+      env:
+        APPLIES: ${{ inputs.shell }}
+        IN_PATHS: ${{ inputs.paths }}
+      shell: bash -e {0}
+      run: |
+        set -uo pipefail
+        # SKIPPED -- FREE -- WHERE DISCOVERY FOUND NONE. Discovery's answer arrives as data (env:),
+        # never as a bare composite input inside `if:`, where the string 'false' would be truthy.
+        if [ "${APPLIES:-false}" != "true" ]; then
+          echo "collection=NOT_APPLICABLE" >> "$GITHUB_OUTPUT"
+          echo "NOT_APPLICABLE: discovery found none of this class here; nothing fetched, nothing run."
+          exit 0
+        fi
+        scope="${IN_PATHS:-.}"; [ -d "$scope" ] || scope="."
+        cf() {
+          echo "::error title=COLLECTION_FAILED::$1 Shell scripts ARE present (discovery), so this is not zero findings."
+          echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"; rm -f shellcheck.sarif; exit 0
+        }
+        b="${kit_lint_bin:-}"; d="${kit_lint_dir:-}"
+        [ -x "$b/shellcheck" ] && [ -s "$d/lint_sarif.py" ] || cf "shellcheck is not installed."
+        mapfile -t files < <(find "$scope" -maxdepth 8 -type f \( -name '*.sh' -o -name '*.bash' \) \
+          -not -path '*/node_modules/*' -not -path '*/vendor/*' -not -path '*/.git/*' | sed 's|^\./||' | sort)
+        [ "${#files[@]}" -gt 0 ] || cf "discovery found shell scripts and this step found none."
+        # Three groups: a supported shebang (shellcheck reads it), no shebang (.sh as POSIX sh,
+        # .bash as bash -- stated), and any other interpreter (not read: a VERSION_GAP).
+        read_bang=(); read_sh=(); read_bash=(); gaps=""
+        for f in "${files[@]}"; do
+          first="$(head -n 1 "$f" 2>/dev/null | tr -d '\r')"
+          case "$first" in
+            '#!'*) interp="$(printf '%s' "${first#\#!}" | awk '{ if ($1 ~ /\/env$/) { i=2; while ($i ~ /^-/) i++; print $i } else print $1 }')"
+                   case "${interp##*/}" in
+                     sh|bash|dash|ksh|busybox) read_bang+=("$f") ;;
+                     *) gaps="${gaps}${gaps:+ }$f" ;;
+                   esac ;;
+            *) case "$f" in *.bash) read_bash+=("$f") ;; *) read_sh+=("$f") ;; esac ;;
+          esac
+        done
+        if [ -n "$gaps" ]; then
+          echo "version_gaps=$gaps" >> "$GITHUB_OUTPUT"
+          echo "::warning title=VERSION_GAP (shellcheck)::not read -- shell dialect shellcheck cannot parse (it reads sh/bash/dash/ksh/busybox): $gaps. These files were NOT scanned; this is not a clean result for them."
+          echo "| (coverage) | VERSION_GAP — shellcheck | dialect unsupported, not scanned: $gaps |" >> "$GITHUB_STEP_SUMMARY"
+        fi
+        if [ $(( ${#read_sh[@]} + ${#read_bash[@]} )) -gt 0 ]; then
+          echo "::notice title=shellcheck dialect assumed::$(( ${#read_sh[@]} + ${#read_bash[@]} )) script(s) carry no shebang: .sh read as POSIX sh, .bash as bash."
+        fi
+        for set_ in bang sh bash; do
+          case "$set_" in
+            bang) list=("${read_bang[@]}"); opt=() ;;
+            sh)   list=("${read_sh[@]}");   opt=(-s sh) ;;
+            bash) list=("${read_bash[@]}"); opt=(-s bash) ;;
+          esac
+          out="$RUNNER_TEMP/sc-$set_.json"; printf '{"comments":[]}' > "$out"
+          [ "${#list[@]}" -gt 0 ] || continue
+          rc=0; "$b/shellcheck" -f json1 -S style "${opt[@]}" "${list[@]}" > "$out" 2> "$RUNNER_TEMP/sc.err" || rc=$?
+          # 0 = clean, 1 = findings; anything else is shellcheck failing to run.
+          [ "$rc" -le 1 ] || cf "shellcheck exited $rc: $(tail -3 "$RUNNER_TEMP/sc.err")"
+        done
+        jq -s '{comments: (map(.comments) | add)}' "$RUNNER_TEMP"/sc-bang.json "$RUNNER_TEMP"/sc-sh.json "$RUNNER_TEMP"/sc-bash.json > "$RUNNER_TEMP/sc.json" || cf "shellcheck's report does not parse."
+        python3 "$d/lint_sarif.py" shellcheck "$RUNNER_TEMP/sc.json" -o shellcheck.sarif 0.11.0 || cf "shellcheck's report did not convert."
+        _v=$(python3 /tmp/sarif_validity.py shellcheck.sarif 2>&1) || cf "$_v"
+        n=$(jq '[.runs[].results[] | select(.level == "error")] | length' shellcheck.sarif)
+        echo "collection=COMPLETE" >> "$GITHUB_OUTPUT"
+        echo "count=$n" >> "$GITHUB_OUTPUT"
+        echo "shellcheck: $(jq '[.runs[].results[]] | length' shellcheck.sarif) result(s), $n at error, over $(( ${#read_bang[@]} + ${#read_sh[@]} + ${#read_bash[@]} )) script(s)"
+
+    # PSScriptAnalyzer on the runner's own pwsh. It parses with that PowerShell, so a script that
+    # `#Requires -Version` newer than it is NOT read and is NAMED as a VERSION_GAP -- the tool would
+    # return nothing for it (measured: no result, no error), which must never read as clean.
+    - name: PowerShell lint (PSScriptAnalyzer)
+      id: ps_lint
+      if: always()
+      env:
+        APPLIES: ${{ inputs.powershell }}
+        IN_PATHS: ${{ inputs.paths }}
+      shell: bash -e {0}
+      run: |
+        set -uo pipefail
+        # SKIPPED -- FREE -- WHERE DISCOVERY FOUND NONE. Discovery's answer arrives as data (env:),
+        # never as a bare composite input inside `if:`, where the string 'false' would be truthy.
+        if [ "${APPLIES:-false}" != "true" ]; then
+          echo "collection=NOT_APPLICABLE" >> "$GITHUB_OUTPUT"
+          echo "NOT_APPLICABLE: discovery found none of this class here; nothing fetched, nothing run."
+          exit 0
+        fi
+        scope="${IN_PATHS:-.}"; [ -d "$scope" ] || scope="."
+        cf() {
+          echo "::error title=COLLECTION_FAILED::$1 PowerShell files ARE present (discovery), so this is not zero findings."
+          echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"; rm -f psscriptanalyzer.sarif; exit 0
+        }
+        d="${kit_lint_dir:-}"; m="$d/modules/PSScriptAnalyzer/1.25.0/PSScriptAnalyzer.psd1"
+        [ -s "$m" ] && [ -s "$d/lint_sarif.py" ] || cf "PSScriptAnalyzer is not installed."
+        command -v pwsh >/dev/null 2>&1 || cf "pwsh is not on this runner."
+        host="$(pwsh -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()' 2>/dev/null | tr -d '\r')"
+        [ -n "$host" ] || cf "pwsh did not run."
+        mapfile -t files < <(find "$scope" -maxdepth 8 -type f \( -name '*.ps1' -o -name '*.psm1' -o -name '*.psd1' \) \
+          -not -path '*/node_modules/*' -not -path '*/vendor/*' -not -path '*/.git/*' | sed 's|^\./||' | sort)
+        [ "${#files[@]}" -gt 0 ] || cf "discovery found PowerShell and this step found none."
+        read_=(); gaps=""
+        for f in "${files[@]}"; do
+          need="$(grep -iEo '^[[:space:]]*#requires[[:space:]]+-version[[:space:]]+[0-9]+(\.[0-9]+)?' "$f" 2>/dev/null | head -1 | grep -Eo '[0-9]+(\.[0-9]+)?$' || true)"
+          if [ -n "$need" ] && [ "$(printf '%s\n%s\n' "$need" "$host" | sort -V | tail -1)" != "$host" ]; then
+            gaps="${gaps}${gaps:+ }$f"
+          else
+            read_+=("$f")
+          fi
+        done
+        if [ -n "$gaps" ]; then
+          echo "version_gaps=$gaps" >> "$GITHUB_OUTPUT"
+          echo "::warning title=VERSION_GAP (PSScriptAnalyzer)::not read -- #Requires a PowerShell newer than this runner's $host: $gaps. These files were NOT scanned; this is not a clean result for them."
+          echo "| (coverage) | VERSION_GAP — PSScriptAnalyzer | #Requires newer than pwsh $host, not scanned: $gaps |" >> "$GITHUB_STEP_SUMMARY"
+        fi
+        printf '%s\n' "${read_[@]}" > "$RUNNER_TEMP/ps-files.txt"
+        out="$RUNNER_TEMP/pssa.json"; : > "$out"
+        if [ "${#read_[@]}" -gt 0 ]; then
+          kit_pssa="$m" kit_ps_files="$RUNNER_TEMP/ps-files.txt" kit_ps_out="$out" pwsh -NoProfile -NonInteractive -Command '
+            $ErrorActionPreference = "Stop"
+            Import-Module $env:kit_pssa
+            $r = @(Get-Content $env:kit_ps_files | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ })
+            ConvertTo-Json -InputObject @($r | Select-Object RuleName, Severity, ScriptPath, Line, Column, Message, @{n="Text"; e={$_.Extent.Text}}) -Depth 3 -EnumsAsStrings |
+              Set-Content -Path $env:kit_ps_out -Encoding utf8' 2> "$RUNNER_TEMP/pssa.err" || cf "PSScriptAnalyzer failed: $(tail -3 "$RUNNER_TEMP/pssa.err")"
+        else
+          echo '[]' > "$out"
+        fi
+        python3 "$d/lint_sarif.py" psscriptanalyzer "$out" -o psscriptanalyzer.sarif 1.25.0 || cf "PSScriptAnalyzer's report did not convert."
+        _v=$(python3 /tmp/sarif_validity.py psscriptanalyzer.sarif 2>&1) || cf "$_v"
+        n=$(jq '[.runs[].results[] | select(.level == "error")] | length' psscriptanalyzer.sarif)
+        echo "collection=COMPLETE" >> "$GITHUB_OUTPUT"
+        echo "count=$n" >> "$GITHUB_OUTPUT"
+        echo "PSScriptAnalyzer (pwsh $host): $(jq '[.runs[].results[]] | length' psscriptanalyzer.sarif) result(s), $n at error, over ${#read_[@]} file(s)"
+
+    # THE SINGLE ENFORCEMENT POINT IS THE GATE (O-24). Error-level lint findings are handed to it;
+    # this step fails the job only for a linter that ran on present files and established nothing.
+    - name: Pipeline lint — enforce
+      id: lint_enforce
+      if: always()
+      env:
+        APPLIES: ${{ inputs.workflows }}${{ inputs.shell }}${{ inputs.powershell }}
+        W_ON: ${{ inputs.workflows }}
+        S_ON: ${{ inputs.shell }}
+        P_ON: ${{ inputs.powershell }}
+        W_C: ${{ steps.wf_lint.outputs.collection }}
+        S_C: ${{ steps.sh_lint.outputs.collection }}
+        P_C: ${{ steps.ps_lint.outputs.collection }}
+        W_N: ${{ steps.wf_lint.outputs.count }}
+        S_N: ${{ steps.sh_lint.outputs.count }}
+        P_N: ${{ steps.ps_lint.outputs.count }}
+        ADVISORY_MODE: ${{ inputs.advisory_mode }}
+      shell: bash -e {0}
+      run: |
+        set -uo pipefail
+        # SKIPPED -- FREE -- WHERE DISCOVERY FOUND NONE. Discovery's answer arrives as data (env:),
+        # never as a bare composite input inside `if:`, where the string 'false' would be truthy.
+        if [ "${APPLIES#*true}" = "$APPLIES" ]; then
+          echo "collection=NOT_APPLICABLE" >> "$GITHUB_OUTPUT"
+          echo "NOT_APPLICABLE: discovery found none of this class here; nothing fetched, nothing run."
+          exit 0
+        fi
+        bad=""; n=0
+        for t in "workflows:$W_ON:$W_C:$W_N" "shell:$S_ON:$S_C:$S_N" "powershell:$P_ON:$P_C:$P_N"; do
+          IFS=: read -r cls on col cnt <<< "$t"
+          [ "$on" = "true" ] || continue
+          if [ "$col" != "COMPLETE" ] || [ -z "$cnt" ]; then bad="$bad $cls"; continue; fi
+          n=$((n + cnt))
+        done
+        if [ -n "$bad" ]; then
+          echo "::error title=COLLECTION_FAILED::pipeline lint established nothing for:$bad. An absent measurement is not zero findings (advisory_mode does not cover a scan that did not happen)."
+          exit 1
+        fi
+        if [ "$n" -gt 0 ] && [ "$ADVISORY_MODE" != "true" ]; then
+          echo "findings_state=FINDINGS" >> "$GITHUB_OUTPUT"
+          echo "::warning title=Pipeline lint::$n error-level finding(s) -- handed to the security gate, which decides by the resolved policy."
+          exit 0
+        fi
+        echo "Pipeline lint: $n error-level finding(s) (advisory=$ADVISORY_MODE)"
+
+    - name: Pipeline lint — is there anything to publish?
+      id: sarif_lint
+      if: always()
+      env:
+        SH_GAPS: ${{ steps.sh_lint.outputs.version_gaps }}
+        PS_GAPS: ${{ steps.ps_lint.outputs.version_gaps }}
+      shell: bash -e {0}
+      run: |
+        # The files each linter NAMED and did not read, one list for the report (VERSION_GAP rows).
+        # Empty is exact here: a linter that did not run, or read every file, named nothing.
+        # shellcheck disable=SC2086 # word-split on purpose: two space-separated lists become one
+        echo "version_gaps=$(echo $SH_GAPS $PS_GAPS)" >> "$GITHUB_OUTPUT"
+        for t in actionlint zizmor shellcheck psscriptanalyzer; do
+          if [ -s "$t.sarif" ]; then echo "$t=true" >> "$GITHUB_OUTPUT"; else echo "$t=false" >> "$GITHUB_OUTPUT"; fi
+        done
+    # BEGIN REDACT_STEP — generated by scripts/inline_normalizer.py. DO NOT EDIT HERE.
+    - name: Redact credential material before upload
+      if: always()
+      shell: bash
+      run: |
+        # ORDER IS THE WHOLE CONTROL: this runs immediately before an upload, and
+        # again before every later upload that follows a step which may have written
+        # output -- a redactor after the upload protects nothing while looking exactly
+        # like protection (N24/WP19). The sweep itself is ONE canonical script --
+        # scripts/redact_all.sh, written by the `kit-scripts` job and fetched into
+        # /tmp by every other -- because fourteen copies of one wrapper are how this
+        # file reached 608.8 KB and stopped starting.
+        #
+        # A MISSING TOOL IS NOT A CLEAN RESULT. If the bundle did not arrive,
+        # publication must not proceed on the strength of a scrub that never ran.
+        if [ ! -s /tmp/redact_all.sh ]; then
+          echo "::error title=Redaction could not be guaranteed::/tmp/redact_all.sh is absent."
+          echo "The kit-scripts artifact did not reach this job, so no SARIF was scrubbed"
+          echo "and none may be published. A MISSING TOOL IS NOT A CLEAN RESULT."
+          exit 1
+        fi
+        bash /tmp/redact_all.sh
+    # END REDACT_STEP
+    - name: actionlint — keep SARIF as an artifact
+      if: always() && steps.sarif_lint.outputs.actionlint == 'true'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: sarif-actionlint-${{ github.run_attempt }}
+        path: actionlint.sarif
+        retention-days: 30
+        if-no-files-found: warn
+    - name: zizmor — keep SARIF as an artifact
+      if: always() && steps.sarif_lint.outputs.zizmor == 'true'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: sarif-zizmor-${{ github.run_attempt }}
+        path: zizmor.sarif
+        retention-days: 30
+        if-no-files-found: warn
+    - name: shellcheck — keep SARIF as an artifact
+      if: always() && steps.sarif_lint.outputs.shellcheck == 'true'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: sarif-shellcheck-${{ github.run_attempt }}
+        path: shellcheck.sarif
+        retention-days: 30
+        if-no-files-found: warn
+    - name: PSScriptAnalyzer — keep SARIF as an artifact
+      if: always() && steps.sarif_lint.outputs.psscriptanalyzer == 'true'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: sarif-psscriptanalyzer-${{ github.run_attempt }}
+        path: psscriptanalyzer.sarif
+        retention-days: 30
+        if-no-files-found: warn
+    # Publication is a channel, not the finding (free on public repositories, otherwise GitHub
+    # Advanced Security): each is continue-on-error and the gate enforces from the artifacts.
+    - name: actionlint — publish to the Security tab where available
+      id: cs_actionlint
+      if: always() && steps.sarif_lint.outputs.actionlint == 'true'
+      continue-on-error: true
+      uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+      with:
+        sarif_file: actionlint.sarif
+        category: actionlint
+    - name: zizmor — publish to the Security tab where available
+      id: cs_zizmor
+      if: always() && steps.sarif_lint.outputs.zizmor == 'true'
+      continue-on-error: true
+      uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+      with:
+        sarif_file: zizmor.sarif
+        category: zizmor
+    - name: shellcheck — publish to the Security tab where available
+      id: cs_shellcheck
+      if: always() && steps.sarif_lint.outputs.shellcheck == 'true'
+      continue-on-error: true
+      uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+      with:
+        sarif_file: shellcheck.sarif
+        category: shellcheck
+    - name: PSScriptAnalyzer — publish to the Security tab where available
+      id: cs_psscriptanalyzer
+      if: always() && steps.sarif_lint.outputs.psscriptanalyzer == 'true'
+      continue-on-error: true
+      uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+      with:
+        sarif_file: psscriptanalyzer.sarif
+        category: psscriptanalyzer
+    - name: Pipeline lint — state plainly if publication degraded
+      if: >-
+        always() && ((steps.sarif_lint.outputs.actionlint == 'true' && steps.cs_actionlint.outcome != 'success')
+        || (steps.sarif_lint.outputs.zizmor == 'true' && steps.cs_zizmor.outcome != 'success')
+        || (steps.sarif_lint.outputs.shellcheck == 'true' && steps.cs_shellcheck.outcome != 'success')
+        || (steps.sarif_lint.outputs.psscriptanalyzer == 'true' && steps.cs_psscriptanalyzer.outcome != 'success'))
+      shell: bash -e {0}
+      run: |
+        echo "::warning title=Pipeline lint: NOT published to the Security tab::Code scanning is"
+        echo "unavailable here (free on public repos, otherwise GitHub Advanced Security)."
+        echo "The scans SUCCEEDED and the gate still enforces on these findings."
+        echo "Retrieve them from the sarif-actionlint / sarif-zizmor / sarif-shellcheck / sarif-psscriptanalyzer artifacts."

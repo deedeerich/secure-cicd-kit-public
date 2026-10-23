@@ -69,11 +69,15 @@ NOREL = ('name: n\non: push\npermissions:\n  contents: read\njobs:\n  a:\n    ru
          '    steps:\n      - uses: acme/norel@v9\n')
 
 
+AUTH_SEEN = []   # the Authorization header of every request the stand-in received ('' = none)
+
+
 class Api(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a):  # quiet
         pass
 
     def do_GET(self):
+        AUTH_SEEN.append(self.headers.get('Authorization') or '')
         path, _, query = self.path.partition('?')
         parts = path.strip('/').split('/')
         body, code = None, 404
@@ -96,9 +100,13 @@ class Api(http.server.BaseHTTPRequestHandler):
 
 
 def run(bash, work, port, extra=None):
+    # PIN_ACTIONS_API is where the PUBLIC action repositories are read (github.com in real use);
+    # GITHUB_API_URL is the host that issued GITHUB_TOKEN. Here both are the stand-in, so the token
+    # is attached; A7 makes them differ (KDEC-027).
     env = dict(os.environ, GITHUB_TOKEN='offline-stand-in', GITHUB_API_URL='http://127.0.0.1:%d' % port,
-               PYTHON=sys.executable.replace('\\', '/'))
+               PIN_ACTIONS_API='http://127.0.0.1:%d' % port, PYTHON=sys.executable.replace('\\', '/'))
     env.pop('TRUSTED_ORGS', None)
+    env.pop('PIN_CHECK_TOKEN_HOST', None)
     env.update(extra or {})
     p = subprocess.run([bash, os.path.join(ROOT, 'scripts', 'pin-actions.sh').replace('\\', '/'), '--apply'],
                        cwd=work, env=env, capture_output=True, text=True, encoding='utf-8', errors='replace',
@@ -162,6 +170,30 @@ def main():
         if not ok:
             bad.append('A6 a commit with no exact release: rc=%s, file %s' % (
                 rc, 'unchanged' if after == NOREL else 'REWRITTEN: ' + after.strip().splitlines()[-1]))
+
+        # A7 (KDEC-027): a GHE.com run's token is issued by api.<tenant>.ghe.com. It must never be
+        # sent to the public API the action repositories are read from; the rewrite still works.
+        t3 = os.path.join(work, 't3')
+        w3 = os.path.join(t3, '.github', 'workflows', 'w.yml')
+        os.makedirs(os.path.dirname(w3))
+        io.open(w3, 'w', encoding='utf-8', newline='\n').write(WF)
+        del AUTH_SEEN[:]
+        rc, out = run(bash, t3, port, {'GITHUB_API_URL': 'https://api.example.ghe.com'})
+        leaked = [a for a in AUTH_SEEN if a]
+        ok = rc == 0 and AUTH_SEEN and not leaked and \
+            ('uses: acme/tool@%s # v2.3.1' % S_TOOL) in io.open(w3, encoding='utf-8').read()
+        print('  %-40s %s' % ('A7 ghe.com token not sent cross-host', 'ok' if ok else 'WRONG'))
+        if not ok:
+            bad.append('A7 GITHUB_API_URL=api.example.ghe.com: rc=%s, %d request(s), %d carried a '
+                       'token: %s' % (rc, len(AUTH_SEEN), len(leaked), out[-400:]))
+        # A8: the token IS attached when its issuer is the host being read (github.com in real use).
+        io.open(w3, 'w', encoding='utf-8', newline='\n').write(WF)
+        del AUTH_SEEN[:]
+        rc, out = run(bash, t3, port)
+        ok = rc == 0 and AUTH_SEEN and all(a == 'Bearer offline-stand-in' for a in AUTH_SEEN)
+        print('  %-40s %s' % ('A8 same-host token attached', 'ok' if ok else 'WRONG'))
+        if not ok:
+            bad.append('A8 the issuing host read without its token: rc=%s %s' % (rc, AUTH_SEEN[:3]))
     finally:
         srv.shutdown()
         shutil.rmtree(work, ignore_errors=True)

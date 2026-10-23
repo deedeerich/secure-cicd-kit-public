@@ -96,7 +96,8 @@ kit's own callers and templates to this):
 |---|---|
 | the security workflow | `contents: read`, `security-events: write`, `actions: read` |
 | the build workflow | `contents: read`, `id-token: write`, `attestations: write` |
-| a deploy workflow | `contents: read`, `id-token: write` |
+| a deploy workflow | `contents: read`, `id-token: write`, `attestations: read` (V1 reads the digest's build provenance before login, P-02) |
+| the rollback sequence (`reusable-rollback-sequence.yml`; `templates/rollback-sequence.yml`) | `contents: read`, `id-token: write`, `actions: read` (it downloads each deploy run's evidence artifact) |
 | the ledger proposal (`reusable-propose-ledger.yml`) | `contents: write`, `pull-requests: write` -- and call it only on the protected default branch, never on a pull request, after the security job. Inputs: `environment`; `establish-approver-role` only to establish a first ledger (needs CODEOWNERS over the ledger path; opens an ESTABLISH pull request); `ticket-ledger-artifact` to carry the ticket ledger in the same pull request. Outputs `status` and `why` |
 | the NVD workflow (`reusable-nvd-cve.yml`) | `contents: read`, `security-events: write` |
 | ticket reconciliation (`reusable-ticket-reconcile.yml`) | `contents: read` |
@@ -127,8 +128,13 @@ also gates deploy on artifact identity and the security verdict through a `verdi
     not passed — in a GitHub environment whose required reviewers approve the job.
   - `VERSION_GAP_UNVERIFIED`: the same gap, resting on an UNVERIFIED range. At `uat` and `prod` it
     proceeds, recorded loudly in the summary, the posture record and `outcome.json`. Enforcement is
-    data-driven: it turns on when a seeded corpus makes the range READ in `scanner-registry.yaml`
-    (Checkov and Trivy-config first). There is no switch to set.
+    data-driven: it turns on when a seeded corpus makes the range READ in `scanner-registry.yaml`.
+    There is no switch to set. **Checkov and Trivy-config are already READ for Terraform 0.12–1.14**
+    (`iac-scan`): the seeded corpus `tests/corpora/terraform_corpus.py`, run by
+    `tests/corpora/probe_iac_corpus.py`, measured checkov 3.3.29/3.3.30 and trivy 0.70.0/0.71.2
+    reading every family 0.12..1.14 (2026-10-21), confirmed hosted by probe-scanner-corpora run
+    39640950138. So a Terraform root inside that range is served, and one above 1.14 is a proven
+    `VERSION_GAP`. Semgrep (outside PHP), gosec, eslint and cppcheck are still UNVERIFIED.
   - Without `advisory_causes` the deploy cannot tell, so at those tiers an advisory with no cause is
     refused: pass it. Below `uat` any gap is recorded and the deploy proceeds. The other causes are
     unchanged.
@@ -157,12 +163,21 @@ also gates deploy on artifact identity and the security verdict through a `verdi
 
 ## 5. Ticketing from the kit
 
-Findings become tickets in **Jira** (authoritative) or **Azure DevOps** (second), from a separate
-post-merge/scheduled workflow (`reusable-ticket-reconcile.yml`), never from a pull request. It reads
-the report's `findings.json` from a same-run artifact named by its `findings_artifact` input, and
-`apply: false` (the default) only prints the plan. No starter template wires it yet. One backend per
-repository and environment. A ticket is a request; closing it clears nothing. Configuration (host,
-project, stamp field id, epic id, calibration item) is per tracker; moving trackers changes values only.
+Findings become tickets in **Jira** (authoritative), **Azure DevOps** (second) or **GitHub Issues**,
+from a separate post-merge/scheduled workflow (`reusable-ticket-reconcile.yml`, input `backend`:
+`jira`, `azdo` or `github`; KDEC-024 wired all three), never from a pull request. **Copy
+`templates/ticket-reconcile.yml`** in place of `templates/security.yml`: it runs the reconciler after
+the scan in the same run (from the scan's `evidence_artifact`: `findings.json` and
+`findings-coverage.json`), proposes the ticket ledger as a pull request, and runs the ticket clock
+daily as one job with no scan. Tickets are raised `NEW`, close on a **verified** clearance citing the
+run and commit, reopen as `RECURRED` or `REOPENED_BY_LAPSE`, merge cross-scanner duplicates, carry
+`CONTESTED_ANCHORED` and SLA escalation; an unreachable tracker is `TICKETING_UNAVAILABLE` and never
+touches the gate (part 06). Turning it on -- environment, secrets, variables, register numbers,
+permissions -- is `docs/architecture/TICKETING_CONTRACT.md` section 13.1. Two pieces are **Jira
+only**: the weekly exception check (`scripts/exception_due.py`, `reusable-exception-due.yml`) refuses
+any other tracker, and the pull-request reference gate below checks Jira's link shape. `apply: false`
+(the default) only prints the plan. One backend per repository and environment. A ticket is a request;
+closing it clears nothing. Moving trackers changes configuration values only.
 
 On **pull requests**, `reusable-ticket-reference.yml` requires the description to carry a well-formed Jira
 reference (`https://<host>/browse/<KEY>-<number>`), from `tracker_host` and `project_key`. It is core
@@ -185,11 +200,13 @@ Do NOT assume yet:
   verdict, and the section-3 shape and the starter template have not run on a runner.
 - That **the deploy identity's roles in section 2 are verified**: the live runs used a test identity
   whose roles were not recorded (LZ_KIT_HANDOFF_CONTRACT open item 3).
-- That **Azure DevOps ticketing**, or an armed hosted run of `reusable-ticket-reconcile.yml`, works:
-  Jira is proven live; Azure DevOps against stand-ins; the workflow has no hosted run.
+- That **Azure DevOps or GitHub ticketing**, or an armed hosted run of `reusable-ticket-reconcile.yml`
+  or its template, works: Jira is proven live (the KDEC-024 lifecycle too, R-3); Azure DevOps and
+  GitHub against stand-ins; the workflow has no hosted run.
 - That **a baseline ledger has been established on a runner**: `reusable-propose-ledger.yml` can now
   do it (an approved ESTABLISH pull request, F-01 fixed in `a636f5e`), proven locally only; no hosted
-  establish-then-propose run yet, and no starter template calls it.
+  establish-then-propose run yet; `templates/ticket-reconcile.yml` calls it for proposals, none for
+  establishment.
 - That **attestation signing or V1 verification** has run live: held by plan; V1 runs inside both
   deploy reusables (P-02), proven against recorded answers only.
 - That the kit is a **landing-zone deploy engine**: it is not (section 1).
@@ -197,12 +214,13 @@ Do NOT assume yet:
   floor and secret exceptions are proven locally only.
 - That SLA is enforced: not yet (Release 2). The rung is (above). Version fitness is consumed (KDEC-010): a scanner
   that cannot read the code at its version never carries a PASS; expect `PARTIAL` rows and a
-  `PROCEED_WITH_ADVISORY` route until the registry's UNVERIFIED ranges are established (D-VF-4) —
-  and while those ranges are UNVERIFIED, uat/prod proceed with the gap recorded; once a corpus makes
-  them READ, uat/prod refuse it without a named acceptance (KDEC-014, section 4). The version-gap
-  rule is proven against stubs only; no live run has exercised it yet.
+  `PROCEED_WITH_ADVISORY` route until the registry's remaining UNVERIFIED ranges are established
+  (D-VF-4) — and while a range is UNVERIFIED, uat/prod proceed with the gap recorded; once a corpus
+  makes it READ (as it has for Checkov and Trivy-config, Terraform 0.12–1.14, section 4), uat/prod
+  refuse a proven gap without a named acceptance (KDEC-014). The version-gap rule is proven against
+  stubs only; no live run has exercised it yet.
 
 ## 7. Where the authority lives
 
 The kit's design documents (`docs/architecture/`) and its code win over this explainer and over any brief.
-Owner decisions are in `.context/products/secure-cicd-kit/decisions.md` (KDEC-001..019).
+Owner decisions are in `.context/products/secure-cicd-kit/decisions.md` (KDEC-001..021).

@@ -37,8 +37,8 @@ advisory mode is indistinguishable from no gate.
 every rung and in every mode: source, history, or inside a container image. Only a requested, ticketed
 exception for that one finding, with a named approver and an expiry, lets it through (part 05).
 
-**4a. Nothing is ever below crawl.** Crawl blocks a found secret and a pipeline the kit could not run
-or trust; no rung, input or entry goes lower, and the highest authority's rung (enterprise, else org)
+**4a. Nothing is ever below crawl.** Crawl blocks a found secret, a known-malicious package (routed
+with the secret class) and a scan the kit could not run or could not trust; no rung, input or entry goes lower, and the highest authority's rung (enterprise, else org)
 is the floor for everything beneath it. Narrower scopes may only tighten (KDEC-017, KDEC-018).
 
 **5. Discovered, not declared.** What runs is decided by what discovery finds in the repository, not by

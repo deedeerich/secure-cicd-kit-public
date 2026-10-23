@@ -108,14 +108,27 @@ scan is in the floor too: disabling it is refused (KDEC-020).
 - **Unmapped orgs run at the enterprise floor** (KDEC-020, superseding KDEC-019 item 1): once the
   `orgs` map defines an enterprise, an org it does not name runs at that enterprise's floor (with
   several, the strictest at each tier), may only tighten above it (`POLICY_BELOW_AUTHORITY_FLOOR`),
-  and is named in the notice `ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR` (`policy_notices`, a warning,
-  the gate's policy summary). `ORG_NOT_UNDER_ENTERPRISE` is retired.
+  and is named in the notice `ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR`: a `::warning` annotation and a
+  row in the gate's policy summary (`policy_notices` is the resolve-policy action's output, not the
+  security workflow's; the notice is not in the run record). `ORG_NOT_UNDER_ENTERPRISE` is retired.
+- **No enterprise entry: the strictest org** (KDEC-022 item 1): with an `orgs` map or org entries
+  but no enterprise entry, an org the register does not know runs at the strictest registered org's
+  org-level entries, tier by tier; its own file may only tighten; notice
+  `ORG_UNMAPPED_RAN_AT_STRICTEST_ORG` (`prove_authority_floor.py` A12).
 - **Every exception carries its history** (KDEC-018): `renews` lists its prior grants; the gate
   summary, run record and deploy show "first exception" or "previously excepted N time(s) since …,
   tickets …, approvers …"; more renewals than `numbers.max_exception_renewals` (default 2, 0..5) is
   `EXCEPTION_RENEWAL_LIMIT`. A weekly job (`reusable-exception-due.yml`) raises each exception coming
   due or expired on its Jira ticket, saying it was excepted before (`prove_exception_lifecycle.py`,
-  `prove_exception_due.py`).
+  `prove_exception_due.py`). **The count comes from git** (KDEC-022 item 2, option D): the resolver
+  walks the register file's history (resolve-policy clones the default branch blob-less) and the cap
+  binds the derived count; a shorter declared `renews` is `EXCEPTION_HISTORY_TAMPERED` (`BLOCKED`),
+  a history git cannot show `EXCEPTION_HISTORY_UNVERIFIED` (refused, never zero). The weekly job
+  also cross-checks each ticket in Jira (`EXCEPTION_TICKET_MISMATCH`, reported only; the gate never
+  reads Jira) (`prove_exception_history_derived.py`).
+- **Exploited in the wild** (KDEC-022 item 3): a CVE on the CISA KEV catalog blocks at every rung;
+  one finding may be excepted by `known_exploited_exceptions` on the secret-exception rules plus its
+  CVE (part 04; `prove_known_exploited.py`).
 - **A secret exception is one finding, ticketed** (owner ruling 2026-10-22; lane L-S): an entry's
   `secret_exceptions` item names the finding's fingerprint, a `<PROJECT>-<digits>` ticket, an
   explanation, a named approver, an expiry, and reviewers at uat/prod — in the central register or

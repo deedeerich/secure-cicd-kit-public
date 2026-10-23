@@ -71,9 +71,18 @@ own org, team, product and repository entries may tighten above that floor; one 
 `POLICY_BELOW_AUTHORITY_FLOOR` (`BLOCKED`). It is never a refusal and never silent: the run carries
 the notice **`ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR`** — naming the org, the enterprise and rung used,
 and saying "add it to the orgs map" — in the resolution's `notices` and `notes`, the `policy_notices`
-output, a workflow warning and the gate's policy summary. With no `orgs` map (or an empty one)
-nothing changes. (`ORG_NOT_UNDER_ENTERPRISE`, the refusal briefly built for KDEC-019 item 1, is
-retired and no longer emitted.)
+output, a workflow warning and the gate's policy summary. (`ORG_NOT_UNDER_ENTERPRISE`, the refusal
+briefly built for KDEC-019 item 1, is retired and no longer emitted.)
+
+**With no enterprise ENTRY, an org the register does not know runs at the strictest registered org**
+(KDEC-022 item 1; owner 2026-10-23: *"Yes you should get the strictest from the orgs."*). When the
+register has an `orgs` map or org entries but no enterprise entry, an org that is not in the map,
+named by no entry and owns no registered repository runs, at each tier, at the strictest registered
+org's org-level entries — the same comparison as above. Its own repository file may tighten above
+that, never go below it (`REPOSITORY_FILE_SOFTENING`); the floor org's per-finding exceptions never
+travel. Notice: **`ORG_UNMAPPED_RAN_AT_STRICTEST_ORG`** (the org, the floor org, the rung, the tier).
+With no register at all nothing changes (the kit default, crawl). Proven:
+`tests/prove_authority_floor.py` A12.
 
 ## The authority floor: narrower scopes only tighten
 
@@ -125,6 +134,7 @@ The tiers must stay ordered for every repository: `sandbox ≤ dev ≤ test ≤ 
 | `rung` | `crawl` (only secrets block) · `walk` (findings owe a decision: `DECISION_REQUIRED`) · `run` (findings block). The gate reads a job's findings at `new_critical_high` until per-finding classes reach it (ledger L44) |
 | `controls` | per control class or scanner job, the weakest route it may contribute. `secrets`, `secret-scan`, `malicious-deps` accept only `BLOCKED`; nothing may be `PROCEED` (`CHERRY_PICK_BELOW_FLOOR`) |
 | `secret_exceptions` | one secret finding each, ticketed and attributed (section below); never a class |
+| `known_exploited_exceptions` | one finding whose CVE is on the CISA KEV catalog each, by fingerprint and CVE, on the same rules (KDEC-022) |
 | `merge_reaches_tier` | the tier a merge reaches without a human gate (tier-less entries only). Pull requests and unnamed runs are evaluated there; **prod when none is declared** |
 | `deploy_approval` | what the deploy verifies on its GitHub environment (below). `ai_review` is `advisory` or `none`: an AI review comments on pull requests and is **never** a gate or an approval |
 | `decision` | **required on every entry**: `authority` (a named person), `reason`, `decided_on`, `expires`. An entry that changes enforcement at uat or prod (a uat/prod tier, or no tier) must also name `environment_reviewers` |
@@ -175,6 +185,34 @@ exceptable. `--validate` reports every refused exception. Proven locally:
 `tests/prove_gate_policy_enforcement.py` (`sx_*`), `tests/prove_gate_run_record.py`,
 `tests/prove_report_counts_findings.py`.
 
+## Exploited in the wild: a CVE on the CISA KEV catalog blocks at every rung
+
+KDEC-022 item 3 (owner, 2026-10-23: *"confirmed malicious packages should block if we know there is
+an exploit in the wild right?"*). Known-malicious packages (OSV `MAL-`) already block in every mode.
+Now a dependency or image CVE on the **CISA Known Exploited Vulnerabilities** catalog blocks too, at
+every rung — crawl and `advisory_mode` included: **`FINDING_KNOWN_EXPLOITED`**, `BLOCKED`. The report
+publishes every dependency/image finding's CVE (`cve_findings`, every severity, before dispositions);
+the gate's `kev` step (`.github/actions/known-exploited`, `scripts/known_exploited.py`) reads the
+catalog once per run (a date-keyed cache), pins it in the evidence (catalogVersion, dateReleased,
+sha256) and matches; the gate enforces. An unreadable catalog is `kev_state UNAVAILABLE`: in the
+summary and outputs, routed `PROCEED_WITH_ADVISORY` (cause `KEV_UNAVAILABLE`) — never a pass. The NVD
+path runs the same check on its own SARIF and, resolving no policy, honours no exception.
+
+One such finding may be excepted, on the secret-exception rules above plus its CVE:
+
+```json
+"known_exploited_exceptions": [
+  {"finding": "0123456789ab", "cve": "CVE-2021-44228", "ticket": "SEC-4400",
+   "explanation": "vendor appliance pins it; the lookup is disabled; upgrade tracked on the ticket",
+   "approver": "Named Person", "expires": "2026-12-31", "environment_reviewers": ["platform-approvers"]}
+]
+```
+
+Refused by name (`KEV_EXCEPTION_NOT_FINDING_SCOPED` — no fingerprint or no CVE, `_UNTICKETED`,
+`_UNATTRIBUTED`, `_EXPIRED`, and the history refusals below) the finding blocks. Excepted, the run
+routes `PROCEED_WITH_ADVISORY` (cause `KNOWN_EXPLOITED_EXCEPTION_ATTRIBUTED`), `kev_verdict` is
+`EXCEPTED`, never clear. Proven locally: `tests/prove_known_exploited.py`.
+
 ## Exception history and the renewal cap
 
 KDEC-018 item 4 (owner, 2026-10-22): *"when they resurface it needs to be clear they were exempted
@@ -204,10 +242,25 @@ the kit honours may carry **`renews`** — its PRIOR grants, one object each:
   (`DECISION_REQUIRED`), the version-gap deploy is `VERSION_GAP_REFUSED`. The deploy takes the
   gate's `max_exception_renewals` output and holds the stronger of it and the kit default.
 - A history the kit cannot read is not "no history": the exception is refused as unattributed.
-- The history is declared in the register, under CODEOWNERS review; a reviewer checks it against the
-  ticket trail. `scripts/exception_due.py` (below) resurfaces every exception as it comes due.
+- **The count comes from git, not from the register's say-so** (KDEC-022 item 2, option D, "B plus
+  C"). The resolver walks `git log --follow` of the protected register file on the default branch
+  and collects every distinct (ticket, expiry) each exception ever had — secret and known-exploited
+  exceptions by finding, softening decisions by entry. The declared `renews` must list every prior
+  grant git shows; fewer (the history was erased) is **`EXCEPTION_HISTORY_TAMPERED`** (`BLOCKED`).
+  The cap binds the derived count. A history git cannot show — a shallow clone, a register in no git
+  history, a central copy that is not its newest commit — is **`EXCEPTION_HISTORY_UNVERIFIED`**,
+  refused like an unreadable one, never zero renewals. `resolve-policy` clones the default branch
+  blob-less with its history for this (measured on this kit: 1.0 MB plus 2.4 MB fetched by the walk,
+  against 2.8 MB at depth 1), and clones the kit's own history for the central register when GitHub
+  names the action's repository and ref (not yet run hosted; without it central exceptions are
+  UNVERIFIED and refused).
+- **And Jira is checked weekly (C)**: `exception_due.py --cross-check` (the resurface job runs it)
+  holds each exception's ticket to the register — it exists, names the same approver, and its links,
+  text or comments show each renewal. A disagreement is **`EXCEPTION_TICKET_MISMATCH`**, in the run
+  summary and (applied) a comment on the ticket. The gate never reads Jira.
+- `scripts/exception_due.py` (below) resurfaces every exception as it comes due.
 
-Proven locally: `tests/prove_exception_lifecycle.py`.
+Proven locally: `tests/prove_exception_lifecycle.py`, `tests/prove_exception_history_derived.py`.
 
 ### Resurfacing: exceptions come back onto their ticket when they come due
 

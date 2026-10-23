@@ -435,7 +435,7 @@ runs:
           echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
           exit 1
         fi
-        echo "count=$n" >> "$GITHUB_OUTPUT"
+        echo "count=${n//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
         echo "secret findings: $n"
 
     - name: Strip residual secret material before persisting

@@ -1,0 +1,347 @@
+# Rollback resource classes -- which Azure resource types a rollback may reverse ENTRY BY ENTRY,
+# and which it must treat as one whole, stable thing. KDEC-023 (owner, 2026-10-23), lane L-RB3.
+# Read by scripts/rollback_dependencies.py; proven by tests/prove_rollback_dependencies.py.
+#
+# Owner, 2026-10-23: "If it's a resource or service that is not shared and multi-configurable for
+# each thing think frontdoor or NSGs or firewall rules and routing or WAF rules and routing that are
+# shared but only the product's configs were changed those things can be rolled back but if a solid
+# stable resource like an app service or a database or a container or something is changed by
+# something else the dependency review and refusal to rollback fully and the partial or no rollback
+# with reasons and dependency graph is provided to the user."
+#
+# THE TWO CLASSES (assurance-taxonomy.yaml :: rollback_resource_class)
+#   SHARED_MULTI_CONFIG  many products keep their own config ENTRIES in one resource. A rollback
+#                        reverses only the product's entries and reads back every other entry,
+#                        byte-identical. An entry of the product changed by anyone else is a
+#                        cross-edit: the dependency review decides, as for a stable resource.
+#   STABLE               one product's whole resource. Changed by anything other than the release
+#                        being rolled back -> dependency review; a full rollback is refused.
+#
+# HOW A TYPE IS MATCHED. Type names are compared case-insensitively. A resource id's type is read
+# from the id (".../providers/Microsoft.Network/networkSecurityGroups/nsg/securityRules/r" is
+# Microsoft.Network/networkSecurityGroups/securityRules), and the LONGEST registered type that
+# prefixes it decides: a child of a SHARED type is one of its entries; a child of a STABLE type is
+# part of that stable resource. A type registered nowhere is NOT GUESSED: the node is a human
+# decision (ROLLBACK_REQUIRES_HUMAN_DECISION), and so is everything that depends on it.
+#
+# ENTRIES
+#   child_collections   entries that are ARM child resources (their own id, GET/PUT/DELETE each).
+#                       `*` expands to every child of the collection before it.
+#   inline_collections  entries that live as named elements of an array in the parent's body
+#                       (sub-resource ids <parent>/<name>/<entry>); reversed by one PUT of the
+#                       parent that changes only the product's elements.
+#   interacting         collections whose entries are evaluated TOGETHER (priority, longest prefix):
+#                       a cross-edit of one of the product's entries there also holds the product's
+#                       other entries in the same collection.
+#   parent_excludes     body paths of the parent that ARM mirrors from its children; ignored when the
+#                       parent is read back for "untouched".
+# FLAGS
+#   data: true          holds data: a resource the release CREATED is never deleted by a rollback
+#                       (a human decides); a modification is restored like any other.
+#   reversal: human     restoring the prior state has consequences a machine should not weigh
+#                       (ROLLBACK_CONTRACT.md: RBAC) -- always a human decision.
+#
+# NOT LIVE: the API versions, the child/inline split and the mirrored paths are from the ARM REST
+# reference; that each PUT of a prior body is accepted per type is owed to a live run (KDEC-023).
+# THE BODY IS FLOW-STYLE YAML -- JSON with whole-line comments -- so the rollback engine reads it
+# with the standard library alone (the rollback runner has no PyYAML); any YAML reader reads it too.
+{
+  "schema_version": 1,
+  "classes": {
+    "SHARED_MULTI_CONFIG": "many products' config entries in one resource; only the product's entries are reversed",
+    "STABLE": "one product's whole resource; changed by anything else -> dependency review"
+  },
+  "read_only_fields": [
+    "etag",
+    "systemData",
+    "properties.provisioningState",
+    "properties.resourceState",
+    "properties.deploymentStatus",
+    "properties.resourceGuid"
+  ],
+  "types": {
+    "Microsoft.Network/networkSecurityGroups": {
+      "class": "SHARED_MULTI_CONFIG",
+      "api_version": "2023-09-01",
+      "child_collections": [
+        "securityRules"
+      ],
+      "interacting": [
+        "securityRules"
+      ],
+      "parent_excludes": [
+        "properties.securityRules",
+        "properties.defaultSecurityRules"
+      ]
+    },
+    "Microsoft.Cdn/profiles": {
+      "class": "SHARED_MULTI_CONFIG",
+      "api_version": "2024-02-01",
+      "child_collections": [
+        "afdEndpoints",
+        "afdEndpoints/*/routes",
+        "originGroups",
+        "originGroups/*/origins",
+        "ruleSets",
+        "ruleSets/*/rules",
+        "securityPolicies",
+        "customDomains"
+      ],
+      "interacting": [
+        "ruleSets/*/rules"
+      ]
+    },
+    "Microsoft.Network/frontDoors": {
+      "class": "SHARED_MULTI_CONFIG",
+      "api_version": "2021-06-01",
+      "inline_collections": {
+        "routingRules": "properties.routingRules",
+        "frontendEndpoints": "properties.frontendEndpoints",
+        "backendPools": "properties.backendPools",
+        "healthProbeSettings": "properties.healthProbeSettings",
+        "loadBalancingSettings": "properties.loadBalancingSettings"
+      }
+    },
+    "Microsoft.Network/frontDoorWebApplicationFirewallPolicies": {
+      "class": "SHARED_MULTI_CONFIG",
+      "api_version": "2022-05-01",
+      "inline_collections": {
+        "customRules": "properties.customRules.rules"
+      },
+      "interacting": [
+        "customRules"
+      ]
+    },
+    "Microsoft.Network/firewallPolicies": {
+      "class": "SHARED_MULTI_CONFIG",
+      "api_version": "2023-09-01",
+      "child_collections": [
+        "ruleCollectionGroups"
+      ],
+      "interacting": [
+        "ruleCollectionGroups"
+      ],
+      "parent_excludes": [
+        "properties.ruleCollectionGroups"
+      ]
+    },
+    "Microsoft.Network/azureFirewalls": {
+      "class": "SHARED_MULTI_CONFIG",
+      "api_version": "2023-09-01",
+      "inline_collections": {
+        "applicationRuleCollections": "properties.applicationRuleCollections",
+        "natRuleCollections": "properties.natRuleCollections",
+        "networkRuleCollections": "properties.networkRuleCollections"
+      },
+      "interacting": [
+        "applicationRuleCollections",
+        "natRuleCollections",
+        "networkRuleCollections"
+      ]
+    },
+    "Microsoft.Network/applicationGateways": {
+      "class": "SHARED_MULTI_CONFIG",
+      "api_version": "2023-09-01",
+      "inline_collections": {
+        "httpListeners": "properties.httpListeners",
+        "requestRoutingRules": "properties.requestRoutingRules",
+        "backendAddressPools": "properties.backendAddressPools",
+        "backendHttpSettingsCollection": "properties.backendHttpSettingsCollection",
+        "probes": "properties.probes",
+        "urlPathMaps": "properties.urlPathMaps",
+        "rewriteRuleSets": "properties.rewriteRuleSets",
+        "redirectConfigurations": "properties.redirectConfigurations",
+        "frontendPorts": "properties.frontendPorts"
+      },
+      "interacting": [
+        "requestRoutingRules"
+      ]
+    },
+    "Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies": {
+      "class": "SHARED_MULTI_CONFIG",
+      "api_version": "2023-09-01",
+      "inline_collections": {
+        "customRules": "properties.customRules"
+      },
+      "interacting": [
+        "customRules"
+      ]
+    },
+    "Microsoft.Network/routeTables": {
+      "class": "SHARED_MULTI_CONFIG",
+      "api_version": "2023-09-01",
+      "child_collections": [
+        "routes"
+      ],
+      "interacting": [
+        "routes"
+      ],
+      "parent_excludes": [
+        "properties.routes"
+      ]
+    },
+    "Microsoft.Network/loadBalancers": {
+      "class": "SHARED_MULTI_CONFIG",
+      "api_version": "2023-09-01",
+      "inline_collections": {
+        "loadBalancingRules": "properties.loadBalancingRules",
+        "probes": "properties.probes",
+        "inboundNatRules": "properties.inboundNatRules"
+      }
+    },
+    "Microsoft.Network/virtualNetworks": {
+      "class": "SHARED_MULTI_CONFIG",
+      "api_version": "2023-09-01",
+      "child_collections": [
+        "subnets"
+      ],
+      "parent_excludes": [
+        "properties.subnets"
+      ]
+    },
+    "Microsoft.Network/dnsZones": {
+      "class": "SHARED_MULTI_CONFIG",
+      "api_version": "2018-05-01",
+      "child_collections": [
+        "A",
+        "AAAA",
+        "CAA",
+        "CNAME",
+        "MX",
+        "NS",
+        "PTR",
+        "SRV",
+        "TXT"
+      ]
+    },
+    "Microsoft.Network/privateDnsZones": {
+      "class": "SHARED_MULTI_CONFIG",
+      "api_version": "2020-06-01",
+      "child_collections": [
+        "A",
+        "AAAA",
+        "CNAME",
+        "MX",
+        "PTR",
+        "SRV",
+        "TXT",
+        "virtualNetworkLinks"
+      ]
+    },
+    "Microsoft.ApiManagement/service": {
+      "class": "SHARED_MULTI_CONFIG",
+      "api_version": "2022-08-01",
+      "child_collections": [
+        "apis",
+        "products",
+        "backends",
+        "namedValues",
+        "apiVersionSets"
+      ]
+    },
+    "Microsoft.Web/sites": {
+      "class": "STABLE",
+      "api_version": "2023-12-01"
+    },
+    "Microsoft.Web/serverfarms": {
+      "class": "STABLE",
+      "api_version": "2023-12-01"
+    },
+    "Microsoft.App/containerApps": {
+      "class": "STABLE",
+      "api_version": "2024-03-01"
+    },
+    "Microsoft.App/jobs": {
+      "class": "STABLE",
+      "api_version": "2024-03-01"
+    },
+    "Microsoft.App/managedEnvironments": {
+      "class": "STABLE",
+      "api_version": "2024-03-01"
+    },
+    "Microsoft.ContainerService/managedClusters": {
+      "class": "STABLE",
+      "api_version": "2024-05-01"
+    },
+    "Microsoft.ContainerInstance/containerGroups": {
+      "class": "STABLE",
+      "api_version": "2023-05-01"
+    },
+    "Microsoft.ContainerRegistry/registries": {
+      "class": "STABLE",
+      "api_version": "2023-07-01",
+      "data": true
+    },
+    "Microsoft.Sql/servers": {
+      "class": "STABLE",
+      "api_version": "2023-08-01-preview",
+      "data": true
+    },
+    "Microsoft.Sql/servers/databases": {
+      "class": "STABLE",
+      "api_version": "2023-08-01-preview",
+      "data": true
+    },
+    "Microsoft.DBforPostgreSQL/flexibleServers": {
+      "class": "STABLE",
+      "api_version": "2023-06-01-preview",
+      "data": true
+    },
+    "Microsoft.DBforMySQL/flexibleServers": {
+      "class": "STABLE",
+      "api_version": "2023-06-30",
+      "data": true
+    },
+    "Microsoft.DocumentDB/databaseAccounts": {
+      "class": "STABLE",
+      "api_version": "2024-05-15",
+      "data": true
+    },
+    "Microsoft.Cache/redis": {
+      "class": "STABLE",
+      "api_version": "2024-03-01",
+      "data": true
+    },
+    "Microsoft.Storage/storageAccounts": {
+      "class": "STABLE",
+      "api_version": "2023-05-01",
+      "data": true
+    },
+    "Microsoft.KeyVault/vaults": {
+      "class": "STABLE",
+      "api_version": "2023-07-01",
+      "data": true
+    },
+    "Microsoft.ServiceBus/namespaces": {
+      "class": "STABLE",
+      "api_version": "2022-10-01-preview",
+      "data": true
+    },
+    "Microsoft.EventHub/namespaces": {
+      "class": "STABLE",
+      "api_version": "2024-01-01",
+      "data": true
+    },
+    "Microsoft.Compute/virtualMachines": {
+      "class": "STABLE",
+      "api_version": "2024-03-01"
+    },
+    "Microsoft.Compute/virtualMachineScaleSets": {
+      "class": "STABLE",
+      "api_version": "2024-03-01"
+    },
+    "Microsoft.Network/privateEndpoints": {
+      "class": "STABLE",
+      "api_version": "2023-09-01"
+    },
+    "Microsoft.ManagedIdentity/userAssignedIdentities": {
+      "class": "STABLE",
+      "api_version": "2023-01-31"
+    },
+    "Microsoft.Authorization/roleAssignments": {
+      "class": "STABLE",
+      "api_version": "2022-04-01",
+      "reversal": "human"
+    }
+  }
+}

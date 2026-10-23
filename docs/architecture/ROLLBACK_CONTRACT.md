@@ -20,6 +20,10 @@ cloud only (tests/prove_rollback_sequence.py); never run live. Section "Sequenti
 KDEC-021 (2026-10-23, lane L-RB2): a TEST PERIOD after every step, App Service slots restored to the
 requested version, deploys frozen per target during a rollback and a kit deploy that lands anyway
 rolled back first -- stub-proven (S13..S19), never run live.
+KDEC-023 (2026-10-23, lane L-RB3): resource classes (SHARED_MULTI_CONFIG entries rolled back alone,
+every other entry read back byte-identical; STABLE resources changed by another actor -> dependency
+review, partial or no rollback, the graph), ROLLBACK_REQUIRES_HUMAN_DECISION emitted, and the
+dependency check of an incoming deploy after a rollback -- stub-proven (D1..D8), never run live.
 ```
 
 ## The rule
@@ -312,6 +316,90 @@ group and discards an older pending one (it mutated nothing, and is re-run by ha
 one target's lock; P5 dependents beyond traffic labels are not readable (DCR §8.7); the e2e command is
 the caller's own code and is trusted as such.
 
+### Cross-edited resources and the incoming deploy (KDEC-023, owner, 2026-10-23)
+
+Owner: *"if someone else or a different service edited something then we need to follow the same
+cross edited rollback rules"* — shared, multi-configurable resources where *"only the product's
+configs were changed … can be rolled back but if a solid stable resource … is changed by something
+else the dependency review and refusal to rollback fully and the partial or no rollback with reasons
+and dependency graph is provided to the user."* Built by lane L-RB3.
+
+**Resource classes** (`rollback-resource-classes.yaml`, Azure types → class; vocabulary
+`rollback_resource_class`). The longest registered type that prefixes a resource id decides; a type
+registered nowhere is never guessed (a human decision, and so is everything tied to it).
+
+| class | means | examples |
+|---|---|---|
+| `SHARED_MULTI_CONFIG` | many products keep their own **entries** in one resource; only the product's entries are reversed | Front Door routes / origin groups / rule sets; NSG rules; firewall policy rule collections; Application Gateway listeners, rules, WAF custom rules; route-table routes; DNS record sets; API Management APIs |
+| `STABLE` | one product's whole resource | App Service / Function app; Container App, AKS; Container Instance; SQL, PostgreSQL, Cosmos DB; storage; Key Vault; VM |
+
+**The evidence.** A step with `adapter: arm` reads `resources.json` from the deploying run's evidence:
+every node the release CREATED or MODIFIED with its body before (`prior`) and as left (`post`),
+optional `depends_on`, and optionally the other products' entries as they stood
+(`others_at_deploy`) and baselines of what it depends on (`observed`). The product's own entries are
+the ones the evidence names. **The kit's own deploy adapters do not write it yet** — they change one
+App Service or Container App; another deployer that writes it is exercised, a kit one is owed.
+
+**The dependency review** (`scripts/rollback_dependencies.py`), from a fresh read of every node
+through `az rest`:
+
+1. **Mark** each node: `changed-by-this-release` (holds exactly what the release left),
+   `changed-by-other` (does not, carries another release's stamp, or is gone), `unknown` (unreadable),
+   or for something the release depends on but did not change, `unchanged` / `not-judged` (judged
+   only against a recorded baseline).
+2. **Edges** (who depends on what): `depends_on`; every ARM resource id in a node's body (app
+   settings, connection strings by resource id, subnets, private endpoints, role-assignment scopes);
+   every host a node uses that another provides (a Key Vault reference by vault URI); entry → its
+   shared parent; and entries **evaluated together** (NSG and route-table rules by priority or
+   prefix, firewall, WAF and gateway routing rules by priority) coupled to each other.
+3. **Decide.** Blocked: a node changed by another actor or unreadable, a node no machine may reverse
+   (unregistered type; `reversal: human` — RBAC; a data-bearing resource the release *created*), and
+   every release node that depends on one, that one depends on, or that is evaluated together with
+   one.
+
+| outcome (`rollback_dependency_outcome`) | when | what happens |
+|---|---|---|
+| `ROLLBACK_DEPENDENCY_CLEAR` | nothing blocked, stable only | full rollback, verified |
+| `ROLLBACK_SCOPED_TO_PRODUCT_CONFIG` | nothing blocked, shared entries involved | only the product's entries reversed; every other entry and each parent read back byte-identical before and after (basis `ELIGIBLE_OWNED_PART_SEPARABLE` when other products moved their own entries since) |
+| `ROLLBACK_PARTIAL_DEPENDENCY_CONFLICT` | some blocked, some free | **full rollback refused**; the free nodes reversed (dependents first), verified, the test period run; step `ROLLBACK_STEP_PARTIAL`; the sequence stops (`ROLLBACK_SEQUENCE_STOPPED_DEPENDENCY_CONFLICT`) |
+| `ROLLBACK_REFUSED_DEPENDENCY_CONFLICT` | nothing free | nothing touched; step ineligible; the sequence stops |
+
+Partial and refused are **`ROLLBACK_REQUIRES_HUMAN_DECISION`**, now emitted as the record's
+`rollback_state` and the rollback reusable's `rollback_state` output (the box below). Every node's
+mark, decision and reason, the edges, and a **Mermaid** graph are in the step's `dependency_review`,
+in `dependency-graph.json` / `.mmd` in the step's evidence, and in the run summary. An App Service or
+Container App step changed outside the kit carries a one-node graph, refused, the same way. Reversal:
+a MODIFIED node's prior body is PUT back (read-only fields stripped), a CREATED node is deleted, an
+inline entry (a gateway listener) is changed inside one PUT of its parent that touches only the
+product's elements.
+
+**The incoming deploy** — the owner's *"different situation"*: a deploy that arrives during a
+rollback waits on the shared per-target lock (KDEC-021). Her decision: *"We need to do a dependency
+check on the incoming deployment to ensure that it isn't reliant on things that were just rolled back
+… If there are no dependencies on rolled back items then deploy it."* When a sequence reverses
+anything, the rollback reusable uploads a **marker** for the target (`kit-rollback-marker-<target
+key>`, 90 days): its run, the releases it rolled back (run, commit, images), and every node it
+changed (gone, or restored old → new). Both deploy reusables run `scripts/rollback_hold.py check`
+**before login** (they now need `actions: read`):
+
+| `rollback_dependency_check` | when | the deploy |
+|---|---|---|
+| `ROLLBACK_CHECK_NOT_REQUIRED` | no marker, or its base commit is newer than the rollback | proceeds |
+| `DEPLOY_NO_ROLLBACK_DEPENDENCY` | built before the rollback finished; no dependency found | proceeds, with the note |
+| `DEPLOY_REFUSED_ROLLBACK_DEPENDENCY` | built on a rolled-back commit (compare API), ships a rolled-back image, or a `declared_dependencies` entry names a node the rollback removed or changed | refused, routing `BLOCKED`, with the report (summary, annotation, `rollback-check.json`): the rollback, and each dependency old → new or "no longer exists". **No override**: correct the deploy and deploy again |
+| `ROLLBACK_DEPENDENCY_CHECK_INCOMPLETE` | the marker, the commit or the comparison unreadable | refused with the reason; never blind |
+
+**Proven locally, not live** (`tests/prove_rollback_dependencies.py` D1..D8, test first): NSG, Front
+Door and gateway entries rolled back alone with other products' entries byte-identical; a foreign
+edit of the product's own NSG rule (partial: that rule and its priority-coupled sibling left); an App
+Service changed by another actor (full refused, storage and NSG rule reversed, the App Service and the
+Key Vault it references left, the graph emitted); a database changed by another actor (no rollback);
+the marker; the check's every outcome; both deploy reusables as shipped refusing before login (zero
+Azure calls) and deploying when not dependent. **Limits:** never run against Azure — whether ARM
+accepts each PUT of a prior body per type, whether `az rest` answers a missing resource as modelled,
+and whether the artifact, commit and compare APIs answer as recorded are a live run; ticket / PR
+comment posting of the refusal is not wired; the marker expires after 90 days.
+
 ## Integration-test harness — separate, and safe for a different reason
 
 Full destroy is permitted in the personal-tenant test **because absence is proven first**, not
@@ -388,7 +476,11 @@ PARTIAL_APPLY / STATUS_UNTRUSTED are stub-only (DCR §7.8 matrix B and D).
 - [ ] `ROLLBACK_REQUIRES_HUMAN_DECISION` emitted when pre-state is unknown — NOT ticked. Unknown
       pre-state now refuses BEFORE any mutation (`previous_state` UNKNOWN -> `DEPLOY_REFUSED`), and
       a mutation that loses visibility reports `STATUS_UNTRUSTED` with an escalation contract; the
-      `rollback_state` value itself is not emitted anywhere.
+      `rollback_state` value itself is not emitted by the deploy reusables. **KDEC-023 (lane
+      L-RB3):** the sequential rollback now emits it, as the record's `rollback_state` and the
+      rollback reusable's output, wherever a person must decide (a dependency conflict, a halt, an
+      ineligible step); the single-run deploy reversal still substitutes as above, so the box stays
+      unticked for the deploy reusables.
 - [x] Live-state verification after rollback, not command exit status — gap7, including an
       apply-then-error case decided by live state. An entry the reversal did not act on (refused,
       withheld, deferred, mechanism not valid) makes the run `ROLLBACK_PARTIAL` whatever live

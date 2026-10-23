@@ -87,7 +87,8 @@ def main():
             fails.append(msg)
 
     def res(cen, repo_doc=None):
-        return pr.resolve(cen, repo_doc, E.REPOSITORY, 'prod', 'push', {}, TODAY)
+        return pr.resolve(cen, repo_doc, E.REPOSITORY, 'prod', 'push', {}, TODAY,
+                          history=pr.committed_once(cen, repo_doc))
 
     # ---- H1 / H2: the resolver -----------------------------------------------------------------------
     r = res(E.sx_central([sx()]))

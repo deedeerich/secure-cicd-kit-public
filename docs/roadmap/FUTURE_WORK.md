@@ -60,11 +60,14 @@ backlog.
 > Built locally, wired into the report: durable identity (`scripts/finding_identity.py`), the
 > matching cascade (`finding_match.py`), anchored correlation (`finding_correlation.py`), the
 > hash-chained lineage (`finding_lineage.py`), and tickets from findings (`scripts/reconcile_tickets.py`,
-> proven live on a personal Jira). **Not built:** confidence and disagreement semantics (below), and
-> D4 (findings feeding a roadmap). **D5 is partial:** no starter template calls
-> `reusable-ticket-reconcile.yml`, nothing schedules its sweep, and closure on positive clearance is not
-> built. **D6 is built locally** (version discovery and capability selection, KDEC-010). The text
-> below is the design as it stood, kept.
+> proven live on a personal Jira). **Not built:** D4 (findings feeding a roadmap). **D5 is built locally
+> since 2026-10-23 (KDEC-024, lane L-TKT):** `templates/ticket-reconcile.yml` calls
+> `reusable-ticket-reconcile.yml` after the scan and runs its clock daily as one job; NEW, RECURRED and
+> REOPENED_BY_LAPSE on Jira, Azure DevOps and GitHub; closure on positive clearance citing the run and
+> commit; cross-scanner duplicates merged into one ticket; confidence and disagreement recorded and
+> routed (`CONTESTED_ANCHORED`); SLA escalation; the correlation-triage skill below. Owed: a hosted run.
+> **D6 is built locally** (version discovery and capability selection, KDEC-010). The text below is the
+> design as it stood, kept.
 
 **Doctrine already exists — use it, do not reinvent it:** the reference estate `ADR-013-correlation-engine.md`,
 `backend/app/appsec/correlation.py`, `docs/specialist-pack/04-correlation-and-identity.md`.
@@ -258,7 +261,8 @@ Disagreement should **escalate**, never average away.
 
 **There is no correlation `SKILL.md` anywhere.** `SKILL_TAXONOMY.md` names `correlation-triage`
 as a tool-tier skill and `SESSION-ONBOARDING.md` points at `skills/tools/{tool}/`, but that directory
-does not exist. Specified, never written — a genuine extraction gap.
+does not exist. Specified, never written — a genuine extraction gap. *(Closed 2026-10-23, KDEC-024:
+`skills/tools/correlation-triage/SKILL.md`, written from the kit's own doctrine.)*
 
 ---
 
@@ -284,12 +288,15 @@ sensitive findings kept out of logs.
 
 | Gap | Why it is not "nearly done" |
 |---|---|
-| **Swift / Objective-C** | No scanner at all. Needs real iOS tooling, not a generic C scanner wearing a moustache. Swift is a declared `COVERAGE_GAP`; **Objective-C is not even probed** (no `.m` in discovery's unsupported-language sweep), so an ObjC-only repository reports no gap at all |
-| **Kotlin / Android** | **Java coverage does not imply Android.** Gradle, manifests, exported components, permissions, signing/config, mobile-specific rules. No real repo exists — build a purpose-made consumer. A **Kotlin-only** repository gets no scanner: `.kt` is a declared `COVERAGE_GAP`, and `sast-java` reads Java only |
-| **.NET real-repo consumer** | None exists in any accessible account. Only the synthetic fixture |
-| **Build-aware C/C++** | Source-only analysis is proven. Compilation database, resolved includes/macros, linked dependency graph are **not**. Report `CPP_ANALYSIS_PARTIAL` when source exists without build metadata — and **never synthesise a build system to make a scanner happy**. **`CPP_ANALYSIS_PARTIAL` is never emitted** today (only allow-listed in `scripts/reconcile_taxonomy.py`, not a taxonomy term): a source-only C/C++ scan reads like a complete one |
-| **Shell / bash** | the reference estate has `shell-scanning.yml`; this kit has **no shell scanner** (no shellcheck), while shipping shell inside its own workflows. Discovery declares `.sh` (`Shell`) and `.ps1` (`PowerShell`) as `COVERAGE_GAP` (`.github/actions/discover/action.yml`, the unsupported-language sweep), so the gap is reported, not hidden |
-| **GitHub Actions workflows themselves** | The workflows are a scanned surface. the reference estate has `github-actions-lint.yml`; this kit has `workflow-policy-check.yml` for policy, not lint. **actionlint runs only in the kit's own self-test**; a consumer's workflows get no actionlint or zizmor pass (discovery declares them a `GitHubActionsWorkflow` coverage gap) |
+| ~~**Swift / Objective-C**~~ **CLOSED 2026-10-23 (lane L-SCAN-B, KDEC-026)** | Discovery now probes `.swift` (`swift`) and `.m`/`.mm`/`Info.plist`/`AndroidManifest.xml` (`mobile`); Swift is no longer a `COVERAGE_GAP`. The new `sast-mobile` job runs mobsfscan 1.0.1 (pinned by version and sha256, Semgrep 1.172.0 inside) over Swift and Objective-C source and Info.plist ATS: arbitrary loads, insecure-HTTP and TLS 1.0 exceptions, `kSecAttrAccessibleAlways`, UIWebView, MD5, `strcpy` -- all planted and detected (`tests/prove_sast_mobile_detects.py`, run as shipped in a Linux container; clean trees silent; a hollow or Semgrep-less mobsfscan refused by a positive control). CodeQL for Swift is **deliberately left out**: it needs macOS runners at 10x the minute rate (KDEC-026). Proven only by a hosted run: the `mobile` validate-scanners leg and a consumer run |
+| ~~**Kotlin / Android**~~ **CLOSED 2026-10-23 (lane L-SCAN-B, KDEC-026)** | Kotlin is a discovery class (`kotlin`): `sast-semgrep` adds a `p/kotlin` floor with an examined-files witness (`tests/prove_semgrep_kotlin.py`), and CodeQL's `java-kotlin` leg starts on Kotlin as well as Java (`tests/prove_platform_discovery.py`). Android: mobsfscan reads the manifest (debuggable, allowBackup, cleartext, minSdk), network_security_config (cleartext, user CAs) and Kotlin; kit-authored rules (`.github/actions/sast-mobile/mobile-config.semgrep.yml`) cover what it does not -- exported components without a permission, hard-coded Gradle signing passwords, Gradle minSdk, debuggable release builds. The purpose-made consumer is `tests/_platform_fixtures.py` `android/` with its clean twin (`prove_sast_mobile_detects.py`). Proven only by a hosted run: the `mobile` and `semgrep-kotlin` legs |
+| ~~**.NET real-repo consumer**~~ **CLOSED 2026-10-23 (lane L-SCAN-B, KDEC-026)** | A real-shaped solution fixture -- `Shop.sln`, an ASP.NET Core web project, a data library, a test project, project references, two High NuGet advisories and a controller with planted SQL injection -- runs through `sast-dotnet`'s shipped steps with the real SDK (`tests/prove_dotnet_solution_detects.py`). Its first run found a defect: every advisory was filed against the `.sln` at line 1; each is now filed against the project dotnet reports. Proven only by a hosted run: the `dotnet-solution` leg |
+| ~~**Build-aware C/C++**~~ **CLOSED 2026-10-23 (lane L-SCAN-B, KDEC-026)** | `sast-cpp` builds a compilation database only from the build the repository has -- a committed `compile_commands.json` naming files present here, CMake configure-only for each top-level `CMakeLists.txt` (build tree outside the checkout), bear over `make` where `make -n` works -- and runs `cppcheck --project`. Measured: the planted out-of-bounds write is invisible source-only and reported through the database. Anything without build metadata is scanned source-only and the scan is `PARTIAL` with `CPP_ANALYSIS_PARTIAL` (now a registered `scan_partial_reason`, read by the gate as `COVERAGE_PARTIAL`, rendered PARTIAL in the report). No build system is ever written (`tests/prove_cpp_build_aware.py`, Ubuntu 24.04 container). clang-tidy was **not** added: it re-parses every translation unit at compile cost for overlapping checks -- not cheap (KDEC-026). Proven only by a hosted run: the `cppcheck-build` leg |
+| ~~**Shell / bash**~~ | **CLOSED 2026-10-23 (lane L-SCAN-A, KDEC-025).** shellcheck 0.11.0 reads `*.sh` / `*.bash` and PSScriptAnalyzer 1.25.0 reads `*.ps1` / `*.psm1` / `*.psd1`, both sha256-pinned steps inside `deps-scan`, run only where discovery's new `shell` / `powershell` outputs say the files are; `run:` blocks are shellchecked through actionlint. A dialect shellcheck cannot read (zsh, fish) and a script that `#Requires` a newer PowerShell than the runner are NAMED as `VERSION_GAP`, never clean. Proven by `tests/prove_pipeline_lint.py` and the validate-scanners `shellcheck` / `psscriptanalyzer` legs; no hosted run yet |
+| ~~**GitHub Actions workflows themselves**~~ | **CLOSED 2026-10-23 (lane L-SCAN-A, KDEC-025).** actionlint 1.7.12 and zizmor 1.30.1 (offline, `--no-config`: template injection, excessive permissions, unpinned `uses:`, dangerous triggers such as `pull_request_target`) lint the consumer's `.github/workflows` inside `deps-scan`, where discovery's `workflows` output is true. The `GitHubActionsWorkflow` coverage gap is removed. Proven by `tests/prove_pipeline_lint.py` and the validate-scanners `actionlint` / `zizmor` legs; no hosted run yet. Residual: zizmor's online audits (known-vulnerable actions, impostor commits) are left out -- they need a token and move under a fixed commit |
+| ~~**Dockerfile lint**~~ | **CLOSED 2026-10-23 (lane L-SCAN-A, KDEC-025).** hadolint 2.15.1, sha256-pinned, inside `iac-scan` (which already runs wherever a Dockerfile is), only where discovery's `dockerfile` output is true. An unparseable Dockerfile (DL1000) is a named `VERSION_GAP` |
+| ~~**Language-native dependency audits (pip-audit, npm audit)**~~ | **CLOSED-BY-EXISTING 2026-10-23 (KDEC-025), measured:** over pinned requirements, every one of pip-audit 2.9.0's 57 advisories was also reported by OSV-Scanner 2.7.0 (which resolved idna/urllib3 transitively; Trivy 0.71.2 saw 43 on the direct pins); over a `package-lock.json`, all 8 of npm audit's GHSA ids were in OSV's report (7 in Trivy's). Both scanners already run (`deps-scan`, `malicious-deps`, crawl floor). The one class neither reads -- an UNPINNED requirement (`django>=2.0,<2.1`: pip-audit 18, Trivy 0, OSV 0) -- is now a named `PythonDependenciesUnpinned` coverage gap, the PHP lock rule's twin, not a silent pass |
+| ~~**Terraform lint (tflint)**~~ | **CLOSED-BY-EXISTING 2026-10-23 (KDEC-025), measured:** over a seeded insecure storage account, tflint 0.63.1 (bundled ruleset) reported 4 hygiene warnings and none of the 3 seeded misconfigurations; Trivy config 0.71.2 reported the TLS and HTTP ones (AZU-0011, AZU-0008/0059) among 8, beside Checkov. tflint is a correctness linter, not a security control; the missing `required_version` it flags is already a resolve-job version gap |
 | Composite actions | All observed except `determine-changes` and `setup-terraform` (no consumer yet) and `verify-attestation` (held by plan); each carries a dated deferral to 2026-12-31 in `tests/reconcile_validation.py` |
 | `reusable-nvd-cve.yml` | Has run on a runner (2026-08-18/19, three runs), and its scanners are observed on seeded fixtures. Remaining gap is the WARM path: cache key/restore behaviour has no evidence yet, and the only measured cold updates are 32 min 03 s and 9 min 17 s (runs 32190300370, 32382255986, read by the tool probe). Capture the warm duration from a real run |
 | `context-integrity` negative fixture | ✅ **Refusal observed on the real tenant**: a wrong expected tenant hard-failed after a real login (run 38826929579), the matching case passed (38826938462) |
@@ -358,7 +365,7 @@ Found by reverse census 2026-09-10 (`tests/capability_inventory.py` runs against
 | `update-roadmap-from-scans.yml` | 392 | scan output feeding planning |
 | `azure-security-ingestion.yml` | 55 | cloud posture into the same pipeline |
 | `dependabot-security-check.yml` | — | the GHAS-conditional pattern described above |
-| `shell-scanning.yml` | 75 | **shell is a coverage gap here and is not listed in section 5** |
+| `shell-scanning.yml` | 75 | ~~shell is a coverage gap here~~ closed 2026-10-23: shellcheck and PSScriptAnalyzer in `deps-scan` (KDEC-025) |
 | `github-actions-lint.yml` | 89 | the workflows themselves as a scanned surface |
 | `00-orchestrator.yml` | 293 | sequencing across 30 workflows, with a design document beside it |
 

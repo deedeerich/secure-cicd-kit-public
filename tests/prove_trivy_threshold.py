@@ -54,6 +54,7 @@ sys.path.insert(0, HERE)
 import _scan_step_harness as h  # noqa: E402
 import prove_bootstrap_failure as pbf  # noqa: E402
 import prove_image_scan_enforces as pis  # noqa: E402
+import _trivy_step as ts  # noqa: E402 - the shipped Trivy step read as trivy-action's `with:`
 
 ENV = {'scan-type': None, 'scan-ref': None, 'image-ref': None, 'scanners': 'TRIVY_SCANNERS',
        'severity': 'TRIVY_SEVERITY', 'exit-code': 'TRIVY_EXIT_CODE', 'format': 'TRIVY_FORMAT',
@@ -87,7 +88,7 @@ def resolve(value, inputs):
 
 def run_action(step, inputs, target, ws):
     """Run trivy as trivy-action@v0.36.0 does for this `with:` block. -> (rc, stderr)."""
-    w = step.get('with') or {}
+    w = ts.trivy_with(step)
     unknown = [k for k in w if k not in ENV]
     if unknown:
         raise ValueError('cannot translate trivy-action input(s) %s' % unknown)
@@ -145,11 +146,11 @@ def main():
         pis.image(clean_img, {'/app/hello.txt': 'hello\n'}, 'probe/clean:1')
         for job, cfg in JOBS.items():
             steps = h.steps_by_name(job)
-            prod = [s for s in h.job(job).get('steps', []) if 'trivy-action' in str(s.get('uses'))
-                    and str((s.get('with') or {}).get('output')) == cfg['producer_output']]
+            prod = [s for s in h.job(job).get('steps', []) if ts.is_trivy(s)
+                    and ts.output_of(s) == cfg['producer_output']]
             missing = [n for n in (cfg['count'], cfg['enforce']) if n not in steps]
             if not prod:
-                print('UNKNOWN: %s has no trivy-action step writing %s' % (job, cfg['producer_output']))
+                print('UNKNOWN: %s has no Trivy step writing %s' % (job, cfg['producer_output']))
                 return 2
             # 'handed': the job SUCCEEDS and hands the count to the security gate as
             # findings_state=FINDINGS (lane L-S, O-24: the gate is the single enforcement point).

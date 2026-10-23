@@ -92,7 +92,9 @@ def utc_now():
 def output(**kv):
     path = os.environ.get('GITHUB_OUTPUT')
     for k, v in kv.items():
-        line = '%s=%s' % (k, '' if v is None else v)
+        # One line per value: a newline in a value would end the file command early and let the
+        # rest set another output (output injection; KDEC-027, tests/check_output_writes.py).
+        line = '%s=%s' % (k, '' if v is None else ' '.join(str(v).splitlines()))
         print(line)
         if path:
             io.open(path, 'a', encoding='utf-8').write(line + '\n')

@@ -37,7 +37,8 @@ import sys
 REQUIRED = {
     'jira': {
         'JIRA_HOST': 'https://<site>.atlassian.net',
-        'JIRA_EMAIL': 'Jira Cloud basic auth is email:token. The token alone is a 401.',
+        'JIRA_EMAIL': ('Jira Cloud basic auth is email:token. The token alone is a 401. Not needed '
+                       'with JIRA_AUTH_MODE=bearer (a service account token through the gateway).'),
         'JIRA_TOKEN': 'id.atlassian.com > Security > Create API token',
         'JIRA_PROJECT': 'project key',
         'JIRA_STAMP_FIELD': 'customfield_<id> of a single-line text field, provisioned once',
@@ -65,6 +66,15 @@ REQUIRED = {
 # The older spelling of a variable, accepted so a .env written before the design is not refused
 # for a rename. The design's name wins when both are present.
 ALIASES = {'AZDO_ORG_URL': 'AZDO_ORG'}
+
+
+def required_for(backend, vals):
+    """-> {name: why} required for `backend` given the values present. KDEC-028: with
+    JIRA_AUTH_MODE=bearer and no JIRA_EMAIL, Jira needs only JIRA_TOKEN (no person's address)."""
+    req = dict(REQUIRED[backend])
+    if backend == 'jira' and (vals.get('JIRA_AUTH_MODE') or '').strip().lower() == 'bearer'             and not vals.get('JIRA_EMAIL'):
+        req.pop('JIRA_EMAIL', None)
+    return req
 
 
 def load(path):
@@ -103,7 +113,7 @@ def main(argv):
         print("values this checks depend on which one. (Or pass --backend <name>.)")
         return 1
 
-    required = REQUIRED[backend]
+    required = required_for(backend, vals)
     got = {}
     for k in required:
         got[k] = vals.get(k) or vals.get(ALIASES.get(k, ''), '')

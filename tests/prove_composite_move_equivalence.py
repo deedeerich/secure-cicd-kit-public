@@ -77,6 +77,16 @@ STATUS_STEP = 'Result summary'
 # every tier unless each is excepted. The step-level diff against 5b06ccb was the job `outputs` key
 # and `id` + `run` on the Enforce step only. The L-H pin was 12d86c1c...51f5.
 MOVES = {
+    # RE-PINNED 2026-10-23, lane L-PIN (KDEC-027), `--repin deps-scan` and `--repin iac-scan`. Reason:
+    # aquasecurity/trivy-action -> setup-trivy checks out `aquasecurity/trivy` against github.server_url,
+    # which a GHE.com tenant does not have, so every Trivy step failed to install there. Each Trivy step
+    # is now "Install Trivy (pinned release binary)" + "Trivy database cache" (actions/cache) + a `run:`
+    # step carrying trivy-action's own TRIVY_* settings. The step-level diff was those three steps in
+    # place of the trivy-action step, nothing else.
+    # RE-PINNED 2026-10-23, lane L-PIN (KDEC-027), all six with `--repin <job>`. Reason: every
+    # $GITHUB_OUTPUT write of external text is single-line sanitised (tests/check_output_writes.py:
+    # `echo "count=${n//[$'\r\n']/ }"`), and sast-cpp's Python writer joins a value's lines. The
+    # step-level diff was `run` on the count/collection steps only.
     # RE-PINNED 2026-10-22, lane L-FX, `--repin secret-scan`. Reason: KDEC-018 (owner, 2026-10-22:
     # "You can't drop below crawl ever") -- the secret scan always covers the repository root, so
     # the job hands the composite `paths: "."` instead of the caller's `paths`, which narrowed the
@@ -91,17 +101,57 @@ MOVES = {
     # a31c0a6 was `run` on Write the Azure/Entra rules, Install gitleaks, Gitleaks and
     # detect-secrets only. The L-FX pin was dbd82bc7...fc8f.
     'secret-scan': ('secret-scan', '11d1d56',
-                    '0f2cd63c483c387ea740bb1547eba9740c533ce8c13bd1fccf17b2b76153f8c4'),
+                    '72d388c0864ee323c486fc21d340757f2074cbba556a1c3d9216968f16ca2d9d'),
+    # RE-PINNED 2026-10-23, integration lane L-INT1, `--repin sast-cpp`, after the merge pin
+    # 7981aba5...99f1. Reason: KDEC-027 -- L-SCAN-B's new `C/C++ build metadata` step wrote
+    # scan_state/scan_reason as `$(cat ...)` straight into $GITHUB_OUTPUT; each is now read into a
+    # variable and flattened to one line. The step-level diff was `run` on that step only.
+    # RE-PINNED 2026-10-23, integration lane L-INT1, `--repin sast-cpp`. Reason: L-PIN (KDEC-027,
+    # sanitised output writes; its pin was f7228a0c...350a) and L-SCAN-B (KDEC-026, below; its pin
+    # was 4b0c6fce...7c39) each re-pinned sast-cpp from c7e1ea9; the merged composite carries both.
+    # RE-PINNED 2026-10-23, lane L-SCAN-B, `--repin sast-cpp`. Reason: KDEC-026, build-aware C/C++
+    # -- a new `C/C++ build metadata` step (id cpp_build) before cppcheck, the cppcheck step's run
+    # text (one pass per trusted compilation database, then source-only over what none covers, the
+    # converter reading every pass and writing repository-relative paths), and job/composite
+    # outputs scan_state and scan_reason (CPP_ANALYSIS_PARTIAL). No other step changed. The pin
+    # before was 2763b67b...eeeb. tests/prove_cpp_build_aware.py runs the changed steps.
     'sast-cpp': ('sast-cpp', '11d1d56',
-                 '2763b67bc90b5eda80dbef2ba0343179cb72a4edd9d86e419271398e7a51eeeb'),
+                 'b90b7c7495d9a02fe32b4c03cd937d16ff47caa878674bb5610014c6ccbe148e'),
+    # RE-PINNED 2026-10-23, integration lane L-INT1, `--repin iac-scan` and `--repin deps-scan`.
+    # Reason: L-SCAN-A (KDEC-025, the lint steps below) and L-PIN (KDEC-027, the pinned Trivy
+    # binary and sanitised output writes above) each re-pinned these two from c7e1ea9; merged, the
+    # composites carry both changes, so neither lane's digest holds. The step-level diff against
+    # 11d1d56 is the union of the two lanes' diffs and nothing else. The lanes' pins were iac-scan
+    # 3cac4182...9ed4 (L-SCAN-A) / d3aff382...4ab0 (L-PIN) and deps-scan dd57ab7f...aef9 (L-SCAN-A)
+    # / fe573f0e...f37c (L-PIN).
+    # RE-PINNED 2026-10-23, lane L-SCAN-A, `--repin iac-scan` and `--repin deps-scan`. Reason:
+    # KDEC-025 (owner, 2026-10-23: "All the gaps need to be addressed as closed", cost-beneficially)
+    # -- the pipeline linters ride in jobs that already run instead of jobs of their own. Against
+    # c7e1ea9 the change is ADDITIVE ONLY: iac-scan gains the `dockerfile` input and the hadolint
+    # steps (lint, enforce, publish check, a generated redaction, upload, Security-tab upload,
+    # degraded notice) after its last Trivy step, and its findings_state also reads hadolint's;
+    # deps-scan gains the `workflows`/`shell`/`powershell` inputs and the pipeline-lint steps
+    # (install, actionlint + zizmor, shellcheck, PSScriptAnalyzer, enforce, publish check, a
+    # generated redaction, four uploads, four Security-tab uploads, degraded notice) after its last
+    # Trivy step, and its findings_state also reads lint_enforce's. No existing step's name, id,
+    # if, uses, with, env, run or shell changed; each job passes the new inputs from discovery.
+    # The L-S pins were iac-scan d66edea4...0806 and deps-scan bb038edc...905e.
     'iac-scan': ('iac-scan', '11d1d56',
-                 'd66edea4441f3b2590f26dff5a6eae2178758890a5f37171773ba032f7dc0806'),
+                 '49d9144a4ed65c73595651aebe91506d8d5ba08d685042fde82ab088b6463093'),
     'deps-scan': ('deps-scan', '11d1d56',
-                  'bb038edceba9f88a0bd25b96d9deb52b07aa6b80f4fea4bd28a35da37297905e'),
+                  '980ac662828bbc6fde659e65853a849b972a0c3cf712ad5d28f4d9236cff8197'),
+    # RE-PINNED 2026-10-23, integration lane L-INT1, `--repin sast-dotnet`. Reason: L-PIN (KDEC-027,
+    # its pin was 5ffff3c6...cf1d) and L-SCAN-B (KDEC-026, below; its pin was 5194ff9c...94ec) each
+    # re-pinned sast-dotnet from c7e1ea9; the merged composite carries both.
+    # RE-PINNED 2026-10-23, lane L-SCAN-B, `--repin sast-dotnet`. Reason: KDEC-026 -- the first
+    # run over a real-shaped solution (tests/prove_dotnet_solution_detects.py) found every NuGet
+    # advisory filed against the .sln at line 1; the `NuGet audit — count` run text now files each
+    # result against the project dotnet reports. No other step changed. The pin before was
+    # 08291421...bdf4.
     'sast-dotnet': ('sast-dotnet', '11d1d56',
-                    '082914217be24f109b76545035e724fe63c0391508e765ff639ffd6a7cd8bdf4'),
+                    '7390c5846d1d2b05a1334050ebec771c60b9aca342f3cc5b4f1a6e9e621e04c2'),
     'sast-java': ('sast-java', '11d1d56',
-                  'cab930bb3f577b9f83b4ebf93fda768ffc11db20d2dd22e91598239f0059eea4'),
+                  'c8e8ce39fc7e1baef5b733affb890d387fd726645e739e269cd9261f7b5a4571'),
 }
 
 

@@ -14,7 +14,14 @@
 # vX.Y.Z tag is refused and its line left alone: pin it by hand, with a reviewed comment.
 # tests/prove_pin_actions_names_release.py; the output must pass tests/check_action_pins.py.
 #
-# Requires: curl, jq, GITHUB_TOKEN (public repo read is enough), and Python (PYTHON, else python3).
+# Requires: curl, jq and Python (PYTHON, else python3). GITHUB_TOKEN (public repo read is enough)
+# lifts the 60-an-hour unauthenticated limit.
+#
+# WHICH HOST, WHICH TOKEN (KDEC-027). Third-party actions are PUBLIC github.com repositories, so they
+# are read from PIN_ACTIONS_API (default https://api.github.com) on every host, a GHE.com tenant
+# included. GITHUB_TOKEN is sent there ONLY when the host that issued it -- GITHUB_API_URL, and
+# PIN_CHECK_TOKEN_HOST when set; unset means github.com -- is that same host. A GHE.com token
+# (api.<tenant>.ghe.com) is never sent to api.github.com; the run proceeds unauthenticated instead.
 set -euo pipefail
 
 APPLY=0
@@ -23,12 +30,22 @@ APPLY=0
 TRUSTED_ORGS="${TRUSTED_ORGS:-}"
 PY="${PYTHON:-python3}"
 SEARCH_PATHS="${SEARCH_PATHS:-.github}"
-API="${GITHUB_API_URL:-https://api.github.com}"
+API="${PIN_ACTIONS_API:-https://api.github.com}"
 
-if [ -z "${GITHUB_TOKEN:-}" ]; then
-  echo "GITHUB_TOKEN is not set — the API will rate-limit almost immediately." >&2
-  echo "  export GITHUB_TOKEN=<token with public repo read>" >&2
-  exit 1
+host_of() { local u="${1#*://}"; u="${u%%/*}"; printf '%s' "${u,,}"; }
+AUTH=()
+token_host_ok=1
+for issuer in "${GITHUB_API_URL:-}" "${PIN_CHECK_TOKEN_HOST:-}"; do
+  if [ -n "$issuer" ] && [ "$(host_of "$issuer")" != "$(host_of "$API")" ]; then token_host_ok=0; fi
+done
+if [ -n "${GITHUB_TOKEN:-}" ] && [ "$token_host_ok" = "1" ]; then
+  AUTH=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+elif [ -n "${GITHUB_TOKEN:-}" ]; then
+  echo "GITHUB_TOKEN was not issued by $(host_of "$API"), so it is not sent there (KDEC-027)." >&2
+  echo "  Reading unauthenticated (60 requests an hour)." >&2
+else
+  echo "GITHUB_TOKEN is not set: reading unauthenticated (60 requests an hour)." >&2
+  echo "  export GITHUB_TOKEN=<github.com token with public repo read>" >&2
 fi
 command -v jq >/dev/null || { echo "jq is required." >&2; exit 1; }
 
@@ -44,7 +61,7 @@ is_trusted() {
 resolve_sha() {
   # /commits/<ref> dereferences lightweight tags, annotated tags, and branches alike.
   local repo="$1" ref="$2"
-  curl -sS -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+  curl -sS ${AUTH[@]+"${AUTH[@]}"} \
        -H "Accept: application/vnd.github+json" \
        "${API}/repos/${repo}/commits/${ref}" | jq -r '.sha // empty' | tr -d '\r'
 }
@@ -55,7 +72,7 @@ exact_release() {
   local repo="$1" sha="$2" ref="$3" page=1 body n found=""
   if [[ "$ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "$ref"; return 0; fi
   while [ "$page" -le 50 ]; do
-    body="$(curl -sS -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+    body="$(curl -sS ${AUTH[@]+"${AUTH[@]}"} \
                  -H "Accept: application/vnd.github+json" \
                  "${API}/repos/${repo}/tags?per_page=100&page=${page}")" || return 0
     n="$(printf '%s' "$body" | jq -r 'if type == "array" then length else 0 end' | tr -d '\r')"

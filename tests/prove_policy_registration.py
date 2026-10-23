@@ -152,7 +152,8 @@ def main():
 
     def res(cen, repo_doc=None, repository='acme/ledger-api', environment='prod', event='push',
             supplied=None, today=TODAY):
-        return pr.resolve(cen, repo_doc, repository, environment, event, supplied or {}, today)
+        return pr.resolve(cen, repo_doc, repository, environment, event, supplied or {}, today,
+                          history=pr.committed_once(cen, repo_doc))
 
     # ---- 1  the kit default -------------------------------------------------------------------
     r = res(None)
@@ -199,13 +200,17 @@ def main():
           and r['rung_effective'] == 'walk' and not r['weakenings'],
           'rule 8: a narrower softening with a decision was not refused below the floor: %r / %r / %r'
           % (r['state'], r.get('routes_to'), r.get('weakenings')))
-    # Another repository in the org inherits the org; another org gets the kit default.
+    # Another repository in the org inherits the org; another org -- unknown to a register with org
+    # entries and no enterprise entry -- runs at the strictest registered org (KDEC-022 item 1), here
+    # acme's org-level entry, and says so.
     r = res(reg, repository='acme/other', environment='prod')
     check(r['rung_effective'] == 'crawl' and r['chain'] == ['org'] and r['scope'].get('team') == 'web',
           'rule 4: another repository in the org: %r %r' % (r.get('rung_effective'), r.get('chain')))
     r = res(reg, repository='globex/thing', environment='prod')
-    check(r['policy_source'] == 'KIT_DEFAULT' and r['rung_effective'] == 'crawl',
-          'rule 4: another organisation did not get the kit default: %r' % r.get('policy_source'))
+    check(r['policy_source'] == 'REGISTER' and r['rung_effective'] == 'crawl' and r['chain'] == ['org']
+          and [n for n in r.get('notices') or [] if n.get('code') == 'ORG_UNMAPPED_RAN_AT_STRICTEST_ORG'],
+          'rule 4: another organisation did not run at the strictest registered org with the notice '
+          '(KDEC-022): %r %r %r' % (r.get('policy_source'), r.get('chain'), r.get('notices')))
     check(r['scope'].get('org') == 'globex', 'rule 4: the org was not read from the repository name')
     # Org names compare case-insensitively (GitHub owners do).
     r = res(reg, repository='ACME/ledger-api', environment='prod')

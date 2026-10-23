@@ -35,6 +35,26 @@ THE CAP
     months at the quarterly expiries the kit's examples use), past which a recurring exception is a
     standing policy and belongs in the register as one -- or, for a secret, removed.
 
+THE HISTORY COMES FROM GIT (KDEC-022 item 2, owner 2026-10-23: option D, "B plus C")
+
+    A register can say anything about itself, including a shorter `renews` than happened. So the
+    renewal history of every register exception -- a secret_exceptions or known_exploited_exceptions
+    item (keyed by its finding), and an entry's decision (keyed by the entry id) -- is DERIVED from
+    the git history of the protected register file: `git log --follow` of the file on the default
+    branch, every version read, every distinct (ticket, expiry) the exception ever had collected
+    (read_git_history, derive_grants). Then (check_history):
+
+        the declared `renews` lists every prior grant git shows   -> verified; the count is the
+                                                                     larger of the two (a longer
+                                                                     declared history only tightens)
+        it lists fewer (the history was erased)                    -> EXCEPTION_HISTORY_TAMPERED
+        git cannot show the history (a shallow clone, no git, a    -> EXCEPTION_HISTORY_UNVERIFIED:
+        file that differs from its committed version, a blob the      refused exactly as an
+        fetch cannot supply)                                           unreadable history is --
+                                                                       never read as zero renewals
+    The cap (numbers.max_exception_renewals) binds that DERIVED count. The weekly Jira cross-check
+    (scripts/exception_due.py --cross-check) is the second half, C; the gate never depends on Jira.
+
 USAGE (the deploy reusables' verdict step re-implements the same rules in jq; this CLI is for people)
     python3 exception_history.py --renews-json '[...]' [--cap N]
     python3 exception_history.py --self-test
@@ -42,14 +62,22 @@ EXIT  0 within the cap   1 over the cap or unreadable   2 usage, or self-test fa
 """
 import argparse
 import datetime
+import io
 import json
+import os
 import re
+import subprocess
 import sys
 
 kit_default_max_renewals = 2
 max_renewals_ceiling = 5
 number_key = 'max_exception_renewals'
 EXCEPTION_RENEWAL_LIMIT = 'EXCEPTION_RENEWAL_LIMIT'
+# KDEC-022 item 2: the history as git shows it.
+EXCEPTION_HISTORY_TAMPERED = 'EXCEPTION_HISTORY_TAMPERED'
+EXCEPTION_HISTORY_UNVERIFIED = 'EXCEPTION_HISTORY_UNVERIFIED'
+history_verified = 'VERIFIED'
+history_unverified = 'UNVERIFIED'
 GRANT_KEYS = ('ticket', 'approver', 'from', 'expires')
 TICKET_RE = re.compile(r'^[A-Z][A-Z0-9_]*-[0-9]+$')
 ISO_DATE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
@@ -125,6 +153,157 @@ def verdict(grants, cap):
                 'not a thing: fix the cause, or the authority raises the cap (at most %d)'
                 % (n, cap, number_key, max_renewals_ceiling))
     return (None, '')
+
+
+def verdict_count(n, cap):
+    """verdict() for a count rather than a list of grants (the derived count, KDEC-022)."""
+    return verdict([None] * int(n or 0), cap)
+
+
+# ── the history from git (KDEC-022 item 2, B) ─────────────────────────────────────────────────
+
+def _git(repo, *args):
+    p = subprocess.run(['git', '-C', repo, '-c', 'core.quotepath=off'] + list(args), capture_output=True)
+    return p.returncode, p.stdout.decode('utf-8', 'replace'), p.stderr.decode('utf-8', 'replace').strip()
+
+
+def unverified(why):
+    return {'state': history_unverified, 'why': why, 'versions': [], 'source': 'none'}
+
+
+def history_from_texts(texts, source='supplied'):
+    """A history made of the given versions, oldest first (a fixture, or 'the register as committed
+    once'). -> a VERIFIED history."""
+    return {'state': history_verified, 'why': '%d version(s) supplied' % len(texts), 'source': source,
+            'versions': [{'sha': '', 'date': '', 'text': t} for t in texts]}
+
+
+def read_git_history(repo, ref, path):
+    """Every committed version of `path` reachable from `ref`, oldest first, following renames.
+    -> a history dict: state VERIFIED, or UNVERIFIED with the reason. A shallow repository, an
+    unresolvable ref, or a version whose blob cannot be read is UNVERIFIED -- the history git
+    cannot show is not an empty one."""
+    rc, out, err = _git(repo, 'rev-parse', '--verify', '--quiet', '%s^{commit}' % ref)
+    if rc != 0:
+        return unverified('ref %r cannot be resolved in %s (%s)' % (ref, repo, err or 'no such ref'))
+    sha = out.strip()
+    rc, out, _e = _git(repo, 'rev-parse', '--is-shallow-repository')
+    if rc != 0 or out.strip() != 'false':
+        return unverified('the repository is a shallow clone: git cannot show the register\'s whole history, so '
+                          'no renewal count can be verified (fetch it with history -- the workflow uses a '
+                          'blob-less partial clone)')
+    rc, out, err = _git(repo, 'log', '--follow', '--format=%x00%H%x09%cs', '--name-only', sha, '--', path)
+    if rc != 0:
+        return unverified('git log --follow of %s failed: %s' % (path, err))
+    commits = []
+    for block in out.split('\x00')[1:]:
+        lines = [x for x in block.split('\n') if x.strip()]
+        if not lines:
+            continue
+        head = lines[0].split('\t')
+        commits.append((head[0], head[1] if len(head) > 1 else '', lines[-1].strip() if len(lines) > 1 else path))
+    versions = []
+    for c_sha, date, p in reversed(commits):
+        rc, _o, _e = _git(repo, 'cat-file', '-e', '%s:%s' % (c_sha, p))
+        if rc != 0:
+            # The commit deleted the file (or renamed it away): no version at this commit.
+            continue
+        rc, text, err = _git(repo, 'show', '%s:%s' % (c_sha, p))
+        if rc != 0:
+            return unverified('version %s of %s cannot be read: %s' % (c_sha[:12], p, err))
+        versions.append({'sha': c_sha, 'date': date, 'text': text})
+    return {'state': history_verified, 'why': '%d committed version(s) of %s at %s' % (len(versions), path, sha[:12]),
+            'source': 'git', 'versions': versions}
+
+
+def history_for_file(path, extra_text=None):
+    """The git history of a register FILE in a working tree (the central register, --validate).
+    The committed versions at HEAD; the file as it stands must equal the newest of them, unless
+    `extra_text` is given (a proposed version being validated), which is appended as the newest.
+    -> a history dict."""
+    if not path or not os.path.isfile(path):
+        return unverified('no file at %s' % (path or '(none)'))
+    d, base = os.path.dirname(os.path.abspath(path)), os.path.basename(path)
+    rc, out, _e = _git(d, 'ls-files', '--full-name', '--', base)
+    rel = out.strip().split('\n')[0].strip() if rc == 0 else ''
+    if not rel:
+        return unverified('%s is not a committed file in any git history: its exceptions\' renewals cannot be '
+                          'verified' % path)
+    rc, top, _e = _git(d, 'rev-parse', '--show-toplevel')
+    h = read_git_history(top.strip(), 'HEAD', rel)
+    if h['state'] != history_verified:
+        return h
+    if extra_text is not None:
+        h['versions'].append({'sha': 'proposed', 'date': '', 'text': extra_text})
+        return h
+    try:
+        current = io.open(path, encoding='utf-8').read()
+    except (OSError, UnicodeDecodeError) as exc:
+        return unverified('%s cannot be read: %s' % (path, exc))
+    newest = h['versions'][-1]['text'] if h['versions'] else None
+    if newest is None or newest.replace('\r\n', '\n') != current.replace('\r\n', '\n'):
+        return unverified('%s differs from its committed version: git does not show the history of what is being '
+                          'read' % path)
+    return h
+
+
+def exception_key(kind, ident):
+    return '%s:%s' % (kind, ident)
+
+
+def derive_grants(history):
+    """-> {key: [grant, ...]} oldest first, one per distinct (ticket, expires) the exception ever had,
+    each {ticket, approver, from, expires}. Keys: secret:<finding>, kev:<finding>, decision:<entry id>.
+    A version that does not parse contributes nothing (its neighbours still do)."""
+    out = {}
+    for v in (history or {}).get('versions') or []:
+        try:
+            doc = json.loads(v.get('text') or '')
+        except ValueError:
+            continue
+        for e in (doc.get('policies') if isinstance(doc, dict) else None) or []:
+            if not isinstance(e, dict):
+                continue
+            found = []
+            for kind, field in (('secret', 'secret_exceptions'), ('kev', 'known_exploited_exceptions')):
+                for item in e.get(field) or []:
+                    if isinstance(item, dict) and str(item.get('finding') or '').strip():
+                        found.append((exception_key(kind, str(item['finding']).strip()), item.get('ticket'),
+                                      item.get('expires'), item.get('approver')))
+            dec = e.get('decision')
+            if isinstance(dec, dict) and str(e.get('id') or '').strip():
+                found.append((exception_key('decision', str(e['id']).strip()), dec.get('exception_ref'),
+                              dec.get('expires'), dec.get('authority')))
+            for key, ticket, expires, approver in found:
+                g = {'ticket': str(ticket or '').strip(), 'expires': str(expires or '').strip(),
+                     'approver': str(approver or '').strip(), 'from': v.get('date') or ''}
+                seen = out.setdefault(key, [])
+                if not any(x['ticket'] == g['ticket'] and x['expires'] == g['expires'] for x in seen):
+                    seen.append(g)
+    return out
+
+
+def check_history(history, key, ticket, expires, declared):
+    """-> (code or None, why, derived_prior_count). `declared` is the parsed `renews` (a list)."""
+    if not history or history.get('state') != history_verified:
+        return (EXCEPTION_HISTORY_UNVERIFIED, 'its renewal history cannot be verified from git (%s); a history git '
+                'cannot show is not "no renewals"' % ((history or {}).get('why') or 'no history was read'), None)
+    grants = history.setdefault('_grants', None) or derive_grants(history)
+    history['_grants'] = grants
+    cur = (str(ticket or '').strip(), str(expires or '').strip())
+    prior = [g for g in grants.get(key) or [] if (g['ticket'], g['expires']) != cur]
+    have = set((g['ticket'], g['expires']) for g in declared or [])
+    have_exp = set(g['expires'] for g in declared or [])
+    missing = [g for g in prior if (g['ticket'], g['expires']) not in have
+               and not (not g['ticket'] and g['expires'] in have_exp)]
+    if missing:
+        return (EXCEPTION_HISTORY_TAMPERED,
+                'git shows %d prior grant(s) of this exception and its declared renews lists %d; missing: %s. A '
+                'history shorter than git shows was erased' % (
+                    len(prior), len(declared or []),
+                    ', '.join('%s until %s (first committed %s)' % (g['ticket'] or '(no ticket)', g['expires'],
+                                                                     g['from'] or '?') for g in missing)), len(prior))
+    return (None, '', len(prior))
 
 
 def _selftest():

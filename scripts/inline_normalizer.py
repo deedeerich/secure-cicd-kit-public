@@ -96,7 +96,9 @@ TARGETS = ["reusable-security.yml"]
 # "first step of the composite" are the same moment on the runner.
 # tests/prove_composite_move_equivalence.py expands each call back into its job and compares it
 # with the job as it stood before the move.
-COMPOSITES = ["secret-scan", "sast-cpp", "iac-scan", "deps-scan", "sast-dotnet", "sast-java"]
+COMPOSITES = ["secret-scan", "sast-cpp", "iac-scan", "deps-scan", "sast-dotnet", "sast-java",
+              # lane L-SCAN-B (KDEC-026): born a composite, never inline.
+              "sast-mobile"]
 ACTIONS = os.path.join(ROOT, ".github", "actions")
 
 # The one job that materialises the scripts. It is excluded from the fetch step for the obvious
@@ -143,6 +145,7 @@ STATUS_JOBS = [
      "terraform / bicep / docker"),
     ("sast-dotnet",   "SAST (.NET)",        "",                   "dotnet"),
     ("sast-java",     "SAST (Java)",        "",                   "java / kotlin"),
+    ("sast-mobile",   "SAST (mobile)",      "",                   "android / ios"),
     ("sast-go",       "SAST (Go)",          "",                   "go"),
     ("sast-cpp",      "SAST (C/C++)",       "",                   "c / c++"),
     ("malicious-deps", "Malicious packages", "",                  "dependency provenance"),

@@ -5,6 +5,17 @@ Commit ids are on the build trunk `fix/normalization-and-discovery`. Versions 1.
 `10b-CHANGE-LOG-EARLIER.md`. A reader whose last copy was v1.10 (`a907dc8`) reads
 `12-CHANGES-SINCE-A907DC8.md` first: it groups every change since by what an integrator must do.
 
+## Unreleased — strictest org, exception history from git, exploited in the wild (lane L-POL, 2026-10-23)
+
+KDEC-022 (owner, 2026-10-23). Proven locally, each failed first (`prove_authority_floor.py` A12,
+`prove_exception_history_derived.py`, `prove_known_exploited.py`); no hosted run.
+
+| change | parts affected |
+|---|---|
+| No enterprise entry: an unknown org runs at the strictest registered org (`ORG_UNMAPPED_RAN_AT_STRICTEST_ORG`) | 03, 05 |
+| Renewals counted from git: `EXCEPTION_HISTORY_TAMPERED` (`BLOCKED`), `EXCEPTION_HISTORY_UNVERIFIED`; resolve-policy clones blob-less; weekly Jira cross-check (`EXCEPTION_TICKET_MISMATCH`) | 03, 05, 06 |
+| A CVE on the CISA KEV catalog blocks at every rung (`FINDING_KNOWN_EXPLOITED`); `known_exploited_exceptions`; `KEV_UNAVAILABLE` advisory | 03, 04, 05 |
+
 ## Unreleased — rollback test period, requested version, per-target freeze (lane L-RB2, 2026-10-23)
 
 KDEC-021 (owner, 2026-10-23; `a0c93c4`). Proven against the stub cloud (`prove_rollback_sequence.py`

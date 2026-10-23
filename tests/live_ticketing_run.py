@@ -22,6 +22,9 @@ WHAT IT DOES
            T-7  a person closes it with nothing backing it        -> reopened
            T-8  a person makes the reopen refusable               -> successor, predecessor kept
          Cleanup is by a person: the bridge cannot delete, and the transcript lists every ticket.
+    R-3  the LIFECYCLE (KDEC-024) on ONE synthetic ticket: NEW, SLA escalation (comment, priority,
+         label), closure on a verified clearance, RECURRED reopen, and closure again -- so the
+         ticket ends closed. The reference date is advanced per step instead of waiting.
 
 SAFETY
 
@@ -288,11 +291,71 @@ def r2_after_human(rt, env, tr, run_dir):
                 or res.get('successors'))
 
 
+def r3(rt, env, tr, run_dir):
+    """KDEC-024 live: the LIFECYCLE on ONE synthetic ticket, which ends CLOSED.
+
+        create (NEW) -> SLA overdue: comment, priority one step, label -> verified clearance:
+        closed with the run cited -> the finding returns: reopened RECURRED -> cleared again:
+        closed. The reference date is advanced by the runner (it is an input to every run), so
+        the SLA breach is reached without waiting; the period is 0 days for a LOW finding."""
+    import datetime
+    marker = time.strftime('%Y%m%d%H%M%S')
+    io.open(os.path.join(run_dir, 'marker'), 'w').write(marker)
+    rec = dict(synthetic(marker, 'a')[0], job='deps-scan', fp='')
+    scanner = rec['scanner']
+    coverage = {scanner: {'scanner': scanner, 'job': 'deps-scan', 'established': True,
+                          'gate': 'PASS', 'execution': 'COMPLETE', 'scope': ''}}
+    day0 = datetime.date.today()
+    numbers = {'sla_period_days': {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0}}
+    ledger, ok = {}, True
+    steps = (('create (NEW)', [rec], 0, 'created'),
+             ('SLA overdue -> escalate', [rec], 1, 'escalations'),
+             ('verified clearance -> close', [], 2, 'cleared'),
+             ('the finding returns -> RECURRED', [rec], 3, 'reopened'),
+             ('cleared again -> close (cleanup)', [], 4, 'cleared'))
+    for label, recs, offset, key in steps:
+        b, note = rt.choose_backend(env)
+        if b is None:
+            tr.say('R-3 refused: %s' % note)
+            return False
+        today = (day0 + datetime.timedelta(days=offset)).isoformat()
+        ctx = {'run_url': 'live-r3 %s step %d' % (marker, offset), 'commit': '%040d' % offset,
+               'coverage': coverage, 'numbers': numbers}
+        res = rt.reconcile(*rt.build_clusters(recs), backend=b, ledger=ledger,
+                           apply_changes=True, today=today, context=ctx)
+        got = [x for x in res.get(key) or [] if x.get('ref') and not x.get('planned')]
+        if key == 'reopened':
+            # Reopened in place, or -- where the workflow refuses the reopen -- a successor that
+            # references the predecessor (TC 4.2). Either is the recurrence, named RECURRED.
+            got = [x for x in got + list(res.get('successors') or [])
+                   if x.get('classification') == 'RECURRED']
+        if key == 'cleared':
+            got = [x for x in got if x.get('closed')]
+        if key == 'escalations':
+            got = [x for x in got if x.get('marked') and x.get('commented')]
+        held = bool(got)
+        ok = ok and held
+        tr.say('R-3  %-34s %s  state %s, claim %s, calls %s, %s' % (
+            label, 'HELD' if held else 'FAILED', res.get('ticketing_state'),
+            (res.get('ticketing_claim') or {}).get('routing_result'), res.get('calls'),
+            json.dumps([dict((k, v) for k, v in x.items() if k in ('ref', 'classification',
+                                                                    'applied', 'closed'))
+                        for x in got], sort_keys=True)[:300]))
+        for n in res.get('notes') or []:
+            if 'failed' in n or 'could not' in n or 'incomplete' in n:
+                tr.say('       note: %s' % n)
+    rt.save_ledger(os.path.join(run_dir, 'ledger.json'), ledger)
+    for e in ledger.values():
+        tr.say('R-3  ticket %s (%s) -- created and closed by this run; the bridge has no delete'
+               % (e.get('key'), e.get('ref')))
+    return ok
+
+
 def main(argv=None):
-    ap = argparse.ArgumentParser(description='Live R-1/R-2 against a PERSONAL tracker.')
+    ap = argparse.ArgumentParser(description='Live R-1/R-2/R-3 against a PERSONAL tracker.')
     ap.add_argument('--backend', choices=['jira', 'azdo'], required=True)
     ap.add_argument('--env-file', default=os.path.join(ROOT, '.env'))
-    ap.add_argument('--phase', choices=['r1', 'r2', 'r2-after-human'], default='r1')
+    ap.add_argument('--phase', choices=['r1', 'r2', 'r2-after-human', 'r3'], default='r1')
     ap.add_argument('--run-dir', default='')
     ap.add_argument('--confirm-live', action='store_true',
                     help='required: this contacts the tracker the .env names')
@@ -332,6 +395,8 @@ def main(argv=None):
             ok = r1(rt, env, args.backend, tr, blocker)
         elif args.phase == 'r2':
             ok = r2(rt, env, tr, run_dir)
+        elif args.phase == 'r3':
+            ok = r3(rt, env, tr, run_dir)
         else:
             ok = r2_after_human(rt, env, tr, run_dir)
         tr.say('RESULT: %s' % ('HELD' if ok else 'FAILED'))

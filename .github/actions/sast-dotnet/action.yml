@@ -155,6 +155,7 @@ runs:
         if len(index) != len(roots):
             emit('COLLECTION_FAILED', why='%d project(s) discovered, %d audited' % (len(roots), len(index)))
         hits = set()
+        filed = set()   # (key, project): one result per project that carries it
         # THE AUDIT'S EVIDENCE OUTLIVES THE RUNNER. It blocked and kept nothing: the report's
         # dotnet-vuln row expects dotnet-vuln.sarif, nothing wrote it, and hosted run
         # 38779814703 read the seeded NuGet advisories as MISSED while this job was red. One
@@ -179,25 +180,39 @@ runs:
             if doc.get('problems') or any(p.get('problems') for p in projects):
                 emit('COLLECTION_FAILED', why='dotnet reported problems for %s' % proj)
             for p in projects:
+                # THE PROJECT THAT CARRIES THE PACKAGE, NOT THE ROOT THAT WAS LISTED (lane L-SCAN-B,
+                # KDEC-026). A .sln root lists every project in it; the results were filed against the
+                # solution file at line 1 and, deduplicated, never against the project that declares
+                # the package -- measured on tests/_platform_fixtures.py dotnet-solution/. Each
+                # result now names the project dotnet reports (`projects[].path`), at its declaring
+                # line; the COUNT stays one per distinct (package, version, advisory).
+                ppath = str(p.get('path') or proj)
+                if os.path.isabs(ppath):
+                    r = os.path.relpath(ppath, os.getcwd())
+                    ppath = r if not r.startswith('..') else ppath
+                ppath = ppath.replace(os.sep, '/')
+                ppath = ppath[2:] if ppath.startswith('./') else ppath
                 for fw in (p.get('frameworks') or []):
                     for kind in ('topLevelPackages', 'transitivePackages'):
                         for pkg in (fw.get(kind) or []):
                             for v in (pkg.get('vulnerabilities') or []):
                                 if str(v.get('severity', '')).lower() in ('critical', 'high'):
                                     key = (pkg.get('id'), pkg.get('resolvedVersion'), v.get('advisoryurl'))
-                                    if key in hits:
+                                    if (key, ppath) in filed:
                                         continue
-                                    hits.add(key)
-                                    print('::warning title=Vulnerable NuGet package::%s %s %s %s' % (
-                                        pkg.get('id'), pkg.get('resolvedVersion'), v.get('severity'), v.get('advisoryurl')))
+                                    filed.add((key, ppath))
+                                    if key not in hits:
+                                        hits.add(key)
+                                        print('::warning title=Vulnerable NuGet package::%s %s %s %s' % (
+                                            pkg.get('id'), pkg.get('resolvedVersion'), v.get('severity'), v.get('advisoryurl')))
                                     rid = str(v.get('advisoryurl') or 'nuget-advisory').rstrip('/').rsplit('/', 1)[-1]
                                     rules[rid] = {'id': rid, 'helpUri': v.get('advisoryurl') or '',
                                                   'shortDescription': {'text': 'Vulnerable NuGet package (%s)' % v.get('severity')}}
                                     results.append({'ruleId': rid, 'level': 'error',
-                                        'message': {'text': '%s %s: %s advisory %s' % (pkg.get('id'), pkg.get('resolvedVersion'), v.get('severity'), v.get('advisoryurl'))},
+                                        'message': {'text': '%s %s (%s): %s advisory %s' % (pkg.get('id'), pkg.get('resolvedVersion'), 'declared' if kind == 'topLevelPackages' else 'transitive', v.get('severity'), v.get('advisoryurl'))},
                                         'locations': [{'physicalLocation': {
-                                            'artifactLocation': {'uri': proj[2:] if proj.startswith('./') else proj},
-                                            'region': {'startLine': line_of(proj, pkg.get('id'))}}}]})
+                                            'artifactLocation': {'uri': ppath},
+                                            'region': {'startLine': line_of(ppath, pkg.get('id'))}}}]})
         sarif = {'version': '2.1.0',
                  '$schema': 'https://json.schemastore.org/sarif-2.1.0.json',
                  'runs': [{'tool': {'driver': {'name': 'dotnet-vuln',
@@ -332,7 +347,7 @@ runs:
           echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
           exit 1
         fi
-        echo "count=$n" >> "$GITHUB_OUTPUT"
+        echo "count=${n//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
         echo "C# SAST findings: $n"
 
     - name: Semgrep (C#) — enforce

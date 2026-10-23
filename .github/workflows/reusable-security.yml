@@ -295,6 +295,16 @@ on:
           PASS | EXCEPTED | FAIL — EXCEPTED means every secret found is excepted by a ticketed register entry (never PASS); evaluated SEPARATELY and never suppressed by advisory_mode. A consumer that
           only checks gate_decision would miss that secrets are enforced unconditionally.
         value: ${{ jobs.security-gate.outputs.secret_gate }}
+      kev_state:
+        description: >-
+          AVAILABLE | UNAVAILABLE — whether the CISA Known Exploited Vulnerabilities catalog was read
+          this run (KDEC-022). UNAVAILABLE is never a pass: the run routes PROCEED_WITH_ADVISORY (KEV_UNAVAILABLE).
+        value: ${{ jobs.security-gate.outputs.kev_state }}
+      kev_verdict:
+        description: >-
+          BLOCKED | EXCEPTED | CLEAR | UNAVAILABLE — a dependency or image CVE on the KEV catalog blocks at
+          every rung (FINDING_KNOWN_EXPLOITED) unless a ticketed register exception excepts that finding.
+        value: ${{ jobs.security-gate.outputs.kev_verdict }}
       scanner_states:
         description: >-
           Compact JSON map of scanner -> state, using scanner_state vocabulary
@@ -334,7 +344,8 @@ on:
         description: >-
           Comma list, set only when routing_result is PROCEED_WITH_ADVISORY: VERSION_GAP |
           VERSION_GAP_UNVERIFIED | COVERAGE_PARTIAL | WEAKENING_ATTRIBUTED | FINDINGS_NOT_BLOCKED |
-          SECRET_EXCEPTION_ATTRIBUTED (assurance-taxonomy.yaml advisory_cause). Pass it to the deploy reusables beside
+          SECRET_EXCEPTION_ATTRIBUTED | KNOWN_EXPLOITED_EXCEPTION_ATTRIBUTED | KEV_UNAVAILABLE
+          (assurance-taxonomy.yaml advisory_cause). Pass it to the deploy reusables beside
           routing_result: at uat and prod they refuse a VERSION_GAP without an attributed
           exception, and record a VERSION_GAP_UNVERIFIED prominently (KDEC-014).
         value: ${{ jobs.security-gate.outputs.advisory_causes }}
@@ -1738,7 +1749,17 @@ jobs:
       java: ${{ steps.d.outputs.java }}
       cpp: ${{ steps.d.outputs.cpp }}
       php: ${{ steps.d.outputs.php }}
+      # KDEC-026 (lane L-SCAN-B): Kotlin, Swift and the mobile platforms are classes, not gaps.
+      kotlin: ${{ steps.d.outputs.kotlin }}
+      swift: ${{ steps.d.outputs.swift }}
+      mobile: ${{ steps.d.outputs.mobile }}
       iac: ${{ steps.d.outputs.iac }}
+      # Artefact classes with a linter each, by presence (lane L-SCAN-A, KDEC-025): deps-scan runs
+      # actionlint + zizmor, shellcheck and PSScriptAnalyzer, iac-scan runs hadolint, only on true.
+      workflows: ${{ steps.d.outputs.workflows }}
+      shell: ${{ steps.d.outputs.shell }}
+      powershell: ${{ steps.d.outputs.powershell }}
+      dockerfile: ${{ steps.d.outputs.dockerfile }}
       state: ${{ steps.d.outputs.state }}
       # Coverage, not applicability. Empty = nothing unsupported was seen. A comma list = code this
       # platform cannot scan is present. UNDETERMINED = the coverage probe itself could not run.
@@ -1925,6 +1946,9 @@ jobs:
           discovered-java: ${{ needs.discover.outputs.java }}
           discovered-cpp: ${{ needs.discover.outputs.cpp }}
           discovered-php: ${{ needs.discover.outputs.php }}
+          discovered-kotlin: ${{ needs.discover.outputs.kotlin }}
+          discovered-swift: ${{ needs.discover.outputs.swift }}
+          discovered-mobile: ${{ needs.discover.outputs.mobile }}
           discovered-iac: ${{ needs.discover.outputs.iac }}
           discovery-state: ${{ needs.discover.outputs.state }}
           coverage-gaps: ${{ needs.discover.outputs.coverage_gaps }}
@@ -2334,6 +2358,8 @@ jobs:
           IN_PATHS: ${{ inputs.paths }}
           # Discovery's answer for PHP, as DATA: true, false, or empty when it could not say.
           IN_DISCOVERED_PHP: ${{ needs.discover.outputs.php }}
+          # And for Kotlin (KDEC-026), the same shape: true, false, or empty when it could not say.
+          IN_DISCOVERED_KOTLIN: ${{ needs.discover.outputs.kotlin }}
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
         run: |
           set -uo pipefail
@@ -2362,6 +2388,12 @@ jobs:
           # tests/prove_semgrep_php.py.
           if [ "${IN_DISCOVERED_PHP:-}" != "false" ]; then
             case " ${IN_SEMGREP_CONFIG} " in *" p/php "*) ;; *) cfg="$cfg --config p/php" ;; esac
+          fi
+          # KOTLIN GETS THE SAME FLOOR (KDEC-026). Measured 2026-10-23 on this job's image: the
+          # default's Kotlin rules (18, incidental) and p/kotlin find the planted MD5 and ECB use;
+          # a narrowed config (p/python) finds neither. tests/prove_semgrep_kotlin.py.
+          if [ "${IN_DISCOVERED_KOTLIN:-}" != "false" ]; then
+            case " ${IN_SEMGREP_CONFIG} " in *" p/kotlin "*) ;; *) cfg="$cfg --config p/kotlin" ;; esac
           fi
           echo "rulesets:$cfg    target: ${IN_PATHS}"
 
@@ -2481,7 +2513,24 @@ jobs:
               fi
             fi
           fi
-          echo "count=$n" >> "$GITHUB_OUTPUT"
+          # KOTLIN: EXAMINED, OR REFUSED AS UNEXAMINED (KDEC-026) -- the PHP witness, for .kt/.kts.
+          if [ "${IN_DISCOVERED_KOTLIN:-}" != "false" ]; then
+            kt_src=$(find "${IN_PATHS}" -type f \( -name '*.kt' -o -name '*.kts' \) -not -path '*/node_modules/*' -not -path '*/.git/*' | wc -l | tr -d ' ')
+            if [ "${kt_src:-0}" -gt 0 ]; then
+              # suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE -- empty is refused below
+              # discards: jq's stderr when a file is absent or does not parse
+              # preserved_by: the empty value, which the refusal below names as unknown
+              kt_seen=$(jq '[.paths.scanned[]? | select(endswith(".kt") or endswith(".kts"))] | length' semgrep-paths.json 2>/dev/null || echo "")
+              kt_rules=$(jq '[.runs[].tool.driver.rules[]? | select(.id | startswith("kotlin."))] | length' semgrep.sarif 2>/dev/null || echo "")
+              echo "Kotlin: ${kt_src} file(s) in scope; Semgrep examined ${kt_seen:-UNKNOWN}; kotlin rules loaded: ${kt_rules:-UNKNOWN}"
+              if [ -z "$kt_seen" ] || [ "$kt_seen" = "0" ] || [ -z "$kt_rules" ] || [ "$kt_rules" = "0" ]; then
+                echo "::error title=COLLECTION_FAILED::Kotlin is in scope (${kt_src} file(s)) and Semgrep examined ${kt_seen:-an unknown number} of them with ${kt_rules:-an unknown number of} Kotlin rule(s). A Kotlin scan that analysed nothing is not clean."
+                echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+            fi
+          fi
+          echo "count=${n//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
           # Written LAST: a scan refused above never publishes a state the gate could read.
           echo "scan_state=${scan_state}" >> "$GITHUB_OUTPUT"
           echo "semgrep ERROR-level findings: $n (scan ${scan_state})"
@@ -2713,7 +2762,7 @@ jobs:
           if ! n=$(jq '[.runs[] | ((.tool.driver.rules // []) | map({key: .id, value: (.defaultConfiguration.level // "warning")}) | from_entries) as $lv | .results[] | select((.level // $lv[.ruleId] // "warning") == "error")] | length' bandit.sarif 2>&1); then
             cf "bandit.sarif could not be counted: $n"
           fi
-          echo "count=$n" >> "$GITHUB_OUTPUT"
+          echo "count=${n//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
           echo "bandit ERROR-level (HIGH) findings: $n of $(jq '[.runs[].results[]] | length' bandit.sarif)"
       - name: Bandit — enforce
         id: bandit_enforce
@@ -2829,7 +2878,8 @@ jobs:
     if: >-
       needs.discover.outputs.python == 'true' || needs.discover.outputs.node == 'true' ||
       needs.discover.outputs.go == 'true' || needs.discover.outputs.dotnet == 'true' ||
-      needs.discover.outputs.java == 'true' || needs.discover.outputs.cpp == 'true'
+      needs.discover.outputs.java == 'true' || needs.discover.outputs.cpp == 'true' ||
+      needs.discover.outputs.kotlin == 'true'
     name: SAST (CodeQL)
     runs-on: ubuntu-latest
     # Bounded, LM-001. CodeQL is the slowest scanner here; 30 is generous for a single language
@@ -2851,8 +2901,10 @@ jobs:
             gate: ${{ needs.discover.outputs.go }}
           - lang: csharp
             gate: ${{ needs.discover.outputs.dotnet }}
+          # Kotlin with no pom.xml or Gradle file starts this leg too (KDEC-026): it was gated on
+          # the java probe alone, so Kotlin-only code never reached CodeQL.
           - lang: java-kotlin
-            gate: ${{ needs.discover.outputs.java }}
+            gate: ${{ (needs.discover.outputs.java == 'true' || needs.discover.outputs.kotlin == 'true') && 'true' || 'false' }}
           - lang: c-cpp
             gate: ${{ needs.discover.outputs.cpp }}
     steps:
@@ -3078,6 +3130,8 @@ jobs:
       # FINDINGS when this job's own threshold fired and no caller input softened it; '' otherwise.
       # The job does not fail on it: the security gate enforces it by the resolved policy (O-24).
       findings_state: ${{ steps.scan.outputs.findings_state }}
+      # Files a pipeline linter could not read (VERSION_GAP), for the report (lane L-SCAN-A).
+      lint_version_gaps: ${{ steps.scan.outputs.lint_version_gaps }}
     # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
     # converts a dependency failure into uncontrolled cost).
     # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
@@ -3097,6 +3151,12 @@ jobs:
           advisory_mode: ${{ inputs.advisory_mode }}
           fail_on_severity: ${{ inputs.fail_on_severity }}
           paths: ${{ inputs.paths }}
+          # Pipeline lint rides in this always-on job (lane L-SCAN-A, KDEC-025): a job of its own
+          # would bill a minimum minute on nearly every consumer, since nearly every one has a
+          # workflow. Each linter runs only where discovery found its files.
+          workflows: ${{ needs.discover.outputs.workflows }}
+          shell: ${{ needs.discover.outputs.shell }}
+          powershell: ${{ needs.discover.outputs.powershell }}
   # ─── IaC ────────────────────────────────────────────────────
 
       # BEGIN STATUS_STEP — generated by scripts/inline_normalizer.py. DO NOT EDIT HERE.
@@ -3131,6 +3191,8 @@ jobs:
       # FINDINGS when this job's own threshold fired and no caller input softened it; '' otherwise.
       # The job does not fail on it: the security gate enforces it by the resolved policy (O-24).
       findings_state: ${{ steps.scan.outputs.findings_state }}
+      # Dockerfiles hadolint could not parse (VERSION_GAP), for the report (lane L-SCAN-A).
+      lint_version_gaps: ${{ steps.scan.outputs.lint_version_gaps }}
     # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
     # converts a dependency failure into uncontrolled cost).
     # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
@@ -3150,6 +3212,8 @@ jobs:
           advisory_mode: ${{ inputs.advisory_mode }}
           fail_on_severity: ${{ inputs.fail_on_severity }}
           paths: ${{ inputs.paths }}
+          # hadolint, only where discovery found a Dockerfile (lane L-SCAN-A, KDEC-025).
+          dockerfile: ${{ needs.discover.outputs.dockerfile }}
   # ─── Gate ───────────────────────────────────────────────────
   # --------------------------------------------------------------- native SAST
   # Semgrep covers these languages via rulesets; these jobs add the language-native
@@ -3279,6 +3343,48 @@ jobs:
           . /tmp/scan_status.sh
           if [ "$JOB_STATUS" = "success" ]; then _e=COMPLETE; else _e=FAILED; fi
           scan_status "SAST (Java)" "$_e" "" "java / kotlin"
+      # END STATUS_STEP
+
+  sast-mobile:
+    # Android and iOS (lane L-SCAN-B, KDEC-026): mobsfscan over Kotlin/Java/Swift/Objective-C source,
+    # manifests, network security configs and Info.plist, plus the kit's own rules for what it does
+    # not read. Starts only when discovery found a mobile artifact, so it costs nothing elsewhere.
+    # No macOS runner: CodeQL for Swift would need one at 10x the minute rate (KDEC-026).
+    needs: [discover, kit-scripts]
+    if: needs.discover.outputs.mobile == 'true'
+    name: SAST (mobile)
+    runs-on: ubuntu-latest
+    outputs:
+      # FINDINGS when this job's own threshold fired and no caller input softened it; '' otherwise.
+      findings_state: ${{ steps.scan.outputs.findings_state }}
+    timeout-minutes: 15
+    steps:
+      - name: SAST (mobile)
+        id: scan
+        uses: $/.github/actions/sast-mobile
+        with:
+          paths: ${{ inputs.paths }}
+          soft_fail_sast: ${{ inputs.soft_fail_sast }}
+          advisory_mode: ${{ inputs.advisory_mode }}
+
+      # BEGIN STATUS_STEP — generated by scripts/inline_normalizer.py. DO NOT EDIT HERE.
+      - name: Result summary
+        if: always()
+        shell: bash
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          # A SUMMARY IS NOT A VERDICT. If the script did not arrive, say so and stop;
+          # never fail the job for it. A housekeeping step deciding a security verdict
+          # is how a scan that had SUCCEEDED went red twice in this file's history.
+          if [ ! -s /tmp/scan_status.sh ]; then
+            echo "::warning title=Result summary unavailable::/tmp/scan_status.sh did not reach this job."
+            echo "No per-job summary was printed. The scan's own verdict stands."
+            exit 0
+          fi
+          . /tmp/scan_status.sh
+          if [ "$JOB_STATUS" = "success" ]; then _e=COMPLETE; else _e=FAILED; fi
+          scan_status "SAST (mobile)" "$_e" "" "android / ios"
       # END STATUS_STEP
 
   sast-go:
@@ -3582,10 +3688,10 @@ jobs:
             echo "The findings that WERE collected still stand and are published. What did not"
             echo "analyse stays unknown: this run does not establish Go posture."
             echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
-            echo "count=$n" >> "$GITHUB_OUTPUT"
+            echo "count=${n//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          echo "count=$n" >> "$GITHUB_OUTPUT"
+          echo "count=${n//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
           echo "gosec findings: $n"
 
       - name: gosec — enforce
@@ -3719,6 +3825,9 @@ jobs:
       # FINDINGS when this job's own threshold fired and no caller input softened it; '' otherwise.
       # The job does not fail on it: the security gate enforces it by the resolved policy (O-24).
       findings_state: ${{ steps.scan.outputs.findings_state }}
+      # KDEC-026: PARTIAL / CPP_ANALYSIS_PARTIAL when any C/C++ source had no build metadata.
+      scan_state: ${{ steps.scan.outputs.scan_state }}
+      scan_reason: ${{ steps.scan.outputs.scan_reason }}
     # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
     # converts a dependency failure into uncontrolled cost).
     # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
@@ -3813,37 +3922,67 @@ jobs:
       # follow advisory_mode; secrets never do. Proven by tests/prove_image_scan_enforces.py, and
       # the gate reads the secrets outcome (job output `secret_state`) as a secret, not as an
       # ordinary failed scanner.
-      - name: Trivy image (vulnerabilities)
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+      # TRIVY IS INSTALLED, NOT SET UP BY AN ACTION (KDEC-027): aquasecurity/trivy-action's
+      # setup-trivy checks out `aquasecurity/trivy` against github.server_url, which on a GHE.com
+      # tenant does not have it. Release binary from github.com, pinned by version and sha256
+      # (ledger L84); the database cached per day, as the action did.
+      - name: Install Trivy (pinned release binary)
+        id: trivy_install
+        shell: bash
+        run: |
+          set -euo pipefail
+          v=0.71.2
+          if [ "$(trivy --version 2>/dev/null | sed -n 's/^Version: //p' | head -n 1)" != "$v" ]; then
+            t="trivy_${v}_Linux-64bit.tar.gz"
+            d="$(mktemp -d)"
+            curl -sSfL --retry 3 --connect-timeout 20 -o "$d/$t" \
+              "https://github.com/aquasecurity/trivy/releases/download/v${v}/$t"
+            echo "0510e71e2fd39bf863856d499c8dc19feb4e7336546394c502a8f5cc7ab27460  $d/$t" | sha256sum -c -
+            tar -xzf "$d/$t" -C "$d" trivy
+            sudo install -m 0755 "$d/trivy" /usr/local/bin/trivy
+            rm -rf "$d"
+          fi
+          trivy --version | head -n 1
+          echo "TRIVY_CACHE_DIR=$RUNNER_TEMP/trivy-cache" >> "$GITHUB_ENV"
+          echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+      - name: Trivy database cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          scan-type: image
-          image-ref: ${{ inputs.image_ref }}
-          scanners: vuln
+          path: ${{ runner.temp }}/trivy-cache
+          key: trivy-db-${{ runner.os }}-${{ steps.trivy_install.outputs.day }}
+          restore-keys: trivy-db-${{ runner.os }}-
+      - name: Trivy image (vulnerabilities)
+        shell: bash
+        env:
+          # Each TRIVY_* is the option trivy-action@v0.36.0 passed for the `with:` key it replaced.
+          IMAGE_REF: ${{ inputs.image_ref }}
+          TRIVY_SCANNERS: vuln
           # --ignore-unfixed is deliberately NOT set. A vulnerability with no fix available is
           # still a vulnerability in the thing you are about to run; hiding it turns a risk
           # decision into a silent one. Suppression belongs in the disposition register where
           # it is attributable and expires, not in a scanner flag.
           #
-          # REPORT EVERYTHING, DECIDE ELSEWHERE (ledger L17). trivy-action ignores `severity:`
-          # for a SARIF and then applies `exit-code` to every severity, so fail_on_severity never
+          # REPORT EVERYTHING, DECIDE ELSEWHERE (ledger L17). trivy-action ignored `severity:`
+          # for a SARIF and then applied `exit-code` to every severity, so fail_on_severity never
           # held here either. Trivy reports all; the count and enforce steps below apply it.
-          exit-code: '0'
-          format: sarif
-          output: trivy-image.sarif
+          TRIVY_EXIT_CODE: '0'
+          TRIVY_FORMAT: sarif
+          TRIVY_OUTPUT: trivy-image.sarif
+        run: trivy image --quiet "$IMAGE_REF"
       - name: Trivy image (secrets)
         id: img_secret
         # Runs even when the vulnerability step failed: a vulnerable image can also carry a
         # credential, and the second finding must not hide behind the first.
         if: always()
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          scan-type: image
-          image-ref: ${{ inputs.image_ref }}
-          scanners: secret
+        shell: bash
+        env:
+          IMAGE_REF: ${{ inputs.image_ref }}
+          TRIVY_SCANNERS: secret
           # Every severity, and never advisory: a secret is a secret at any rating.
-          exit-code: '1'
-          format: sarif
-          output: trivy-image-secret.sarif
+          TRIVY_EXIT_CODE: '1'
+          TRIVY_FORMAT: sarif
+          TRIVY_OUTPUT: trivy-image-secret.sarif
+        run: trivy image --quiet "$IMAGE_REF"
       # THE EVIDENCE IS RETAINED (ledger L12, KNOWN_GAPS section 1). Both reports were written and
       # then died with the runner: no redaction, no artifact, no publication. Each now gets the four
       # steps every scanner job has -- redaction (generated, placed before each upload), the
@@ -3879,7 +4018,7 @@ jobs:
           if ! n=$(jq --arg want "$want" '[.runs[] | ((.tool.driver.rules // []) | map({key: .id, value: ([(.properties.tags // [])[] | select(. == "CRITICAL" or . == "HIGH" or . == "MEDIUM" or . == "LOW" or . == "UNKNOWN")] | first // "UNKNOWN")}) | from_entries) as $sev | .results[] | ($sev[.ruleId] // "UNKNOWN") as $s | select($want | contains("," + $s + ","))] | length' "$REPORT" 2>&1); then
             cf "$REPORT could not be counted: $n"
           fi
-          echo "count=$n" >> "$GITHUB_OUTPUT"
+          echo "count=${n//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
           echo "Trivy image findings at ${FAIL_ON}: $n of $(jq '[.runs[].results[]] | length' "$REPORT") reported"
       - name: Trivy image — enforce
         id: trivy_image_enforce
@@ -3932,7 +4071,7 @@ jobs:
             cf "$REPORT could not be counted: $n"
           fi
           echo "collection=COMPLETE" >> "$GITHUB_OUTPUT"
-          echo "count=$n" >> "$GITHUB_OUTPUT"
+          echo "count=${n//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
           echo "Trivy image secrets: $n finding(s) at every severity (a secret blocks in every mode through the gate)"
       - name: Trivy image — is there anything to publish?
         id: sarif_img
@@ -4197,7 +4336,7 @@ jobs:
           # unknown is not a clean supply chain -- even when other lockfiles parsed.
           if state in ('PASS', 'FINDINGS') and 'Error during extraction' in err:
               state, why = 'COLLECTION_FAILED', 'a lockfile could not be parsed, so it was not examined'
-          ids = ' '.join(sorted({k[0] for k in mal}))
+          ids = ' '.join(sorted({' '.join(str(k[0]).split()) for k in mal}))  # one line (KDEC-027)
           with io.open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as o:
               o.write('state=%s\nmalicious=%d\nids=%s\n' % (state, len(mal), ids))
           for (mid, name, ver), eco in sorted(mal.items()):
@@ -4271,7 +4410,7 @@ jobs:
             cf "$REPORT could not be counted: $n"
           fi
           echo "collection=COMPLETE" >> "$GITHUB_OUTPUT"
-          echo "count=$n" >> "$GITHUB_OUTPUT"
+          echo "count=${n//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
           echo "exists=true" >> "$GITHUB_OUTPUT"
           echo "OSV SARIF: $n result(s) of every kind; the malicious-package verdict is the JSON count above"
       # BEGIN REDACT_STEP — generated by scripts/inline_normalizer.py. DO NOT EDIT HERE.
@@ -4552,6 +4691,8 @@ jobs:
       jobs_with_findings: ${{ steps.render.outputs.jobs_with_findings }}
       # The secret scan's findings by fingerprint, for the gate's secret exceptions (lane L-S).
       secret_findings: ${{ steps.render.outputs.secret_findings }}
+      # Every dependency/image finding's CVE, job:fingerprint:CVE, for the gate's KEV check (KDEC-022).
+      cve_findings: ${{ steps.render.outputs.cve_findings }}
       # THE FINDINGS FILE (L52): identify() results, one per finding, inside the evidence
       # artifact. propose-ledger reads it from the artifact; this output names the path.
       findings: ${{ steps.render.outputs.findings }}
@@ -4573,7 +4714,7 @@ jobs:
     # caps a scanner row's PASS at PARTIAL where the scanner cannot read the code at its version.
     needs: [discover, kit-scripts, resolve, secret-scan, code-quality, sast-semgrep, sast-bandit,
             codeql, deps-scan, iac-scan, sast-dotnet, sast-java, sast-go, sast-cpp,
-            malicious-deps, sbom, image-scan]
+            sast-mobile, malicious-deps, sbom, image-scan]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -4645,6 +4786,9 @@ jobs:
           R_JAVA: ${{ needs.sast-java.result }}
           R_GO: ${{ needs.sast-go.result }}
           R_CPP: ${{ needs.sast-cpp.result }}
+          # KDEC-026: PARTIAL when any C/C++ source had no build metadata (CPP_ANALYSIS_PARTIAL).
+          R_CPP_SCAN_STATE: ${{ needs.sast-cpp.outputs.scan_state }}
+          R_MOBILE: ${{ needs.sast-mobile.result }}
           R_MALDEPS: ${{ needs.malicious-deps.result }}
           R_SBOM: ${{ needs.sbom.result }}
           R_IMAGE: ${{ needs.image-scan.result }}
@@ -4655,7 +4799,16 @@ jobs:
           D_DOTNET: ${{ needs.discover.outputs.dotnet }}
           D_JAVA: ${{ needs.discover.outputs.java }}
           D_CPP: ${{ needs.discover.outputs.cpp }}
+          D_MOBILE: ${{ needs.discover.outputs.mobile }}
           D_IAC: ${{ needs.discover.outputs.iac }}
+          # Pipeline lint (lane L-SCAN-A, KDEC-025): applicability by artefact, and the files each
+          # linter could not read (VERSION_GAP) -- a row over unread files is PARTIAL, never PASS.
+          D_WORKFLOWS: ${{ needs.discover.outputs.workflows }}
+          D_SHELL: ${{ needs.discover.outputs.shell }}
+          D_POWERSHELL: ${{ needs.discover.outputs.powershell }}
+          D_DOCKERFILE: ${{ needs.discover.outputs.dockerfile }}
+          R_LINT_GAPS: ${{ needs.deps-scan.outputs.lint_version_gaps }}
+          R_HADOLINT_GAPS: ${{ needs.iac-scan.outputs.lint_version_gaps }}
           D_STATE: ${{ needs.discover.outputs.state }}
           P_CODESCAN: ${{ needs.discover.outputs.code_scanning }}
           P_SOURCE: ${{ needs.discover.outputs.platform_source }}
@@ -4799,8 +4952,17 @@ jobs:
           # cppcheck AND flawfinder BOTH RUN IN sast-cpp AND FIND DIFFERENT THINGS -- the seeded
           # fixture carries a double free only cppcheck detects. cppcheck had no row, so a dead
           # cppcheck path was covered for by a live flawfinder and the table could not show it.
-          add "cppcheck"      "$(appl "$D_CPP")"  "$R_CPP"     "c / c++"                'cppcheck.sarif' sast-cpp
+          cc_scope="c / c++"
+          [ "${R_CPP_SCAN_STATE:-}" = "PARTIAL" ] && cc_scope="c / c++; PARTIAL (CPP_ANALYSIS_PARTIAL): some sources had no build metadata"
+          add "cppcheck"      "$(appl "$D_CPP")"  "$R_CPP"     "$cc_scope"              'cppcheck.sarif' sast-cpp
+          if [ "${R_CPP_SCAN_STATE:-}" = "PARTIAL" ] && [ -f _states/state-cppcheck.json ]; then
+            jq '.gate = (if .gate == "PASS" then "PARTIAL" else .gate end)' _states/state-cppcheck.json > _states/state-cppcheck.tmp &&
+              mv _states/state-cppcheck.tmp _states/state-cppcheck.json
+          fi
           add "flawfinder"    "$(appl "$D_CPP")"  "$R_CPP"     "c / c++"                'flawfinder.sarif' sast-cpp
+          # ANDROID AND iOS (KDEC-026): two scanners in sast-mobile, two rows, two reports.
+          add "mobsfscan"     "$(appl "$D_MOBILE")" "$R_MOBILE" "android / ios"         'mobsfscan.sarif' sast-mobile
+          add "mobile-config" "$(appl "$D_MOBILE")" "$R_MOBILE" "manifests / gradle"    'mobile-config.sarif' sast-mobile
 
           # --- dependencies and infrastructure -------------------------------------------
           add "trivy"         APPLICABLE          "$R_DEPS"    "dependencies"           'trivy-deps.sarif' deps-scan
@@ -4809,6 +4971,28 @@ jobs:
           # file INSIDE it, named results_sarif.sarif. `checkov*.sarif` matched nothing, so the
           # IaC row reported NOT ESTABLISHED on runs where checkov had just counted findings.
           add "checkov"       "$(appl "$D_IAC")"  "$R_IAC"     "infrastructure as code" 'results_sarif.sarif' iac-scan
+
+          # --- pipeline lint (lane L-SCAN-A, KDEC-025) -------------------------------------
+          # Four classes that were COVERAGE_GAP rows, each with its own linter and its own row.
+          # They ride in deps-scan and iac-scan, so the job result is shared; the SARIF is not.
+          # A file a linter could not read (VERSION_GAP) caps that row's PASS at PARTIAL.
+          add "actionlint"    "$(appl "$D_WORKFLOWS")" "$R_DEPS" "github actions workflows" 'actionlint.sarif' deps-scan
+          add "zizmor"        "$(appl "$D_WORKFLOWS")" "$R_DEPS" "github actions workflows" 'zizmor.sarif' deps-scan
+          add "shellcheck"    "$(appl "$D_SHELL")" "$R_DEPS"   "shell scripts"          'shellcheck.sarif' deps-scan
+          add "psscriptanalyzer" "$(appl "$D_POWERSHELL")" "$R_DEPS" "powershell"       'psscriptanalyzer.sarif' deps-scan
+          add "hadolint"      "$(appl "$D_DOCKERFILE")" "$R_IAC" "dockerfiles"          'hadolint.sarif' iac-scan
+          for _ln in shellcheck psscriptanalyzer hadolint; do
+            _gaps="$R_LINT_GAPS"; [ "$_ln" = hadolint ] && _gaps="$R_HADOLINT_GAPS"
+            _mine=""
+            for _f in $_gaps; do
+              case "$_ln:$_f" in
+                shellcheck:*.sh|shellcheck:*.bash|psscriptanalyzer:*.ps1|psscriptanalyzer:*.psm1|psscriptanalyzer:*.psd1|hadolint:*) _mine="$_mine $_f" ;;
+              esac
+            done
+            [ -n "$_mine" ] && [ -f "_states/state-$_ln.json" ] || continue
+            jq --arg g "$_mine" '.gate = (if .gate == "PASS" then "PARTIAL" else .gate end) | .scope += "; VERSION_GAP, not read:" + $g' \
+              "_states/state-$_ln.json" > "_states/state-$_ln.tmp" && mv "_states/state-$_ln.tmp" "_states/state-$_ln.json"
+          done
           # OSV writes osv.sarif. `maldeps*.sarif` matched nothing, and has never matched
           # anything, so this row has been NOT ESTABLISHED since it was added.
           add "malicious-deps" APPLICABLE         "$R_MALDEPS" "dependency provenance"  'osv.sarif' malicious-deps
@@ -4890,6 +5074,42 @@ jobs:
           cq_lang java-kotlin           java.sarif       "$D_JAVA"
           cq_lang c-cpp                 cpp.sarif        "$D_CPP"
 
+          # --- EXTERNAL EVIDENCE (KDEC-028): a caller's own scanner, adopted by contract ----------
+          # A caller may run a scanner this kit does not ship, in the same run, before calling it,
+          # and upload `sarif-external-<name>-<attempt>` holding ext-<name>.sarif and its row
+          # state-ext-<name>.json (and an `-floor` pair for the secret/KEV/malicious class). The
+          # sarif-* pull above already fetched them. A row is ADOPTED only when it is well typed:
+          # its name is ext-<lowercase>, its job is external or external-floor (never a core job
+          # it could impersonate), every value is from the registered vocabulary, and its SARIF is
+          # empty or exactly <scanner>.sarif and present. Anything else is refused out loud and
+          # not adopted -- it can never become a row that reads clean. The kit names no tool here.
+          for _x in _sarif/state-ext-*.json; do
+            [ -f "$_x" ] || continue
+            _xn="$(jq -r '.scanner // ""' "$_x" 2>/dev/null)" || _xn=""
+            _why=""
+            printf '%s' "$_xn" | grep -Eq '^ext-[a-z0-9][a-z0-9-]*$' || _why="name '${_xn}' is not ext-<lowercase>"
+            [ -n "$_why" ] || [ "$(basename "$_x")" = "state-${_xn}.json" ] || _why="file name does not match scanner ${_xn}"
+            [ -n "$_why" ] || jq -e '(.job == "external" or .job == "external-floor")
+                and (.applicability | IN("APPLICABLE","NOT_APPLICABLE","UNKNOWN","NOT_CONFIGURED","UNAVAILABLE"))
+                and (.execution | IN("COMPLETE","FAILED","COLLECTION_FAILED","NOT_RUN"))
+                and (.gate | IN("PASS","UNDETERMINED"))
+                and ((.subject // "") | IN("SOURCE","SOURCE_DEPENDENCY","RUNTIME_OBSERVATION","IAC_PLAN","IMAGE"))
+                and (.external == true)' "$_x" >/dev/null 2>&1 || _why="job, vocabulary or subject out of contract"
+            _xs="$(jq -r '.sarif // ""' "$_x" 2>/dev/null)" || _xs=""
+            if [ -z "$_why" ] && [ -n "$_xs" ]; then
+              { [ "$_xs" = "${_xn}.sarif" ] && [ -f "_sarif/$_xs" ]; } || _why="sarif '${_xs}' is not ${_xn}.sarif or was not delivered"
+            fi
+            if [ -n "$_why" ]; then
+              echo "::warning title=External evidence refused::$(basename "$_x"): ${_why}. Not adopted."
+              continue
+            fi
+            # PASS is recomputed here, never taken on the row's word.
+            jq --arg has "$_xs" '.gate = (if .execution == "COMPLETE" and .applicability == "APPLICABLE" and $has != "" then "PASS" else "UNDETERMINED" end)' \
+              "$_x" > "_states/state-${_xn}.json"
+            [ -z "$_xs" ] || cp -f "_sarif/$_xs" "_states/$_xs"
+            echo "adopted external evidence: ${_xn} ($(jq -r '.job + " " + .execution' "$_x"))"
+          done
+
           echo "built $(ls -1 _states/state-*.json | wc -l) scanner state file(s)"
 
       - name: Render the report
@@ -4906,7 +5126,7 @@ jobs:
           environment: ${{ inputs.environment }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           max-detail: '20'
-          expect: gitleaks,detect-secrets,code-quality,eslint,semgrep,bandit,java-sast,gosec,dotnet-vuln,semgrep-csharp,cppcheck,flawfinder,trivy,trivy-iac,checkov,malicious-deps,sbom,trivy-image,trivy-image-secret,codeql-python,codeql-javascript-typescript,codeql-go,codeql-csharp,codeql-java-kotlin,codeql-c-cpp
+          expect: gitleaks,detect-secrets,code-quality,eslint,semgrep,bandit,java-sast,gosec,dotnet-vuln,semgrep-csharp,cppcheck,flawfinder,mobsfscan,mobile-config,trivy,trivy-iac,checkov,actionlint,zizmor,shellcheck,psscriptanalyzer,hadolint,malicious-deps,sbom,trivy-image,trivy-image-secret,codeql-python,codeql-javascript-typescript,codeql-go,codeql-csharp,codeql-java-kotlin,codeql-c-cpp
           # KDEC-010: the capability selection. A scanner row whose job cannot read the code at
           # its version renders PARTIAL, never PASS; a substitution is labelled as one.
           capped-jobs: ${{ needs.resolve.outputs.capped_jobs }}
@@ -4969,6 +5189,7 @@ jobs:
       - sast-java
       - sast-go
       - sast-cpp
+      - sast-mobile
       - deps-scan
       - iac-scan
       - malicious-deps
@@ -4992,6 +5213,9 @@ jobs:
       gate_decision: ${{ steps.gate.outputs.gate_decision }}
       secret_gate: ${{ steps.gate.outputs.secret_gate }}
       secret_exceptions_applied: ${{ steps.gate.outputs.secret_exceptions_applied }}
+      kev_state: ${{ steps.gate.outputs.kev_state }}
+      kev_verdict: ${{ steps.gate.outputs.kev_verdict }}
+      known_exploited: ${{ steps.gate.outputs.known_exploited }}
       scanner_states: ${{ steps.gate.outputs.scanner_states }}
       undetermined: ${{ steps.gate.outputs.undetermined }}
       evidence_artifact: ${{ steps.gate.outputs.evidence_artifact }}
@@ -5045,6 +5269,19 @@ jobs:
           environment: ${{ inputs.target_environment }}
           event: ${{ github.event_name }}
           supplied-inputs: ${{ toJSON(inputs) }}
+      - name: Check every CVE found against the CISA KEV catalog
+        id: kev
+        # KNOWN EXPLOITED IN THE WILD BLOCKS AT EVERY RUNG (KDEC-022 item 3, owner 2026-10-23). The
+        # catalog is read once per run (a date-keyed cache), pinned in the evidence, and matched
+        # against every dependency/image CVE the report found and the register's ticketed,
+        # finding-scoped exceptions. This step computes; the gate step below enforces. A feed that
+        # cannot be read is kev_state UNAVAILABLE -- never a pass. tests/prove_known_exploited.py.
+        if: always()
+        uses: $/.github/actions/known-exploited
+        with:
+          cve-findings: ${{ needs.report.outputs.cve_findings }}
+          exceptions: ${{ steps.policy.outputs.policy_known_exploited_exceptions }}
+          policy-state: ${{ steps.policy.outputs.policy_state }}
       - name: Enforce required scans
         id: gate
         # Runs whatever the policy step did: a policy step that failed leaves P_STATE empty and the
@@ -5080,9 +5317,12 @@ jobs:
           G_NEEDS_REPORT_RESULT: ${{ needs.report.result }}
           G_NEEDS_SAST_BANDIT_RESULT: ${{ needs.sast-bandit.result }}
           G_NEEDS_SAST_CPP_RESULT: ${{ needs.sast-cpp.result }}
+          G_NEEDS_SAST_CPP_OUTPUTS_SCAN_STATE: ${{ needs.sast-cpp.outputs.scan_state }}
+          G_NEEDS_SAST_CPP_OUTPUTS_SCAN_REASON: ${{ needs.sast-cpp.outputs.scan_reason }}
           G_NEEDS_SAST_DOTNET_RESULT: ${{ needs.sast-dotnet.result }}
           G_NEEDS_SAST_GO_RESULT: ${{ needs.sast-go.result }}
           G_NEEDS_SAST_JAVA_RESULT: ${{ needs.sast-java.result }}
+          G_NEEDS_SAST_MOBILE_RESULT: ${{ needs.sast-mobile.result }}
           G_NEEDS_SAST_SEMGREP_RESULT: ${{ needs.sast-semgrep.result }}
           G_NEEDS_SAST_SEMGREP_OUTPUTS_SCAN_STATE: ${{ needs.sast-semgrep.outputs.scan_state }}
           G_NEEDS_SAST_SEMGREP_OUTPUTS_PARSE_PARTIAL_FILES: ${{ needs.sast-semgrep.outputs.parse_partial_files }}
@@ -5111,6 +5351,7 @@ jobs:
           G_FS_SAST_JAVA: ${{ needs.sast-java.outputs.findings_state }}
           G_FS_SAST_GO: ${{ needs.sast-go.outputs.findings_state }}
           G_FS_SAST_CPP: ${{ needs.sast-cpp.outputs.findings_state }}
+          G_FS_SAST_MOBILE: ${{ needs.sast-mobile.outputs.findings_state }}
           G_FS_DEPS_SCAN: ${{ needs.deps-scan.outputs.findings_state }}
           G_FS_IAC_SCAN: ${{ needs.iac-scan.outputs.findings_state }}
           G_FS_IMAGE_SCAN: ${{ needs.image-scan.outputs.findings_state }}
@@ -5122,6 +5363,17 @@ jobs:
           G_REPORT_SECRET_FINDINGS: ${{ needs.report.outputs.secret_findings }}
           P_SECRET_EXCEPTIONS: ${{ steps.policy.outputs.policy_secret_exceptions }}
           P_SECRET_EXCEPTION_REFUSALS: ${{ steps.policy.outputs.policy_secret_exception_refusals }}
+          # KNOWN EXPLOITED IN THE WILD (KDEC-022 item 3): the kev step's verdict over the report's
+          # CVEs, the CISA KEV catalog it read, and the register's refused exceptions.
+          K_STATE: ${{ steps.kev.outputs.kev_state }}
+          K_VERDICT: ${{ steps.kev.outputs.kev_verdict }}
+          K_BLOCKING: ${{ steps.kev.outputs.kev_blocking }}
+          K_EXCEPTED: ${{ steps.kev.outputs.kev_excepted }}
+          K_CATALOG: ${{ steps.kev.outputs.kev_catalog_version }}
+          K_RELEASED: ${{ steps.kev.outputs.kev_date_released }}
+          K_WHY: ${{ steps.kev.outputs.kev_why }}
+          K_KNOWN_EXPLOITED: ${{ steps.kev.outputs.known_exploited }}
+          P_KEV_EXCEPTION_REFUSALS: ${{ steps.policy.outputs.policy_known_exploited_exception_refusals }}
         run: |
           set -u
           fail=0
@@ -5216,6 +5468,7 @@ jobs:
                    "sast-java=${G_NEEDS_SAST_JAVA_RESULT}" \
                    "sast-go=${G_NEEDS_SAST_GO_RESULT}" \
                    "sast-cpp=${G_NEEDS_SAST_CPP_RESULT}" \
+                   "sast-mobile=${G_NEEDS_SAST_MOBILE_RESULT}" \
                    "deps-scan=${G_NEEDS_DEPS_SCAN_RESULT}" \
                    "iac-scan=${G_NEEDS_IAC_SCAN_RESULT}" \
                    "malicious-deps=${G_NEEDS_MALICIOUS_DEPS_RESULT}" \
@@ -5244,6 +5497,7 @@ jobs:
               sast-java)    fs="${G_FS_SAST_JAVA:-}" ;;
               sast-go)      fs="${G_FS_SAST_GO:-}" ;;
               sast-cpp)     fs="${G_FS_SAST_CPP:-}" ;;
+              sast-mobile)  fs="${G_FS_SAST_MOBILE:-}" ;;
               deps-scan)    fs="${G_FS_DEPS_SCAN:-}" ;;
               iac-scan)     fs="${G_FS_IAC_SCAN:-}" ;;
               image-scan)   fs="${G_FS_IMAGE_SCAN:-}" ;;
@@ -5291,6 +5545,14 @@ jobs:
               coverage_partial="${coverage_partial}${coverage_partial:+ }${name}"
               echo "::warning title=sast-semgrep PARTIAL (PARSE_PARTIAL_PHP_SYNTAX)::PHP file(s) Semgrep could not fully parse: ${G_NEEDS_SAST_SEMGREP_OUTPUTS_PARSE_PARTIAL_FILES:-unnamed}. Everything else was scanned; these were not, fully."
               echo "| (coverage) | PARTIAL — PARSE_PARTIAL_PHP_SYNTAX | sast-semgrep could not fully parse ${G_NEEDS_SAST_SEMGREP_OUTPUTS_PARSE_PARTIAL_FILES:-unnamed files}; every other file was scanned and its findings stand (COVERAGE_PARTIAL) |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            # C/C++ ANALYSED WITHOUT ITS BUILD (KDEC-026): sources no compilation database covered were
+            # scanned source-only. The job succeeded and its findings stand; the scan is PARTIAL.
+            if [ "$name" = "sast-cpp" ] && [ "$res" != "skipped" ] && [ "${G_NEEDS_SAST_CPP_OUTPUTS_SCAN_STATE:-}" = "PARTIAL" ]; then
+              [ "$res" = "success" ] && [ -z "${st:-}" ] && st=PARTIAL
+              coverage_partial="${coverage_partial}${coverage_partial:+ }${name}"
+              echo "::warning title=sast-cpp PARTIAL (${G_NEEDS_SAST_CPP_OUTPUTS_SCAN_REASON:-CPP_ANALYSIS_PARTIAL})::C/C++ source without build metadata was analysed source-only. Its findings stand; it is not a complete analysis."
+              echo "| (coverage) | PARTIAL — ${G_NEEDS_SAST_CPP_OUTPUTS_SCAN_REASON:-CPP_ANALYSIS_PARTIAL} | sast-cpp analysed some C/C++ without a compilation database (COVERAGE_PARTIAL) |" >> "$GITHUB_STEP_SUMMARY"
             fi
             if [ "$name" = "sbom" ] && [ "$res" = "success" ] && [ "$LICENCE_STATE" = "FINDINGS" ]; then
               st=FINDINGS
@@ -5395,6 +5657,26 @@ jobs:
                 ;;
             esac
           done
+          # EXTERNAL EVIDENCE (KDEC-028): findings from a caller's own scanner that the report
+          # ADOPTED (state-ext-* rows) and counted under job `external` are findings handed to this
+          # gate, routed by the resolved policy like any scanner job's -- advisory at crawl. Their
+          # secret / KEV / malicious class arrives as `external-floor` and blocks at every rung, as
+          # a secret does; it is not exceptable here. A crashed external scanner counts nothing, so
+          # it never reaches this point: the report shows it, and it never blocks (KDEC-019 item 3).
+          case "$FINDINGS_JOBS" in
+            *" external "*)
+              fail=1; findings_named="${findings_named} external"
+              established="${established}${established:+ }external(FINDINGS)"
+              states="${states}${states:+,}\"external\":\"FINDINGS\""
+              echo "| external (adopted evidence) | findings handed to this gate |" >> "$GITHUB_STEP_SUMMARY" ;;
+          esac
+          case "$FINDINGS_JOBS" in
+            *" external-floor "*)
+              fail=1; secret_fail=1; secret_cause="${secret_cause}${secret_cause:+ }external-floor"
+              established="${established}${established:+ }external-floor(FINDINGS)"
+              states="${states}${states:+,}\"external-floor\":\"FINDINGS\""
+              echo "| external-floor (adopted evidence) | secret / KEV / malicious class — blocks at every rung |" >> "$GITHUB_STEP_SUMMARY" ;;
+          esac
           # SECRET EXCEPTIONS (owner ruling 2026-10-22, lane L-S): "There must be the possibility of
           # exceptions ... but they must be requested and logged with tickets that have explanations."
           # The secret scan's findings are excepted ONLY when the resolved policy (a protected-branch
@@ -5405,7 +5687,7 @@ jobs:
           # An image secret and a known-malicious package are not exceptable here.
           secret_excepted=0; sx_used=""; sx_uncovered=""
           words_have() { case " $(printf '%s' "$1" | tr '\r\n' '  ') " in *" $2 "*) return 0 ;; esac; return 1; }
-          case "${P_STATE:-}" in POLICY_RESOLVED|POLICY_DECISION_EXPIRED|EXCEPTION_RENEWAL_LIMIT) sx_policy=1 ;; *) sx_policy=0 ;; esac
+          case "${P_STATE:-}" in POLICY_RESOLVED|POLICY_DECISION_EXPIRED|EXCEPTION_RENEWAL_LIMIT|EXCEPTION_HISTORY_UNVERIFIED) sx_policy=1 ;; *) sx_policy=0 ;; esac
           if [ "${G_FS_SECRET_SCAN:-}" = "FINDINGS" ] && words_have "$secret_cause" secret-scan; then
             sx_in_force=""
             if [ "$sx_policy" = "1" ]; then
@@ -5460,6 +5742,43 @@ jobs:
               printf '%s' "${P_SECRET_EXCEPTION_REFUSALS:-[]}" | jq -r '.[] | "| `\(.finding)` | \(.ticket) | \(.code) | \(.entry) | \(.history // "") |"' 2>/dev/null
               echo ""
             fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          # KNOWN EXPLOITED IN THE WILD (KDEC-022 item 3, owner 2026-10-23). The kev step matched every
+          # dependency/image CVE the report found against the CISA KEV catalog and the register's
+          # known_exploited_exceptions. A catalogued CVE not excepted joins the every-mode class, like
+          # a known-malicious package: BLOCKED at every rung, advisory_mode included. A check that did
+          # not report is UNAVAILABLE -- never CLEAR -- and is visible (the posture step makes it
+          # advisory, never PROCEED).
+          if [ -z "${K_STATE:-}" ]; then kev_state=UNAVAILABLE; else kev_state="$K_STATE"; fi
+          if [ -z "${K_VERDICT:-}" ]; then kev_verdict=UNAVAILABLE; else kev_verdict="$K_VERDICT"; fi
+          case "$kev_verdict" in
+            BLOCKED)
+              secret_fail=1; secret_cause="${secret_cause}${secret_cause:+ }known-exploited" ;;
+            EXCEPTED)
+              echo "::warning title=KNOWN EXPLOITED, EXCEPTED (ticketed)::${K_EXCEPTED:-?}: on the KEV catalog and excepted by the policy register, each by fingerprint, CVE, ticket and named approver. Not a clean result." ;;
+          esac
+          if [ "$kev_state" != "AVAILABLE" ]; then
+            echo "::warning title=kev_state UNAVAILABLE::the CISA KEV catalog could not be read (${K_WHY:-no reason recorded}). No CVE here has been shown not to be exploited in the wild; this run is not a pass."
+          fi
+          {
+            echo ""
+            echo "### Known exploited in the wild (CISA KEV, KDEC-022)"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| kev_state | **${kev_state}** |"
+            echo "| catalog | ${K_CATALOG:-not read} released ${K_RELEASED:-?} |"
+            echo "| verdict | **${kev_verdict}** |"
+            [ -n "${K_BLOCKING:-}" ] && echo "| FINDING_KNOWN_EXPLOITED | ${K_BLOCKING} -- blocks at every rung |"
+            if [ "$kev_verdict" = "EXCEPTED" ] || [ -n "${K_EXCEPTED:-}" ]; then
+              printf '%s' "${K_KNOWN_EXPLOITED:-[]}" | jq -r '.[] | select(.excepted) | "| excepted \(.cve) | `\(.finding)` ticket \(.ticket), approved by \(.approver) until \(.expires) (\(.history // "first exception")) |"' 2>/dev/null
+            fi
+            [ "$kev_state" = "AVAILABLE" ] || echo "| why | ${K_WHY:-no reason recorded} -- not a pass |"
+            kx_refused=$(printf '%s' "${P_KEV_EXCEPTION_REFUSALS:-[]}" | jq -r 'length' 2>/dev/null) || kx_refused=0
+            if [ "${kx_refused:-0}" != "0" ]; then
+              printf '%s' "${P_KEV_EXCEPTION_REFUSALS:-[]}" | jq -r '.[] | "| exception REFUSED | \(.cve) `\(.finding)` \(.ticket) -- \(.code) (entry \(.entry)) |"' 2>/dev/null
+            fi
+            echo ""
           } >> "$GITHUB_STEP_SUMMARY"
           # THE EVIDENCE JOB, CHECKED AS ITSELF AND NOT AS A SCANNER.
           #
@@ -5703,7 +6022,7 @@ jobs:
           # POLICY IS NOT CRAWL: an empty or refused policy leaves the gate strict, as it was.
           # tests/prove_gate_policy_enforcement.py.
           policy_on=0
-          case "${P_STATE:-}" in POLICY_RESOLVED|POLICY_DECISION_EXPIRED|EXCEPTION_RENEWAL_LIMIT) policy_on=1 ;; esac
+          case "${P_STATE:-}" in POLICY_RESOLVED|POLICY_DECISION_EXPIRED|EXCEPTION_RENEWAL_LIMIT|EXCEPTION_HISTORY_UNVERIFIED) policy_on=1 ;; esac
           route_rank() { case "$1" in BLOCKED) echo 5;; EVIDENCE_UNTRUSTED) echo 4;; DECISION_REQUIRED) echo 3;; PROCEED_WITH_ADVISORY) echo 2;; PROCEED) echo 1;; *) echo 0;; esac; }
           policy_findings_route=""
           if [ "$policy_on" = "1" ]; then
@@ -5743,6 +6062,10 @@ jobs:
           elif [ "$secret_excepted" = "1" ]; then emit secret_gate EXCEPTED
           else emit secret_gate PASS; fi
           emit secret_exceptions_applied "$sx_applied_json"
+          # KDEC-022 item 3: the KEV check's state and verdict, and every catalogued finding.
+          emit kev_state "$kev_state"
+          emit kev_verdict "$kev_verdict"
+          emit known_exploited "${K_KNOWN_EXPLOITED:-[]}"
           # TWO SEPARATE QUESTIONS, answered separately on purpose.
           #
           #   assurance_state   what this run ESTABLISHED about the code
@@ -5843,6 +6166,16 @@ jobs:
                     echo "> **A compromised dependency is outside advisory mode.** Remove it and rotate"
                     echo "> what the build environment could reach."
                   } >> "$GITHUB_STEP_SUMMARY" ;;
+                known-exploited)
+                  echo "::error title=GATE=FAIL (FINDING_KNOWN_EXPLOITED)::A CVE on the CISA KEV catalog blocks at every rung: ${K_BLOCKING:-unnamed}."
+                  echo "advisory_mode and crawl do NOT cover it: attackers are using it now (KDEC-022). Upgrade"
+                  echo "or remove the component; only a ticketed known_exploited_exceptions entry for that one"
+                  echo "finding excepts it."
+                  {
+                    echo "## GATE = FAIL — FINDING_KNOWN_EXPLOITED"
+                    echo ""
+                    echo "> **Exploited in the wild blocks at every rung.** ${K_BLOCKING:-unnamed} -- on the KEV catalog ${K_CATALOG:-?}."
+                  } >> "$GITHUB_STEP_SUMMARY" ;;
                 malicious-no-evidence)
                   echo "::error title=GATE=FAIL (malicious-package evidence absent)::The malicious-package check produced no evidence, and no evidence blocks regardless of mode."
                   echo "advisory_mode does NOT cover this: absence of a match is not proof of a clean"
@@ -5854,6 +6187,9 @@ jobs:
                     echo "> **No evidence is not a clean supply chain.** The check could not read every"
                     echo "> lockfile; nothing here says the dependencies are clean."
                   } >> "$GITHUB_STEP_SUMMARY" ;;
+                external-floor)
+                  echo "::error title=GATE=FAIL (external evidence, floor class)::A caller-delivered scanner reported a secret, known-exploited (KEV) or malicious finding. It blocks regardless of mode."
+                  echo "## GATE = FAIL — external evidence of the secret / KEV / malicious class" >> "$GITHUB_STEP_SUMMARY" ;;
                 *)
                   echo "::error title=GATE=FAIL (every-mode block)::A finding of the class that blocks in every mode was recorded without its cause ($cause)."
                   echo "## GATE = FAIL — every-mode block, cause $cause" >> "$GITHUB_STEP_SUMMARY" ;;
@@ -5975,6 +6311,8 @@ jobs:
           G_VERSION_GAPPED_UNVERIFIED: ${{ steps.gate.outputs.version_gapped_unverified }}
           G_POLICY_FINDINGS_ROUTE: ${{ steps.gate.outputs.policy_findings_route }}
           G_COVERAGE_PARTIAL: ${{ steps.gate.outputs.coverage_partial }}
+          G_kev_state: ${{ steps.gate.outputs.kev_state }}
+          G_KEV_VERDICT: ${{ steps.gate.outputs.kev_verdict }}
           W_TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
           # What stage 1 resolved, as data (wiring/gate-rung.patch.md section 4.1).
           P_RESOLUTION: ${{ steps.policy.outputs.policy_state }}
@@ -6203,6 +6541,13 @@ jobs:
           for pr_route in "${P_ROUTES:-}" "${G_POLICY_FINDINGS_ROUTE:-}"; do
             if [ "$(rank "$pr_route")" -gt "$(rank "$route")" ]; then route="$pr_route"; fi
           done
+          # KNOWN EXPLOITED (KDEC-022 item 3). A catalogued CVE not excepted is already BLOCKED (the
+          # gate's every-mode class). An excepted one, or a catalog nobody could read, is never a pass:
+          # at least PROCEED_WITH_ADVISORY, with its own cause below.
+          if [ "$route" = "PROCEED" ] &&
+             { [ "${G_kev_state:-}" = "UNAVAILABLE" ] || [ "${G_KEV_VERDICT:-}" = "EXCEPTED" ]; }; then
+            route=PROCEED_WITH_ADVISORY
+          fi
 
           # WHY IT IS ADVISORY (KDEC-014; vocabulary :: advisory_cause). A deploy refuses a
           # VERSION_GAP (established by READ ranges) at uat/prod without an attributed exception,
@@ -6232,6 +6577,9 @@ jobs:
             # A job that scanned only part of its scope while its findings outranked the PARTIAL
             # (lane L-P85: PHP Semgrep could not fully parse) is still a coverage gap: both causes.
             [ -n "${G_COVERAGE_PARTIAL:-}" ] && causes="$causes,COVERAGE_PARTIAL"
+            # KDEC-022 item 3: a KEV CVE excepted by the register; a KEV catalog nobody could read.
+            [ "${G_KEV_VERDICT:-}" = "EXCEPTED" ] && causes="$causes,KNOWN_EXPLOITED_EXCEPTION_ATTRIBUTED"
+            [ "${G_kev_state:-}" = "UNAVAILABLE" ] && causes="$causes,KEV_UNAVAILABLE"
           fi
           CAUSES="$(dedupe "$causes")"
 
@@ -6382,7 +6730,7 @@ jobs:
           if [ -z "${RESOLUTION:-}" ]; then
             echo "::warning title=No policy resolution::the policy step emitted nothing"
           elif [ "$RESOLUTION" = "POLICY_RESOLVED" ] || [ "$RESOLUTION" = "POLICY_DECISION_EXPIRED" ] ||
-               [ "$RESOLUTION" = "EXCEPTION_RENEWAL_LIMIT" ]; then
+               [ "$RESOLUTION" = "EXCEPTION_RENEWAL_LIMIT" ] || [ "$RESOLUTION" = "EXCEPTION_HISTORY_UNVERIFIED" ]; then
             resolved=1
           fi
           case "${ROUTE:-}" in

@@ -20,27 +20,42 @@ name: Ticket reconcile (reusable)
 # DATA, NEVER CODE. Every caller value reaches the script through `env:`; no `run:` block contains
 # an expression (TC 7.4). Redaction already ran in the report before findings were written.
 #
-# STATUS: proven locally only (tests/prove_ticket_reconcile_workflow.py extracts and runs the guard
-# and the reconcile step). That GitHub honours the environment's branch policy, and that a real
-# caller wires it, need a hosted run, which is owed.
+# THREE MODES (KDEC-024). `reconcile` (post-merge: findings -> tickets, close on verified
+# clearance, RECURRED, merges, SLA escalation) runs behind the `guard` job. `sweep` (the
+# credential-free deferral clock) and `resurface` (the scheduled clock WITH writes: reopen lapsed
+# dispositions as REOPENED_BY_LAPSE, escalate overdue SLAs) are ONE job each: the guard is the
+# job's own `if:` -- the same push/schedule/dispatch-on-the-default-branch rule, evaluated before
+# the job starts or requests anything -- so a scheduled clock costs one small job, not two.
+#
+# EVERY BACKEND THE SCRIPT SUPPORTS IS WIRED: jira, azdo and github. Only the selected backend's
+# values survive into the step (C-2 refuses two at once).
+#
+# STATUS: proven locally only (tests/prove_ticket_reconcile_workflow.py extracts and runs the guard,
+# the reconcile, sweep and resurface steps; tests/prove_ticket_lifecycle.py proves the template
+# caller). That GitHub honours the environment's branch policy, and that a real caller wires it,
+# need a hosted run, which is owed.
 
 on:
   workflow_call:
     inputs:
       backend:
-        description: "jira or azdo (TICKETING_BACKENDS.md; KDEC-004). github is kept, not extended."
+        description: "jira, azdo or github (TICKETING_BACKENDS.md; KDEC-004, KDEC-024). Jira is the system of record."
         type: string
         required: true
       environment:
         description: "The protected deployment environment holding the tracker credential, with a branch policy refusing every ref but the default branch."
         type: string
         required: true
+      test_environment:
+        description: "KDEC-028: a SANDBOX environment (e.g. ticketing-test) used, automatically, by a push or dispatch on any branch but the default one: its JIRA_PROJECT is a sandbox project, its tickets carry the label kit-test and a [TEST] summary prefix, and a sandbox that is a real project (JIRA_REAL_PROJECTS, or the register's routing) is refused TICKETING_TEST_TARGETS_REAL_PROJECT. The REF chooses, never a variable. Empty: those runs are not armed, as before."
+        type: string
+        default: ""
       default_branch:
         description: "The protected default branch name. The guard refuses every other ref."
         type: string
         required: true
       mode:
-        description: "reconcile (post-merge: findings -> tickets, plus the deferral sweep) or sweep (schedule: the past-due deferral clock only, no findings)."
+        description: "reconcile (post-merge: findings -> tickets), sweep (schedule, no credential: the past-due deferral clock, read from the ledger) or resurface (schedule: the clock WITH writes -- REOPENED_BY_LAPSE and SLA escalation, no scan)."
         type: string
         default: reconcile
       findings_artifact:
@@ -85,7 +100,7 @@ on:
         default: ""
     secrets:
       JIRA_EMAIL:
-        description: "Jira: the account email (basic auth is email:token). From the protected environment."
+        description: "Jira: the account email (basic auth is email:token). From the protected environment. Not needed with vars.JIRA_AUTH_MODE=bearer (a service account token through the gateway, KDEC-028)."
         required: false
       JIRA_TOKEN:
         description: "Jira: API token. From the protected environment."
@@ -93,16 +108,22 @@ on:
       AZDO_PAT:
         description: "Azure DevOps: PAT, Work Items read & write, one organisation. From the protected environment."
         required: false
+      GH_TICKET_TOKEN:
+        description: "GitHub Issues: a token with issues read & write on the ONE repository vars.TICKET_REPO names. From the protected environment."
+        required: false
     outputs:
       armed:
         description: "true only for push/schedule/dispatch on the protected default branch."
-        value: ${{ jobs.guard.outputs.armed }}
+        value: ${{ jobs.guard.outputs.armed || jobs.sweep.outputs.armed || jobs.resurface.outputs.armed }}
       routing_result:
         description: "The ticketing claim as a registered routing_result. Empty when not armed."
-        value: ${{ jobs.reconcile.outputs.routing_result || jobs.sweep.outputs.routing_result }}
+        value: ${{ jobs.reconcile.outputs.routing_result || jobs.sweep.outputs.routing_result || jobs.resurface.outputs.routing_result }}
+      ticketing_state:
+        description: "TICKETING_AVAILABLE | TICKETING_UNAVAILABLE | TICKETING_NOT_CONFIGURED. Never a gate input."
+        value: ${{ jobs.reconcile.outputs.ticketing_state || jobs.resurface.outputs.ticketing_state }}
       controls_unavailable:
         description: "Controls that could not be acquired this run. Never read as clean."
-        value: ${{ jobs.reconcile.outputs.controls_unavailable || jobs.sweep.outputs.controls_unavailable }}
+        value: ${{ jobs.reconcile.outputs.controls_unavailable || jobs.sweep.outputs.controls_unavailable || jobs.resurface.outputs.controls_unavailable }}
 
 permissions:
   contents: read
@@ -110,10 +131,14 @@ permissions:
 jobs:
   guard:
     name: Ticketing armed only after the merge or on a schedule
+    # Only mode reconcile needs a separate guard job; the clock modes carry the same rule in their
+    # own `if:` (one job, not two).
+    if: inputs.mode == 'reconcile'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     outputs:
       armed: ${{ steps.decide.outputs.armed }}
+      ticketing_mode: ${{ steps.decide.outputs.ticketing_mode }}
     steps:
       - name: Decide from the trigger context, holding nothing
         id: decide
@@ -121,9 +146,11 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REF: ${{ github.ref }}
           DEFAULT_BRANCH: ${{ inputs.default_branch }}
+          TEST_ENVIRONMENT: ${{ inputs.test_environment }}
         run: |
           set -euo pipefail
           armed=false
+          mode=real
           why=""
           case "$EVENT_NAME" in
             push|schedule|workflow_dispatch) ;;
@@ -132,11 +159,26 @@ jobs:
           if [ -z "$why" ] && [ -z "$DEFAULT_BRANCH" ]; then
             why="no default branch was named, so the protected-branch context cannot be established"
           fi
+          # KDEC-028: TEST TICKETING IS CHOSEN BY THE REF, NEVER BY A VARIABLE SOMEONE MUST PUT BACK.
+          # Any branch but the default one is a TEST run, in the sandbox environment, when the
+          # caller named one; the default branch is always the real one.
           if [ -z "$why" ] && [ "$REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
-            why="ref '$REF' is not the protected default branch"
+            if [ -n "${TEST_ENVIRONMENT:-}" ] && [ "$EVENT_NAME" != "schedule" ]; then
+              mode=test
+            else
+              why="ref '$REF' is not the protected default branch"
+            fi
           fi
-          if [ -z "$why" ]; then armed=true; why="armed: $EVENT_NAME on the protected default branch"; fi
+          if [ -z "$why" ]; then
+            armed=true
+            if [ "$mode" = test ]; then
+              why="armed for TEST ticketing: $EVENT_NAME on '$REF' (not the default branch), in the sandbox environment '${TEST_ENVIRONMENT:-}'; tickets carry kit-test and [TEST]"
+            else
+              why="armed: $EVENT_NAME on the protected default branch"
+            fi
+          fi
           echo "armed=$armed" >> "$GITHUB_OUTPUT"
+          echo "ticketing_mode=$mode" >> "$GITHUB_OUTPUT"
           {
             echo "### Ticket reconciliation: $([ "$armed" = true ] && echo ARMED || echo NOT ARMED)"
             echo ""
@@ -153,13 +195,19 @@ jobs:
   # holding the tracker credential -- a credential in reach of a job that needs none.
   sweep:
     name: Sweep the past-due deferral clock (no tracker, no credential)
-    needs: guard
-    if: needs.guard.outputs.armed == 'true' && inputs.mode == 'sweep'
+    # THE GUARD, AS THIS JOB'S OWN CONDITION: push, schedule or dispatch on the named default
+    # branch, nothing else -- evaluated before the job starts. One job for the clock (T-17).
+    if: >-
+      inputs.mode == 'sweep' && inputs.default_branch != '' &&
+      (github.event_name == 'push' || github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch') &&
+      github.ref == format('refs/heads/{0}', inputs.default_branch)
     runs-on: ubuntu-latest
     permissions:
       contents: read
     timeout-minutes: ${{ inputs.timeout_minutes }}
     outputs:
+      armed: ${{ steps.sweep.outputs.armed }}
       routing_result: ${{ steps.sweep.outputs.routing_result }}
       controls_unavailable: ${{ steps.sweep.outputs.controls_unavailable }}
     steps:
@@ -199,24 +247,148 @@ jobs:
             1) route=DECISION_REQUIRED; unav="" ;;
             *) route=EVIDENCE_UNTRUSTED; unav="deferral-sweep" ;;
           esac
+          echo "armed=true" >> "$GITHUB_OUTPUT"
           echo "routing_result=$route" >> "$GITHUB_OUTPUT"
           echo "controls_unavailable=$unav" >> "$GITHUB_OUTPUT"
           echo "| deferral sweep | exit $rc, routing_result **$route** |" >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
 
-  reconcile:
-    name: Reconcile findings to the tracker
-    needs: guard
-    if: needs.guard.outputs.armed == 'true' && inputs.mode != 'sweep'
+  # THE SCHEDULED CLOCK WITH WRITES (T-17, D5; KDEC-024). No findings and no scan: the ledger, the
+  # date and ONE sweep of the tracker. A disposition that has expired reopens its ticket as
+  # REOPENED_BY_LAPSE; an open ticket past its SLA is escalated (comment, priority, label) -- each
+  # once. It holds the tracker credential, so it requests the protected environment, and it is
+  # ONE job: the guard rule is its own `if:`.
+  resurface:
+    name: Resurface lapsed dispositions and SLA breaches (scheduled, no scan)
+    if: >-
+      inputs.mode == 'resurface' && inputs.default_branch != '' &&
+      (github.event_name == 'push' || github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch') &&
+      github.ref == format('refs/heads/{0}', inputs.default_branch)
     runs-on: ubuntu-latest
-    # The ONE job that holds the tracker credential: from a protected environment whose branch
-    # policy refuses every ref but the default branch (TC 7.2).
     environment: ${{ inputs.environment }}
     permissions:
       contents: read
     timeout-minutes: ${{ inputs.timeout_minutes }}
     outputs:
+      armed: ${{ steps.resurface.outputs.armed }}
+      routing_result: ${{ steps.resurface.outputs.routing_result }}
+      ticketing_state: ${{ steps.resurface.outputs.ticketing_state }}
+      controls_unavailable: ${{ steps.resurface.outputs.controls_unavailable }}
+    steps:
+      - name: Check out the protected branch (the ledger and the register live here)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out the kit at a pinned commit (its scripts)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.kit_repository }}
+          ref: ${{ inputs.kit_ref }}
+          path: .kit
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Resurface (the clock, with writes)
+        id: resurface
+        env:
+          KIT_DIR: ${{ github.workspace }}/.kit
+          LEDGER_PATH: ${{ inputs.ledger_path }}
+          APPLY: ${{ inputs.apply }}
+          TICKET_BACKEND: ${{ inputs.backend }}
+          JIRA_HOST: ${{ vars.JIRA_HOST }}
+          JIRA_PROJECT: ${{ vars.JIRA_PROJECT }}
+          JIRA_STAMP_FIELD: ${{ vars.JIRA_STAMP_FIELD }}
+          JIRA_EPIC_ID: ${{ vars.JIRA_EPIC_ID }}
+          JIRA_CALIBRATION_ISSUE: ${{ vars.JIRA_CALIBRATION_ISSUE }}
+          JIRA_TYPE_CLUSTER: ${{ vars.JIRA_TYPE_CLUSTER }}
+          JIRA_TYPE_INSTANCE: ${{ vars.JIRA_TYPE_INSTANCE }}
+          JIRA_TRANSITION_REOPEN: ${{ vars.JIRA_TRANSITION_REOPEN }}
+          JIRA_TRANSITION_DONE: ${{ vars.JIRA_TRANSITION_DONE }}
+          JIRA_PRIORITY_LADDER: ${{ vars.JIRA_PRIORITY_LADDER }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+          # KDEC-028: bearer auth for a service account (JIRA_TOKEN alone), and the cloud id.
+          JIRA_AUTH_MODE: ${{ vars.JIRA_AUTH_MODE }}
+          JIRA_CLOUD_ID: ${{ vars.JIRA_CLOUD_ID }}
+          JIRA_REAL_PROJECTS: ${{ vars.JIRA_REAL_PROJECTS }}
+          AZDO_ORG_URL: ${{ vars.AZDO_ORG_URL }}
+          AZDO_PROJECT: ${{ vars.AZDO_PROJECT }}
+          AZDO_STAMP_FIELD: ${{ vars.AZDO_STAMP_FIELD }}
+          AZDO_EPIC_ID: ${{ vars.AZDO_EPIC_ID }}
+          AZDO_CALIBRATION_ITEM: ${{ vars.AZDO_CALIBRATION_ITEM }}
+          AZDO_TYPE_CLUSTER: ${{ vars.AZDO_TYPE_CLUSTER }}
+          AZDO_TYPE_INSTANCE: ${{ vars.AZDO_TYPE_INSTANCE }}
+          AZDO_STATE_REOPEN: ${{ vars.AZDO_STATE_REOPEN }}
+          AZDO_STATE_DONE: ${{ vars.AZDO_STATE_DONE }}
+          AZDO_PAT: ${{ secrets.AZDO_PAT }}
+          TICKET_REPO: ${{ vars.TICKET_REPO }}
+          TICKET_CALIBRATION_REF: ${{ vars.TICKET_CALIBRATION_REF }}
+          GH_TOKEN: ${{ secrets.GH_TICKET_TOKEN }}
+          TICKET_STAMP_LABEL: ${{ vars.TICKET_STAMP_LABEL }}
+          TICKET_CREATE_CEILING: ${{ vars.TICKET_CREATE_CEILING }}
+          TICKET_RETRY_CEILING: ${{ vars.TICKET_RETRY_CEILING }}
+          TICKET_CALL_BUDGET: ${{ vars.TICKET_CALL_BUDGET }}
+          # The clock runs on the default branch only: always real.
+          TICKETING_MODE: real
+        run: |
+          set -uo pipefail
+          # Only the selected backend's values survive (C-2 refuses two credentials at once).
+          case "$TICKET_BACKEND" in
+            jira) unset AZDO_PAT AZDO_ORG_URL AZDO_PROJECT GH_TOKEN TICKET_REPO ;;
+            azdo) unset JIRA_TOKEN JIRA_EMAIL JIRA_HOST JIRA_PROJECT GH_TOKEN TICKET_REPO ;;
+            github) unset JIRA_TOKEN JIRA_EMAIL JIRA_HOST JIRA_PROJECT AZDO_PAT AZDO_ORG_URL AZDO_PROJECT ;;
+          esac
+          today="${TODAY_OVERRIDE:-$(date -u +%F)}"
+          record="${RUNNER_TEMP}/ticket-run-record.json"
+          args=(--resurface --ledger "$LEDGER_PATH" --today "$today" --record "$record")
+          if [ "$APPLY" = "true" ]; then args+=(--apply); fi
+          if [ -f .security/policy-registration.json ]; then args+=(--registration .security/policy-registration.json); fi
+          if [ -f "$KIT_DIR/policy/policy-registration.json" ]; then args+=(--central-registration "$KIT_DIR/policy/policy-registration.json"); fi
+          rc=0
+          python3 "$KIT_DIR/scripts/reconcile_tickets.py" "${args[@]}" || rc=$?
+          case "$rc" in
+            0) route=PROCEED; unav="" ;;
+            1) route=DECISION_REQUIRED; unav="" ;;
+            *) route=EVIDENCE_UNTRUSTED; unav="ticket-resurface" ;;
+          esac
+          state="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("ticketing_state") or "")' "$record" 2>/dev/null || true)"
+          echo "armed=true" >> "$GITHUB_OUTPUT"
+          echo "routing_result=$route" >> "$GITHUB_OUTPUT"
+          echo "ticketing_state=$state" >> "$GITHUB_OUTPUT"
+          echo "controls_unavailable=$unav" >> "$GITHUB_OUTPUT"
+          echo "| ticket clock | exit $rc, routing_result **$route**, ${state:-no ticketing state} |" >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+      - name: Keep the clock's run record
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ticket-resurface-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ticket-run-record.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  reconcile:
+    name: Reconcile findings to the tracker
+    needs: guard
+    if: needs.guard.outputs.armed == 'true' && inputs.mode == 'reconcile'
+    runs-on: ubuntu-latest
+    # The tracker credential is held only here and in `resurface` -- one of them per mode, never
+    # both in one run -- from a protected environment whose branch policy refuses every ref but
+    # the default branch (TC 7.2). KDEC-028: a TEST run (any other branch, the guard decides from
+    # the ref) uses the sandbox environment instead -- never the real one.
+    environment: ${{ needs.guard.outputs.ticketing_mode == 'test' && inputs.test_environment || inputs.environment }}
+    permissions:
+      contents: read
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    outputs:
       routing_result: ${{ steps.posture.outputs.routing_result }}
+      ticketing_state: ${{ steps.posture.outputs.ticketing_state }}
       controls_unavailable: ${{ steps.posture.outputs.controls_unavailable }}
     steps:
       - name: Check out the protected branch (the ledger lives here)
@@ -265,8 +437,14 @@ jobs:
           JIRA_TYPE_CLUSTER: ${{ vars.JIRA_TYPE_CLUSTER }}
           JIRA_TYPE_INSTANCE: ${{ vars.JIRA_TYPE_INSTANCE }}
           JIRA_TRANSITION_REOPEN: ${{ vars.JIRA_TRANSITION_REOPEN }}
+          JIRA_TRANSITION_DONE: ${{ vars.JIRA_TRANSITION_DONE }}
+          JIRA_PRIORITY_LADDER: ${{ vars.JIRA_PRIORITY_LADDER }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+          # KDEC-028: bearer auth for a service account (JIRA_TOKEN alone), and the cloud id.
+          JIRA_AUTH_MODE: ${{ vars.JIRA_AUTH_MODE }}
+          JIRA_CLOUD_ID: ${{ vars.JIRA_CLOUD_ID }}
+          JIRA_REAL_PROJECTS: ${{ vars.JIRA_REAL_PROJECTS }}
           AZDO_ORG_URL: ${{ vars.AZDO_ORG_URL }}
           AZDO_PROJECT: ${{ vars.AZDO_PROJECT }}
           AZDO_STAMP_FIELD: ${{ vars.AZDO_STAMP_FIELD }}
@@ -275,19 +453,28 @@ jobs:
           AZDO_TYPE_CLUSTER: ${{ vars.AZDO_TYPE_CLUSTER }}
           AZDO_TYPE_INSTANCE: ${{ vars.AZDO_TYPE_INSTANCE }}
           AZDO_STATE_REOPEN: ${{ vars.AZDO_STATE_REOPEN }}
+          AZDO_STATE_DONE: ${{ vars.AZDO_STATE_DONE }}
           AZDO_PAT: ${{ secrets.AZDO_PAT }}
+          # GitHub Issues: one repository, one token (KDEC-024 wires every backend the script has).
+          TICKET_REPO: ${{ vars.TICKET_REPO }}
+          TICKET_CALIBRATION_REF: ${{ vars.TICKET_CALIBRATION_REF }}
+          GH_TOKEN: ${{ secrets.GH_TICKET_TOKEN }}
           TICKET_STAMP_LABEL: ${{ vars.TICKET_STAMP_LABEL }}
           TICKET_CREATE_CEILING: ${{ vars.TICKET_CREATE_CEILING }}
           TICKET_RETRY_CEILING: ${{ vars.TICKET_RETRY_CEILING }}
+          TICKET_CALL_BUDGET: ${{ vars.TICKET_CALL_BUDGET }}
           TICKET_INSTANCE_THRESHOLD: ${{ vars.TICKET_INSTANCE_THRESHOLD }}
           TICKET_DEGRADED_RUN_THRESHOLD: ${{ vars.TICKET_DEGRADED_RUN_THRESHOLD }}
+          # KDEC-028: derived by the guard from the ref (default branch real, any other test).
+          TICKETING_MODE: ${{ needs.guard.outputs.ticketing_mode }}
         run: |
           set -uo pipefail
           # Only the selected backend's credential may be present (C-2 refuses two at once), so
-          # the other backend's values are cleared here rather than trusted to be empty.
+          # the other backends' values are cleared here rather than trusted to be empty.
           case "$TICKET_BACKEND" in
-            jira) unset AZDO_PAT AZDO_ORG_URL AZDO_PROJECT ;;
-            azdo) unset JIRA_TOKEN JIRA_EMAIL JIRA_HOST JIRA_PROJECT ;;
+            jira) unset AZDO_PAT AZDO_ORG_URL AZDO_PROJECT GH_TOKEN TICKET_REPO ;;
+            azdo) unset JIRA_TOKEN JIRA_EMAIL JIRA_HOST JIRA_PROJECT GH_TOKEN TICKET_REPO ;;
+            github) unset JIRA_TOKEN JIRA_EMAIL JIRA_HOST JIRA_PROJECT AZDO_PAT AZDO_ORG_URL AZDO_PROJECT ;;
           esac
           today="${TODAY_OVERRIDE:-$(date -u +%F)}"
           record="${RUNNER_TEMP}/ticket-run-record.json"
@@ -309,17 +496,27 @@ jobs:
               fi
               args=(--findings "$FINDINGS_FILE" --ledger "$LEDGER_PATH" --today "$today" --record "$record")
               if [ "$APPLY" = "true" ]; then args+=(--apply); fi
+              # KDEC-024. The report's coverage record (beside findings.json: a ticket closes on
+              # absence only with it), the register (SLA numbers, secret-exception links), and
+              # this run and commit (linked on every ticket, cited on every closure).
+              cov="$(dirname "$FINDINGS_FILE")/findings-coverage.json"
+              if [ -f "$cov" ]; then args+=(--coverage "$cov"); fi
+              if [ -f .security/policy-registration.json ]; then args+=(--registration .security/policy-registration.json); fi
+              if [ -f "$KIT_DIR/policy/policy-registration.json" ]; then args+=(--central-registration "$KIT_DIR/policy/policy-registration.json"); fi
+              if [ -n "${GITHUB_RUN_ID:-}" ]; then args+=(--run-url "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID}"); fi
+              if [ -n "${GITHUB_SHA:-}" ]; then args+=(--commit "$GITHUB_SHA"); fi
               # Captured, not allowed to abort: the runner's bash is `-e`, and an exit of 1 or 3
               # must still reach the posture step as rc (it used to end the step first).
               rc=0
               python3 "$script" "${args[@]}" || rc=$?
-              # The ledger is a governance artifact: proposed, never pushed (ETFB 5.4).
-              if [ -f "$LEDGER_PATH" ]; then cp "$LEDGER_PATH" "${RUNNER_TEMP}/ticket-ledger-proposal.json"; fi
+              # The ledger is a governance artifact: proposed, never pushed (ETFB 5.4). A TEST run's
+              # ledger is never proposed: its bindings are sandbox tickets (KDEC-028).
+              if [ -f "$LEDGER_PATH" ] && [ "${TICKETING_MODE:-real}" != "test" ]; then cp "$LEDGER_PATH" "${RUNNER_TEMP}/ticket-ledger-proposal.json"; fi
               finish $rc
               ;;
             *)
-              # mode sweep runs in the credential-free sweep job (T-21), never here.
-              echo "::error title=Unknown mode::this job serves mode reconcile; sweep has its own job"
+              # mode sweep and mode resurface run in their own jobs (T-21, T-17), never here.
+              echo "::error title=Unknown mode::this job serves mode reconcile; sweep and resurface have their own jobs"
               finish 2
               ;;
           esac
@@ -373,6 +570,7 @@ jobs:
 
           posture backend                 NOT_A_CONTROL_SURFACE - -
           posture environment             NOT_A_CONTROL_SURFACE - -
+          posture test_environment        NOT_A_CONTROL_SURFACE - -
           posture default_branch          NOT_A_CONTROL_SURFACE - -
           posture mode                    NOT_A_CONTROL_SURFACE - -
           posture findings_artifact       TARGET_NOT_SUPPLIED NONEMPTY ticket-reconciliation "$W_FINDINGS_ARTIFACT"
@@ -442,6 +640,13 @@ jobs:
           fi
 
           emit() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
+          # TICKETING_UNAVAILABLE is reported as itself (KDEC-024): visible, never a silent pass,
+          # and never a gate input -- the security gate ran before this job and does not wait.
+          tstate=""
+          if [ -f "$RECORD" ]; then
+            tstate="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("ticketing_state") or "")' "$RECORD" 2>/dev/null || true)"
+          fi
+          emit ticketing_state "$tstate"
           emit routing_result "$route"
           emit controls_required "$REQ"
           emit controls_executed "$EXE"
@@ -457,6 +662,7 @@ jobs:
             echo "| row | value |"
             echo "|---|---|"
             echo "| routing_result | **$route** |"
+            echo "| ticketing | ${tstate:-not recorded} |"
             echo "| controls executed | ${EXE:-none} |"
             echo "| controls unavailable | ${UNAV:-none} |"
             echo "| controls skipped | ${SKP:-none} |"

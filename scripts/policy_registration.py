@@ -29,7 +29,10 @@ THE FORMAT (schemas/policy-registration.schema.json; templates/policy-register.c
         decision: {authority, reason, decided_on, expires, [approver_role], [exception_ref],
                    [environment_reviewers], [evidence_refs]}, [notes],
         [secret_exceptions: [{finding, ticket, explanation, approver, expires,
-                              [environment_reviewers]}]]}]}
+                              [environment_reviewers]}]],
+        [ticket_routing: {[inherit], [rules: [{[id], [match], project, ...}]], [default]}]}]}
+    ticket_routing: which tracker project a finding's ticket is created in (scripts/ticket_routing.py,
+    KDEC-028). Not a floor: any scope may set it, the most specific wins.
     secret_exceptions: ONE secret finding made advisory, ticketed and attributed (below, SECRET
     EXCEPTIONS). A defective item is refused by name (SECRET_EXCEPTION_*) and the secret blocks.
 
@@ -51,6 +54,10 @@ PRECEDENCE (most specific wins; deterministic; ties are conflicts)
     ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR (the org, the enterprise and rung used, "add it to the orgs
     map") in `notices`, `notes`, policy_notices and a workflow warning. With no map, or an empty
     one, nothing changes.
+    WITH NO ENTERPRISE ENTRY (KDEC-022 item 1, owner 2026-10-23: "Yes you should get the strictest
+    from the orgs."): when the register has an `orgs` map or org entries but no enterprise entry, an
+    org it does not know runs at the STRICTEST registered org's org-level entries, tier by tier, by
+    the same comparison; notice ORG_UNMAPPED_RAN_AT_STRICTEST_ORG. Its own file may only tighten.
 
 THE AUTHORITY FLOOR (KDEC-018, owner 2026-10-22: "if they say walk everyone is at walk")
 
@@ -81,12 +88,19 @@ WHAT RESOLUTION REFUSES, BY NAME (policy_resolution in assurance-taxonomy.yaml)
                                             set to PROCEED (findings must never PASS-wash), or
                                             the run received an input that switches a crawl-floor
                                             scan off (enable_malicious_pkg_scan false, KDEC-020)
+    TICKET_ROUTING_BELOW_FLOOR    BLOCKED   an entry's ticket_routing sends a secret, KEV or
+                                            malicious class to "none" (scripts/ticket_routing.py;
+                                            routing is otherwise free at every scope, KDEC-028)
     REPOSITORY_FILE_SOFTENING     BLOCKED   the repository's own file softened what it inherited
     POLICY_BELOW_AUTHORITY_FLOOR  BLOCKED   a central entry left something weaker than the
                                             authority floor above it (THE AUTHORITY FLOOR)
     CELLS_NOT_MONOTONE           BLOCKED   sandbox <= dev <= test <= uat = prod violated
     POLICY_DECISION_EXPIRED       DECISION_REQUIRED  an applied decision expired; its tightening
                                             stays in force and its softening reverts
+    EXCEPTION_HISTORY_TAMPERED    BLOCKED   an exception declares a shorter renewal history than the
+                                            register file's git history shows (KDEC-022 item 2)
+    EXCEPTION_HISTORY_UNVERIFIED  DECISION_REQUIRED  a softening decision's history git cannot show;
+                                            the softening reverts (an exception item is refused alone)
     REGISTRATION_UNAVAILABLE      EVIDENCE_UNTRUSTED unreadable, unparseable, schema violation
     CELL_NOT_REGISTERED           EVIDENCE_UNTRUSTED an environment name that maps to no tier
 
@@ -112,6 +126,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import enforcement_axes as ax  # noqa: E402
 import exception_history as eh  # noqa: E402
 import rung_ladder as rl  # noqa: E402
+import ticket_routing as troute  # noqa: E402
 
 SCHEMA_VERSION = 2
 KIT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -134,12 +149,19 @@ POLICY_BELOW_AUTHORITY_FLOOR = 'POLICY_BELOW_AUTHORITY_FLOOR'
 # policy_notice (assurance-taxonomy.yaml): visible, never a refusal. An org the central orgs map does
 # not name ran at the enterprise floor (KDEC-020, correcting KDEC-019 item 1).
 ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR = 'ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR'
+# KDEC-022 item 1: no enterprise entry, and an org the register does not know ran at the strictest
+# registered org.
+ORG_UNMAPPED_RAN_AT_STRICTEST_ORG = 'ORG_UNMAPPED_RAN_AT_STRICTEST_ORG'
 # Run inputs that switch off a scan that is part of the crawl floor (KDEC-020): the input -> the job.
 # Received false, the run is refused CHERRY_PICK_BELOW_FLOOR -- "Secrets + broken pipeline" stays the
 # crawl blocking set; this refuses only the scan NOT RUNNING, not how its findings route.
 FLOOR_SCAN_INPUTS = {'enable_malicious_pkg_scan': 'malicious-deps'}
 # An exception renewed more often than the authority's cap (KDEC-018 item 4; scripts/exception_history.py).
 EXCEPTION_RENEWAL_LIMIT = eh.EXCEPTION_RENEWAL_LIMIT
+# KDEC-022 item 2: the renewal history is derived from git. Shorter declared than git shows: erased.
+# Git cannot show it: unverified -- refused like an unreadable history, never read as zero.
+EXCEPTION_HISTORY_TAMPERED = eh.EXCEPTION_HISTORY_TAMPERED
+EXCEPTION_HISTORY_UNVERIFIED = eh.EXCEPTION_HISTORY_UNVERIFIED
 # Precedence levels. The AUTHORITY is the enterprise and the org: only they may soften the kit
 # default (deploy approval), and nothing beneath a registered entry may soften it (KDEC-018).
 LEVEL_ENTERPRISE = 0
@@ -153,21 +175,30 @@ ROUTE_OF = {
     rl.POLICY_MODE_SUPPLIED: 'BLOCKED', POLICY_REGISTER_CONFLICT: 'BLOCKED',
     POLICY_DECISION_UNATTRIBUTED: 'BLOCKED', rl.CHERRY_PICK_BELOW_FLOOR: 'BLOCKED',
     REPOSITORY_FILE_SOFTENING: 'BLOCKED', POLICY_BELOW_AUTHORITY_FLOOR: 'BLOCKED',
-    rl.CELLS_NOT_MONOTONE: 'BLOCKED',
+    rl.CELLS_NOT_MONOTONE: 'BLOCKED', troute.TICKET_ROUTING_BELOW_FLOOR: 'BLOCKED',
     rl.REGISTRATION_UNAVAILABLE: 'EVIDENCE_UNTRUSTED', rl.CELL_NOT_REGISTERED: 'EVIDENCE_UNTRUSTED',
     POLICY_DECISION_EXPIRED: 'DECISION_REQUIRED', EXCEPTION_RENEWAL_LIMIT: 'DECISION_REQUIRED',
+    EXCEPTION_HISTORY_TAMPERED: 'BLOCKED', EXCEPTION_HISTORY_UNVERIFIED: 'DECISION_REQUIRED',
 }
 # When several refusals apply, the record names the first of these that fired.
 REFUSAL_ORDER = (rl.POLICY_MODE_SUPPLIED, POLICY_REGISTER_CONFLICT, POLICY_DECISION_UNATTRIBUTED,
-                 rl.CHERRY_PICK_BELOW_FLOOR, REPOSITORY_FILE_SOFTENING, POLICY_BELOW_AUTHORITY_FLOOR,
-                 rl.CELLS_NOT_MONOTONE,
+                 rl.CHERRY_PICK_BELOW_FLOOR, troute.TICKET_ROUTING_BELOW_FLOOR,
+                 REPOSITORY_FILE_SOFTENING, POLICY_BELOW_AUTHORITY_FLOOR,
+                 EXCEPTION_HISTORY_TAMPERED, rl.CELLS_NOT_MONOTONE,
                  rl.REGISTRATION_UNAVAILABLE, rl.CELL_NOT_REGISTERED, EXCEPTION_RENEWAL_LIMIT,
-                 POLICY_DECISION_EXPIRED)
+                 EXCEPTION_HISTORY_UNVERIFIED, POLICY_DECISION_EXPIRED)
 
 # The flagship's scanner jobs: the named controls a register may set. secret-scan and
 # malicious-deps are the secret class -- they block in every mode and never soften.
 JOBS = ('secret-scan', 'code-quality', 'sast-semgrep', 'sast-bandit', 'sast-dotnet', 'sast-java',
-        'sast-go', 'sast-cpp', 'deps-scan', 'iac-scan', 'malicious-deps', 'sbom', 'codeql', 'image-scan')
+        'sast-go', 'sast-cpp', 'deps-scan', 'iac-scan', 'malicious-deps', 'sbom', 'codeql', 'image-scan',
+        # Android and iOS (lane L-SCAN-B, KDEC-026)
+        'sast-mobile',
+        # KDEC-028: findings a CALLER's own scanner delivered as adopted external evidence (the
+        # report's state-ext-* rows). Routed like any scanner job, at JOB_DEFAULT_CLASS. Their
+        # secret / KEV / malicious class arrives as `external-floor`, which the gate reads as the
+        # secret class directly and no register entry can soften, so it is not a job here.
+        'external')
 SECRET_JOBS = ('secret-scan', 'malicious-deps')
 SECRET_CONTROLS = ('secrets',) + SECRET_JOBS
 CONTROL_KEYS = rl.control_classes + JOBS
@@ -180,7 +211,7 @@ TOP_KEYS = ('schema_version', 'register_id', 'sign_off', 'proposed_by', 'notes',
             'orgs', 'repositories', 'numbers', 'policies')
 ORG_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
 ENTRY_KEYS = ('id', 'scope', 'rung', 'controls', 'team_pattern', 'merge_reaches_tier', 'deploy_approval',
-              'decision', 'notes', 'secret_exceptions')
+              'decision', 'notes', 'secret_exceptions', 'known_exploited_exceptions', 'ticket_routing')
 
 # ── SECRET EXCEPTIONS (owner ruling 2026-10-22, lane L-S) ───────────────────────────────────────
 #
@@ -214,7 +245,20 @@ SECRET_EXCEPTION_UNTICKETED = 'SECRET_EXCEPTION_UNTICKETED'
 SECRET_EXCEPTION_UNATTRIBUTED = 'SECRET_EXCEPTION_UNATTRIBUTED'
 SECRET_EXCEPTION_EXPIRED = 'SECRET_EXCEPTION_EXPIRED'
 SECRET_EXCEPTION_REFUSALS = (SECRET_EXCEPTION_NOT_FINDING_SCOPED, SECRET_EXCEPTION_UNTICKETED,
-                             SECRET_EXCEPTION_UNATTRIBUTED, EXCEPTION_RENEWAL_LIMIT, SECRET_EXCEPTION_EXPIRED)
+                             SECRET_EXCEPTION_UNATTRIBUTED, EXCEPTION_RENEWAL_LIMIT, EXCEPTION_HISTORY_TAMPERED,
+                             EXCEPTION_HISTORY_UNVERIFIED, SECRET_EXCEPTION_EXPIRED)
+EXCEPTION_LISTS = ('secret_exceptions', 'known_exploited_exceptions')
+SECRET_CODES = {'scope': SECRET_EXCEPTION_NOT_FINDING_SCOPED, 'ticket': SECRET_EXCEPTION_UNTICKETED,
+                'attribution': SECRET_EXCEPTION_UNATTRIBUTED, 'expired': SECRET_EXCEPTION_EXPIRED}
+# KDEC-022 item 3: one finding whose CVE is on the CISA KEV catalog, excepted on the same rules.
+KEV_EXCEPTION_NOT_FINDING_SCOPED = 'KEV_EXCEPTION_NOT_FINDING_SCOPED'
+KEV_EXCEPTION_UNTICKETED = 'KEV_EXCEPTION_UNTICKETED'
+KEV_EXCEPTION_UNATTRIBUTED = 'KEV_EXCEPTION_UNATTRIBUTED'
+KEV_EXCEPTION_EXPIRED = 'KEV_EXCEPTION_EXPIRED'
+KEV_CODES = {'scope': KEV_EXCEPTION_NOT_FINDING_SCOPED, 'ticket': KEV_EXCEPTION_UNTICKETED,
+             'attribution': KEV_EXCEPTION_UNATTRIBUTED, 'expired': KEV_EXCEPTION_EXPIRED}
+KEV_EXCEPTION_KEYS = SECRET_EXCEPTION_KEYS + ('cve',)
+CVE_RE = re.compile(r'^CVE-\d{4}-\d{4,}$')
 FINGERPRINT_RE = re.compile(r'^[0-9a-f]{12}$')
 TICKET_RE = re.compile(r'^([A-Z][A-Z0-9_]*)-([0-9]+)$')
 SCOPE_KEYS = ('enterprise', 'org', 'team', 'product', 'repository', 'environment_tier')
@@ -443,22 +487,29 @@ def check_document(doc, origin):
             elif c in SECRET_CONTROLS and v != 'BLOCKED':
                 p.append((rl.CHERRY_PICK_BELOW_FLOOR, '%s sets %s to %s: a secret-class control blocks at '
                           'every rung and has no softer setting' % (where, c, v)))
-        sx = e.get('secret_exceptions')
-        if sx is not None:
+        for field, allowed in (('secret_exceptions', SECRET_EXCEPTION_KEYS),
+                               ('known_exploited_exceptions', KEV_EXCEPTION_KEYS)):
+            sx = e.get(field)
+            if sx is None:
+                continue
             if not isinstance(sx, list):
-                bad('%s secret_exceptions is not a list' % where)
-            else:
-                for j, item in enumerate(sx):
-                    if not isinstance(item, dict):
-                        bad('%s secret_exceptions[%d] is not an object' % (where, j))
-                        continue
-                    for k in item:
-                        if k not in SECRET_EXCEPTION_KEYS:
-                            bad('%s secret_exceptions[%d] carries unknown field %r' % (where, j, k))
-                    rv_i = item.get('environment_reviewers')
-                    if rv_i is not None and (not isinstance(rv_i, list) or any(not _s(x) for x in rv_i)):
-                        bad('%s secret_exceptions[%d].environment_reviewers must be a list of reviewer '
-                            'names' % (where, j))
+                bad('%s %s is not a list' % (where, field))
+                continue
+            for j, item in enumerate(sx):
+                if not isinstance(item, dict):
+                    bad('%s %s[%d] is not an object' % (where, field, j))
+                    continue
+                for k in item:
+                    if k not in allowed:
+                        bad('%s %s[%d] carries unknown field %r' % (where, field, j, k))
+                rv_i = item.get('environment_reviewers')
+                if rv_i is not None and (not isinstance(rv_i, list) or any(not _s(x) for x in rv_i)):
+                    bad('%s %s[%d].environment_reviewers must be a list of reviewer names' % (where, field, j))
+        # TICKET ROUTING (KDEC-028): which project a finding's ticket is created in. Not a security
+        # floor -- any scope may set it -- except that a secret, KEV or malicious class may never be
+        # routed to "none" (TICKET_ROUTING_BELOW_FLOOR). scripts/ticket_routing.py.
+        if 'ticket_routing' in e:
+            p.extend(troute.check_routing(e['ticket_routing'], where, rl.REGISTRATION_UNAVAILABLE))
         if 'team_pattern' in e and e['team_pattern'] not in TEAM_PATTERNS:
             bad('%s team_pattern %r is not registered' % (where, e['team_pattern']))
         if 'merge_reaches_tier' in e:
@@ -528,22 +579,29 @@ def renewal_cap(central):
     return eh.cap_from_numbers((central or {}).get('numbers'))[0]
 
 
-def secret_exception_verdict(item, entry, today, numbers=None, cap=eh.kit_default_max_renewals):
-    """-> (refusal code or None, why) for ONE secret_exceptions item, in the order a reader fixes
-    them: what it covers, its ticket, who decided and why, how often it was renewed, whether it is
-    still in force."""
+def secret_exception_verdict(item, entry, today, numbers=None, cap=eh.kit_default_max_renewals, history=None,
+                             kind='secret'):
+    """-> (refusal code or None, why) for ONE secret_exceptions item -- or, with kind='kev', ONE
+    known_exploited_exceptions item (KDEC-022 item 3: the same rules, plus the CVE it excepts) -- in
+    the order a reader fixes them: what it covers, its ticket, who decided and why, how often it was
+    renewed (counted from git, KDEC-022 item 2), whether it is still in force."""
+    names = KEV_CODES if kind == 'kev' else SECRET_CODES
+    what = 'known-exploited' if kind == 'kev' else 'secret'
     finding = _s(item.get('finding'))
     if not FINGERPRINT_RE.match(finding):
-        return (SECRET_EXCEPTION_NOT_FINDING_SCOPED,
+        return (names['scope'],
                 'finding %r is not one finding\'s fingerprint (12 lowercase hex, the security report\'s '
-                '`fp`). Secrets as a class, a scanner, a rule or a wildcard are never excepted -- that is '
-                'CHERRY_PICK_BELOW_FLOOR' % (item.get('finding'),))
+                '`fp`). A class, a scanner, a rule, a CVE everywhere or a wildcard is never excepted%s'
+                % (item.get('finding'), ' -- that is CHERRY_PICK_BELOW_FLOOR' if kind == 'secret' else ''))
+    if kind == 'kev' and not CVE_RE.match(_s(item.get('cve')).upper()):
+        return (names['scope'], 'the known-exploited exception for %s names no CVE (CVE-YYYY-NNNN): it must say '
+                'which catalogued vulnerability of that one finding it excepts' % finding)
     ticket = _s(item.get('ticket'))
     m = TICKET_RE.match(ticket)
     if not m:
-        return (SECRET_EXCEPTION_UNTICKETED,
-                'ticket %r is not a work-item key <PROJECT>-<digits>: a secret exception must be requested '
-                'and logged on a ticket' % (item.get('ticket') or '',))
+        return (names['ticket'],
+                'ticket %r is not a work-item key <PROJECT>-<digits>: a %s exception must be requested '
+                'and logged on a ticket' % (item.get('ticket') or '', what))
     import ticket_reference as tr
     nums = numbers or {}
     lo, hi = nums.get('ticket_min_digits'), nums.get('ticket_max_digits')
@@ -551,40 +609,51 @@ def secret_exception_verdict(item, entry, today, numbers=None, cap=eh.kit_defaul
     seen = tr.examine(ticket, m.group(1), enforce=enforce, min_digits=lo if enforce else None,
                       max_digits=hi if enforce else None)
     if seen['outcome'] != tr.REFERENCE_FOUND or seen['key'] != ticket:
-        return (SECRET_EXCEPTION_UNTICKETED, 'ticket %r does not satisfy the id-format policy (%s)'
+        return (names['ticket'], 'ticket %r does not satisfy the id-format policy (%s)'
                 % (ticket, seen['detail']))
     missing = [k for k in ('explanation', 'approver', 'expires') if not _s(item.get(k))]
     if missing:
-        return (SECRET_EXCEPTION_UNATTRIBUTED, 'the exception for %s lacks %s' % (finding, ', '.join(missing)))
+        return (names['attribution'], 'the exception for %s lacks %s' % (finding, ', '.join(missing)))
     exp = _date(item.get('expires'))
     if exp is None:
-        return (SECRET_EXCEPTION_UNATTRIBUTED, 'expires %r is not a YYYY-MM-DD calendar date; an expiry '
+        return (names['attribution'], 'expires %r is not a YYYY-MM-DD calendar date; an expiry '
                 'nobody can read has not "not arrived"' % item.get('expires'))
     tier = ((entry or {}).get('scope') or {}).get('environment_tier')
     reviewers = item.get('environment_reviewers') or ((entry or {}).get('decision') or {}).get('environment_reviewers')
     if tier in (None,) + PRODUCTION_TIERS and not reviewers:
-        return (SECRET_EXCEPTION_UNATTRIBUTED, 'the exception for %s applies at uat/prod, so it must name the '
+        return (names['attribution'], 'the exception for %s applies at uat/prod, so it must name the '
                 'environment\'s required reviewers (environment_reviewers)' % finding)
     grants, why = eh.parse_renews(item.get('renews'))
     if grants is None:
-        return (SECRET_EXCEPTION_UNATTRIBUTED, 'the exception for %s has a history the kit cannot read (%s), so '
+        return (names['attribution'], 'the exception for %s has a history the kit cannot read (%s), so '
                 'it cannot be shown to be under the renewal cap' % (finding, why))
     code, why = eh.verdict(grants, cap)
     if code:
         return (code, 'the exception for %s (%s) was %s' % (finding, ticket, why))
+    # KDEC-022 item 2: the history git shows, against the one declared; the cap binds the derived count.
+    hcode, hwhy, derived = eh.check_history(history, eh.exception_key(kind, finding), ticket, item.get('expires'),
+                                            grants)
+    if hcode:
+        return (hcode, 'the exception for %s (%s): %s' % (finding, ticket, hwhy))
+    code, why = eh.verdict_count(max(derived, len(grants)), cap)
+    if code:
+        return (code, 'the exception for %s (%s) was %s (counted from git)' % (finding, ticket, why))
     if exp < datetime.date.fromisoformat(today):
-        return (SECRET_EXCEPTION_EXPIRED, 'the exception for %s (%s) expired on %s; the secret blocks again '
-                'until someone re-decides it' % (finding, ticket, exp.isoformat()))
+        return (names['expired'], 'the exception for %s (%s) expired on %s; the %s finding blocks again '
+                'until someone re-decides it' % (finding, ticket, exp.isoformat(), what))
     dec_exp = _date(((entry or {}).get('decision') or {}).get('expires'))
     if dec_exp is None or dec_exp < datetime.date.fromisoformat(today):
-        return (SECRET_EXCEPTION_EXPIRED, 'the entry %r carrying the exception for %s has an expired '
+        return (names['expired'], 'the entry %r carrying the exception for %s has an expired '
                 'decision' % ((entry or {}).get('id'), finding))
     return (None, 'excepted: %s on %s, approved by %s until %s' % (finding, ticket, _s(item.get('approver')),
                                                                   exp.isoformat()))
 
 
-def validate(doc, origin, today):
-    """--validate: everything resolution would refuse anywhere, before any run meets it. -> problems."""
+def validate(doc, origin, today, history=None):
+    """--validate: everything resolution would refuse anywhere, before any run meets it. -> problems.
+    `history` is the file's history with this version as its newest (KDEC-022 item 2); None means it
+    could not be read, and every exception's history is then UNVERIFIED."""
+    hist = {origin: history}
     problems = check_document(doc, origin)
     if problems:
         return problems
@@ -593,11 +662,13 @@ def validate(doc, origin, today):
         if exp and exp < datetime.date.fromisoformat(today):
             problems.append((POLICY_DECISION_EXPIRED, 'entry %r expired on %s; renew or remove it'
                              % (e.get('id'), exp.isoformat())))
-        for item in e.get('secret_exceptions') or []:
-            code, why = secret_exception_verdict(item, e, today, doc.get('numbers'),
-                                                 renewal_cap(doc if origin == ORIGIN_CENTRAL else None))
-            if code:
-                problems.append((code, 'entry %r: %s' % (e.get('id'), why)))
+        for kind, field in (('secret', 'secret_exceptions'), ('kev', 'known_exploited_exceptions')):
+            for item in e.get(field) or []:
+                code, why = secret_exception_verdict(item, e, today, doc.get('numbers'),
+                                                     renewal_cap(doc if origin == ORIGIN_CENTRAL else None),
+                                                     history, kind=kind)
+                if code:
+                    problems.append((code, 'entry %r: %s' % (e.get('id'), why)))
     if origin == ORIGIN_CENTRAL:
         # An org the orgs map leaves out is not a problem: it runs at the enterprise floor (KDEC-020),
         # and every entry it would meet is checked against that floor below.
@@ -610,14 +681,15 @@ def validate(doc, origin, today):
         idents += [(r, _identity(doc, r)) for r in sorted(doc.get('repositories') or {})]
         seen = set()
         for t, ident in idents:
-            folds = {tier: _fold(doc, None, ident, tier, today) for tier in rl.tier_order}
+            folds = {tier: _fold(doc, None, ident, tier, today, hist) for tier in rl.tier_order}
             for d in rl.check_cells_monotone(dict((tier, {'tier': tier, 'rung': f['rung']})
                                                   for tier, f in folds.items())):
                 problems.append((rl.CELLS_NOT_MONOTONE, '%s: %s' % (t, d)))
             # THE AUTHORITY FLOOR, for every repository and org it would reach (KDEC-018).
             for tier, f in sorted(folds.items()):
                 for code, d in zip(f['refusals'], f['defects']):
-                    if code in (POLICY_BELOW_AUTHORITY_FLOOR, EXCEPTION_RENEWAL_LIMIT) and (t, d) not in seen:
+                    if code in (POLICY_BELOW_AUTHORITY_FLOOR, EXCEPTION_RENEWAL_LIMIT, EXCEPTION_HISTORY_TAMPERED,
+                                EXCEPTION_HISTORY_UNVERIFIED) and (t, d) not in seen:
                         seen.add((t, d))
                         problems.append((code, '%s at %s: %s' % (t, tier, d)))
     return problems
@@ -633,27 +705,84 @@ def enterprise_defined(central):
     return isinstance(orgs, dict) and any(_s(v) for v in orgs.values())
 
 
-def _floor_identity(central, ident, tier, today):
+def has_enterprise_entry(central):
+    """True when any central entry is scoped to an enterprise (KDEC-022 item 1 turns on this)."""
+    return any((e.get('scope') or {}).get('enterprise') for e in (central or {}).get('policies') or []
+               if isinstance(e, dict))
+
+
+def _registered_orgs(central):
+    """The orgs the central register names: the orgs map and every entry's scope.org (lower case)."""
+    orgs = set(_s(o).lower() for o in ((central or {}).get('orgs') or {}) if _s(o))
+    orgs |= set(_s((e.get('scope') or {}).get('org')).lower() for e in (central or {}).get('policies') or []
+                if isinstance(e, dict) and _s((e.get('scope') or {}).get('org')))
+    return orgs
+
+
+def _known_orgs(central):
+    """Registered orgs, plus the owners of every repository the register names: an org the register
+    knows in any way is not 'unmapped'."""
+    known = _registered_orgs(central)
+    known |= set(r.split('/')[0].lower() for r in ((central or {}).get('repositories') or {}) if '/' in r)
+    known |= set(_s((e.get('scope') or {}).get('repository')).split('/')[0].lower()
+                 for e in (central or {}).get('policies') or []
+                 if isinstance(e, dict) and _s((e.get('scope') or {}).get('repository')))
+    return known
+
+
+def _is_org_level(sc):
+    return bool(sc.get('org')) and all(k in ('org', 'environment_tier') for k in sc)
+
+
+def _strength(f):
+    """KDEC-020's comparison: the higher rung, then the stronger controls, then the stronger deploy
+    approval. One key, used for enterprises (KDEC-020) and for orgs (KDEC-022 item 1)."""
+    eff = _effective(f['rung'], f['overrides'])
+    return (rl.rung_index(f['rung']), sum(_rank(eff[c]) for c in sorted(eff)),
+            _approval_strength(f['deploy_approval']))
+
+
+def _floor_identity(central, ident, tier, today, history=None):
     """KDEC-020: an org the orgs map does not name is rolled in at the enterprise floor. One
     enterprise defined -> that one. Several -> at THIS tier the strictest of them, judged on the
     enterprise entries alone: the higher rung, then the stronger controls, then the stronger deploy
     approval; a tie goes to the first name, so the choice is deterministic. Never the lower.
-    -> ident, with the enterprise chosen and enterprise_unmapped/enterprise_floor_rung set."""
-    if ident.get('enterprise') or not enterprise_defined(central):
+    -> ident, with the enterprise chosen and enterprise_unmapped/enterprise_floor_rung set.
+
+    KDEC-022 item 1 (owner, 2026-10-23: "Yes you should get the strictest from the orgs."): when the
+    register has an `orgs` map or org entries but NO enterprise entry, an org it does not know at
+    all runs at the STRICTEST registered org, judged at THIS tier on each org's org-level entries
+    alone by the same comparison. -> ident with floor_org/org_floor_rung/org_unmapped_strictest."""
+    if ident.get('enterprise') or ident.get('floor_org') or ident.get('no_floor') or not central:
         return ident
-    ents = sorted(set(_s(v) for v in central['orgs'].values() if _s(v)))
-    only = dict(central, policies=[e for e in central.get('policies') or []
-                                   if (e.get('scope') or {}).get('enterprise')])
+    if has_enterprise_entry(central):
+        if not enterprise_defined(central):
+            return ident
+        ents = sorted(set(_s(v) for v in central['orgs'].values() if _s(v)))
+        only = dict(central, policies=[e for e in central.get('policies') or []
+                                       if (e.get('scope') or {}).get('enterprise')])
+        best, best_key, best_rung = None, None, None
+        for ent in ents:
+            f = _fold(only, None, dict(ident, enterprise=ent), tier, today, history)
+            key = _strength(f)
+            if best_key is None or key > best_key:
+                best, best_key, best_rung = ent, key, f['rung']
+        return dict(ident, enterprise=best, enterprise_unmapped=True, enterprise_floor_rung=best_rung,
+                    enterprises_defined=ents)
+    cands = sorted(_registered_orgs(central))
+    if not cands or ident.get('org') in _known_orgs(central):
+        return ident
+    only = dict(central, orgs={}, repositories={},
+                policies=[e for e in central.get('policies') or [] if _is_org_level(e.get('scope') or {})])
     best, best_key, best_rung = None, None, None
-    for ent in ents:
-        f = _fold(only, None, dict(ident, enterprise=ent), tier, today)
-        eff = _effective(f['rung'], f['overrides'])
-        key = (rl.rung_index(f['rung']), sum(_rank(eff[c]) for c in sorted(eff)),
-               _approval_strength(f['deploy_approval']))
+    for org in cands:
+        f = _fold(only, None, dict(ident, org=org, repository='%s/' % org, team=None, product=None,
+                                       no_floor=True), tier, today, history)
+        key = _strength(f)
         if best_key is None or key > best_key:
-            best, best_key, best_rung = ent, key, f['rung']
-    return dict(ident, enterprise=best, enterprise_unmapped=True, enterprise_floor_rung=best_rung,
-                enterprises_defined=ents)
+            best, best_key, best_rung = org, key, f['rung']
+    return dict(ident, floor_org=best, org_unmapped_strictest=True, org_floor_rung=best_rung,
+                orgs_registered=cands)
 
 
 def unmapped_notice(ident, tier):
@@ -667,6 +796,18 @@ def unmapped_notice(ident, tier):
                                              ident.get('enterprise_floor_rung'), tier, of))
     return {'code': ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR, 'org': ident['org'], 'enterprise': ident['enterprise'],
             'rung': ident.get('enterprise_floor_rung'), 'tier': tier, 'why': why}
+
+
+def strictest_org_notice(ident, tier):
+    """KDEC-022 item 1: the named, visible notice for an org that ran at the strictest registered org."""
+    orgs = ident.get('orgs_registered') or []
+    why = ('%s: org %r is not known to the central register, which has no enterprise entry, so it ran at the '
+           'STRICTEST registered org: %r at rung %s for tier %s (of %d registered: %s). It may tighten above that '
+           '(its own repository file), never go below it -- register the org (KDEC-022)'
+           % (ORG_UNMAPPED_RAN_AT_STRICTEST_ORG, ident['org'], ident['floor_org'], ident.get('org_floor_rung'), tier,
+              len(orgs), ', '.join(orgs)))
+    return {'code': ORG_UNMAPPED_RAN_AT_STRICTEST_ORG, 'org': ident['org'], 'floor_org': ident['floor_org'],
+            'enterprise': '', 'rung': ident.get('org_floor_rung'), 'tier': tier, 'why': why}
 
 
 def _identity(doc, repository):
@@ -718,11 +859,18 @@ def _matches(sc, ident, origin, tier):
 
 def _chain(central, repo_doc, ident, tier):
     out = []
+    floor_org = ident.get('floor_org')
     for origin, doc in ((ORIGIN_CENTRAL, central), (ORIGIN_REPOSITORY, repo_doc)):
         for e in (doc or {}).get('policies') or []:
             sc = e.get('scope') or {}
             if _matches(sc, ident, origin, tier):
                 out.append(((_level(sc, origin), 'environment_tier' in sc), origin, e))
+            elif (floor_org and origin == ORIGIN_CENTRAL and _is_org_level(sc)
+                  and _s(sc.get('org')).lower() == floor_org and sc.get('environment_tier') in (None, tier)):
+                # KDEC-022 item 1: the strictest org's ORG-LEVEL policy is this org's floor. Its
+                # per-finding exceptions name that org's findings and never travel.
+                carried = dict((k, v) for k, v in e.items() if k not in EXCEPTION_LISTS)
+                out.append(((LEVEL_ORG, 'environment_tier' in sc), origin, carried))
     out.sort(key=lambda x: x[0])
     return out
 
@@ -739,15 +887,18 @@ def _approval_strength(da):
     return (da['approvers_required'], 1 if da['self_review_prevented'] == 'required' else 0)
 
 
-def _fold(central, repo_doc, ident, tier, today):
-    """Apply every matching entry, least specific first, at one tier."""
-    ident = _floor_identity(central, ident, tier, today)
+def _fold(central, repo_doc, ident, tier, today, history=None):
+    """Apply every matching entry, least specific first, at one tier. `history` is {origin: the
+    register file's history} (scripts/exception_history.py); None means none was read -- every
+    exception's history is then UNVERIFIED (KDEC-022 item 2)."""
+    ident = _floor_identity(central, ident, tier, today, history)
     chain = _chain(central, repo_doc, ident, tier)
     rung, over, team = 'crawl', {}, None
     da = default_deploy_approval(tier)
     weak, refusals, defects, applied = [], [], [], []
     ranks = {}
     sx_applied, sx_refused = {}, []
+    kx_applied, kx_refused = {}, []
     nums = dict((central or {}).get('numbers') or {}, **((repo_doc or {}).get('numbers') or {}))
     cap = renewal_cap(central)
     # The deploy-approval fields a REGISTERED entry has set at this tier. The rung and the controls
@@ -801,9 +952,19 @@ def _fold(central, repo_doc, ident, tier, today):
                            'decision or without one (KDEC-018). Its tightening, if any, is applied; its '
                            'softening is not' % (e.get('id'), softened, ', '.join(applied) or 'the kit default'))
         may_soften = not expired and origin == ORIGIN_CENTRAL and not floor_breach
-        # A SOFTENING decision is an exception: its renewals are counted and capped (KDEC-018 item 4).
+        # A SOFTENING decision is an exception: its renewals are counted and capped (KDEC-018 item 4),
+        # counted from git (KDEC-022 item 2): erased is TAMPERED (BLOCKED), unshowable is UNVERIFIED.
         grants = eh.parse_renews(dec.get('renews'))[0] or []
         renew_code, renew_why = eh.verdict(grants, cap)
+        renewals = len(grants)
+        if any_softer and may_soften and not renew_code:
+            hcode, hwhy, derived = eh.check_history((history or {}).get(origin), eh.exception_key('decision', e.get('id')),
+                                                    dec.get('exception_ref'), dec.get('expires'), grants)
+            if hcode:
+                renew_code, renew_why = hcode, hwhy
+            else:
+                renewals = max(derived, len(grants))
+                renew_code, renew_why = eh.verdict_count(renewals, cap)
         if any_softer and may_soften and renew_code:
             refusals.append(renew_code)
             defects.append('entry %r softens %s on a decision %s; the softening does not apply'
@@ -843,7 +1004,7 @@ def _fold(central, repo_doc, ident, tier, today):
                 'attribution': rl.WEAKENING_ATTRIBUTED, 'routes_to': rl.PROCEED_WITH_ADVISORY,
                 'reason': _s(dec.get('reason')), 'authority': _s(dec.get('authority')),
                 'expires': _s(dec.get('expires')), 'exception_ref': _s(dec.get('exception_ref')),
-                'renewals': hist['renewals'], 'history': hist['history']})
+                'renewals': renewals, 'history': hist['history']})
             if rung_softer:
                 row('rung', prev_rung, new_rung)
             for c in softer:
@@ -862,20 +1023,53 @@ def _fold(central, repo_doc, ident, tier, today):
         # the secret still blocks; an applied one is keyed by its finding, the most specific entry
         # winning. The repository's own file may carry them (the owner's ruling names it).
         for item in e.get('secret_exceptions') or []:
-            code, why = secret_exception_verdict(item, e, today, nums, cap)
-            ih = eh.summary(eh.parse_renews(item.get('renews'))[0] or [])
-            rec = {'finding': _s(item.get('finding')), 'ticket': _s(item.get('ticket')),
-                   'entry': e.get('id'), 'origin': origin, 'renewals': ih['renewals'], 'history': ih['history']}
+            code, why = secret_exception_verdict(item, e, today, nums, cap, (history or {}).get(origin))
+            if code == EXCEPTION_HISTORY_TAMPERED:
+                refusals.append(code)
+                defects.append('entry %r: %s' % (e.get('id'), why))
+            rec = _exception_record(item, e, origin, (history or {}).get(origin), 'secret')
             if code:
                 sx_refused.append(dict(rec, code=code, why=why))
             else:
-                sx_applied[rec['finding']] = dict(rec, approver=_s(item.get('approver')),
-                                                  expires=_s(item.get('expires')),
-                                                  explanation=_s(item.get('explanation')))
+                sx_applied[rec['finding']] = rec
+        # KNOWN-EXPLOITED EXCEPTIONS (KDEC-022 item 3): the same rules, one finding each, by fingerprint
+        # and CVE. A refused one changes nothing -- the known-exploited finding still blocks.
+        for item in e.get('known_exploited_exceptions') or []:
+            code, why = secret_exception_verdict(item, e, today, nums, cap, (history or {}).get(origin), kind='kev')
+            if code == EXCEPTION_HISTORY_TAMPERED:
+                refusals.append(code)
+                defects.append('entry %r: %s' % (e.get('id'), why))
+            rec = _exception_record(item, e, origin, (history or {}).get(origin), 'kev')
+            if code:
+                kx_refused.append(dict(rec, code=code, why=why))
+            else:
+                kx_applied[rec['finding']] = rec
     return {'rung': rung, 'overrides': over, 'team_pattern': team, 'deploy_approval': da, 'chain': applied,
             'weakenings': weak, 'refusals': refusals, 'defects': defects, 'identity': ident,
             'secret_exceptions': [sx_applied[k] for k in sorted(sx_applied)],
-            'secret_exception_refusals': sx_refused}
+            'secret_exception_refusals': sx_refused,
+            'known_exploited_exceptions': [kx_applied[k] for k in sorted(kx_applied)],
+            'known_exploited_exception_refusals': kx_refused}
+
+
+def _exception_record(item, entry, origin, history, kind):
+    """One exception as the resolution reports it: its history and renewal count as git shows them
+    (KDEC-022 item 2), falling back to the declared history where git could not be read."""
+    grants = eh.parse_renews(item.get('renews'))[0] or []
+    ih = eh.summary(grants)
+    renewals, source = ih['renewals'], 'declared'
+    if history and history.get('state') == eh.history_verified:
+        _c, _w, derived = eh.check_history(history, eh.exception_key(kind, _s(item.get('finding'))),
+                                           item.get('ticket'), item.get('expires'), grants)
+        if derived is not None:
+            renewals, source = max(derived, len(grants)), history.get('source') or 'git'
+    rec = {'finding': _s(item.get('finding')), 'ticket': _s(item.get('ticket')), 'entry': entry.get('id'),
+           'origin': origin, 'renewals': renewals, 'history': ih['history'], 'history_source': source,
+           'approver': _s(item.get('approver')), 'expires': _s(item.get('expires')),
+           'explanation': _s(item.get('explanation'))}
+    if kind == 'kev':
+        rec['cve'] = _s(item.get('cve')).upper()
+    return rec
 
 
 def _merge_reach(central, repo_doc, ident):
@@ -896,7 +1090,8 @@ def _blank(state, why, notes=None, defects=None, **extra):
            'unvalidated_human_workflow_paths': [], 'breach_authority': {},
            'tier_behaviour': {'stops_on_evidence_untrusted': True}, 'deploy_approval': {},
            'numbers': {}, 'registration_ref': None, 'max_exception_renewals': None,
-           'secret_exceptions': [], 'secret_exception_refusals': [], 'notices': []}
+           'secret_exceptions': [], 'secret_exception_refusals': [], 'notices': [],
+           'known_exploited_exceptions': [], 'known_exploited_exception_refusals': [], 'history_state': {}}
     out.update(extra)
     return out
 
@@ -920,8 +1115,11 @@ def _refusal_state(codes):
     return None
 
 
-def resolve(central, repo_doc, repository, environment, event, supplied_inputs, today):
-    """Stage 1, pure over its arguments. `central` / `repo_doc` are parsed documents or None."""
+def resolve(central, repo_doc, repository, environment, event, supplied_inputs, today, history=None):
+    """Stage 1, pure over its arguments. `central` / `repo_doc` are parsed documents or None.
+    `history` is {'central': ..., 'repository': ...}, each register file's history as
+    scripts/exception_history.py reads it (KDEC-022 item 2). None, or an origin missing from it, is
+    a history nobody read: every exception it carries is EXCEPTION_HISTORY_UNVERIFIED, never zero."""
     sup = rl.refuse_supplied_policy_mode(dict(supplied_inputs or {}))
     if sup['state'] == rl.POLICY_MODE_SUPPLIED:
         return _blank(sup['state'], sup['why'], defects=[sup['why']])
@@ -958,7 +1156,7 @@ def resolve(central, repo_doc, repository, environment, event, supplied_inputs, 
                 return _blank(POLICY_REGISTER_CONFLICT, why, defects=[why])
     # Which tier.
     env = _s(environment)
-    reach = _merge_reach(central, repo_doc, _floor_identity(central, ident, 'prod', today))
+    reach = _merge_reach(central, repo_doc, _floor_identity(central, ident, 'prod', today, history))
     basis = 'named environment'
     if event in ('pull_request', 'pull_request_target') or not env:
         tier = reach or 'prod'
@@ -972,7 +1170,7 @@ def resolve(central, repo_doc, repository, environment, event, supplied_inputs, 
             why = ('environment %r maps to no environment_tier: name it in environment_names or use a '
                    'tier name (%s)' % (env, ', '.join(rl.tier_order)))
             return _blank(rl.CELL_NOT_REGISTERED, why, environment=env)
-    folds = dict((t, _fold(central, repo_doc, ident, t, today)) for t in rl.tier_order)
+    folds = dict((t, _fold(central, repo_doc, ident, t, today, history)) for t in rl.tier_order)
     if reach and env and event not in ('pull_request', 'pull_request_target') and \
             rl.rung_index(folds[reach]['rung']) > rl.rung_index(folds[tier]['rung']):
         basis = ('named %s sits below %s, which a merge reaches without a human gate; evaluated at %s'
@@ -992,6 +1190,8 @@ def resolve(central, repo_doc, repository, environment, event, supplied_inputs, 
     if routes is None and f['weakenings']:
         routes = rl.PROCEED_WITH_ADVISORY
     notices = [unmapped_notice(f['identity'], tier)] if f['identity'].get('enterprise_unmapped') else []
+    if f['identity'].get('org_unmapped_strictest'):
+        notices.append(strictest_org_notice(f['identity'], tier))
     return _blank(
         state, 'resolved at tier %s by %s; chain: %s' % (tier, basis, ', '.join(f['chain']) or 'kit default'),
         notes=[n['why'] for n in notices], notices=notices, defects=defects, refusals=sorted(set(refusals)), routes_to=routes,
@@ -1007,6 +1207,10 @@ def resolve(central, repo_doc, repository, environment, event, supplied_inputs, 
         breach_authority=ax.breach_authority(team or 'solo_dev'), tier_behaviour=ax.tier_behaviour(tier),
         deploy_approval=dict((t, folds[t]['deploy_approval']) for t in rl.tier_order),
         secret_exceptions=f['secret_exceptions'], secret_exception_refusals=f['secret_exception_refusals'],
+        known_exploited_exceptions=f['known_exploited_exceptions'],
+        known_exploited_exception_refusals=f['known_exploited_exception_refusals'],
+        history_state=dict((o, (h or {}).get('state') or eh.history_unverified)
+                           for o, h in sorted((history or {}).items())),
         max_exception_renewals=renewal_cap(central),
         numbers=dict((central or {}).get('numbers') or {}, **((repo_doc or {}).get('numbers') or {})))
 
@@ -1043,8 +1247,41 @@ def read_central(path):
         return (None, 'unreadable', ['cannot read the central register %s: %s' % (path, exc)])
 
 
+def committed_once(central, repo_doc):
+    """The history of registers committed exactly once, as they stand -- for a caller that holds the
+    documents and no repository (a proof). Only what git would show for a first commit: no prior
+    grant of anything. -> the `history` argument of resolve()."""
+    out = {}
+    for origin, doc in ((ORIGIN_CENTRAL, central), (ORIGIN_REPOSITORY, repo_doc)):
+        if doc is not None:
+            out[origin] = eh.history_from_texts([json.dumps(doc)], source='git')
+    return out
+
+
+def central_history(central_path, history_repo='', history_ref='', history_path=''):
+    """The central register's git history (KDEC-022 item 2). The kit delivered by $/ is usually not a
+    git checkout, so the workflow may hand a blob-less clone of the kit (`history_repo` at
+    `history_ref`, the register at `history_path`); otherwise the file's own enclosing git history.
+    Either way the newest committed version must be the file being read, or the history is not its
+    history: UNVERIFIED."""
+    if not history_repo:
+        return eh.history_for_file(central_path)
+    h = eh.read_git_history(history_repo, history_ref or 'HEAD', history_path or 'policy/policy-registration.json')
+    if h['state'] != eh.history_verified:
+        return h
+    try:
+        current = io.open(central_path, encoding='utf-8').read().replace('\r\n', '\n')
+    except (OSError, UnicodeDecodeError) as exc:
+        return eh.unverified('the central register cannot be read: %s' % exc)
+    if not h['versions'] or h['versions'][-1]['text'].replace('\r\n', '\n') != current:
+        return eh.unverified('the central register delivered with the kit is not the newest version in the history '
+                             'read from %s at %s' % (history_repo, history_ref or 'HEAD'))
+    return h
+
+
 def resolve_from_ref(repo, default_ref, path, central_path, repository, environment, event,
-                     supplied_inputs, today):
+                     supplied_inputs, today, central_history_repo='', central_history_ref='',
+                     central_history_path=''):
     sup = rl.refuse_supplied_policy_mode(dict(supplied_inputs or {}))
     if sup['state'] == rl.POLICY_MODE_SUPPLIED:
         return _blank(sup['state'], sup['why'], defects=[sup['why']])
@@ -1069,8 +1306,17 @@ def resolve_from_ref(repo, default_ref, path, central_path, repository, environm
                               defects=[m for _c, m in problems], registration_ref=sha or None,
                               refusals=sorted(set(c for c, _m in problems)))
             docs[origin] = doc
+    # KDEC-022 item 2: each register's renewal history, from git. A register that is absent needs none.
+    history = {}
+    if ORIGIN_REPOSITORY in docs:
+        history[ORIGIN_REPOSITORY] = eh.read_git_history(repo, default_ref, path)
+    if ORIGIN_CENTRAL in docs:
+        history[ORIGIN_CENTRAL] = central_history(central_path, central_history_repo, central_history_ref,
+                                                  central_history_path)
+    for o, h in sorted(history.items()):
+        notes.append('%s register history: %s (%s)' % (o, h['state'], h['why']))
     out = resolve(docs.get(ORIGIN_CENTRAL), docs.get(ORIGIN_REPOSITORY), repository, environment, event,
-                  supplied_inputs, today)
+                  supplied_inputs, today, history=history)
     out['registration_ref'] = sha
     out['notes'] = notes + out['notes']
     return out
@@ -1107,13 +1353,23 @@ def github_output_lines(r):
     out.append('policy_secret_exception_refusals=%s' % json.dumps(
         [dict((k, x.get(k, '')) for k in ('finding', 'ticket', 'entry', 'code', 'history'))
          for x in r.get('secret_exception_refusals') or []], sort_keys=True))
+    # The known-exploited exceptions in force and refused (KDEC-022 item 3): the gate's KEV step
+    # matches `finding` AND `cve` against each catalogued CVE the report found.
+    out.append('policy_known_exploited_exceptions=%s' % json.dumps(
+        [dict((k, x.get(k, '')) for k in keep + ('cve',)) for x in r.get('known_exploited_exceptions') or []],
+        sort_keys=True))
+    out.append('policy_known_exploited_exception_refusals=%s' % json.dumps(
+        [dict((k, x.get(k, '')) for k in ('finding', 'cve', 'ticket', 'entry', 'code', 'history'))
+         for x in r.get('known_exploited_exception_refusals') or []], sort_keys=True))
+    # Each register's history state (KDEC-022 item 2): VERIFIED from git, or UNVERIFIED.
+    out.append('policy_history_state=%s' % json.dumps(r.get('history_state') or {}, sort_keys=True))
     # The authority's renewal cap, for the deploy's version-gap exception (it holds the stronger of
     # this and the kit default).
     out.append('policy_max_exception_renewals=%s' % v(r.get('max_exception_renewals')))
     # Visible notices that are not refusals (policy_notice): e.g. an org the orgs map does not name
     # that ran at the enterprise floor (KDEC-020). The gate's summary shows each one.
     out.append('policy_notices=%s' % json.dumps(
-        [dict((k, x.get(k, '')) for k in ('code', 'org', 'enterprise', 'rung', 'tier'))
+        [dict((k, x.get(k, '')) for k in ('code', 'org', 'enterprise', 'floor_org', 'rung', 'tier'))
          for x in r.get('notices') or []], sort_keys=True))
     return [line.replace('\n', ' ').replace('\r', ' ') for line in out]
 
@@ -1156,6 +1412,10 @@ def main(argv=None):
                     help='key=value for every input the run RECEIVED (repeatable)')
     ap.add_argument('--supplied-json', default='',
                     help='toJSON(inputs): a JSON object of every input the run RECEIVED')
+    ap.add_argument('--central-history-repo', default='',
+                    help='a git clone (blob-less is enough) holding the central register\'s history')
+    ap.add_argument('--central-history-ref', default='')
+    ap.add_argument('--central-history-path', default='')
     ap.add_argument('--today', default='')
     ap.add_argument('--out', default='')
     ap.add_argument('--github-output', default='')
@@ -1171,7 +1431,8 @@ def main(argv=None):
             return 1
         doc, problems = parse_registration(text, a.origin)
         if doc is not None:
-            problems = validate(doc, a.origin, today)
+            # The committed history of this file, with this version as the newest (KDEC-022 item 2).
+            problems = validate(doc, a.origin, today, eh.history_for_file(a.validate, extra_text=text))
         for c, m in problems:
             print('%s: %s' % (c, m))
         if problems:
@@ -1206,7 +1467,7 @@ def main(argv=None):
         k, _sep, val = kv.partition('=')
         supplied[k.strip()] = val
     r = resolve_from_ref(a.repo, a.default_ref, a.path, a.central, a.repository, a.environment, a.event,
-                         supplied, today)
+                         supplied, today, a.central_history_repo, a.central_history_ref, a.central_history_path)
     print('%s  routes_to=%s  source=%s tier=%s rung=%s policy_mode=%s chain=%s'
           % (r['state'], r['routes_to'], r['policy_source'], r['environment_tier'], r['rung_effective'],
              r['policy_mode'], ','.join(r['chain']) or '-'))

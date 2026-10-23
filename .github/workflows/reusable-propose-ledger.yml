@@ -155,6 +155,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # KDEC-027: gh's token goes to this run's host only (gh api / -R default to github.com).
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
           # THE ONLY REF THIS JOB MAY WRITE IS ITS OWN PROPOSAL BRANCH. Refused before anything
           # is touched, so a payload naming any other branch -- by defect or by tampering with
           # the artifact -- pushes nothing. tests/prove_propose_ledger_job_scope.py runs this

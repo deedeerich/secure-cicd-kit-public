@@ -78,6 +78,18 @@ inputs:
     description: needs.discover.outputs.php (lane L-PHP).
     required: false
     default: ''
+  discovered-kotlin:
+    description: needs.discover.outputs.kotlin (lane L-SCAN-B, KDEC-026).
+    required: false
+    default: ''
+  discovered-swift:
+    description: needs.discover.outputs.swift (lane L-SCAN-B, KDEC-026).
+    required: false
+    default: ''
+  discovered-mobile:
+    description: needs.discover.outputs.mobile (KDEC-026) -- decides sast-mobile in the plan.
+    required: false
+    default: ''
   discovered-iac:
     description: needs.discover.outputs.iac.
     required: false
@@ -250,6 +262,9 @@ runs:
         D_JAVA: ${{ inputs.discovered-java }}
         D_CPP: ${{ inputs.discovered-cpp }}
         D_PHP: ${{ inputs.discovered-php }}
+        D_KOTLIN: ${{ inputs.discovered-kotlin }}
+        D_SWIFT: ${{ inputs.discovered-swift }}
+        D_MOBILE: ${{ inputs.discovered-mobile }}
         D_IAC: ${{ inputs.discovered-iac }}
         D_STATE: ${{ inputs.discovery-state }}
         D_COVERAGE_GAPS: ${{ inputs.coverage-gaps }}
@@ -375,6 +390,18 @@ runs:
                 "verified": "READ"
               }
             ],
+            "kotlin": [
+              {
+                "basis": "Kotlin 1.8.0 to 2.4.20 (CodeQL supported languages page as fetched 2026-10-23, KDEC-026). The java-kotlin leg extracts Kotlin while autobuild compiles it; Swift is not carried (it needs a macOS runner).",
+                "compare": "version",
+                "max": "2.4.20",
+                "max_from_input": null,
+                "min": "1.8.0",
+                "tool": "codeql",
+                "unbounded": false,
+                "verified": "READ"
+              }
+            ],
             "node": [
               {
                 "basis": "ECMAScript 2022 or lower; TypeScript 2.6 to 7.0 (same page). A node RUNTIME version does not establish the syntax level; tsconfig target does.",
@@ -400,7 +427,72 @@ runs:
               }
             ]
           },
+          "deps-scan": {
+            "GitHubActionsWorkflow": [
+              {
+                "basis": "actionlint 1.7.12 (sha256-pinned) checks against the workflow syntax it ships; a key newer than it is reported as a syntax-check finding, never skipped. It shellchecks every run: block with shellcheck 0.11.0. Measured 2026-10-23 by tests/prove_pipeline_lint.py.",
+                "compare": "version",
+                "corpus": "tests/corpora/pipeline_lint_corpus.py",
+                "max": null,
+                "max_from_input": null,
+                "min": null,
+                "tool": "actionlint",
+                "unbounded": true,
+                "verified": "READ"
+              },
+              {
+                "basis": "zizmor 1.30.1 (sha256-pinned), offline, --no-config: template injection, excessive permissions, unpinned uses, dangerous triggers. A workflow it cannot load is a zizmor error exit, COLLECTION_FAILED. Measured 2026-10-23 by tests/prove_pipeline_lint.py.",
+                "compare": "version",
+                "corpus": "tests/corpora/pipeline_lint_corpus.py",
+                "max": null,
+                "max_from_input": null,
+                "min": null,
+                "tool": "zizmor",
+                "unbounded": true,
+                "verified": "READ"
+              }
+            ],
+            "PowerShell": [
+              {
+                "basis": "PSScriptAnalyzer 1.25.0 (sha256-pinned nupkg) parses with the runner's pwsh, 7.4.x on ubuntu-latest at 2026-10-23; the job compares each file's #Requires -Version with the pwsh it actually ran and names a newer one as a VERSION_GAP (measured: #Requires -Version 99.0 returned no result and no error). Measured 2026-10-23 by tests/prove_pipeline_lint.py.",
+                "compare": "version",
+                "corpus": "tests/corpora/pipeline_lint_corpus.py",
+                "max": "7.4",
+                "max_from_input": null,
+                "min": null,
+                "tool": "psscriptanalyzer",
+                "unbounded": false,
+                "verified": "READ"
+              }
+            ],
+            "Shell": [
+              {
+                "basis": "shellcheck 0.11.0 (sha256-pinned) reads the sh, bash, dash, ksh and busybox dialects; any other shebang (zsh, fish, csh) is a per-file VERSION_GAP the job names (measured: SC1071 on zsh). No shebang: .sh as POSIX sh, .bash as bash, stated. Measured 2026-10-23 by tests/prove_pipeline_lint.py.",
+                "compare": "version",
+                "corpus": "tests/corpora/pipeline_lint_corpus.py",
+                "max": null,
+                "max_from_input": null,
+                "min": null,
+                "tool": "shellcheck",
+                "unbounded": true,
+                "verified": "READ"
+              }
+            ]
+          },
           "iac-scan": {
+            "Dockerfile": [
+              {
+                "basis": "hadolint 2.15.1 (sha256-pinned in iac-scan) parses the Dockerfile itself; no syntax version is discovered or claimed. An unparseable file is DL1000, NAMED as a VERSION_GAP by the job, not counted. Measured 2026-10-23 (DL3000/DL3002/DL3007/DL3008/DL3020 seeded and read) by tests/prove_pipeline_lint.py.",
+                "compare": "version",
+                "corpus": "tests/corpora/pipeline_lint_corpus.py",
+                "max": null,
+                "max_from_input": null,
+                "min": null,
+                "tool": "hadolint",
+                "unbounded": true,
+                "verified": "READ"
+              }
+            ],
             "iac": [
               {
                 "basis": "MEASURED by the seeded Terraform corpus (tests/corpora/terraform_corpus.py; D-VF-4): checkov 3.3.30 (and 3.3.29) read the seed in every family 0.12..1.14 (families: 0.12, 0.13, 0.14, 0.15, 1.1, 1.2, 1.3, 1.4, 1.5, 1.7, 1.8, 1.9, 1.10, 1.11, 1.14); every family in the corpus was read; no newer family is in it, so a newer release is outside what was measured. Releases with no new .tf construct are claimed through their neighbours. Measured 2026-10-21 (locally: the image checkov-action@v12 runs, ghcr.io/bridgecrewio/checkov 3.3.30 by digest sha256:4b65e89f1fde, and pip 3.3.29/3.3.30 on Windows; confirmed hosted by probe-scanner-corpora run 39640950138 on 37e4e77, --check PASS) by tests/corpora/probe_iac_corpus.py.",
@@ -516,6 +608,20 @@ runs:
               }
             ]
           },
+          "sast-mobile": {
+            "swift": [
+              {
+                "basis": "Swift rules run on Semgrep 1.172.0's Swift parser (mobsfscan 1.0.1 pins it); per-version support not published, no corpus measured (KDEC-026).",
+                "compare": "version",
+                "max": null,
+                "max_from_input": null,
+                "min": null,
+                "tool": "mobsfscan",
+                "unbounded": false,
+                "verified": "UNVERIFIED"
+              }
+            ]
+          },
           "sast-semgrep": {
             "dotnet": [
               {
@@ -544,6 +650,18 @@ runs:
             "java": [
               {
                 "basis": "own parser; per-version support not published.",
+                "compare": "version",
+                "max": null,
+                "max_from_input": null,
+                "min": null,
+                "tool": "semgrep",
+                "unbounded": false,
+                "verified": "UNVERIFIED"
+              }
+            ],
+            "kotlin": [
+              {
+                "basis": "own parser; per-version Kotlin support not published, no corpus measured (KDEC-026).",
                 "compare": "version",
                 "max": null,
                 "max_from_input": null,
@@ -590,6 +708,18 @@ runs:
                 "unbounded": false,
                 "verified": "UNVERIFIED"
               }
+            ],
+            "swift": [
+              {
+                "basis": "own parser; per-version Swift support not published, no corpus measured (KDEC-026).",
+                "compare": "version",
+                "max": null,
+                "max_from_input": null,
+                "min": null,
+                "tool": "semgrep",
+                "unbounded": false,
+                "verified": "UNVERIFIED"
+              }
             ]
           },
           "secret-scan": {
@@ -623,6 +753,12 @@ runs:
               "codeql/codeql"
             ],
             "class": "cpp"
+          },
+          "dockerfile-lint": {
+            "candidates": [
+              "iac-scan/hadolint"
+            ],
+            "class": "Dockerfile"
           },
           "dotnet-nuget-audit": {
             "candidates": [
@@ -661,6 +797,13 @@ runs:
             ],
             "class": "java"
           },
+          "kotlin-sast": {
+            "candidates": [
+              "sast-semgrep/semgrep",
+              "codeql/codeql"
+            ],
+            "class": "kotlin"
+          },
           "node-quality": {
             "candidates": [
               "code-quality/eslint"
@@ -680,6 +823,12 @@ runs:
             ],
             "class": "php"
           },
+          "powershell-lint": {
+            "candidates": [
+              "deps-scan/psscriptanalyzer"
+            ],
+            "class": "PowerShell"
+          },
           "python-quality": {
             "candidates": [
               "code-quality/mypy"
@@ -693,6 +842,31 @@ runs:
               "codeql/codeql"
             ],
             "class": "python"
+          },
+          "shell-lint": {
+            "candidates": [
+              "deps-scan/shellcheck"
+            ],
+            "class": "Shell"
+          },
+          "swift-sast": {
+            "candidates": [
+              "sast-mobile/mobsfscan",
+              "sast-semgrep/semgrep"
+            ],
+            "class": "swift"
+          },
+          "workflow-lint": {
+            "candidates": [
+              "deps-scan/actionlint"
+            ],
+            "class": "GitHubActionsWorkflow"
+          },
+          "workflow-security": {
+            "candidates": [
+              "deps-scan/zizmor"
+            ],
+            "class": "GitHubActionsWorkflow"
           }
         }
         SELECTION
@@ -706,7 +880,7 @@ runs:
 
         def out(k, v):
             with open(gh_out, "a", encoding="utf-8") as f:
-                f.write("%s=%s\n" % (k, v))
+                f.write("%s=%s\n" % (k, " ".join(str(v).splitlines())))  # one line (KDEC-027)
 
         def summ(line):
             with open(gh_sum, "a", encoding="utf-8") as f:
@@ -1234,13 +1408,62 @@ runs:
             # the repository-wide `none` record below names the remedy once.
             return False
 
+        # ── kotlin: the Kotlin Gradle plugin version is the compiler version (lane L-SCAN-B,
+        # KDEC-026). kotlin("jvm") version "x", id("org.jetbrains.kotlin.<p>") version "x",
+        # kotlin-gradle-plugin:x, ext.kotlin_version = 'x', or kotlin = "x" in a version catalog.
+        KOTLIN_PATS = [r'kotlin\(\s*"[\w.-]+"\s*\)\s*version\s*"(\d+(?:\.\d+)+)"',
+                       r'id\s*\(?\s*["\']org\.jetbrains\.kotlin[\w.-]*["\']\s*\)?\s*version\s*["\'](\d+(?:\.\d+)+)["\']',
+                       r'kotlin-gradle-plugin:(\d+(?:\.\d+)+)',
+                       r'kotlin_version\s*=\s*["\'](\d+(?:\.\d+)+)["\']',
+                       r'(?m)^\s*kotlin\s*=\s*"(\d+(?:\.\d+)+)"']
+
+        def probe_kotlin(root, names):
+            present = [n for n in ("build.gradle.kts", "build.gradle", "settings.gradle.kts",
+                                   "settings.gradle", "libs.versions.toml") if n in names]
+            for n in present:
+                text = read(path(root, n)); src = rsrc(root, n)
+                if text is None:
+                    record("kotlin", root, "language", strength="unreadable", checked=[src],
+                           note="could not read " + n)
+                    return True
+                for p in KOTLIN_PATS:
+                    m = re.search(p, text)
+                    if m:
+                        exact("kotlin", root, "language", m.group(1), src + ":kotlin plugin", [src])
+                        return True
+            return False
+
+        # ── swift: swift-tools-version in Package.swift, SWIFT_VERSION in an Xcode project, or
+        # .swift-version (KDEC-026). The tools version is the floor the package is written for.
+        def probe_swift(root, names):
+            for n in sorted(names):
+                if n not in ("Package.swift", ".swift-version", "project.pbxproj"):
+                    continue
+                text = read(path(root, n)); src = rsrc(root, n)
+                if text is None:
+                    record("swift", root, "language", strength="unreadable", checked=[src])
+                    return True
+                if n == "Package.swift":
+                    m = re.search(r"swift-tools-version\s*:\s*(\d+(?:\.\d+)*)", text)
+                elif n == ".swift-version":
+                    m = re.match(r"\s*(\d+(?:\.\d+)*)", text)
+                else:
+                    m = re.search(r"SWIFT_VERSION\s*=\s*(\d+(?:\.\d+)*)", text)
+                if m:
+                    exact("swift", root, "language", m.group(1), src, [src])
+                    return True
+            return False
+
         probes = {"python": probe_python, "node": probe_node, "go": probe_go, "dotnet": probe_dotnet,
-                  "java": probe_java, "cpp": probe_cpp, "php": probe_php, "iac": probe_iac}
+                  "java": probe_java, "cpp": probe_cpp, "php": probe_php, "kotlin": probe_kotlin,
+                  "swift": probe_swift, "iac": probe_iac}
         remediation = {"python": ".python-version (or requires-python in pyproject.toml)",
                        "node": ".nvmrc (or engines.node in package.json)", "go": "a go directive in go.mod",
                        "dotnet": "TargetFramework in the project file", "java": "maven.compiler.release in pom.xml (or a Gradle toolchain)",
                        "cpp": "a C++ standard (set(CMAKE_CXX_STANDARD n)) in CMakeLists.txt",
                        "php": ".php-version (or config.platform.php / require.php in composer.json)",
+                       "kotlin": "a Kotlin Gradle plugin version (kotlin(\"jvm\") version \"x\")",
+                       "swift": "swift-tools-version in Package.swift (or SWIFT_VERSION in the Xcode project)",
                        "iac": "required_version in a terraform block"}
 
         for cls, probe in probes.items():
@@ -1649,12 +1872,13 @@ runs:
                      ".c": "cpp", ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".h": "cpp", ".hpp": "cpp",
                      ".hh": "cpp", ".hxx": "cpp", ".tf": "iac", ".bicep": "iac",
                      ".php": "php",
-                     ".rs": "Rust", ".rb": "Ruby", ".swift": "Swift", ".kt": "Kotlin",
-                     ".kts": "Kotlin", ".scala": "Scala", ".ex": "Elixir", ".exs": "Elixir",
+                     ".kt": "kotlin", ".kts": "kotlin", ".swift": "swift",
+                     ".rs": "Rust", ".rb": "Ruby", ".scala": "Scala", ".ex": "Elixir", ".exs": "Elixir",
                      ".erl": "Erlang", ".hs": "Haskell", ".lua": "Lua", ".pl": "Perl", ".r": "R",
                      ".jl": "Julia", ".dart": "Dart", ".groovy": "Groovy", ".clj": "Clojure",
                      ".zig": "Zig", ".nim": "Nim", ".vb": "VisualBasic", ".fs": "FSharp",
-                     ".sh": "Shell", ".ps1": "PowerShell"}
+                     ".sh": "Shell", ".bash": "Shell",
+                     ".ps1": "PowerShell", ".psm1": "PowerShell", ".psd1": "PowerShell"}
         name_class = {"Chart.yaml": "iac", "kustomization.yaml": "iac", "azuredeploy.json": "iac"}
 
         def classify(path):
@@ -1680,6 +1904,13 @@ runs:
         for cls in sorted(counts):
             rows = [c for c in capability if c["class"] == cls]
             covered, not_covered = [], []
+            # A CLASS WITH NO VERSION TO DISCOVER (lane L-SCAN-A, KDEC-025): workflows, shell and
+            # PowerShell carry none a resolver can read, so no capability row is ever asked for them.
+            # Their coverage is the registry's READ rows for the class; each job names, per file,
+            # what its tool cannot read (a VERSION_GAP), so this is scope inference, not a version claim.
+            if not rows and cls not in probes:
+                covered = sorted("%s/%s" % (job, e["tool"]) for job, classes in table.items()
+                                 for e in (classes.get(cls) or []) if e.get("verified") == "READ")
             for key in sorted({(c["job"], c["tool"]) for c in rows}):
                 states = {c["state"] for c in rows if (c["job"], c["tool"]) == key}
                 label = "%s/%s" % key
@@ -1754,11 +1985,12 @@ runs:
             ("sast-java",      "discover.java",                   "sast-java"),
             ("sast-go",        "discover.go",                     "sast-go"),
             ("sast-cpp",       "discover.cpp",                    "sast-cpp"),
+            ("sast-mobile",    "discover.mobile",                 "sast-mobile"),
             ("image-scan",     "input.image_ref",                 "container"),
             ("malicious-deps", "input.enable_malicious_pkg_scan", "sca"),
             ("sbom",           "input.enable_sbom",               "sca"),
         ]
-        codeql_langs = ["python", "node", "go", "dotnet", "java", "cpp"]
+        codeql_langs = ["python", "node", "go", "dotnet", "java", "cpp", "kotlin"]
 
         def decide(rule):
             if survey == "DISCOVERY_UNAVAILABLE":
@@ -1917,6 +2149,8 @@ runs:
         p_platform_source: ${{ inputs.platform-source }}
       run: |
         set -uo pipefail
+        # KDEC-027: gh's token goes to this run's host only (gh api / -R default to github.com).
+        GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
         trap 'echo "::error title=Platform consumers failed::The platform step itself failed; Dependabot is UNAVAILABLE and the dataflow capability is UNKNOWN for this run."; \
               echo "dependabot_state=UNAVAILABLE" >> "$GITHUB_OUTPUT"; \
               echo "dependabot_open_alerts=" >> "$GITHUB_OUTPUT"; \
@@ -2028,8 +2262,8 @@ runs:
 
         {
           echo "dependabot_state=$dep_state"
-          echo "dependabot_open_alerts=$dep_n"
-          echo "dependabot_basis=$dep_basis"
+          echo "dependabot_open_alerts=${dep_n//[$'\r\n']/ }"
+          echo "dependabot_basis=${dep_basis//[$'\r\n']/ }"
           echo "dependabot_owner_role=$dep_role"
           echo "dataflow_capability=$dataflow"
           echo "platform_owners=[$owners]"

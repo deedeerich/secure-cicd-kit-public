@@ -234,6 +234,7 @@ jobs:
       contents: read
       id-token: write
       attestations: read   # the deploy runs V1 itself, before login (P-02)
+      actions: read        # the deploy reads its target's rollback marker, before login (KDEC-023)
     with:
       github_environment: ${{ inputs.environment }}       # approvals live on the Environment
       # V1 inside the deploy: the build workflow that must have signed this digest. On a private

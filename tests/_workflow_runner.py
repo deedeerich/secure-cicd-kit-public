@@ -117,6 +117,15 @@ def run_job(path, inputs, path_prepend=None, extra_env=None, cancel_after=None, 
     ctx = {'inputs': {k: stringify(v) for k, v in inputs.items()}, 'steps': {}, 'fn': {}}
     values = {'inputs.%s' % k: stringify(v) for k, v in inputs.items()}
     job_failed, cancelled, logs, order = False, False, [], []
+    if 'GITHUB_API_URL' not in (extra_env or {}):
+        # A job always runs with a repository and an API. A harness that names none gets a recorded
+        # one with no artifacts -- no rollback marker for the target (KDEC-023) -- rather than an
+        # unreadable answer the deploy's rollback check would (rightly) refuse on.
+        api_root = os.path.join(runner_temp, '_github_api')
+        write_default_api(api_root)
+        extra_env = dict({'GITHUB_REPOSITORY': 'o/r',
+                          'GITHUB_API_URL': 'file:///' + api_root.replace('\\', '/').lstrip('/')},
+                         **(extra_env or {}))
     try:
         for i, step in enumerate(D.steps(doc)):
             name = step.get('name') or step.get('uses') or '#%d' % i
@@ -251,8 +260,22 @@ PROTECTED_ENVIRONMENT = {'protection_rules': [
      'reviewers': [{'type': 'Team', 'reviewer': {'slug': 'release-approvers', 'name': 'Release approvers'}}]}]}
 
 
-def run_world(path, inputs, state, cancel_after=None, environment_answer=PROTECTED_ENVIRONMENT):
-    """Run the job against a fresh fake cloud. -> (result, final_state, az_calls)."""
+def write_default_api(api_root):
+    """The answers every deploy job reads from the GitHub API besides its environment: no artifact
+    (so no rollback marker for the target, KDEC-023) and the commit it was built from."""
+    import json
+    repo = os.path.join(api_root, 'repos', 'o', 'r')
+    os.makedirs(os.path.join(repo, 'actions'), exist_ok=True)
+    listing = os.path.join(repo, 'actions', 'artifacts')
+    if not os.path.exists(listing):
+        io.open(listing, 'w', encoding='utf-8').write(json.dumps({'total_count': 0, 'artifacts': []}))
+
+
+def run_world(path, inputs, state, cancel_after=None, environment_answer=PROTECTED_ENVIRONMENT,
+              api_files=None, env_extra=None):
+    """Run the job against a fresh fake cloud. -> (result, final_state, az_calls). `api_files`:
+    {path under the API root: body} answered by the recorded GitHub API (KDEC-023's rollback
+    marker, commits, comparisons); `env_extra`: more job environment (the commit and the run id)."""
     import json
     work = tempfile.mkdtemp(prefix='fake-world-')
     try:
@@ -261,6 +284,12 @@ def run_world(path, inputs, state, cancel_after=None, environment_answer=PROTECT
         if environment_answer is not None and inputs.get('github_environment'):
             io.open(os.path.join(api, str(inputs['github_environment'])), 'w', encoding='utf-8').write(
                 json.dumps(environment_answer))
+        for rel, body in (api_files or {}).items():
+            p = os.path.join(work, 'api', *rel.split('/'))
+            if not os.path.isdir(os.path.dirname(p)):
+                os.makedirs(os.path.dirname(p))
+            io.open(p, 'w', encoding='utf-8').write(body)
+        write_default_api(os.path.join(work, 'api'))
         state_path = os.path.join(work, 'state.json')
         log_path = os.path.join(work, 'calls.jsonl')
         io.open(state_path, 'w', encoding='utf-8').write(json.dumps(state))
@@ -275,6 +304,7 @@ def run_world(path, inputs, state, cancel_after=None, environment_answer=PROTECT
                    'AZURE_CONFIG_DIR': os.path.join(work, 'no-azure-config'),
                    'GITHUB_REPOSITORY': 'o/r',
                    'GITHUB_API_URL': 'file:///' + os.path.join(work, 'api').replace('\\', '/').lstrip('/')}
+            env.update(env_extra or {})
             rt = os.path.join(work, 'runner-temp')
             os.makedirs(rt)
             res = run_job(path, inputs, path_prepend=bin_dir, extra_env=env,

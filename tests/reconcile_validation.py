@@ -29,6 +29,8 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
         # validation census could not see them at all, and nothing could ever report them unproven.
         # Found by tests/check_scanner_registry.py on its first run (N55).
         "codeql", "image-scan",
+        # Android and iOS (lane L-SCAN-B, KDEC-026).
+        "sast-mobile",
     ],
     "reusable-nvd-cve.yml": ["nvd-dependency-check", "nvd-trivy", "nvd-dockerfile"],
     # The kit invoking its own reusable NVD workflow. It exercises the same capabilities
@@ -104,6 +106,10 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # tests/prove_gate_reads_rung.py (wiring), tests/prove_gate_policy_enforcement.py (behaviour)
     # and tests/prove_policy_registration.py (the reader).
     "action:resolve-policy": [],
+    # KDEC-022 item 3: the CISA KEV match over findings OTHER scanners established (the report's
+    # cve_findings, or the NVD path's SARIF). It scans nothing itself, so it names no capability;
+    # it feeds the gate's verdict. Proof: tests/prove_known_exploited.py.
+    "action:known-exploited": [],
     # THE RUN RECORD (ledger L36): evidence assembly, not an assurance claim -- it restates what the
     # gate established, validated against the schema. Proof: tests/prove_gate_run_record.py.
     "action:run-record": [],
@@ -134,6 +140,7 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     "action:secret-scan": ["secret-scan"],
     "action:sast-cpp": ["sast-cpp"],
     "action:sast-java": ["sast-java"],
+    "action:sast-mobile": ["sast-mobile"],
     "action:sast-dotnet": ["sast-dotnet"],
     "action:deps-scan": ["deps-scan"],
     "action:iac-scan": ["iac-scan"],
@@ -261,6 +268,12 @@ VALIDATION_REGISTRY: dict[str, dict] = {
                        "level": "tool"},
     "sast-java": {"probe": "tests/prove_sast_java_detects.py", "state": "observed",
                   "level": "tool"},
+    # OBSERVED 2026-10-23, locally (lane L-SCAN-B, KDEC-026): the composite's own mobsfscan and
+    # mobile-configuration steps, run as shipped with mobsfscan 1.0.1 / Semgrep 1.172.0 by digest in
+    # a container, find every planted Android and iOS condition and stay silent on the clean trees.
+    # The hosted proof is the validate-scanners mobsfscan leg.
+    "sast-mobile": {"probe": "tests/prove_sast_mobile_detects.py", "state": "observed",
+                    "level": "tool"},
     # OBSERVED 2026-10-14, locally: the job's trivy-action `with:` blocks, read as shipped and
     # translated flag for flag, run by the real Trivy against images built byte by byte (outdated
     # openssl; a credential; nothing). CVEs fail with advisory off and are reported with it on; a

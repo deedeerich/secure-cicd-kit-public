@@ -138,12 +138,21 @@ def policy_outputs(work, cen, environment='prod', event='push', text=None, repo_
         os.makedirs(repo)
         subprocess.run(g + ['init', '-q'], cwd=repo, check=True)
         subprocess.run(g + ['commit', '-q', '--allow-empty', '-m', 'x'], cwd=repo, check=True)
-    cpath = os.path.join(work, 'central.json')
-    if os.path.exists(cpath):
-        os.remove(cpath)
+    # THE CENTRAL REGISTER IS COMMITTED, ONCE, in a fresh kit repository per call: its exceptions'
+    # renewal histories come from git (KDEC-022 item 2), and a register in no git history is
+    # EXCEPTION_HISTORY_UNVERIFIED. One commit is a first grant of everything in it.
+    n = 0
+    while os.path.isdir(os.path.join(work, 'kit-%d' % n)):
+        n += 1
+    kit = os.path.join(work, 'kit-%d' % n)
+    cpath = os.path.join(kit, 'policy', 'policy-registration.json')
     if text is not None or cen is not None:
-        with io.open(cpath, 'w', encoding='utf-8') as fh:
+        os.makedirs(os.path.dirname(cpath))
+        subprocess.run(g + ['init', '-q'], cwd=kit, check=True)
+        with io.open(cpath, 'w', encoding='utf-8', newline='\n') as fh:
             fh.write(text if text is not None else json.dumps(cen))
+        subprocess.run(g + ['add', '-A'], cwd=kit, check=True)
+        subprocess.run(g + ['commit', '-q', '-m', 'central'], cwd=kit, check=True)
     out = os.path.join(work, 'gh_output')
     io.open(out, 'w').close()
     subprocess.run([sys.executable, RESOLVER, '--repo', repo, '--default-ref', 'main', '--central', cpath,
@@ -194,7 +203,7 @@ def step(steps, sid):
 # them, and asserts the same rule). codeql never failed on findings; sbom hands its licence verdict
 # to the gate; malicious-deps is secret-class (a known-malicious package blocks in every mode).
 FINDING_JOBS = ('sast-semgrep', 'sast-bandit', 'sast-go', 'deps-scan', 'iac-scan', 'sast-dotnet',
-                'sast-java', 'sast-cpp', 'image-scan')
+                'sast-java', 'sast-cpp', 'image-scan', 'sast-mobile')
 SECRET_JOB = 'secret-scan'
 STEP_OUT = re.compile(r'steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)')
 SEP_INPUTS = {'inputs.soft_fail_sast': 'false', 'inputs.advisory_mode': 'false',
@@ -618,6 +627,12 @@ def main():
              dict(scanners('sast-semgrep'), **{'needs.sast-semgrep.outputs.scan_state': 'PARTIAL',
                                                'needs.sast-semgrep.outputs.parse_partial_files': '["a.php"]'}),
              (True, 'ADVISORY'), 'PROCEED_WITH_ADVISORY', 'FINDINGS_NOT_BLOCKED,COVERAGE_PARTIAL', True),
+            # C/C++ analysed without its build (KDEC-026, CPP_ANALYSIS_PARTIAL): the same visible
+            # partial -- COVERAGE_PARTIAL, advisory, never a PASS.
+            ('crawl_cpp_partial_clean', policy_outputs(work, None, environment='dev'),
+             dict(scanners(), **{'needs.sast-cpp.outputs.scan_state': 'PARTIAL',
+                                 'needs.sast-cpp.outputs.scan_reason': 'CPP_ANALYSIS_PARTIAL'}),
+             (True, 'ALLOWED'), 'PROCEED_WITH_ADVISORY', 'COVERAGE_PARTIAL', True),
         ]
         for name, pol, seeded, (gate_zero, enf), route, cause, verdict_zero in cases:
             if name != 'no_policy_step' and not pol.get('steps.policy.outputs.policy_state'):

@@ -77,6 +77,9 @@ jobs:
         run: |
           set -euo pipefail
           python tests/make_fixture.py --out fixture
+          # The platform trees and their planted-finding contract, PLATFORM_SIGNALS.json (lane
+          # L-SCAN-B, KDEC-026): Android/Kotlin, iOS, build-aware C/C++, a multi-project .NET solution.
+          python tests/_platform_fixtures.py --out fixture --only android,ios,cpp-build,dotnet-solution
           echo "signals=$(jq -c '[.[].expected_signal]|unique' fixture/EXPECTED_SIGNALS.json)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -206,6 +209,33 @@ jobs:
             lang: dotnet
           - id: depcheck
             lang: nvd
+          # Pipeline lint (lane L-SCAN-A, KDEC-025): the release each job pins, over the seeded
+          # corpus tests/corpora/pipeline_lint_corpus.py. One leg per tool, so one cannot hide another.
+          - id: actionlint
+            lang: workflows
+          - id: zizmor
+            lang: workflows
+          - id: shellcheck
+            lang: shell
+          - id: psscriptanalyzer
+            lang: powershell
+          - id: hadolint
+            lang: dockerfile
+          # Lane L-SCAN-B (KDEC-026). Each grades against fixture/PLATFORM_SIGNALS.json: a row is
+          # DETECTED only when that tool names that rule on that planted file.
+          # mobsfscan 1.0.1 + Semgrep 1.172.0 by digest (the sast-mobile job's pins) over the Android
+          # and iOS trees, and the kit's mobile-config rules over the Android tree.
+          - id: mobile
+            lang: mobile
+          # The flagship's Semgrep image (by digest) with the p/kotlin floor over the Android tree.
+          - id: semgrep-kotlin
+            lang: kotlin
+          # cppcheck through CMake's and bear's compilation databases (the sast-cpp build step).
+          - id: cppcheck-build
+            lang: cpp
+          # The NuGet audit per project of a real-shaped solution (sln, web, data, tests).
+          - id: dotnet-solution
+            lang: dotnet
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -794,6 +824,166 @@ jobs:
               # rather than silently left, so the exception is visible and deliberate.
               NOTE="$(grep -ciE 'has the following vulnerable' out.txt || echo 0) projects flagged"
               ;;
+            actionlint|zizmor|shellcheck|psscriptanalyzer|hadolint)
+              # PIPELINE LINT (lane L-SCAN-A, KDEC-025): the release each job pins, by the same sha256,
+              # over the seeded corpus (tests/corpora/pipeline_lint_corpus.py -- generated here, never
+              # committed under a .github/workflows path the kit's own scan would read). DETECT is
+              # every seeded rule present, checked by the corpus itself; an absent or unreadable
+              # report is COLLECTION_FAILED, never zero.
+              python3 tests/corpora/pipeline_lint_corpus.py --write lintfix >/dev/null
+              pin() {
+                curl -sSfL --retry 2 -o "$1" "$2" && echo "$3  $1" | sha256sum -c - >/dev/null
+              }
+              case "$ID" in
+                actionlint)
+                  pin al.tgz "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz" 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 \
+                    && tar -xzf al.tgz actionlint \
+                    && pin sc.txz "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz" 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198 \
+                    && tar -xJf sc.txz --strip-components=1 shellcheck-v0.11.0/shellcheck \
+                    && (cd lintfix && ../actionlint -shellcheck ../shellcheck -pyflakes= -format '{{json .}}' .github/workflows/seeded.yml > ../out.json; true) && EXEC=ok ;;
+                zizmor)
+                  pin zz.tgz "https://github.com/zizmorcore/zizmor/releases/download/v1.30.1/zizmor-x86_64-unknown-linux-gnu.tar.gz" e65324f4430c2717591937edcec90ccbefaf14c174f8ec9415e03ca875b46e1a \
+                    && tar -xzf zz.tgz zizmor \
+                    && (cd lintfix && ../zizmor --offline --no-config --no-progress --format sarif .github/workflows/seeded.yml > ../out.json; true) && EXEC=ok ;;
+                shellcheck)
+                  pin sc.txz "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz" 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198 \
+                    && tar -xJf sc.txz --strip-components=1 shellcheck-v0.11.0/shellcheck \
+                    && (cd lintfix && ../shellcheck -f json1 -S style scripts/deploy.sh > ../out.json; true) && EXEC=ok ;;
+                psscriptanalyzer)
+                  pin pssa.nupkg "https://www.powershellgallery.com/api/v2/package/PSScriptAnalyzer/1.25.0" 14e634c828eb98efb9f40b2918ba90f139ed5eccdf663a2a747736d996995d60 \
+                    && mkdir -p pssa && unzip -q -o pssa.nupkg -d pssa \
+                    && pwsh -NoProfile -NonInteractive -Command 'Import-Module ./pssa/PSScriptAnalyzer.psd1; ConvertTo-Json -InputObject @(Invoke-ScriptAnalyzer -Path lintfix/ops/run.ps1 | Select-Object RuleName, Severity, Line) -EnumsAsStrings | Set-Content out.json' \
+                    && EXEC=ok ;;
+                hadolint)
+                  pin hadolint "https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-linux-x86_64" c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507 \
+                    && chmod +x hadolint \
+                    && (cd lintfix && ../hadolint --no-fail -f sarif build/Dockerfile > ../out.json) && EXEC=ok ;;
+              esac
+              if [ ! -s out.json ]; then
+                echo "::error title=COLLECTION_FAILED::$ID wrote no report (exec=$EXEC). An ABSENT report is not zero findings."
+                echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              rc=0; NOTE="$(python3 tests/corpora/pipeline_lint_corpus.py --check "$ID" out.json)" || rc=$?
+              if [ "$rc" -eq 2 ]; then
+                echo "::error title=COLLECTION_FAILED::$NOTE"
+                echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              [ "$rc" -eq 0 ] && DETECT=ok
+              ;;
+            mobile)
+              # The sast-mobile job's install, verbatim in substance: both files by their published
+              # sha256, --no-deps, then the ordinary dependencies by version, into a venv.
+              python -m venv /tmp/mobsf-venv
+              printf '%s\n' "mobsfscan==1.0.1 --hash=sha256:4d755d4b7910fdbb119f1844433a1fbe1d8c2d64e02eee4b648331c51f260bd3" \
+                "semgrep==1.172.0 --hash=sha256:d8b94af4266a575287ad2cd844573743ab4fe58f6bfb6d9229327807937eade3 --hash=sha256:f13ddebc870e784b03c9247f095720f49f67244eca1e7da493364f55c65b4493" > mobsf-pinned.txt
+              if /tmp/mobsf-venv/bin/python -m pip install --quiet --no-deps --only-binary=:all: --require-hashes -r mobsf-pinned.txt \
+                 && /tmp/mobsf-venv/bin/python -m pip install --quiet mobsfscan==1.0.1; then
+                EXEC=ok
+                # mobsfscan runs its code rules through the `semgrep` ON PATH and silently skips them
+                # when there is none (measured 2026-10-23): the venv goes first on PATH.
+                export PATH="/tmp/mobsf-venv/bin:$PATH"
+                /tmp/mobsf-venv/bin/mobsfscan --sarif --no-fail -o mobsf-android.sarif fixture/android > mobsf.log 2>&1 || true
+                /tmp/mobsf-venv/bin/mobsfscan --sarif --no-fail -o mobsf-ios.sarif fixture/ios >> mobsf.log 2>&1 || true
+                cp .github/actions/sast-mobile/mobile-config.semgrep.yml .kit-mobile-config.yml
+                /tmp/mobsf-venv/bin/semgrep scan --metrics=off --config .kit-mobile-config.yml --sarif --output mobile-config.sarif fixture/android >> mobsf.log 2>&1 || true
+                if [ ! -s mobsf-android.sarif ] || [ ! -s mobsf-ios.sarif ] || [ ! -s mobile-config.sarif ]; then
+                  echo "::error title=COLLECTION_FAILED::a mobile report was not produced."; tail -20 mobsf.log
+                  echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"; exit 1
+                fi
+                g=0
+                python tests/_platform_signals_grade.py --signals fixture/PLATFORM_SIGNALS.json --tool mobsfscan --tree android --root fixture/android mobsf-android.sarif || g=1
+                python tests/_platform_signals_grade.py --signals fixture/PLATFORM_SIGNALS.json --tool mobsfscan --tree ios --root fixture/ios mobsf-ios.sarif || g=1
+                python tests/_platform_signals_grade.py --signals fixture/PLATFORM_SIGNALS.json --tool mobile-config --tree android --root fixture/android mobile-config.sarif || g=1
+                [ "$g" = "0" ] && DETECT=ok
+                cp mobsf-android.sarif out.json
+                NOTE="mobsfscan 1.0.1 + kit rules; every planted Android/iOS row graded (detect=$DETECT)"
+              else
+                NOTE="mobsfscan / semgrep did not install against their pinned digests"
+              fi
+              ;;
+            semgrep-kotlin)
+              # The flagship's image, by digest, with the p/kotlin floor sast-semgrep adds on Kotlin.
+              # suppression: EXPECTED_NEGATIVE_RESULT -- semgrep exits 1 on findings
+              # preserved_by: the absent-report and grading checks below
+              pull_image semgrep/semgrep@sha256:32e459968daabe7ab86968184a29109b9564aa00392401156f9788452b42786b || echo "the image did not arrive in 3 attempts; the scan below will have no report"
+              docker run --rm --user 0 -e HOME=/tmp -v "$PWD":/src -w /src semgrep/semgrep@sha256:32e459968daabe7ab86968184a29109b9564aa00392401156f9788452b42786b semgrep scan \
+                --config p/kotlin --metrics=off --sarif --output /src/out.json fixture/android > semgrep.log 2>&1 || true
+              EXEC=ok
+              if [ ! -s out.json ]; then
+                echo "::error title=COLLECTION_FAILED::out.json was not produced."; tail -20 semgrep.log || true
+                echo "collection=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"; exit 1
+              fi
+              python tests/_platform_signals_grade.py --signals fixture/PLATFORM_SIGNALS.json --tool semgrep-kotlin --tree android --root fixture/android out.json && DETECT=ok
+              NOTE="p/kotlin on the planted Kotlin (container 1.178.0)"
+              ;;
+            cppcheck-build)
+              # The sast-cpp build step's sources of a compilation database: CMake configure only
+              # (outside the tree), and bear over make where `make -n` works.
+              timeout 180 sudo apt-get -o DPkg::Lock::Timeout=60 update -qq || true
+              timeout 300 sudo apt-get -o DPkg::Lock::Timeout=60 install -y --no-install-recommends cppcheck bear
+              EXEC=ok
+              cmake -S fixture/cpp-build/cmake -B /tmp/cc-cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON > cc.log 2>&1 || true
+              make -n -C fixture/cpp-build/make >> cc.log 2>&1 && bear --output /tmp/cc-make.json -- make -k -C fixture/cpp-build/make >> cc.log 2>&1 || true
+              for db in /tmp/cc-cmake/compile_commands.json /tmp/cc-make.json; do
+                if [ -s "$db" ]; then
+                  cppcheck --enable=warning,style,performance,portability --project="$db" --xml --output-file="cc-$(basename "$(dirname "$db")").xml" >> cc.log 2>&1 || true
+                fi
+              done
+              # Source-only on the same tree: the control, which must stay silent (the gap itself).
+              cppcheck --enable=warning,style,performance,portability --xml --output-file=cc-sourceonly.xml fixture/cpp-build/cmake >> cc.log 2>&1 || true
+              python - <<'CCB_PY'
+          import glob, json, os, xml.etree.ElementTree as ET
+          runs = []
+          for x in sorted(glob.glob("cc-*.xml")):
+              if x == "cc-sourceonly.xml":
+                  continue
+              res = []
+              for e in ET.parse(x).getroot().iter("error"):
+                  loc = e.find("location")
+                  if loc is not None:
+                      res.append({"ruleId": e.get("id"), "locations": [{"physicalLocation": {"artifactLocation": {"uri": loc.get("file")}}}]})
+              runs.append({"tool": {"driver": {"name": "cppcheck"}}, "results": res})
+          json.dump({"version": "2.1.0", "runs": runs}, open("out.json", "w"))
+          src = [e.get("id") for e in ET.parse("cc-sourceonly.xml").getroot().iter("error")] if os.path.exists("cc-sourceonly.xml") else ["(none)"]
+          open("cc-control.txt", "w").write(" ".join(src))
+          CCB_PY
+              python tests/_platform_signals_grade.py --signals fixture/PLATFORM_SIGNALS.json --tool cppcheck --tree cpp-build --root fixture/cpp-build out.json && DETECT=ok
+              if grep -q arrayIndexOutOfBounds cc-control.txt; then
+                DETECT=fail; echo "::error::the source-only control found the planted write: the fixture no longer shows the gap"
+              fi
+              NOTE="cppcheck via CMake/bear databases; source-only control silent"
+              ;;
+            dotnet-solution)
+              EXEC=ok
+              dotnet restore fixture/dotnet-solution/Shop.sln > dn.log 2>&1 || true
+              : > dn-index.txt
+              for proj in $(find fixture/dotnet-solution -name '*.csproj' | sort); do
+                n=$(wc -l < dn-index.txt)
+                dotnet list "$proj" package --vulnerable --include-transitive --format json > "dn-$n.json" 2>>dn.log || true
+                printf '%s\t%s\n' "$proj" "dn-$n.json" >> dn-index.txt
+              done
+              python - <<'DNS_PY'
+          import json
+          res = []
+          for line in open("dn-index.txt"):
+              proj, f = line.rstrip("\n").split("\t")
+              try:
+                  doc = json.load(open(f, encoding="utf-8-sig"))
+              except ValueError:
+                  continue
+              for p in doc.get("projects") or []:
+                  for fw in p.get("frameworks") or []:
+                      for pkg in (fw.get("topLevelPackages") or []):
+                          for v in pkg.get("vulnerabilities") or []:
+                              res.append({"ruleId": str(v.get("advisoryurl", "")).rstrip("/").rsplit("/", 1)[-1],
+                                          "locations": [{"physicalLocation": {"artifactLocation": {"uri": proj}}}]})
+          json.dump({"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "dotnet-vuln"}}, "results": res}]}, open("out.json", "w"))
+          DNS_PY
+              python tests/_platform_signals_grade.py --signals fixture/PLATFORM_SIGNALS.json --tool dotnet-vuln --tree dotnet-solution --root fixture/dotnet-solution out.json && DETECT=ok
+              NOTE="NuGet advisories per project of a multi-project solution"
+              ;;
           esac
 
           [ -s out.json ] || [ -s out.txt ] && ARTIFACT=ok
@@ -927,7 +1117,9 @@ jobs:
           # matrix above is expected here; tests/prove_validate_scanners_matrix.py holds this list
           # equal to the matrix ids.
           EXPECTED = ["bandit", "semgrep", "semgrep-container", "semgrep-php", "gosec", "flawfinder",
-                      "checkov", "trivy", "osv", "syft", "dotnet", "depcheck"]
+                      "checkov", "trivy", "osv", "syft", "dotnet", "depcheck",
+                      "actionlint", "zizmor", "shellcheck", "psscriptanalyzer", "hadolint",
+                      "mobile", "semgrep-kotlin", "cppcheck-build", "dotnet-solution"]
           # NOT PROVEN, DATED, OWNED -- reported, not failed, until it expires. Silence never
           # renews it. depcheck: first, this workflow had no NVD_API_KEY, so Dependency-Check
           # built no database (hosted run 39618320185, "no report produced"); then the keyed NVD

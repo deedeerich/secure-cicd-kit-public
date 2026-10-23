@@ -13,6 +13,10 @@ read, parsed or validated is REGISTRATION_UNAVAILABLE -- never "nothing due")
     --workflows-dir DIR          the caller's .github/workflows: every job whose `with:` sets a literal
                                  `weakening_expires` (the deploy's KDEC-014 version-gap exception, and
                                  any other weakening record); an expression there is named, not guessed
+    --ticket-ledger PATH         the ticket reconciler's ledger (.security/ticket-ledger.json). A secret
+                                 exception names ONE finding by its `fp`; the ledger knows which
+                                 finding ticket carries that fp, so the resurfacing comment names it --
+                                 and the finding ticket names the exception back (KDEC-024, LINK)
 
 WHAT IT LISTS, per exception: kind (secret_exception | policy_decision | weakening_record), where it
 lives, its ticket, approver and expiry, EXCEPTION_DUE_SOON (expiring within --days, default 14) or
@@ -51,10 +55,13 @@ DUE_SOON = 'EXCEPTION_DUE_SOON'
 OVERDUE = 'EXCEPTION_OVERDUE'
 UNAVAILABLE = 'REGISTRATION_UNAVAILABLE'
 STAMP_PREFIX = 'exception-due:'
+# KDEC-022 item 2 (C): the register and the exception's Jira ticket disagree (reported, never gating).
+TICKET_MISMATCH = 'EXCEPTION_TICKET_MISMATCH'
 JIRA_SETTINGS = ('JIRA_HOST', 'JIRA_EMAIL', 'JIRA_TOKEN', 'JIRA_PROJECT')
 OTHER_TRACKER_CREDENTIALS = ('GH_TOKEN', 'GITHUB_TOKEN', 'AZDO_PAT')
 KIND_LABEL = {'secret_exception': 'secret exception', 'policy_decision': 'policy decision',
-              'weakening_record': 'weakening record (version-gap exception)'}
+              'weakening_record': 'weakening record (version-gap exception)',
+              'known_exploited_exception': 'known-exploited exception'}
 
 
 def _s(v):
@@ -178,6 +185,7 @@ def collect(sources, today, days):
                            ticket_key(x.get('ticket')), _s(x.get('approver')), x.get('expires'), x.get('renews'),
                            cap, today, days, notes)
                 if it:
+                    it['finding'] = fp
                     due.append(it)
     # The deploy holds the stronger of the authority's cap and the kit default.
     wcap = min(cap, eh.kit_default_max_renewals)
@@ -231,6 +239,10 @@ def body(it):
     else:
         lines.append('It is now due: fix the cause, or renew it on a new ticket with this grant added to '
                      '`renews` (that would be renewal %d of %d).' % ((it['renewals'] or 0) + 1, it['cap']))
+    if it.get('finding_tickets'):
+        lines.append('The finding this exception covers is tracked on %s (the ticket reconciler\'s '
+                     'finding ticket, which names this exception back).'
+                     % ', '.join(it['finding_tickets']))
     lines.append('Raised by the scheduled exception check (scripts/exception_due.py, KDEC-018).')
     return '\n'.join(lines)
 
@@ -242,6 +254,32 @@ def title(it):
 
 
 # ── resurfacing ───────────────────────────────────────────────────────────────────────────────
+
+def finding_tickets(ledger_path):
+    """-> ({finding fp: [ticket key]}, note). From the reconciler's ledger: each cluster entry
+    records the fps of its members and the ticket's human key (KDEC-024). An absent path is no
+    cross-reference, said; an unreadable one is named, never read as "no finding ticket"."""
+    if not ledger_path:
+        return {}, ''
+    if not os.path.exists(ledger_path):
+        return {}, 'no ticket ledger at %s, so no finding ticket can be named' % ledger_path
+    try:
+        doc = json.load(io.open(ledger_path, encoding='utf-8'))
+    except (OSError, ValueError) as exc:
+        return {}, 'the ticket ledger %s could not be read (%s); no finding ticket is named' % (
+            ledger_path, exc)
+    clusters = doc.get('clusters') if isinstance(doc, dict) else None
+    out = {}
+    for entry in (clusters or {}).values():
+        if not isinstance(entry, dict) or entry.get('merged_into') or not entry.get('ref'):
+            continue
+        key = str(entry.get('key') or entry.get('ref'))
+        for fp in entry.get('fps') or []:
+            out.setdefault(str(fp), [])
+            if key not in out[str(fp)]:
+                out[str(fp)].append(key)
+    return out, ''
+
 
 def choose(env, factory):
     """-> (backend, state, why). state None means a usable Jira backend."""
@@ -347,6 +385,62 @@ def resurface(due, env, apply_changes, factory):
     return 'RESURFACED', actions, 'every due exception was raised on its ticket'
 
 
+# ── the Jira cross-check (KDEC-022 item 2, C) ─────────────────────────────────────────────────
+
+def ticketed(sources):
+    """Every exception that names a ticket, due or not: (key, kind, where, ticket, approver, prior tickets)."""
+    out = []
+    for origin in ('central', 'repository'):
+        for e in (sources.get(origin) or {}).get('policies') or []:
+            eid = _s(e.get('id'))
+            d = e.get('decision') or {}
+            grants = eh.parse_renews(d.get('renews'))[0] or []
+            if ticket_key(d.get('exception_ref')):
+                out.append(('decision:%s:%s' % (origin, eid), 'policy_decision', '%s register, entry %s' % (origin, eid),
+                            ticket_key(d.get('exception_ref')), _s(d.get('authority')), [g['ticket'] for g in grants]))
+            for kind, field in (('secret_exception', 'secret_exceptions'),
+                                ('known_exploited_exception', 'known_exploited_exceptions')):
+                for x in e.get(field) or []:
+                    fp = _s(x.get('finding'))
+                    grants = eh.parse_renews(x.get('renews'))[0] or []
+                    if ticket_key(x.get('ticket')):
+                        out.append(('%s:%s:%s:%s' % (kind.split('_')[0], origin, eid, fp), kind,
+                                    '%s register, entry %s, finding %s' % (origin, eid, fp), ticket_key(x.get('ticket')),
+                                    _s(x.get('approver')), [g['ticket'] for g in grants]))
+    return out
+
+
+def cross_check(sources, backend, apply_changes):
+    """Hold each exception's Jira ticket to the register: it exists, names the same approver, and its
+    links, text or comments show every renewal. -> (mismatches, actions). Never a gate input."""
+    mismatches, actions = [], []
+    for key, kind, where, ticket, approver, prior in ticketed(sources):
+        rec, ok, detail = backend.resolve(ticket)
+        reasons = []
+        if not ok:
+            reasons.append('ticket %s does not exist or cannot be read (%s)' % (ticket, _safe(detail)))
+        else:
+            blob = json.dumps(rec, sort_keys=True).lower()
+            if approver and approver.lower() not in blob:
+                reasons.append('the ticket does not name the approver %r the register records' % approver)
+            for p in prior:
+                if p.lower() not in blob:
+                    reasons.append('the ticket does not show the renewal %s (no link, mention or comment)' % p)
+        if not reasons:
+            continue
+        m = {'key': key, 'kind': kind, 'where': where, 'ticket': ticket, 'code': TICKET_MISMATCH, 'reasons': reasons}
+        mismatches.append(m)
+        if ok and apply_changes:
+            text = '%s: the policy register and this ticket disagree about the %s at %s:\n- %s\n' \
+                   'Raised by the weekly exception check (scripts/exception_due.py --cross-check, KDEC-022). ' \
+                   'The gate does not read this ticket; fix whichever record is wrong.' % (
+                       TICKET_MISMATCH, KIND_LABEL.get(kind, kind), where, '\n- '.join(reasons))
+            cok, cdetail = backend.comment(ticket, text)
+            actions.append({'key': key, 'action': 'comment %s (%s)' % (ticket, TICKET_MISMATCH),
+                            'result': 'ok' if cok else 'failed: %s' % _safe(cdetail)})
+    return mismatches, actions
+
+
 # ── output ────────────────────────────────────────────────────────────────────────────────────
 
 def render(doc):
@@ -369,6 +463,13 @@ def render(doc):
         out.append('- resurfacing: %s' % doc['resurface_why'])
     for a in doc['actions']:
         out.append('- %s: %s -- %s' % (a['key'], a['action'], a['result']))
+    xc = doc.get('cross_check') or {}
+    if xc.get('state') not in (None, 'NOT_REQUESTED'):
+        out += ['', '### Jira cross-check (KDEC-022): %s' % xc['state'], '']
+        if xc.get('why'):
+            out.append('- %s' % xc['why'])
+        for m in xc.get('mismatches') or []:
+            out.append('- **%s** %s (ticket %s): %s' % (m['code'], m['where'], m['ticket'], '; '.join(m['reasons'])))
     return '\n'.join(out) + '\n'
 
 
@@ -377,6 +478,7 @@ def main(argv=None, env=None, backend_factory=None):
     ap.add_argument('--central', default='')
     ap.add_argument('--repository-register', default='')
     ap.add_argument('--workflows-dir', default='')
+    ap.add_argument('--ticket-ledger', default='')
     ap.add_argument('--today', default='')
     ap.add_argument('--days', type=int, default=DEFAULT_DAYS)
     ap.add_argument('--out', default='')
@@ -384,6 +486,8 @@ def main(argv=None, env=None, backend_factory=None):
     ap.add_argument('--github-output', default='')
     ap.add_argument('--resurface', action='store_true')
     ap.add_argument('--apply', action='store_true')
+    ap.add_argument('--cross-check', action='store_true',
+                    help='hold every ticketed exception to its Jira ticket (KDEC-022 item 2, C); reported only')
     a = ap.parse_args(argv)
     env = os.environ if env is None else env
     if a.days < 0:
@@ -411,6 +515,12 @@ def main(argv=None, env=None, backend_factory=None):
     sources['workflows'] = wf
     due, notes, _bad = collect(sources, today, a.days)
     notes = wnotes + notes
+    by_fp, lnote = finding_tickets(a.ticket_ledger)
+    if lnote:
+        notes.append(lnote)
+    for it in due:
+        if it.get('finding') and by_fp.get(it['finding']):
+            it['finding_tickets'] = sorted(by_fp[it['finding']])
     if unreadable:
         state = UNAVAILABLE
     else:
@@ -421,7 +531,20 @@ def main(argv=None, env=None, backend_factory=None):
             rstate, rwhy = 'NOT_ATTEMPTED', 'a register or workflow could not be read'
         else:
             rstate, actions, rwhy = resurface(due, env, a.apply, backend_factory)
-    doc = {'schema': 'exception-due/1', 'state': state, 'today': today.isoformat(), 'days': a.days,
+    xc = {'state': 'NOT_REQUESTED', 'why': '', 'mismatches': []}
+    if a.cross_check:
+        if unreadable:
+            xc = {'state': 'NOT_ATTEMPTED', 'why': 'a register or workflow could not be read', 'mismatches': []}
+        else:
+            backend, bstate, bwhy = choose(env, backend_factory)
+            if bstate:
+                xc = {'state': bstate, 'why': bwhy, 'mismatches': []}
+            else:
+                mism, xacts = cross_check(sources, backend, a.apply)
+                actions = list(actions) + xacts
+                xc = {'state': 'CHECKED', 'why': '%d ticketed exception(s) checked' % len(ticketed(sources)),
+                      'mismatches': mism}
+    doc = {'schema': 'exception-due/1', 'state': state, 'cross_check': xc, 'today': today.isoformat(), 'days': a.days,
            'sources': sources_seen, 'due': due, 'counts': {'due_soon': sum(1 for i in due if i['status'] == DUE_SOON),
                                                           'overdue': sum(1 for i in due if i['status'] == OVERDUE),
                                                           'over_cap': sum(1 for i in due if i['over_cap'])},
@@ -438,12 +561,13 @@ def main(argv=None, env=None, backend_factory=None):
         with io.open(a.github_output, 'a', encoding='utf-8') as fh:
             fh.write('state=%s\ndue_count=%d\noverdue_count=%d\nover_cap_count=%d\nresurface_state=%s\n'
                      % (state, len(due), doc['counts']['overdue'], doc['counts']['over_cap'], rstate))
+            fh.write('cross_check_state=%s\nticket_mismatch_count=%d\n' % (xc['state'], len(xc['mismatches'])))
     print(text)
     if state == UNAVAILABLE:
         return 3
     if rstate == 'RESURFACE_FAILED':
         return 4
-    return 1 if due else 0
+    return 1 if (due or xc['mismatches']) else 0
 
 
 if __name__ == '__main__':

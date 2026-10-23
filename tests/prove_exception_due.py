@@ -386,7 +386,8 @@ def main():
                 try:
                     os.makedirs(os.path.join(ws, '.kit', 'scripts'))
                     for f in ('exception_due.py', 'exception_history.py', 'policy_registration.py', 'rung_ladder.py',
-                              'enforcement_axes.py', 'ticket_reference.py', 'reconcile_tickets.py'):
+                              'enforcement_axes.py', 'ticket_reference.py', 'reconcile_tickets.py',
+                              'ticket_routing.py'):
                         shutil.copy(os.path.join(ROOT, 'scripts', f), os.path.join(ws, '.kit', 'scripts', f))
                     os.makedirs(os.path.join(ws, '.kit', 'policy'))
                     with io.open(os.path.join(ws, '.kit', 'policy', 'policy-registration.json'), 'w') as fh:

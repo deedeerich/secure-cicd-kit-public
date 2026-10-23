@@ -282,6 +282,9 @@ jobs:
       nvd_database_state: ${{ steps.summary.outputs.nvd_database_state }}
       cache_state: ${{ steps.summary.outputs.cache_state }}
       routing_result: ${{ steps.posture.outputs.routing_result }}
+      # KDEC-022 item 3: AVAILABLE or UNAVAILABLE, and the check's verdict over this run's SARIF.
+      kev_state: ${{ steps.posture.outputs.kev_state }}
+      kev_verdict: ${{ steps.kev.outputs.kev_verdict }}
       controls_required: ${{ steps.posture.outputs.controls_required }}
       controls_executed: ${{ steps.posture.outputs.controls_executed }}
       controls_unavailable: ${{ steps.posture.outputs.controls_unavailable }}
@@ -328,17 +331,49 @@ jobs:
 
       # ---------------------------------------------------------------- Trivy
 
+      # TRIVY IS INSTALLED, NOT SET UP BY AN ACTION (KDEC-027): aquasecurity/trivy-action's
+      # setup-trivy checks out `aquasecurity/trivy` against github.server_url, which on a GHE.com
+      # tenant does not have it. Release binary from github.com, pinned by version and sha256.
+      - name: Install Trivy (pinned release binary)
+        id: trivy_install
+        if: inputs.enable_trivy
+        shell: bash
+        run: |
+          set -euo pipefail
+          v=0.71.2
+          if [ "$(trivy --version 2>/dev/null | sed -n 's/^Version: //p' | head -n 1)" != "$v" ]; then
+            t="trivy_${v}_Linux-64bit.tar.gz"
+            d="$(mktemp -d)"
+            curl -sSfL --retry 3 --connect-timeout 20 -o "$d/$t" \
+              "https://github.com/aquasecurity/trivy/releases/download/v${v}/$t"
+            echo "0510e71e2fd39bf863856d499c8dc19feb4e7336546394c502a8f5cc7ab27460  $d/$t" | sha256sum -c -
+            tar -xzf "$d/$t" -C "$d" trivy
+            sudo install -m 0755 "$d/trivy" /usr/local/bin/trivy
+            rm -rf "$d"
+          fi
+          trivy --version | head -n 1
+          echo "TRIVY_CACHE_DIR=$RUNNER_TEMP/trivy-cache" >> "$GITHUB_ENV"
+          echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+      - name: Trivy database cache
+        if: inputs.enable_trivy
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/trivy-cache
+          key: trivy-db-${{ runner.os }}-${{ steps.trivy_install.outputs.day }}
+          restore-keys: trivy-db-${{ runner.os }}-
       - name: Trivy filesystem scan (SARIF)
         id: trivy_fs
         if: inputs.enable_trivy
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: "."
-          format: sarif
-          output: nvd-scan-results/trivy-nvd.sarif
-          severity: ${{ inputs.trivy_severities }}
-          exit-code: "0"          # reporting pass; gating happens below
+        shell: bash
+        env:
+          # Each TRIVY_* is the option trivy-action@v0.36.0 passed for the `with:` key it replaced.
+          # Its `severity:` was dropped for a SARIF (entrypoint.sh), so this reporting pass carries
+          # none: every severity is reported, as it always was; the gate below applies them.
+          SCAN_REF: "."
+          TRIVY_FORMAT: sarif
+          TRIVY_OUTPUT: nvd-scan-results/trivy-nvd.sarif
+          TRIVY_EXIT_CODE: "0"          # reporting pass; gating happens below
+        run: trivy fs --quiet "$SCAN_REF"
 
       # PUBLICATION IS NOT DETECTION. Code scanning is free on public repos and otherwise
       # Advanced Security; on a private repo without it, upload-sarif returns "Resource not
@@ -368,13 +403,13 @@ jobs:
 
       - name: Trivy gate
         if: inputs.enable_trivy && inputs.trivy_fail_severities != ''
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: "."
-          format: table
-          severity: ${{ inputs.trivy_fail_severities }}
-          exit-code: "1"          # this one is the gate, and it is explicit
+        shell: bash
+        env:
+          SCAN_REF: "."
+          TRIVY_FORMAT: table
+          TRIVY_SEVERITY: ${{ inputs.trivy_fail_severities }}
+          TRIVY_EXIT_CODE: "1"          # this one is the gate, and it is explicit
+        run: trivy fs --quiet "$SCAN_REF"
 
       # ------------------------------------------------- OWASP Dependency-Check
 
@@ -766,6 +801,20 @@ jobs:
           tar -xzf "$t" trivy && sudo mv trivy /usr/local/bin/ && rm -f "$t"
           trivy config --format table --exit-code 0 . | tee nvd-scan-results/trivy-dockerfile.txt
 
+      # KNOWN EXPLOITED IN THE WILD BLOCKS HERE TOO (KDEC-022 item 3). This path has no report job
+      # and no policy step, so the check reads the CVEs straight from its own SARIF and honours no
+      # exception: a CVE on the CISA KEV catalog routes this run BLOCKED (the posture step below).
+      # An unreadable catalog is kev_state UNAVAILABLE -- visible, never a pass.
+      - name: Check every CVE found against the CISA KEV catalog
+        id: kev
+        if: always()
+        uses: $/.github/actions/known-exploited
+        with:
+          sarif: >-
+            nvd-scan-results/trivy-nvd.sarif nvd-scan-results/dependency-check/dependency-check-report.sarif
+            nvd-scan-results/trivy-sbom-revalidation.sarif nvd-scan-results/trivy-image-revalidation.sarif
+          sarif-job: nvd-cve-scan
+
       # --------------------------------------------------------------- Results
 
       - name: Upload scan artifacts
@@ -962,6 +1011,10 @@ jobs:
           JOB_STATUS: ${{ job.status }}
           SUM_UNAVAILABLE: ${{ steps.summary.outputs.unavailable }}
           SUM_STATE: ${{ steps.summary.outputs.assurance_state }}
+          # KDEC-022 item 3: the known-exploited check over this run's SARIF.
+          K_STATE: ${{ steps.kev.outputs.kev_state }}
+          K_VERDICT: ${{ steps.kev.outputs.kev_verdict }}
+          K_BLOCKING: ${{ steps.kev.outputs.kev_blocking }}
         run: |
           set -u
           req=""; exe=""; skp=""; red=""; wk=""; dead=""; inforce=0; badclass=0
@@ -1122,9 +1175,23 @@ jobs:
           elif [ "$inforce" -gt 0 ]; then
             route=PROCEED_WITH_ADVISORY
           fi
+          # FINDING_KNOWN_EXPLOITED (KDEC-022 item 3): a CVE on the CISA KEV catalog is an observed
+          # refusal at every rung -- BLOCKED, ahead of everything else. An unreadable catalog, or a
+          # check that did not report, is never a pass: at least PROCEED_WITH_ADVISORY.
+          # An absent output is a check that did not report: UNAVAILABLE, said so, never CLEAR.
+          if [ -z "${K_STATE:-}" ]; then kev_state=UNAVAILABLE; else kev_state="$K_STATE"; fi
+          if [ -z "${K_VERDICT:-}" ]; then kev_verdict=UNAVAILABLE; else kev_verdict="$K_VERDICT"; fi
+          if [ "$kev_verdict" = "BLOCKED" ]; then
+            route=BLOCKED
+            echo "::error title=GATE=FAIL (FINDING_KNOWN_EXPLOITED)::on the CISA KEV catalog: ${K_BLOCKING:-unnamed}. Exploited in the wild blocks at every rung."
+          elif [ "$route" = "PROCEED" ] && [ "$kev_state" != "AVAILABLE" ]; then
+            route=PROCEED_WITH_ADVISORY
+            echo "::warning title=kev_state UNAVAILABLE::the CISA KEV catalog could not be read; no CVE here has been shown not to be exploited in the wild."
+          fi
 
           emit() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
           emit routing_result "$route"
+          emit kev_state "$kev_state"
           emit controls_required "$REQ"
           emit controls_executed "$EXE"
           emit controls_unavailable "$UNAV"
@@ -1150,6 +1217,7 @@ jobs:
             echo "| expiry | ${W_WEAKENING_EXPIRES:-_(no expiry set)_} |"
             echo "| attribution | \`$auth\` |"
             echo "| **routing result** | **\`$route\`** |"
+            echo "| kev_state (CISA known exploited) | \`${kev_state}\` — verdict \`${kev_verdict}\`${K_BLOCKING:+ — FINDING_KNOWN_EXPLOITED: ${K_BLOCKING}} |"
             echo ""
             # THE SAME FACT THE TOP OF THE SUMMARY STATES, RESTATED WHERE THE RECORD IS.
             #

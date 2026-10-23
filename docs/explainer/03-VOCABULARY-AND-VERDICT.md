@@ -72,7 +72,9 @@ weakening: attribute it (`weakening_reason` + `weakening_authority`, ideally `we
 **The policy decides which findings block (lane L-A, owner requirement 2026-10-22; VERIFIED locally:
 `tests/prove_gate_policy_enforcement.py`, 64 scenarios at `19b5e1d`).** Before it reads any result the gate
 resolves the policy register (part 05). With nothing registered the run is at the kit default,
-**crawl: secrets and a broken pipeline block** (KDEC-017) — a non-secret finding routes `PROCEED_WITH_ADVISORY` with cause
+**crawl: a secret, a known-malicious package (routed with the secret class), a dependency or image
+CVE on the CISA KEV catalog (`FINDING_KNOWN_EXPLOITED`, KDEC-022) and a scan the kit
+could not run or trust block** (KDEC-017, KDEC-020) — any other finding routes `PROCEED_WITH_ADVISORY` with cause
 `FINDINGS_NOT_BLOCKED`, never `PROCEED`. **Owner ruling O-24:** at crawl the gate still blocks when
 the kit could not run or trust its own scan (a crash, `COLLECTION_FAILED`, a hollow or unreadable
 scan, a bootstrap failure) — `EVIDENCE_UNTRUSTED` at every tier — while a coverage gap stays
@@ -86,7 +88,16 @@ the cap is refused by the same name and the secret blocks (part 05). **An org th
 does not name runs at the enterprise floor** (KDEC-020): the one enterprise's, or with several the
 strictest at each tier; its own entries may only tighten (`POLICY_BELOW_AUTHORITY_FLOOR` below it).
 It is never silent: the notice `ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR` (namespace `policy_notice`)
-is in the `policy_notices` output, a workflow warning and the gate's policy summary.
+appears as a `::warning` annotation and as a row in the gate's policy summary. `policy_notices` is
+an output of the resolve-policy action only, not of the security workflow, and the notice is not
+in the run record. With **no enterprise entry**, an org the register does not know runs at the
+**strictest registered org** instead, tier by tier, with the notice
+`ORG_UNMAPPED_RAN_AT_STRICTEST_ORG` (KDEC-022). An exception's renewals are counted from git: a
+declared history shorter than git shows is `EXCEPTION_HISTORY_TAMPERED` (`BLOCKED`); one git cannot
+show is `EXCEPTION_HISTORY_UNVERIFIED` (refused; a softening reverts, `DECISION_REQUIRED`). A KEV
+catalog nobody could read is `kev_state UNAVAILABLE`: `PROCEED_WITH_ADVISORY`, cause
+`KEV_UNAVAILABLE`, never `PROCEED`; an excepted KEV finding has cause
+`KNOWN_EXPLOITED_EXCEPTION_ATTRIBUTED`.
 `ORG_NOT_UNDER_ENTERPRISE` (KDEC-019 item 1, built backwards) is retired and no longer emitted. The gate job then exits on the verdict: `BLOCKED` and `EVIDENCE_UNTRUSTED`
 fail it at every tier; the rest pass the gate and the deploy refuses `DECISION_REQUIRED`. With no policy step at all the gate is strict, never crawl.
 

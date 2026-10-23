@@ -257,6 +257,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the clean-tree sweep below runs check_context_current.py, which resolves
+          # the commit .context says it was reconciled against. A depth-1 checkout holds only the
+          # PR merge commit, so the check refused on the private repo (Release 3 re-cut, run
+          # 39985896367, job 120524861777) while passing locally and on the source-only mirror.
+          fetch-depth: 0
       - name: Inlined normalizer must match the canonical source
         run: |
           set -euo pipefail
@@ -306,11 +312,22 @@ jobs:
 
       - name: Every pinned image and action ref must resolve
         env:
-          # Lifts the unauthenticated GitHub rate limit; the resolver reports a limit as UNKNOWN,
-          # never PASS, and an UNKNOWN step is a red step. Read-only lookups of public refs.
+          # Refs resolve by git against github.com with no token (KDEC-027). The token is used for
+          # the REST fallback ONLY when GITHUB_API_URL is api.github.com: on a GHE.com data-residency
+          # tenant it was issued by api.<tenant>.ghe.com and is never sent to api.github.com.
+          # UNKNOWN is never PASS, and an UNKNOWN step is a red step.
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # The run's token stays on the host that issued it; refs resolve through git (no network).
+          python3 tests/prove_github_token_stays_on_its_host.py
+          # No step writes external text into $GITHUB_OUTPUT/$GITHUB_ENV unsanitised: an API error
+          # body crashed the resolve step on a GHE.com tenant, and a newline is output injection.
+          python3 tests/check_output_writes.py
+          # The whole kit on a simulated GHE.com host: GH_HOST on every gh step, no api.github.com
+          # with a token, no github.com/<repo> links, no trivy-action/setup-trivy, and the resolve
+          # step degrades on a tenant API error instead of crashing (H6 runs it under bash).
+          python3 tests/prove_ghe_host.py
           # A Go scanner image tag that never existed was pinned for two weeks behind a green job
           # (FUTURE_WORK §11); an action ref that never existed shipped the same way (§9). This
           # checker was written for the first and could not see `v`-prefixed tags or `uses:` refs
@@ -324,7 +341,8 @@ jobs:
 
       - name: Every remote uses is a commit SHA naming its exact release (L82)
         env:
-          # --online resolves the tag each comment names; a rate limit is UNKNOWN, a red step.
+          # --online resolves the tag each comment names by git (KDEC-027); the token is used only
+          # as a REST fallback on a github.com run. UNKNOWN is a red step.
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -554,6 +572,17 @@ jobs:
           # cppcheck: the distribution package the job itself installs.
           sudo apt-get -o DPkg::Lock::Timeout=60 install -y --no-install-recommends cppcheck
           python3 tests/prove_cppcheck_collects.py
+
+      - name: Pipeline linters run where their files are, detect the seeds, and are free where not (KDEC-025)
+        run: |
+          set -euo pipefail
+          # Lane L-SCAN-A. Runs the deps-scan and iac-scan lint steps as shipped: their install steps
+          # fetch actionlint, zizmor, shellcheck, PSScriptAnalyzer and hadolint by exact version and
+          # sha256, then each linter must detect tests/corpora/pipeline_lint_corpus.py, name the zsh
+          # script and the future-#Requires script as VERSION_GAPs, hand error-level findings to the
+          # gate, do nothing when discovery found none, and fail the job only when it cannot scan.
+          # The runner image carries bash, python3, jq, curl, xz, unzip and pwsh.
+          python3 tests/prove_pipeline_lint.py
 
       - name: Every published SARIF has a producer, and the SAST jobs that once ran nothing still run (W4C-001)
         run: |
@@ -925,6 +954,10 @@ jobs:
           # it says; a refused or unreadable policy is never the default.
           python3 tests/prove_gate_reads_rung.py
           python3 tests/prove_gate_policy_enforcement.py
+          # KDEC-028 (lane L-AM): a caller's own scanner delivered as external evidence is adopted
+          # by the report by contract, fingerprinted by its declared subject, routed by the rung,
+          # and its secret/KEV/malicious class (external-floor) blocks at every rung.
+          python3 tests/prove_external_evidence.py
           # KDEC-018 (lane L-FX): the highest authority's rung is the floor -- narrower scopes only
           # tighten (POLICY_BELOW_AUTHORITY_FLOOR) -- and crawl is the absolute floor: no input,
           # weakening or entry lets a secret or an untrusted scan through, the secret scan included.
@@ -937,6 +970,12 @@ jobs:
           # ... and every exception resurfaces as it comes due, onto its Jira ticket (a recording
           # fake here; no real Jira), saying plainly it was excepted before.
           python3 tests/prove_exception_due.py
+          # KDEC-022 item 2: renewal histories derived from git (erased is TAMPERED, unshowable is
+          # UNVERIFIED), and the weekly Jira cross-check (a fake Jira here).
+          python3 tests/prove_exception_history_derived.py
+          # KDEC-022 item 3: a CVE on the CISA KEV catalog blocks at every rung (a fixture feed here).
+          python3 scripts/known_exploited.py --self-test
+          python3 tests/prove_known_exploited.py
           # L36: the gate emits the run record, schema-valid, and refuses to emit an invalid one.
           python3 tests/prove_gate_run_record.py
           python3 scripts/policy_registration.py --validate templates/policy-register.central.example.json --origin central
@@ -1010,6 +1049,27 @@ jobs:
           # replayer for the whole run, so no request can leave the runner. Live behaviour is
           # TICKETING_BACKENDS.md R-1/R-2, run by a person with a transcript.
           python3 tests/prove_ticket_backends.py
+
+      - name: The ticket lifecycle, end to end on every backend (KDEC-024)
+        run: |
+          set -euo pipefail
+          # Stateful Jira, Azure DevOps and GitHub stand-ins, no network: the report's findings
+          # reach the reconciler; verified clearance closes citing the run and commit, a return is
+          # RECURRED; NEW and REOPENED_BY_LAPSE; one cluster key and cross-scanner merges;
+          # contested confidence; SLA due dates and one escalation; links both ways; no
+          # duplicates, a bounded call budget, TICKETING_UNAVAILABLE exits 3; the template caller.
+          python3 -m pip install --quiet PyYAML
+          python3 tests/prove_ticket_lifecycle.py
+
+      - name: Jira bearer auth, ticket routing and test ticketing (KDEC-028)
+        run: |
+          set -euo pipefail
+          # No network: bearer through the gateway with a credential-free cloud id lookup; basic
+          # stays the default; every Jira caller takes it; ticket_routing precedence, the
+          # TICKET_ROUTING_BELOW_FLOOR refusal, a rule change that never moves or duplicates a
+          # ticket; test ticketing chosen by the ref, refused against a real project.
+          python3 -m pip install --quiet PyYAML
+          python3 tests/prove_jira_auth_and_routing.py
 
       - name: The live R-1/R-2 runner is safe before anyone runs it live
         run: |
@@ -1421,6 +1481,13 @@ jobs:
           # anything later is touched; no e2e command is a refusal. STUBBED: the live run is owed.
           python3 scripts/rollback_sequence.py --self-test
           python3 tests/prove_rollback_sequence.py
+          # KDEC-023 (lane L-RB3): shared multi-config resources roll back only the product's entries;
+          # a cross-edited stable resource gets a dependency review (partial or no rollback, with the
+          # graph); an incoming deploy built before a rollback of its target is checked for
+          # dependencies on what it took out, and refused with a report when it has any.
+          python3 scripts/rollback_dependencies.py --self-test
+          python3 scripts/rollback_hold.py --self-test
+          python3 tests/prove_rollback_dependencies.py
 
       - name: Harness teardown only behind PRE and POST zero-count assertions
         run: |
@@ -1751,6 +1818,34 @@ jobs:
             exit 1
           fi
           echo "provenance stamp carries the identity chain and claims nothing it cannot see"
+
+  # Lane L-SCAN-B (KDEC-026): Kotlin/Android, Swift/Objective-C, build-aware C/C++ and a real-shaped
+  # .NET solution. Its own job, in parallel with normalizer-drift (already 14 of its 30 minutes):
+  # the two container proofs build small images and install mobsfscan by digest (~4 min measured
+  # locally). Bounded at 20.
+  platform-scanners:
+    name: Platform scanners (mobile, Kotlin, build-aware C/C++, .NET solution)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Discovery routes Kotlin, Swift, Objective-C and mobile configuration to scanners
+        run: |
+          set -euo pipefail
+          python3 tests/prove_platform_discovery.py
+      - name: Kotlin is scanned under a narrowed config, and a .NET solution is audited per project
+        run: |
+          set -euo pipefail
+          # The release the sast-semgrep image pins (prove_semgrep_php S6 holds them equal).
+          python3 -m pip install --quiet semgrep==1.178.0
+          python3 tests/prove_semgrep_kotlin.py
+          # The runner's preinstalled .NET SDK, restoring from nuget.org.
+          python3 tests/prove_dotnet_solution_detects.py
+      - name: sast-mobile and build-aware sast-cpp, run as shipped in Linux containers
+        run: |
+          set -euo pipefail
+          python3 tests/prove_sast_mobile_detects.py
+          python3 tests/prove_cpp_build_aware.py
 
   validation-coverage:
     name: Validation coverage

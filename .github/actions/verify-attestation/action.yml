@@ -66,6 +66,8 @@ runs:
         AVAILABLE: ${{ inputs.attestations-available }}
         GH_TOKEN: ${{ github.token }}
       run: |
+        # KDEC-027: gh's token goes to this run's host only (gh api / -R default to github.com).
+        GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
         case "$RUNG" in crawl|walk|run) ;; *)
           echo "::error title=Unknown rung::'$RUNG' is not crawl, walk or run."; exit 1 ;; esac
         if ! printf '%s' "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then

@@ -133,6 +133,7 @@ HOSTILE_TRIGGERS = {'pull_request_target', 'issue_comment', 'issues', 'pull_requ
 BLOCKING = ['.github/workflows/reusable-*.yml', '.github/workflows/reusable-*.yaml',
             '.github/workflows/workflow-policy-check.yml', 'overlays/*/workflows/*.yml',
             'overlays/*/workflows/*.yaml', '.github/actions/*/action.yml',
+            'overlays/*/actions/*/action.yml', 'overlays/*/templates/*.yml',
             '.github/actions/*/action.yaml']
 
 UNTRUSTED_RE = [re.compile(p) for p in UNTRUSTED]
@@ -156,7 +157,7 @@ def is_blocking(path, root):
 
 def is_workflow_dir(dp):
     d = dp.replace('\\', '/').rstrip('/')
-    return d.endswith('.github/workflows') or bool(re.search(r'(^|/)overlays/[^/]+/workflows$', d))
+    return d.endswith('.github/workflows') or bool(re.search(r'(^|/)overlays/[^/]+/(workflows|templates)$', d))
 
 
 def shown(path):

@@ -102,7 +102,22 @@ REFUSALS -- BEFORE ANYTHING IS TOUCHED (the fail-safes chosen, and why)
     nothing, which is the non-destructive branch: each deploy's own single-run reversal is
     unaffected.
 
-THE RECORD (schemas/rollback-sequence.schema.json, schema_version 2, validated before it is written)
+CROSS-EDITED RESOURCES -- `adapter: arm` (KDEC-023, owner 2026-10-23, lane L-RB3)
+
+    A step whose deployment changed Azure resources through ARM (its evidence is `resources.json`,
+    scripts/rollback_dependencies.py) is judged by a DEPENDENCY REVIEW instead of the per-adapter
+    eligibility: each resource is SHARED_MULTI_CONFIG (only the product's entries are reversed and
+    every other entry is read back byte-identical: ROLLBACK_SCOPED_TO_PRODUCT_CONFIG) or STABLE
+    (rollback-resource-classes.yaml). A node another actor changed refuses the FULL rollback; the
+    nodes independent of it are reversed (ROLLBACK_PARTIAL_DEPENDENCY_CONFLICT, the step
+    ROLLBACK_STEP_PARTIAL, its test period still run) or, with none, nothing is
+    (ROLLBACK_REFUSED_DEPENDENCY_CONFLICT). Either stops the sequence for a human,
+    ROLLBACK_SEQUENCE_STOPPED_DEPENDENCY_CONFLICT, with ROLLBACK_REQUIRES_HUMAN_DECISION as the
+    record's rollback_state and the dependency graph (JSON and Mermaid) in the step's record, its
+    evidence directory (dependency-graph.json, dependency-graph.mmd) and the run summary. An App
+    Service or Container App step changed outside the kit carries a one-node graph the same way.
+
+THE RECORD (schemas/rollback-sequence.schema.json, schema_version 3, validated before it is written)
 
     One JSON record: the sequence result, why, the test period, the lock, the requested and
     final version, the kit releases on each target when the sequence started, the deployments
@@ -143,6 +158,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import deploy_contract as dc  # noqa: E402
+import rollback_dependencies as rd  # noqa: E402
 
 SCHEMA = os.path.join(os.path.dirname(HERE), 'schemas', 'rollback-sequence.schema.json')
 
@@ -155,7 +171,9 @@ STOPPED_INELIGIBLE = 'ROLLBACK_SEQUENCE_STOPPED_INELIGIBLE'
 HALTED_ROLLBACK = 'ROLLBACK_SEQUENCE_HALTED_ROLLBACK_UNVERIFIED'
 HALTED_HEALTH = 'ROLLBACK_SEQUENCE_HALTED_HEALTH_FAILED'
 HALTED_E2E = 'ROLLBACK_SEQUENCE_HALTED_E2E_FAILED'
+STOPPED_DEPENDENCY = 'ROLLBACK_SEQUENCE_STOPPED_DEPENDENCY_CONFLICT'
 # rollback_sequence_step
+STEP_PARTIAL = 'ROLLBACK_STEP_PARTIAL'
 STEP_VERIFIED = 'ROLLBACK_STEP_VERIFIED'
 STEP_HALTED = 'ROLLBACK_STEP_HALTED'
 STEP_INELIGIBLE = 'ROLLBACK_STEP_INELIGIBLE'
@@ -167,7 +185,10 @@ HUMAN = 'ROLLBACK_REQUIRES_HUMAN_DECISION'
 PROHIBITED = 'ROLLBACK_PROHIBITED'
 VERIFIED = 'ROLLBACK_VERIFIED'
 
-ADAPTERS = ('containerapp', 'appservice')
+ADAPTERS = ('containerapp', 'appservice', 'arm')
+# The deploy evidence each adapter's step reads.
+EVIDENCE = {'arm': ('resources.json', 'outcome.json')}
+DEFAULT_EVIDENCE = ('snapshot.json', 'manifest.json', 'capability.json', 'outcome.json')
 STEP_KEYS = ('deployment', 'run_id', 'run_attempt', 'adapter', 'evidence', 'health_path',
              'forward_fix_only')
 TOP_KEYS = ('sequence_id', 'steps', 'notes', 'target_version')
@@ -194,6 +215,9 @@ def release_of(st):
 
 
 def target_of(st):
+    if st.get('adapter') == 'arm':
+        t = (st['_ev'].get('resources.json') or {}).get('target') or {}
+        return '%s/%s' % (t.get('resource_group', ''), t.get('name', ''))
     snap = st['_ev'].get('snapshot.json') or {}
     return '%s/%s' % (snap.get('resource_group', ''), snap.get('app', ''))
 
@@ -214,7 +238,7 @@ def load_step(st, root, where, p, locked=None):
         if k not in STEP_KEYS and not k.startswith('_'):
             p.append('%s carries unknown field %r' % (where, k))
     if st.get('adapter') not in ADAPTERS:
-        p.append('%s adapter %r is not containerapp or appservice' % (where, st.get('adapter')))
+        p.append('%s adapter %r is not containerapp, appservice or arm' % (where, st.get('adapter')))
     rid, att = _s(str(st.get('run_id') or '')), _s(str(st.get('run_attempt') or '1'))
     if not rid.isdigit() or not att.isdigit():
         p.append('%s run_id / run_attempt must be the deploying run\'s numbers' % where)
@@ -223,16 +247,19 @@ def load_step(st, root, where, p, locked=None):
     st.setdefault('deployment', 'run %s attempt %s' % (rid, att))
     d = os.path.join(root, _s(st.get('evidence')) or 'deploy-evidence-%s-%s' % (rid, att))
     ev = {}
-    for name in ('snapshot.json', 'manifest.json', 'capability.json', 'outcome.json'):
+    for name in EVIDENCE.get(st.get('adapter'), DEFAULT_EVIDENCE):
         try:
             ev[name] = json.load(io.open(os.path.join(d, name), encoding='utf-8'))
         except (OSError, ValueError) as exc:
             p.append('%s: %s could not be read from %s (%s)' % (where, name, d, exc))
     st['_dir'], st['_ev'] = d, ev
-    man = ev.get('manifest.json') or {}
+    man = ev.get('manifest.json') or ev.get('resources.json') or {}
     if man and man.get('release_id') != 'run-%s-%s' % (rid, att):
         p.append('%s: the manifest belongs to %r, not run %s attempt %s' % (
             where, man.get('release_id'), rid, att))
+    if st.get('adapter') == 'arm' and ev.get('resources.json') is not None and \
+            not isinstance((ev['resources.json'] or {}).get('nodes'), list):
+        p.append('%s: resources.json names no nodes' % where)
     snap = ev.get('snapshot.json') or {}
     if snap and snap.get('adapter') not in (None, st.get('adapter')):
         p.append('%s: the evidence is a %s deployment, the step says %s' % (
@@ -299,7 +326,8 @@ def check_target_version(seq):
     """KDEC-021 rule 2: the request names the version to return to, and it must be the version each
     target held before the deployments being reversed. -> problems."""
     want = _s(seq.get('target_version'))
-    steps = [st for st in seq['steps'] if isinstance(st, dict) and st.get('_ev')]
+    # An ARM step returns each resource to its recorded prior body; it has no image version.
+    steps = [st for st in seq['steps'] if isinstance(st, dict) and st.get('_ev') and st.get('adapter') != 'arm']
     if not want:
         if any(st.get('adapter') == 'appservice' for st in steps):
             return ['target_version is missing: an App Service rollback restores each slot it '
@@ -321,6 +349,11 @@ def check_target_version(seq):
 # ----------------------------------------------------------------------------- environment
 def step_env(st):
     """The deploy contract reads its target from the environment, as in the deploy job."""
+    if st['adapter'] == 'arm':
+        t = (st['_ev'].get('resources.json') or {}).get('target') or {}
+        return {'resource_group'.upper(): t.get('resource_group', ''),
+                'github_run_id'.upper(): st['run_id'], 'github_run_attempt'.upper(): st['run_attempt'],
+                'health_path'.upper(): st.get('health_path') or '/health'}
     snap = st['_ev']['snapshot.json']
     e = {'resource_group': snap.get('resource_group', ''), 'github_run_id': st['run_id'],
          'github_run_attempt': st['run_attempt'], 'health_path': st.get('health_path') or '/health'}
@@ -363,6 +396,8 @@ def live_kit_releases(st):
     the stamp of every ACTIVE revision; App Service: the stamp on every slot the step names. A
     stamp that is not a kit release id is another actor's, and is left to eligibility."""
     out = {}
+    if st['adapter'] == 'arm':
+        return arm_kit_releases(st)
     if st['adapter'] == 'containerapp':
         ok, revs, _ = dc.az('containerapp', 'revision', 'list', '-n', dc.env('containerapp_name'),
                             '-g', dc.env('resource_group'), '--all')
@@ -382,6 +417,25 @@ def live_kit_releases(st):
         if rel is None:
             return None
         m = KIT_RELEASE.match(rel)
+        if m:
+            out[rel] = (int(m.group(1)), int(m.group(2)))
+    return out
+
+
+def arm_kit_releases(st):
+    """The kit stamps on the STABLE resources an ARM step names (entries carry no tags). A resource
+    that is gone is left to the review; one that cannot be read makes the target unreadable."""
+    reg = rd.load_registry()
+    out = {}
+    for n in (st['_ev'].get('resources.json') or {}).get('nodes') or []:
+        info = rd.resolve(reg, n.get('id', ''))
+        if info['entry'] or info['class'] is None:
+            continue
+        state, body = rd.arm_get(n['id'], rd.api_version(info))
+        if state == 'error':
+            return None
+        rel = rd._stamp_of(body) if state == 'ok' else ''
+        m = KIT_RELEASE.match(rel or '')
         if m:
             out[rel] = (int(m.group(1)), int(m.group(2)))
     return out
@@ -586,7 +640,9 @@ def eligibility_appservice(man, snap, release, checks):
 
 
 # ----------------------------------------------------------------------------- one step
-def app_url(adapter):
+def app_url(adapter, st=None):
+    if adapter == 'arm':
+        return _s(((st or {}).get('_ev', {}).get('resources.json') or {}).get('app_url')).rstrip('/')
     if adapter == 'containerapp':
         ok, shown, _ = dc.az('containerapp', 'show', '-n', dc.env('containerapp_name'),
                              '-g', dc.env('resource_group'))
@@ -697,17 +753,50 @@ def test_period(st, n, total, seq_id, url, cfg):
 def new_step_record(st, n):
     return {'position': st['_position'], 'executed_as': n, 'deployment': st['deployment'],
             'run_id': st['run_id'], 'run_attempt': st['run_attempt'], 'adapter': st['adapter'],
-            'target': (st['_ev'].get('snapshot.json') or {}).get('app') or None,
+            'target': ((st['_ev'].get('snapshot.json') or {}).get('app') or
+                       ((st['_ev'].get('resources.json') or {}).get('target') or {}).get('name') or None),
             'inserted': bool(st.get('_inserted_because')),
             'inserted_because': st.get('_inserted_because'),
             'started_at': now(), 'finished_at': None, 'eligibility': None,
             'rollback': {'result': 'not-run', 'reversal_path': None, 'not_reversed': []},
             'restored': [], 'health': {'result': 'not-run', 'url': None},
             'e2e': {'result': 'not-run', 'exit_code': None}, 'test_period': None,
-            'step_result': STEP_NOT_REACHED}
+            'dependency_review': None, 'step_result': STEP_NOT_REACHED}
+
+
+def run_period(st, n, total, seq_id, cfg, rec, label, what='rolled back and verified'):
+    """The test period after a reversal (KDEC-021 rule 1), into `rec`. -> halt or None."""
+    url = app_url(st['adapter'], st)
+    rec['health']['url'] = url or None
+    period, failure = test_period(st, n, total, seq_id, url, cfg)
+    rec['test_period'] = period
+    checks = period['checks']
+    rec['health']['result'] = 'failed' if any(c['health'] == 'failed' for c in checks) else 'passed'
+    last = checks[-1] if checks else {}
+    if failure and failure[0] == 'e2e':
+        e2e_result = failure[1]['e2e']
+    else:
+        e2e_result = 'passed' if any(c['e2e'] == 'passed' for c in checks) else 'not-run'
+    rec['e2e'] = {'result': e2e_result, 'exit_code': last.get('exit_code')}
+    if failure and failure[0] == 'health':
+        c = failure[1]
+        return (HALTED_HEALTH, '%s: %s, but at the %s check of its test period (%.0f s in) the health '
+                'probe on %s never answered 200; the end-to-end tests were not run on it. The sequence '
+                'halts here for a human decision' % (label, what, c['phase'], c['offset_seconds'],
+                                                     url or 'no host'))
+    if failure:
+        c = failure[1]
+        return (HALTED_E2E, '%s: %s and healthy, but at the %s check of its test period (%.0f s in) the '
+                'end-to-end tests %s%s. The sequence halts here for a human decision; it never '
+                'continues on a broken intermediate state' % (
+                    label, what, c['phase'], c['offset_seconds'], c['e2e'],
+                    '' if c['exit_code'] is None else ' (exit %d)' % c['exit_code']))
+    return None
 
 
 def run_step(st, n, total, seq_id, work, cfg, contract):
+    if st['adapter'] == 'arm':
+        return run_arm_step(st, n, total, seq_id, work, cfg)
     rec = new_step_record(st, n)
     step_dir = os.path.join(work, 'step-%02d' % n)
     ev = os.path.join(step_dir, 'deploy-evidence')
@@ -723,6 +812,11 @@ def run_step(st, n, total, seq_id, work, cfg, contract):
         rec['eligibility'] = el
         if not el['eligible']:
             rec['step_result'] = STEP_INELIGIBLE
+            if 'other than the kit' in el['why']:
+                # KDEC-023: a stable resource changed by another actor -- the whole release is this
+                # one resource, so the review is one node, refused, with its reason.
+                rec['dependency_review'] = write_graph(
+                    rd.single(st['adapter'], target_of(st), el['why']), step_dir)
             halt = (STOPPED_INELIGIBLE, '%s is not eligible -- %s: %s. Stopped BEFORE it; nothing of '
                     'it was touched' % (label, el['disposition'], el['why']))
         else:
@@ -741,35 +835,94 @@ def run_step(st, n, total, seq_id, work, cfg, contract):
                             'back does not hold: %s' % (label, '; '.join(
                                 '%s is %s, not %s' % (x['slot'], x['live'], x['want']) for x in bad)))
             if not halt:
-                url = app_url(st['adapter'])
-                rec['health']['url'] = url or None
-                period, failure = test_period(st, n, total, seq_id, url, cfg)
-                rec['test_period'] = period
-                checks = period['checks']
-                rec['health']['result'] = 'failed' if any(c['health'] == 'failed' for c in checks) \
-                    else 'passed'
-                last = checks[-1] if checks else {}
-                if failure and failure[0] == 'e2e':
-                    e2e_result = failure[1]['e2e']
-                else:
-                    e2e_result = 'passed' if any(c['e2e'] == 'passed' for c in checks) else 'not-run'
-                rec['e2e'] = {'result': e2e_result, 'exit_code': last.get('exit_code')}
-                if failure and failure[0] == 'health':
-                    c = failure[1]
-                    halt = (HALTED_HEALTH, '%s: rolled back and verified, but at the %s check of its '
-                            'test period (%.0f s in) the health probe on %s never answered 200; the '
-                            'end-to-end tests were not run on it. The sequence halts here for a '
-                            'human decision' % (label, c['phase'], c['offset_seconds'],
-                                                url or 'no host'))
-                elif failure:
-                    c = failure[1]
-                    halt = (HALTED_E2E, '%s: rolled back, verified and healthy, but at the %s check '
-                            'of its test period (%.0f s in) the end-to-end tests %s%s. The sequence '
-                            'halts here for a human decision; it never continues on a broken '
-                            'intermediate state' % (label, c['phase'], c['offset_seconds'], c['e2e'],
-                                                    '' if c['exit_code'] is None
-                                                    else ' (exit %d)' % c['exit_code']))
+                halt = run_period(st, n, total, seq_id, cfg, rec, label)
             rec['step_result'] = STEP_HALTED if halt else STEP_VERIFIED
+    rec['finished_at'] = now()
+    return rec, halt
+
+
+def write_graph(review, step_dir):
+    """The dependency graph into the step's evidence (uploaded with the rollback work directory):
+    dependency-graph.json and dependency-graph.mmd. -> the review, with graph_path set."""
+    try:
+        os.makedirs(step_dir, exist_ok=True)
+        io.open(os.path.join(step_dir, 'dependency-graph.json'), 'w', encoding='utf-8').write(json.dumps(
+            {'outcome': review['outcome'], 'nodes': review['nodes'], 'edges': review['edges']},
+            indent=1, sort_keys=True))
+        io.open(os.path.join(step_dir, 'dependency-graph.mmd'), 'w', encoding='utf-8').write(
+            review['mermaid'] + '\n')
+        review['graph_path'] = os.path.basename(step_dir) + '/dependency-graph.json'
+    except OSError:
+        review['graph_path'] = None
+    return review
+
+
+def run_arm_step(st, n, total, seq_id, work, cfg):
+    """KDEC-023: a step that changed Azure resources through ARM, judged by the dependency review."""
+    rec = new_step_record(st, n)
+    step_dir = os.path.join(work, 'step-%02d' % n)
+    ev_dir = os.path.join(step_dir, 'deploy-evidence')
+    os.makedirs(ev_dir, exist_ok=True)
+    shutil.copyfile(os.path.join(st['_dir'], 'resources.json'), os.path.join(ev_dir, 'resources.json'))
+    label = 'step %d (%s)' % (n, st['deployment'])
+    halt, rv = None, None
+    reg = rd.load_registry()
+    with environment(step_env(st), step_dir):
+        outcome = (st['_ev'].get('outcome.json') or {}).get('deployment_outcome')
+        if _s(st.get('forward_fix_only')):
+            el = ineligible(PROHIBITED, 'forward-fix only', 'declared forward-fix only: %s'
+                            % _s(st['forward_fix_only']), [])
+        elif outcome != 'DEPLOY_HEALTHY':
+            el = ineligible(HUMAN, 'a standing deployment', 'the deployment\'s own outcome was %r, so it '
+                            'is not a standing deployment to reverse' % outcome, [])
+        else:
+            rv = rd.review(st['_ev']['resources.json'], reg, st.get('_sequence_releases') or ())
+            checks = [{'check': 'a standing deployment', 'held': True, 'detail': 'the deploy reported DEPLOY_HEALTHY'},
+                      {'check': 'dependency review', 'held': rv['outcome'] in (rd.CLEAR, rd.SCOPED),
+                       'detail': '%s: %s' % (rv['outcome'], rv['why'])}]
+            el = {'eligible': rv['outcome'] != rd.REFUSED, 'basis': rv['basis'],
+                  'disposition': HUMAN if rv['outcome'] in (rd.PARTIAL, rd.REFUSED) else None,
+                  'why': rv['why'], 'checks': checks}
+        rec['eligibility'] = el
+        if not el['eligible']:
+            rec['step_result'] = STEP_INELIGIBLE
+            halt = ((STOPPED_DEPENDENCY if rv else STOPPED_INELIGIBLE),
+                    '%s is not eligible -- %s: %s. Stopped BEFORE it; nothing of it was touched'
+                    % (label, el['disposition'], el['why']))
+        else:
+            result = rd.reverse(rv, reg)
+            held_ = result == (VERIFIED if rv['outcome'] in (rd.CLEAR, rd.SCOPED) else 'ROLLBACK_PARTIAL') \
+                and all(r['applied'] and r['verified'] for r in rv['reversed']) \
+                and all(o['identical'] for o in rv['others_untouched'])
+            rec['rollback'] = {'result': result, 'reversal_path': 'arm (rollback_dependencies.py)',
+                               'not_reversed': rv['not_reversed']}
+            rec['restored'] = [{'slot': r['id'], 'want': 'absent' if r['op'].startswith('delete') else 'prior',
+                                'live': r.get('live'), 'held': bool(r['applied'] and r['verified'])}
+                               for r in rv['reversed']]
+            io.open(os.path.join(ev_dir, 'reversal.json'), 'w', encoding='utf-8').write(json.dumps(
+                {'result': result, 'reversed': rv['reversed'], 'not_reversed': rv['not_reversed'],
+                 'others_untouched': rv['others_untouched'], 'problems': rv.get('problems') or []},
+                indent=1, sort_keys=True))
+            if not held_:
+                bad = [r['id'] for r in rv['reversed'] if not (r['applied'] and r['verified'])] + \
+                      [o['id'] for o in rv['others_untouched'] if not o['identical']]
+                halt = (HALTED_ROLLBACK, '%s: the reversal of the nodes the review freed did not hold '
+                        '(%s): %s' % (label, result, ', '.join(bad) or '; '.join(rv.get('problems') or [])))
+            else:
+                what = 'rolled back and verified' if rv['outcome'] in (rd.CLEAR, rd.SCOPED) else \
+                    'partly rolled back (the parts independent of the cross-edit, verified)'
+                halt = run_period(st, n, total, seq_id, cfg, rec, label, what)
+                if not halt and rv['outcome'] == rd.PARTIAL:
+                    halt = (STOPPED_DEPENDENCY, '%s: %s. Reversed and verified: %s. Left for a human '
+                            'decision: %s. The test period passed on that state; nothing after it was '
+                            'touched' % (label, rv['why'], ', '.join(r['id'].rsplit('/', 1)[-1] for r in rv['reversed'])
+                                         or 'nothing', '; '.join('%s (%s)' % (x['id'].rsplit('/', 1)[-1], x['reason'])
+                                                                 for x in rv['not_reversed'])))
+                    rec['step_result'] = STEP_PARTIAL
+            if rec['step_result'] != STEP_PARTIAL:
+                rec['step_result'] = STEP_HALTED if halt else STEP_VERIFIED
+        if rv is not None:
+            rec['dependency_review'] = write_graph(rd.public(rv), step_dir)
     rec['finished_at'] = now()
     return rec, halt
 
@@ -812,7 +965,7 @@ def run(seq_path, root, work, e2e_cmd, e2e_timeout, contract=None, period=None, 
     elif period is None:
         period = DEFAULT_PERIOD_MINUTES * 60.0
     started = now()
-    record = {'schema_version': 2, 'sequence_id': None, 'started_at': started, 'finished_at': None,
+    record = {'schema_version': 3, 'sequence_id': None, 'rollback_state': None, 'started_at': started, 'finished_at': None,
               'result': None, 'why': None, 'order': 'reverse of deployment order (newest first)',
               'e2e': {'supplied': bool(_s(e2e_cmd)),
                       'command_sha256': hashlib.sha256(_s(e2e_cmd).encode('utf-8')).hexdigest()
@@ -917,9 +1070,10 @@ def run(seq_path, root, work, e2e_cmd, e2e_timeout, contract=None, period=None, 
         queue.pop(0)
         n += 1
         st['_sequence_objects'] = set(done)
+        st['_sequence_releases'] = set(known)
         rec, halt = run_step(st, n, n + len(queue), record['sequence_id'], work, cfg, contract)
         record['steps'].append(rec)
-        done |= set(e.get('object') for e in st['_ev']['manifest.json'].get('entries') or []
+        done |= set(e.get('object') for e in (st['_ev'].get('manifest.json') or {}).get('entries') or []
                     if e.get('action') == 'CREATED' and e.get('object'))
     if halt:
         return finish(record, halt[0], halt[1])
@@ -941,7 +1095,8 @@ def final_version(seq, want, work):
     """Read each target's production version live after the last step (KDEC-021 rule 2)."""
     earliest = {}
     for st in seq['steps']:
-        earliest.setdefault(target_of(st), st)
+        if st.get('adapter') != 'arm':   # an ARM step has no image version; its review read it back
+            earliest.setdefault(target_of(st), st)
     targets = []
     for tgt, st in sorted(earliest.items()):
         with environment(step_env(st), work):
@@ -968,11 +1123,38 @@ def skeleton(st, i, n=None):
             'rollback': {'result': 'not-run', 'reversal_path': None, 'not_reversed': []},
             'restored': [], 'health': {'result': 'not-run', 'url': None},
             'e2e': {'result': 'not-run', 'exit_code': None}, 'test_period': None,
-            'step_result': STEP_NOT_REACHED}
+            'dependency_review': None, 'step_result': STEP_NOT_REACHED}
+
+
+def rollback_state(record, result):
+    """rollback_state (assurance-taxonomy.yaml) for the sequence as a whole. A refusal before
+    anything was touched decides nothing (null: correct the input); a verified sequence is
+    ROLLBACK_VERIFIED; a step declared forward-fix only is ROLLBACK_PROHIBITED; every other stop or
+    halt leaves a state a PERSON must decide -- ROLLBACK_REQUIRES_HUMAN_DECISION (KDEC-023: the
+    census found this value was never emitted)."""
+    if result == SEQUENCE_VERIFIED:
+        return VERIFIED
+    if result in (REFUSED_NO_E2E, REFUSED_NO_PERIOD, REFUSED_INPUT):
+        return None
+    if any(((s.get('eligibility') or {}).get('disposition') == PROHIBITED) for s in record['steps']):
+        return PROHIBITED
+    return HUMAN
 
 
 def finish(record, result, why):
     record['result'], record['why'], record['finished_at'] = result, why, now()
+    record['rollback_state'] = rollback_state(record, result)
+    if result == STOPPED_DEPENDENCY:
+        record['escalation'] = {
+            'resolution_owner': 'platform operations, with the owners of the resources left',
+            'next_action': 'Read the step\'s dependency review and graph: each node left was changed by '
+                           'another actor, or depends on (or is evaluated together with) one that was. '
+                           'Decide those with whoever changed them; what the review freed is already '
+                           'reversed and verified, and the steps after it are untouched.',
+            'required_artefacts': ['this record', 'the step\'s dependency-graph.json and .mmd',
+                                   'the step\'s reversal.json'],
+            'permitted_agent_action': {'may': dc.MAY, 'may_not': getattr(dc, 'may_not'.upper())}}
+        return record
     if result != SEQUENCE_VERIFIED:
         record['escalation'] = {
             'resolution_owner': 'platform operations',
@@ -1063,6 +1245,11 @@ def summary_lines(r):
             s.get('executed_as') or '-', str(s.get('deployment')).replace('|', '/'),
             ' (inserted)' if s.get('inserted') else '', basis, s['rollback']['result'],
             s['health']['result'], e2e, s['step_result']))
+    out += ['', 'rollback_state: `%s`.' % (r.get('rollback_state') or 'none -- nothing was touched')]
+    for s in r['steps']:
+        if s.get('dependency_review'):
+            out += rd.summary(s['dependency_review'], 'Step %s (%s)' % (s.get('executed_as') or '-',
+                                                                        s.get('deployment')))
     return out
 
 
@@ -1138,6 +1325,7 @@ def main(argv):
             fh.write('sequence_result=%s\n' % record['result'])
             fh.write('steps_verified=%d\n' % sum(1 for s in record['steps'] if s['step_result'] == STEP_VERIFIED))
             fh.write('steps_total=%d\n' % len(record['steps']))
+            fh.write('rollback_state=%s\n' % (record.get('rollback_state') or ''))
     return 0 if record['result'] == SEQUENCE_VERIFIED else 1
 
 

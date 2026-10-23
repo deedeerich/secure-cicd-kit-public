@@ -40,6 +40,12 @@ WHAT IT PROVES (against scripts/policy_registration.py, the real resolver)
         entry that goes LOWER is POLICY_BELOW_AUTHORITY_FLOOR; one that tightens is honoured. A
         mapped org carries no notice; with no enterprise defined nothing changes; --validate no
         longer refuses an unmapped org; ORG_NOT_UNDER_ENTERPRISE is no longer emitted anywhere
+    A12 (KDEC-022 item 1, owner 2026-10-23: "Yes you should get the strictest from the orgs.") with
+        an `orgs` map or org entries but NO enterprise entry, an org the register does not know runs
+        at the STRICTEST registered org, tier by tier (KDEC-020's comparison), with the notice
+        ORG_UNMAPPED_RAN_AT_STRICTEST_ORG; its own repository file may tighten above it and never go
+        below; the floor org's per-finding exceptions do not travel; a registered org is untouched;
+        with an enterprise entry KDEC-020 still governs
 
 EXIT  0 proven   1 a rule failed (named)   2 could not be checked (UNKNOWN, never PASS)
 """
@@ -57,6 +63,7 @@ TODAY = '2026-10-22'
 FLOOR = 'POLICY_BELOW_AUTHORITY_FLOOR'
 RETIRED = 'ORG_NOT_UNDER_ENTERPRISE'
 NOTICE = 'ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR'
+NOTICE_ORG = 'ORG_UNMAPPED_RAN_AT_STRICTEST_ORG'
 
 
 def decision(**over):
@@ -98,7 +105,8 @@ def main():
             fails.append(msg)
 
     def res(cen, repo_doc=None, repository='acme/ledger-api', environment='prod'):
-        return pr.resolve(cen, repo_doc, repository, environment, 'push', {}, TODAY)
+        return pr.resolve(cen, repo_doc, repository, environment, 'push', {}, TODAY,
+                          history=pr.committed_once(cen, repo_doc))
 
     def refused(r, code=FLOOR):
         return r['state'] == code and r.get('routes_to') == 'BLOCKED'
@@ -299,19 +307,18 @@ def main():
     check(r['state'] == rl.POLICY_RESOLVED and r['rung_effective'] == 'run' and r['chain'] == ['ent', 'globex-run'],
           'A11: an unmapped org\'s own tightening was not honoured: %r %r %r'
           % (r['state'], r.get('rung_effective'), r.get('chain')))
-    # An orgs map with no enterprise entry: the enterprise floor is the kit default (crawl), noticed.
+    # An orgs map with NO enterprise entry is KDEC-022 item 1 (A12): the strictest registered org, not
+    # the enterprise floor -- with no org entries anywhere that is crawl, under the A12 notice.
     r = res(central([]), repository='globex/thing')
-    check(r['state'] == rl.POLICY_RESOLVED and r['rung_effective'] == 'crawl' and notice_of(r),
-          'A11: an orgs map with no enterprise entry did not run the unmapped org at crawl with a notice: %r %r'
+    check(r['state'] == rl.POLICY_RESOLVED and r['rung_effective'] == 'crawl' and not notice_of(r)
+          and [n for n in r.get('notices') or [] if n.get('code') == NOTICE_ORG],
+          'A11/A12: an orgs map with no enterprise entry did not run the unmapped org at the strictest org '
+          '(crawl, none registered above it) with the A12 notice: %r %r' % (r['state'], r.get('notices')))
+    # No register at all: unchanged -- the kit default, and no notice.
+    r = res(None, repository='globex/thing')
+    check(r['state'] == rl.POLICY_RESOLVED and r['policy_source'] == 'KIT_DEFAULT' and not r.get('notices'),
+          'A11: with no register an unnamed org did not resolve to the kit default without a notice: %r %r'
           % (r['state'], r.get('notices')))
-    # No enterprise defined at all: unchanged -- the kit default, and no notice.
-    no_ent = central([org_walk])
-    del no_ent['orgs']
-    for why, doc in (('no orgs map', no_ent), ('an empty orgs map', dict(no_ent, orgs={})), ('no register', None)):
-        r = res(doc, repository='globex/thing')
-        check(r['state'] == rl.POLICY_RESOLVED and r['policy_source'] == 'KIT_DEFAULT' and not notice_of(r),
-              'A11: with %s an unnamed org did not resolve to the kit default without a notice: %r %r'
-              % (why, r['state'], r.get('notices')))
     # --validate no longer refuses a register that mentions unmapped orgs: they run, at the floor.
     work = tempfile.mkdtemp(prefix='authority-floor-')
     path = os.path.join(work, 'central.json')
@@ -335,6 +342,80 @@ def main():
     check(RETIRED not in src, 'A11: the resolver still carries the %s refusal' % RETIRED)
     notice_vals = (((tax.get('namespaces') or {}).get('policy_notice') or {}).get('values') or {})
     check(NOTICE in notice_vals, 'A11: %s is not a registered policy_notice value' % NOTICE)
+
+    # ---- A12 no enterprise entry: an unmapped org runs at the STRICTEST registered org (KDEC-022) --
+    # Owner, 2026-10-23: "Yes you should get the strictest from the orgs."
+    def org_notice(r):
+        return [n for n in r.get('notices') or [] if n.get('code') == NOTICE_ORG]
+
+    acme_walk = entry('acme-walk', {'org': 'acme'}, rung='walk')
+    beta_run = entry('beta-run', {'org': 'beta'}, rung='run')
+    for label, doc in (('no orgs map', central([acme_walk, beta_run], orgs=None)),
+                       ('an orgs map, no enterprise entry', central([acme_walk, beta_run],
+                                                                    orgs={'acme': 'acme-group', 'beta': 'beta-group'}))):
+        if doc.get('orgs') is None:
+            del doc['orgs']
+        for env in ('prod', 'dev', ''):
+            r = res(doc, repository='globex/thing', environment=env)
+            n = org_notice(r)
+            check(r['state'] == rl.POLICY_RESOLVED and r.get('rung_effective') == 'run' and r['chain'] == ['beta-run'],
+                  'A12 (%s, env %r): the unmapped org did not run at the strictest org (beta, run): %r %r %r'
+                  % (label, env, r['state'], r.get('rung_effective'), r.get('chain')))
+            check(bool(n) and n[0].get('org') == 'globex' and n[0].get('floor_org') == 'beta'
+                  and n[0].get('rung') == 'run' and 'globex' in (n[0].get('why') or ''),
+                  'A12 (%s, env %r): no named %s notice: %r' % (label, env, NOTICE_ORG, r.get('notices')))
+            check(not notice_of(r), 'A12 (%s): the enterprise-floor notice fired with no enterprise entry' % label)
+            check(any(x.startswith('policy_notices=') and NOTICE_ORG in x and 'beta' in x
+                      for x in pr.github_output_lines(r)),
+                  'A12 (%s): the notice is not in the GitHub outputs (policy_notices)' % label)
+            check(any(NOTICE_ORG in x for x in r.get('notes') or []), 'A12 (%s): the notice is not in the notes' % label)
+    # Tier by tier: acme is walk everywhere, beta is run only at uat/prod (crawl below). At dev the
+    # strictest is acme (walk), at prod beta (run) -- the same comparison KDEC-020 makes per tier.
+    beta_tiers = [entry('beta-prod', {'org': 'beta', 'environment_tier': 'prod'}, rung='run'),
+                  entry('beta-uat', {'org': 'beta', 'environment_tier': 'uat'}, rung='run')]
+    no_map = central([acme_walk] + beta_tiers)
+    del no_map['orgs']
+    for env, rung, floor_org in (('dev', 'walk', 'acme'), ('prod', 'run', 'beta')):
+        r = res(no_map, repository='globex/thing', environment=env)
+        n = org_notice(r)
+        check(r['state'] == rl.POLICY_RESOLVED and r.get('rung_effective') == rung and n
+              and n[0].get('floor_org') == floor_org,
+              'A12: at %s the unmapped org did not take the strictest org for that tier (%s, %s): %r %r %r'
+              % (env, floor_org, rung, r['state'], r.get('rung_effective'), r.get('notices')))
+    # It may tighten above that floor (its own repository file), never go below it.
+    repo_run = {'schema_version': 2, 'register_id': 'r', 'sign_off': central([])['sign_off'],
+                'policies': [entry('own', {}, rung='run')]}
+    repo_crawl = {'schema_version': 2, 'register_id': 'r', 'sign_off': central([])['sign_off'],
+                  'policies': [entry('own', {}, rung='crawl')]}
+    walk_only = central([acme_walk])
+    del walk_only['orgs']
+    r = res(walk_only, repo_run, repository='globex/thing')
+    check(r['state'] == rl.POLICY_RESOLVED and r['rung_effective'] == 'run',
+          'A12: the unmapped org\'s own file tightening above the strictest org was not honoured: %r %r'
+          % (r['state'], r.get('rung_effective')))
+    r = res(walk_only, repo_crawl, repository='globex/thing')
+    check(r['state'] == 'REPOSITORY_FILE_SOFTENING' and r['rung_effective'] == 'walk',
+          'A12: the unmapped org\'s own file going below the strictest org resolved %r (rung %r)'
+          % (r['state'], r.get('rung_effective')))
+    # The floor org's per-finding exceptions are its own: they never travel to the unmapped org.
+    sx_beta = entry('beta-run', {'org': 'beta'}, rung='run', secret_exceptions=[sx])
+    sx_doc = central([sx_beta])
+    del sx_doc['orgs']
+    r = res(sx_doc, repository='globex/thing')
+    check(r['state'] == rl.POLICY_RESOLVED and r['rung_effective'] == 'run' and not r.get('secret_exceptions'),
+          'A12: the floor org\'s secret exception travelled to the unmapped org: %r' % r.get('secret_exceptions'))
+    # A registered org keeps its own entries and carries no notice.
+    r = res(no_map, repository='acme/x', environment='prod')
+    check(r['state'] == rl.POLICY_RESOLVED and r['rung_effective'] == 'walk' and not org_notice(r),
+          'A12: a registered org was moved to the strictest org or noticed: %r %r %r'
+          % (r['state'], r.get('rung_effective'), r.get('notices')))
+    # With an enterprise entry, KDEC-020 still governs (the enterprise floor, its own notice).
+    r = res(central([ent_walk, entry('beta-run', {'org': 'beta'}, rung='run')],
+                    orgs={'acme': 'acme-group', 'beta': 'acme-group'}), repository='globex/thing')
+    check(r['rung_effective'] == 'walk' and notice_of(r) and not org_notice(r),
+          'A12: with an enterprise entry the unmapped org did not stay at the enterprise floor (KDEC-020): %r %r'
+          % (r.get('rung_effective'), r.get('notices')))
+    check(NOTICE_ORG in notice_vals, 'A12: %s is not a registered policy_notice value' % NOTICE_ORG)
 
     if fails:
         for f in fails:
