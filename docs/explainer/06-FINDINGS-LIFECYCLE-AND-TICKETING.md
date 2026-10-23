@@ -17,7 +17,9 @@ any of those changes on a tool upgrade and would orphan every approval keyed on 
   `prove_subject_covers_roster.py`).
 - **Refuse, never degrade**: a finding that cannot be identified is `UNFINGERPRINTABLE` with a reason —
   never an empty string that two findings could share (`prove_identity_durability.py`).
-- **Secrets are outside the baseline**: they block at every rung and are never grandfathered.
+- **Secrets are outside the baseline**: they block at every rung and are never grandfathered. The only
+  way past one found secret is a ticketed, finding-scoped exception in the policy register (part 05),
+  which is a dated decision, not a baseline entry.
 
 ## 2. The baseline ledger (BUILT; read and write paths wired; proven locally, no hosted run)
 
@@ -97,6 +99,14 @@ with zero writes, idempotent re-runs, a successor for a closed ticket, reopen, a
 reported ambiguous) by `tests/live_ticketing_run.py`; **Azure DevOps is proven against stand-ins
 only**; and the armed workflow `reusable-ticket-reconcile.yml` has **no hosted run** and no starter
 template calls it yet. Moving to a consumer's tracker changes configuration values only (test B-1).
+
+**Exceptions come back onto their tickets** (KDEC-018, lane L-FX; VERIFIED locally:
+`prove_exception_due.py`). A ticket reference is required for a secret exception but never authorises
+it: only the merged register entry does. A weekly workflow (`reusable-exception-due.yml`, called by
+`templates/exception-due.yml`; `scripts/exception_due.py`) lists every exception due within 14 days or
+expired, with its history, and raises it on its Jira ticket (reopen, comment, or one new issue),
+saying it was excepted before and is now due. Jira only; without its credentials it reports
+`NOT_CONFIGURED`, and an unreadable register is never "nothing due".
 
 **Updates never erase human text** (completion ledger T-02, fixed in `795d13c`; VERIFIED at `078ef90`:
 `prove_ticket_backends.py`). An update reads the description in full, replaces only the kit's

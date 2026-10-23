@@ -133,7 +133,8 @@ jobs:
       paths: tests/consumer-fixture/full/php
       soft_fail_sast: false
       enable_sbom: false
-      enable_malicious_pkg_scan: false
+      # enable_malicious_pkg_scan stays at its default (true): turning it off is below crawl and
+      # refused (KDEC-020), which would turn this leg's crawl verdict into BLOCKED.
     secrets: inherit
 
   # THE PHP LEG'S VERDICT, KEPT AS EVIDENCE (lane L-S). A job conclusion cannot say WHY the gate

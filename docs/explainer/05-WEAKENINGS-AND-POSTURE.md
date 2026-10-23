@@ -9,7 +9,7 @@ fails the build if an input exists without a classification, if an input that de
 softening is labelled inert, if any of the nine record rows is missing, or if any of the five routing
 outcomes is unreachable.
 
-## The flagship's inputs (VERIFIED at `078ef90`: 26 inputs, all enumerated)
+## The flagship's inputs (VERIFIED at `19b5e1d`: 27 inputs, all enumerated)
 
 **Defaults are the baseline (KDEC-008, OD-7, applied in `127438d`):** `soft_fail_sast: false`, `language:
 auto`. A caller who changes nothing gets every control at full strength and `PROCEED` on a clean run.
@@ -27,7 +27,7 @@ The new `environment` input names the baseline-ledger environment; empty is TARG
 | `semgrep_config` | SCOPE_NARROWED | `p/default p/owasp-top-ten p/xss` | sast-semgrep | |
 | `fail_on_severity` | SEVERITY_RAISED | `CRITICAL,HIGH` | deps-scan, image vulnerabilities | |
 | `enable_sbom` | CONTROL_DISABLED | `true` | sbom | |
-| `enable_malicious_pkg_scan` | CONTROL_DISABLED | `true` | malicious-deps | |
+| `enable_malicious_pkg_scan` | CONTROL_DISABLED | `true` | malicious-deps | not a recordable weakening: part of the crawl floor, so `false` is refused, `CHERRY_PICK_BELOW_FLOOR` (`BLOCKED`, KDEC-020) |
 | `advisory_mode` | GATE_SOFTENED | `false` | the gate | never softens secrets or toolchain failures |
 | `scan_git_history` | DEPTH_REDUCED | `false`, or deeper | secret-scan | turning it ON is never a weakening |
 | `soft_fail_sast` | GATE_SOFTENED | `false` | SAST jobs | |
@@ -91,9 +91,11 @@ entries per org, team, product, repository and environment tier, in the kit's ce
 repository's own file on its protected default branch, applied most specific last
 (`kit default < enterprise < org < org+team < org+product < org+team+product < repository`,
 tier-qualified above untiered; the central `orgs` map places each org in an enterprise). Nothing
-registered is the kit default: crawl, only secrets block. **Nothing is ever below crawl** (KDEC-018):
+registered is the kit default: crawl, where a found secret, a known-malicious package and a scan the
+kit could not run or trust block, and nothing else does. **Nothing is ever below crawl** (KDEC-018):
 every weakening input still blocks a secret and a scan the kit could not run or trust, and the
-secret scan always covers the repository root (`prove_crawl_floor.py`).
+secret scan always covers the repository root (`prove_crawl_floor.py`). The malicious-package
+scan is in the floor too: disabling it is refused (KDEC-020).
 
 - **Every entry is a decision**: `authority` (a named person), `reason`, `decided_on`, `expires`, and
   for a uat/prod change the environment's `environment_reviewers` — the same shape as the weakening
@@ -103,8 +105,11 @@ secret scan always covers the repository root (`prove_crawl_floor.py`).
   softening left — the authority (enterprise/org) softening the kit default deploy approval — joins
   this record as an attributed weakening row (`WEAKENING_ATTRIBUTED`) and the deploy never honours
   it. The repository's own file may only tighten. Secrets never soften as a class; nothing is `PROCEED`.
-- **No run outside the enterprise** (KDEC-019): once the `orgs` map defines an enterprise, an org it
-  does not name is refused, `ORG_NOT_UNDER_ENTERPRISE` (`BLOCKED`), even if it ran before the map.
+- **Unmapped orgs run at the enterprise floor** (KDEC-020, superseding KDEC-019 item 1): once the
+  `orgs` map defines an enterprise, an org it does not name runs at that enterprise's floor (with
+  several, the strictest at each tier), may only tighten above it (`POLICY_BELOW_AUTHORITY_FLOOR`),
+  and is named in the notice `ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR` (`policy_notices`, a warning,
+  the gate's policy summary). `ORG_NOT_UNDER_ENTERPRISE` is retired.
 - **Every exception carries its history** (KDEC-018): `renews` lists its prior grants; the gate
   summary, run record and deploy show "first exception" or "previously excepted N time(s) since …,
   tickets …, approvers …"; more renewals than `numbers.max_exception_renewals` (default 2, 0..5) is
@@ -132,7 +137,8 @@ VERIFIED locally (not hosted): `prove_policy_registration.py`, `prove_gate_polic
 reusables carry the same record and expose the same nine posture outputs (the deploys' routing is
 proven by `tests/prove_deploy_posture.py`). `reusable-ticket-reconcile.yml` records its inputs but
 exposes only `routing_result` and `controls_unavailable` as workflow outputs. `check_weakening_record.py`
-reports 10 workflows RECORDED at `078ef90`, and one exempt (below). `reusable-propose-ledger.yml`'s
+reports 12 kit workflows RECORDED at `19b5e1d` (the exception-due, rollback-sequence, ticket-reference
+and Dependabot-triage reusables among them), and one exempt (below). `reusable-propose-ledger.yml`'s
 inputs `establish-approver-role` and `ticket-ledger-artifact` are classified inert: neither softens a
 control (part 06).
 
@@ -145,7 +151,6 @@ reads as reversal **UNAVAILABLE**, never available (`71a3d63`), so the deploy's 
 `BLOCKED` (`078ef90`, part 03). In the deploy reusables the four `weakening_*` fields are also the **KDEC-014 exception**:
 at uat/prod a proven `VERSION_GAP` is accepted only when `weakening_authority` names the accepter,
 `weakening_reason` says why and `weakening_expires` has not passed (part 03, part 11). Only the OIDC
-verifier (`verify-azure-oidc.yml`) is still **exempt with a dated expiry (2026-10-31)**: its inputs
-are probe expectations, not control settings; the exemption is printed on every run. (Its stated
-closing condition — the two Azure deferrals closing — was met on 2026-10-15, and its reason still
-says the probe was never dispatched; the exemption is owed a fresh decision.)
+verifier (`verify-azure-oidc.yml`) is still **exempt with a dated expiry (2026-12-31)**: its inputs
+are probe expectations, not control settings; the exemption is printed on every run. It closes when
+the verifier emits a posture record over those inputs, built with ledger L103.

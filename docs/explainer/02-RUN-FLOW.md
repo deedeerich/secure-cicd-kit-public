@@ -99,7 +99,8 @@ secrets over with their count, and the gate **blocks them at every tier** unless
 excepts each one — one finding by its fingerprint, a ticket, an explanation, a named approver, an
 expiry, and a renewal history under the cap (part 03; `docs/adoption/POLICY_REGISTER.md`). The secret
 scan always covers the **repository root**: `paths` narrows the other scanners, never it (KDEC-018,
-crawl is the floor). A separate weekly workflow, `reusable-exception-due.yml`, raises every exception
+crawl is the floor). The malicious-package scan is part of that floor too (KDEC-020): a run given
+`enable_malicious_pkg_scan: false` is refused, `CHERRY_PICK_BELOW_FLOOR` (`BLOCKED`). A separate weekly workflow, `reusable-exception-due.yml`, raises every exception
 coming due on its Jira ticket (part 05). Only the gate holds the policy, so only the gate
 can honour an exception. An image's secrets step and a known-malicious package, which no register
 excepts, still fail their own job. `advisory_mode` and

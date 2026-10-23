@@ -32,12 +32,14 @@ WHAT IT PROVES (against scripts/policy_registration.py, the real resolver)
         org maps to, an `orgs` map in a repository file, are refused (REGISTRATION_UNAVAILABLE)
     A9  --validate reports a below-floor entry for every repository and org it would reach
     A10 POLICY_BELOW_AUTHORITY_FLOOR is a registered policy_resolution value routing BLOCKED
-    A11 (KDEC-019 item 1) when the central register defines an enterprise (a non-empty `orgs` map),
-        a run in an org the map does not name is REFUSED -- ORG_NOT_UNDER_ENTERPRISE, BLOCKED, the
-        org named -- at every tier and on a pull request, even though it ran before the map
-        existed; a mapped org still runs; with no enterprise defined (no map, or an empty one)
-        nothing changes; --validate names every org the register mentions that the map leaves
-        out; the value is registered and routes BLOCKED
+    A11 (KDEC-020, correcting KDEC-019 item 1) an org the central `orgs` map does not name RUNS: it
+        is rolled in at the enterprise floor -- the one enterprise's rung, or with several the
+        STRICTEST of them at each tier (never lower) -- with a named, visible notice
+        ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR (enterprise, rung, "add it to the orgs map") in the
+        resolution's notices, notes and GitHub outputs; never a refusal, never silent. Its own org
+        entry that goes LOWER is POLICY_BELOW_AUTHORITY_FLOOR; one that tightens is honoured. A
+        mapped org carries no notice; with no enterprise defined nothing changes; --validate no
+        longer refuses an unmapped org; ORG_NOT_UNDER_ENTERPRISE is no longer emitted anywhere
 
 EXIT  0 proven   1 a rule failed (named)   2 could not be checked (UNKNOWN, never PASS)
 """
@@ -53,7 +55,8 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, 'scripts'))
 TODAY = '2026-10-22'
 FLOOR = 'POLICY_BELOW_AUTHORITY_FLOOR'
-UNMAPPED = 'ORG_NOT_UNDER_ENTERPRISE'
+RETIRED = 'ORG_NOT_UNDER_ENTERPRISE'
+NOTICE = 'ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR'
 
 
 def decision(**over):
@@ -108,13 +111,11 @@ def main():
     r = res(central([ent_walk]), repository='acme-labs/tool')
     check(r['state'] == rl.POLICY_RESOLVED and r['rung_effective'] == 'walk',
           'A1: an enterprise entry did not bind a second org mapped to it: %r %r' % (r['state'], r.get('why')))
-    # An org the map does not name is outside the enterprise: KDEC-019 refuses it (A11), and the
-    # enterprise entry never reaches it either way.
+    # An org the map does not name is rolled in at the enterprise floor (KDEC-020, A11).
     r = res(central([ent_walk]), repository='globex/thing')
-    check('ent' not in (r.get('chain') or []),
-          'A1: an enterprise entry reached an org not mapped to it: %r' % r.get('chain'))
-    check((r.get('scope') or {}).get('enterprise') in (None, ''),
-          'A1: an unmapped org was given an enterprise: %r' % r.get('scope'))
+    check(r['state'] == rl.POLICY_RESOLVED and 'ent' in (r.get('chain') or []) and r.get('rung_effective') == 'walk',
+          'A1: an unmapped org was not rolled in at the enterprise floor: %r %r %r'
+          % (r['state'], r.get('chain'), r.get('why')))
     r = res(central([ent_walk]))
     check((r.get('scope') or {}).get('enterprise') == 'acme-group', 'A1: the resolved scope does not name '
           'the enterprise: %r' % r.get('scope'))
@@ -246,34 +247,72 @@ def main():
                         None, 'acme/ledger-api', 'prod', 'push', {}, TODAY).get('routes_to')
     check(routes == 'BLOCKED', 'A10: %s does not route BLOCKED (%r)' % (FLOOR, routes))
 
-    # ---- A11 an unmapped org does not run under an enterprise (KDEC-019 item 1) ----------------------
-    # Owner, 2026-10-22: "No run with the enterprise floor even if unmapped previously."
-    for why, doc in (('an enterprise entry', central([ent_walk])),
-                     ('an orgs map and no enterprise entry', central([org_walk])),
-                     ('an orgs map and no entries at all', central([]))):
-        for env in ('prod', 'dev'):
-            r = res(doc, repository='globex/thing', environment=env)
-            check(refused(r, UNMAPPED), 'A11: with %s, an org the orgs map does not name resolved %r / %r at %s'
-                  % (why, r['state'], r.get('routes_to'), env))
-            check('globex' in (r.get('why') or ''), 'A11: the refusal does not name the org: %r' % r.get('why'))
-        r = res(doc, repository='globex/thing', environment='')
-        check(refused(r, UNMAPPED), 'A11: with %s, a pull request in an unmapped org resolved %r' % (why, r['state']))
-    # Mapped orgs still run, whatever the case of the name.
-    r = res(central([ent_walk]), repository='ACME/ledger-api')
-    check(r['state'] == rl.POLICY_RESOLVED and r['rung_effective'] == 'walk',
-          'A11: a mapped org (different case) was refused: %r %r' % (r['state'], r.get('why')))
-    # No enterprise defined at all: unchanged -- an org entry, or nothing, governs as before.
+    # ---- A11 an unmapped org runs at the enterprise floor (KDEC-020, correcting KDEC-019 item 1) ---
+    # Owner, 2026-10-22: "No run with the enterprise floor even if unmapped previously" -- meaning
+    # "No -- RUN with the enterprise floor"; 2026-10-23: "I thought we agreed unmapped orgs would be
+    # rolled in at whatever level the enterprise or other orgs are at".
+    def notice_of(r):
+        return [n for n in r.get('notices') or [] if n.get('code') == NOTICE]
+
+    for env in ('prod', 'dev', ''):
+        r = res(central([ent_walk]), repository='globex/thing', environment=env)
+        check(r['state'] == rl.POLICY_RESOLVED and r.get('rung_effective') == 'walk' and 'ent' in r['chain'],
+              'A11: an unmapped org did not run at the single enterprise\'s walk (env %r): %r %r %r'
+              % (env, r['state'], r.get('rung_effective'), r.get('why')))
+        n = notice_of(r)
+        check(bool(n) and n[0].get('enterprise') == 'acme-group' and n[0].get('org') == 'globex'
+              and n[0].get('rung') == 'walk' and 'add it to the orgs map' in (n[0].get('why') or ''),
+              'A11: no named notice for the unmapped org (env %r): %r' % (env, r.get('notices')))
+        check(any(NOTICE in x for x in r.get('notes') or []), 'A11: the notice is not in the notes: %r' % r.get('notes'))
+        lines = pr.github_output_lines(r)
+        check(any(x.startswith('policy_notices=') and NOTICE in x and 'acme-group' in x for x in lines),
+              'A11: the notice is not in the GitHub outputs (policy_notices)')
+        check((r.get('scope') or {}).get('enterprise') == 'acme-group', 'A11: the scope does not name the '
+              'enterprise used: %r' % r.get('scope'))
+    # Two enterprises, at walk and at run: the unmapped org gets the STRICTER, at every tier.
+    two_ent = [entry('e-walk', {'enterprise': 'acme-group'}, rung='walk'),
+               entry('e-run', {'enterprise': 'beta-group'}, rung='run')]
+    two_orgs = {'acme': 'acme-group', 'beta': 'beta-group'}
+    for env in ('prod', 'dev', ''):
+        r = res(central(two_ent, orgs=two_orgs), repository='globex/thing', environment=env)
+        check(r['state'] == rl.POLICY_RESOLVED and r.get('rung_effective') == 'run' and r['chain'] == ['e-run'],
+              'A11: with enterprises at walk and run the unmapped org did not get run (env %r): %r %r %r'
+              % (env, r['state'], r.get('rung_effective'), r.get('chain')))
+        n = notice_of(r)
+        check(bool(n) and n[0].get('enterprise') == 'beta-group',
+              'A11: the notice does not name the stricter enterprise: %r' % r.get('notices'))
+    # Mapped orgs keep their own enterprise and carry no notice, whatever the case of the name.
+    r = res(central(two_ent, orgs=two_orgs), repository='ACME/x')
+    check(r['state'] == rl.POLICY_RESOLVED and r['rung_effective'] == 'walk' and not notice_of(r),
+          'A11: a mapped org was moved or noticed: %r %r %r' % (r['state'], r.get('rung_effective'), r.get('notices')))
+    # The unmapped org's own entry may tighten above the floor, never go below it.
+    r = res(central([ent_walk, entry('globex-crawl', {'org': 'globex'}, rung='crawl')]), repository='globex/thing')
+    check(refused(r, FLOOR) and r.get('rung_effective') == 'walk',
+          'A11: an unmapped org\'s own entry below the enterprise floor resolved %r / %r (rung %r)'
+          % (r['state'], r.get('routes_to'), r.get('rung_effective')))
+    r = res(central(two_ent + [entry('globex-walk', {'org': 'globex'}, rung='walk')], orgs=two_orgs),
+            repository='globex/thing')
+    check(refused(r, FLOOR) and r.get('rung_effective') == 'run',
+          'A11: an unmapped org\'s entry at walk beneath the stricter enterprise (run) resolved %r (rung %r)'
+          % (r['state'], r.get('rung_effective')))
+    r = res(central([ent_walk, entry('globex-run', {'org': 'globex'}, rung='run')]), repository='globex/thing')
+    check(r['state'] == rl.POLICY_RESOLVED and r['rung_effective'] == 'run' and r['chain'] == ['ent', 'globex-run'],
+          'A11: an unmapped org\'s own tightening was not honoured: %r %r %r'
+          % (r['state'], r.get('rung_effective'), r.get('chain')))
+    # An orgs map with no enterprise entry: the enterprise floor is the kit default (crawl), noticed.
+    r = res(central([]), repository='globex/thing')
+    check(r['state'] == rl.POLICY_RESOLVED and r['rung_effective'] == 'crawl' and notice_of(r),
+          'A11: an orgs map with no enterprise entry did not run the unmapped org at crawl with a notice: %r %r'
+          % (r['state'], r.get('notices')))
+    # No enterprise defined at all: unchanged -- the kit default, and no notice.
     no_ent = central([org_walk])
     del no_ent['orgs']
-    r = res(no_ent, repository='globex/thing')
-    check(r['state'] == rl.POLICY_RESOLVED and r['policy_source'] == 'KIT_DEFAULT',
-          'A11: with no enterprise defined, an unnamed org no longer resolved to the kit default: %r' % r['state'])
-    r = res(dict(no_ent, orgs={}), repository='globex/thing')
-    check(r['state'] == rl.POLICY_RESOLVED, 'A11: an EMPTY orgs map defines no enterprise, yet %r' % r['state'])
-    r = res(None, repository='globex/thing')
-    check(r['state'] == rl.POLICY_RESOLVED, 'A11: no register at all refused an org: %r' % r['state'])
-    # --validate names every org the register mentions (an entry, the repository map) that the
-    # orgs map leaves outside the enterprise -- before any run meets it.
+    for why, doc in (('no orgs map', no_ent), ('an empty orgs map', dict(no_ent, orgs={})), ('no register', None)):
+        r = res(doc, repository='globex/thing')
+        check(r['state'] == rl.POLICY_RESOLVED and r['policy_source'] == 'KIT_DEFAULT' and not notice_of(r),
+              'A11: with %s an unnamed org did not resolve to the kit default without a notice: %r %r'
+              % (why, r['state'], r.get('notices')))
+    # --validate no longer refuses a register that mentions unmapped orgs: they run, at the floor.
     work = tempfile.mkdtemp(prefix='authority-floor-')
     path = os.path.join(work, 'central.json')
     try:
@@ -284,24 +323,18 @@ def main():
             fh.write(json.dumps(doc))
         p = subprocess.run([sys.executable, os.path.join(ROOT, 'scripts', 'policy_registration.py'), '--validate',
                             path, '--origin', 'central', '--today', TODAY], capture_output=True, text=True)
-        out = p.stdout
-        check(p.returncode == 1 and UNMAPPED in out and 'globex' in out and 'initech' in out,
-              'A11: --validate did not name the unmapped orgs globex and initech: rc %d %s' % (p.returncode, out[-400:]))
-        with io.open(path, 'w', encoding='utf-8') as fh:
-            fh.write(json.dumps(central([org_walk])))
-        p = subprocess.run([sys.executable, os.path.join(ROOT, 'scripts', 'policy_registration.py'), '--validate',
-                            path, '--origin', 'central', '--today', TODAY], capture_output=True, text=True)
-        check(p.returncode == 0 and UNMAPPED not in p.stdout,
-              'A11: --validate refused a register whose every org is mapped: rc %d %s' % (p.returncode, p.stdout[-300:]))
+        check(p.returncode == 0 and RETIRED not in p.stdout,
+              'A11: --validate refused a register mentioning unmapped orgs: rc %d %s' % (p.returncode, p.stdout[-400:]))
     finally:
         try:
             os.remove(path)
             os.rmdir(work)
         except OSError:
             pass
-    check(UNMAPPED in vals, 'A11: %s is not a registered policy_resolution value' % UNMAPPED)
-    routes = res(central([]), repository='globex/thing').get('routes_to')
-    check(routes == 'BLOCKED', 'A11: %s does not route BLOCKED (%r)' % (UNMAPPED, routes))
+    src = io.open(os.path.join(ROOT, 'scripts', 'policy_registration.py'), encoding='utf-8').read()
+    check(RETIRED not in src, 'A11: the resolver still carries the %s refusal' % RETIRED)
+    notice_vals = (((tax.get('namespaces') or {}).get('policy_notice') or {}).get('values') or {})
+    check(NOTICE in notice_vals, 'A11: %s is not a registered policy_notice value' % NOTICE)
 
     if fails:
         for f in fails:
@@ -312,7 +345,8 @@ def main():
           'repository, a tier beneath a tier-less entry) only tightens, and leaving anything weaker is '
           'POLICY_BELOW_AUTHORITY_FLOOR (BLOCKED) even with an unexpired decision; only the authority may '
           'soften the kit default deploy approval; crawl is absolute; per-finding exceptions are unaffected; '
-          'once an enterprise is defined an org outside the orgs map is ORG_NOT_UNDER_ENTERPRISE (BLOCKED).')
+          'an org outside the orgs map runs at the strictest enterprise floor with a named notice '
+          '(ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR) and may only tighten above it.')
     return 0
 
 

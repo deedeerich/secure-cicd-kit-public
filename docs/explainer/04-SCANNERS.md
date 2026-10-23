@@ -18,7 +18,7 @@ State at trunk `078ef90`: every row's count and enforce path is proven locally w
 
 | job | tool(s) | runs when | blocks on | mode rule | proof / state |
 |---|---|---|---|---|---|
-| `secret-scan` | gitleaks 8.21.2 (pinned, kit rules for cloud/identity credential classes), detect-secrets | always | any gitleaks finding; an empty scope or zero commits scanned (`COLLECTION_FAILED`); a detect-secrets report that cannot be read | **never softened** | `prove_secrets_always_block.py`, `prove_secret_denominator.py` (VERIFIED) |
+| `secret-scan` | gitleaks 8.21.2 (pinned, kit rules for cloud/identity credential classes), detect-secrets | always | any gitleaks finding; an empty scope or zero commits scanned (`COLLECTION_FAILED`); a detect-secrets report that cannot be read | **never softened**; one found secret passes only under a ticketed exception for that finding (part 05) | `prove_secrets_always_block.py`, `prove_secret_denominator.py` (VERIFIED) |
 | `code-quality` | ruff + mypy (python), ESLint (node) | discovery found python **or** node | ruff / ESLint violations, only with `enforce_lint: true` | lint is not a security control; off by default; advisory never blocks | `prove_code_quality_enforces.py` (VERIFIED) |
 | `sast-semgrep` | Semgrep, rulesets from `semgrep_config`, run with `--strict`; **plus `p/php` whenever discovery finds PHP** (a floor the caller's rulesets cannot narrow away) | always | ERROR-level findings by **effective** SARIF level; a file it cannot parse (exit 3 under `--strict`) is `COLLECTION_FAILED`; PHP in scope that Semgrep examined none of (its own `paths.scanned`), or with no PHP rule loaded, is `COLLECTION_FAILED` | softened by `soft_fail_sast` / advisory | `prove_sarif_effective_level.py`, `prove_semgrep_rulesets.py`, `prove_semgrep_strict.py`, `prove_semgrep_php.py` (VERIFIED). The job runs the Semgrep **1.178.0 image, pinned by digest** (lane L-SG), the release the C# and Java jobs install; the local proofs fail if the Semgrep they run is not that release. Exit 3 under `--strict` measured on 1.178.0, in this image too (locally, 2026-10-21); a hosted run of the job is owed |
 | `sast-bandit` | Bandit | python found | findings; an unparseable file is COLLECTION_FAILED | softened | `prove_bandit_enforces.py` (VERIFIED) |
@@ -29,7 +29,7 @@ State at trunk `078ef90`: every row's count and enforce path is proven locally w
 | `codeql` | GitHub CodeQL, `codeql_queries` suite (default `security-extended`), up to six language legs | a CodeQL language found | findings | softened | **proven at Level 2** (a separate private repository calling by `owner/repo@sha`, runs 38817782084, 38820564939: 5 Python and 4 JavaScript results read by the gate; absent languages NOT_APPLICABLE). On a private unlicensed repository the analysis runs and only publication is refused; `resolve` still caps the job PARTIAL on the platform pre-flight (KNOWN_DEFECTS D-10). An autobuild that did not succeed now reads `PARTIAL`, not `COMPLETE` (`prove_codeql_build_outcome.py`, VERIFIED) — in the summary and an annotation only: the gate reads the job's result, so it does not reach the verdict |
 | `deps-scan` | Trivy filesystem (dependencies) | always | findings at `fail_on_severity` (default CRITICAL,HIGH); every severity stays in the SARIF | softened by advisory | `prove_trivy_threshold.py`, `prove_deps_scan_composer.py` (VERIFIED; a vulnerable Composer lock blocks) |
 | `iac-scan` | Checkov, Trivy IaC | IaC found (`iac_mode: auto`), or `required` | ERROR-level by effective level | softened | `prove_sarif_effective_level.py` covers the count (VERIFIED) |
-| `malicious-deps` | OSV-Scanner (pinned, checksum-verified) | `enable_malicious_pkg_scan` (default true) | known-malicious `MAL-` advisories (ids and aliases), **in every mode**, like secrets | never softened | `prove_malicious_deps_enforces.py` (VERIFIED). Malware published only under a GHSA id is not seen by the MAL- rule |
+| `malicious-deps` | OSV-Scanner (pinned, checksum-verified) | always: part of the crawl floor; `enable_malicious_pkg_scan` cannot be false (refused, `CHERRY_PICK_BELOW_FLOOR`, KDEC-020) | known-malicious `MAL-` advisories (ids and aliases): routed with the secret class at the gate, **blocking in every mode** | never softened | `prove_malicious_deps_enforces.py` (VERIFIED). Malware published only under a GHSA id is not seen by the MAL- rule |
 | `sbom` | Syft (CycloneDX), licence check | `enable_sbom` (default true) | a denied licence (token match, counted once); no SBOM = failure | — | `prove_sbom_licence_verdict.py` (VERIFIED) |
 | `image-scan` | Trivy image: **two steps** — vulnerabilities, then secrets | `image_ref` supplied | CVEs at `fail_on_severity` (advisory softens); **any secret in the image, every mode** | secrets never softened | `prove_image_scan_enforces.py`, `prove_image_scan_retains.py` (VERIFIED; both SARIFs redacted and retained) |
 
@@ -90,12 +90,15 @@ with `p/php` over the three seeded PHP files, detected only when all three are r
 (measured locally on that image; the hosted run is owed). A push no longer cancels a dispatched or
 scheduled run of this workflow or of the corpus probe: pushes cancelled dispatch runs 39681385412 and
 39688249062, so the concurrency group now splits by event and only push runs supersede each other
-(M8, VERIFIED locally).
+(M8, VERIFIED locally). A push runs it only on `main` (lane L-DOC, M12): this private repository pays
+for every Actions minute, so a branch is validated by the free public mirror's run on the release
+candidate, or here by dispatch; the weekly schedule is unchanged.
 
 ## Pinning
 
 Every tool is installed at a pinned version, and where a release publishes checksums the install
 verifies them. `releases/latest` and `install.sh` from a moving branch are refused (L84, in progress for
 the remaining installs). The Semgrep container is pinned by image digest, with its release named
-beside it (lane L-SG). Actions are referenced by tag today; resolving them to commit SHAs needs a token
-and the live API (L82, part 09).
+beside it (lane L-SG). Every remote action is referenced by a full commit SHA with its release named
+beside it (L82, `4dfd858`; VERIFIED at `19b5e1d`: `tests/check_action_pins.py`, 182 references, 0
+refused). Two pip installs (detect-secrets, ruff/mypy) are still unpinned (L84).

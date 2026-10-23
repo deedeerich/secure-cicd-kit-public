@@ -42,11 +42,15 @@ PRECEDENCE (most specific wins; deterministic; ties are conflicts)
     and, at each level, the scope without environment_tier < the same scope with it.
     The ENTERPRISE of a repository is its org's value in the central `orgs` map ({org: enterprise}).
     An enterprise scope names only `enterprise` (and optionally environment_tier). ONCE THE MAP
-    DEFINES AN ENTERPRISE (it is non-empty), an org it does not name does not run at all:
-    ORG_NOT_UNDER_ENTERPRISE, BLOCKED, even if it ran before the map existed (KDEC-019 item 1,
-    owner 2026-10-22: "No run with the enterprise floor even if unmapped previously"). With no
-    map, or an empty one, nothing changes. --validate names every org the register mentions that
-    the map leaves out.
+    DEFINES AN ENTERPRISE (it is non-empty), an org it does not name STILL RUNS -- rolled in at the
+    enterprise floor (KDEC-020, correcting KDEC-019 item 1; owner 2026-10-23: "I thought we agreed
+    unmapped orgs would be rolled in at whatever level the enterprise or other orgs are at"). With
+    one enterprise defined it is that one; with several, at each tier the STRICTEST of them (never
+    lower; KDEC-018). Its own org/team/product/repository entries may only tighten above it. It is
+    never a refusal and never silent: the resolution carries the notice
+    ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR (the org, the enterprise and rung used, "add it to the orgs
+    map") in `notices`, `notes`, policy_notices and a workflow warning. With no map, or an empty
+    one, nothing changes.
 
 THE AUTHORITY FLOOR (KDEC-018, owner 2026-10-22: "if they say walk everyone is at walk")
 
@@ -74,12 +78,12 @@ WHAT RESOLUTION REFUSES, BY NAME (policy_resolution in assurance-taxonomy.yaml)
                                             expires; a uat/prod departure without the
                                             environment's required reviewers; no sign_off
     CHERRY_PICK_BELOW_FLOOR       BLOCKED   a secret-class control below BLOCKED, or any control
-                                            set to PROCEED (findings must never PASS-wash)
+                                            set to PROCEED (findings must never PASS-wash), or
+                                            the run received an input that switches a crawl-floor
+                                            scan off (enable_malicious_pkg_scan false, KDEC-020)
     REPOSITORY_FILE_SOFTENING     BLOCKED   the repository's own file softened what it inherited
     POLICY_BELOW_AUTHORITY_FLOOR  BLOCKED   a central entry left something weaker than the
                                             authority floor above it (THE AUTHORITY FLOOR)
-    ORG_NOT_UNDER_ENTERPRISE      BLOCKED   an enterprise is defined and the run's org is not in
-                                            the orgs map (KDEC-019)
     CELLS_NOT_MONOTONE           BLOCKED   sandbox <= dev <= test <= uat = prod violated
     POLICY_DECISION_EXPIRED       DECISION_REQUIRED  an applied decision expired; its tightening
                                             stays in force and its softening reverts
@@ -127,8 +131,13 @@ POLICY_DECISION_UNATTRIBUTED = 'POLICY_DECISION_UNATTRIBUTED'
 POLICY_DECISION_EXPIRED = 'POLICY_DECISION_EXPIRED'
 REPOSITORY_FILE_SOFTENING = 'REPOSITORY_FILE_SOFTENING'
 POLICY_BELOW_AUTHORITY_FLOOR = 'POLICY_BELOW_AUTHORITY_FLOOR'
-# An org outside the enterprise once one is defined (KDEC-019 item 1).
-ORG_NOT_UNDER_ENTERPRISE = 'ORG_NOT_UNDER_ENTERPRISE'
+# policy_notice (assurance-taxonomy.yaml): visible, never a refusal. An org the central orgs map does
+# not name ran at the enterprise floor (KDEC-020, correcting KDEC-019 item 1).
+ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR = 'ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR'
+# Run inputs that switch off a scan that is part of the crawl floor (KDEC-020): the input -> the job.
+# Received false, the run is refused CHERRY_PICK_BELOW_FLOOR -- "Secrets + broken pipeline" stays the
+# crawl blocking set; this refuses only the scan NOT RUNNING, not how its findings route.
+FLOOR_SCAN_INPUTS = {'enable_malicious_pkg_scan': 'malicious-deps'}
 # An exception renewed more often than the authority's cap (KDEC-018 item 4; scripts/exception_history.py).
 EXCEPTION_RENEWAL_LIMIT = eh.EXCEPTION_RENEWAL_LIMIT
 # Precedence levels. The AUTHORITY is the enterprise and the org: only they may soften the kit
@@ -144,14 +153,14 @@ ROUTE_OF = {
     rl.POLICY_MODE_SUPPLIED: 'BLOCKED', POLICY_REGISTER_CONFLICT: 'BLOCKED',
     POLICY_DECISION_UNATTRIBUTED: 'BLOCKED', rl.CHERRY_PICK_BELOW_FLOOR: 'BLOCKED',
     REPOSITORY_FILE_SOFTENING: 'BLOCKED', POLICY_BELOW_AUTHORITY_FLOOR: 'BLOCKED',
-    ORG_NOT_UNDER_ENTERPRISE: 'BLOCKED', rl.CELLS_NOT_MONOTONE: 'BLOCKED',
+    rl.CELLS_NOT_MONOTONE: 'BLOCKED',
     rl.REGISTRATION_UNAVAILABLE: 'EVIDENCE_UNTRUSTED', rl.CELL_NOT_REGISTERED: 'EVIDENCE_UNTRUSTED',
     POLICY_DECISION_EXPIRED: 'DECISION_REQUIRED', EXCEPTION_RENEWAL_LIMIT: 'DECISION_REQUIRED',
 }
 # When several refusals apply, the record names the first of these that fired.
 REFUSAL_ORDER = (rl.POLICY_MODE_SUPPLIED, POLICY_REGISTER_CONFLICT, POLICY_DECISION_UNATTRIBUTED,
                  rl.CHERRY_PICK_BELOW_FLOOR, REPOSITORY_FILE_SOFTENING, POLICY_BELOW_AUTHORITY_FLOOR,
-                 ORG_NOT_UNDER_ENTERPRISE, rl.CELLS_NOT_MONOTONE,
+                 rl.CELLS_NOT_MONOTONE,
                  rl.REGISTRATION_UNAVAILABLE, rl.CELL_NOT_REGISTERED, EXCEPTION_RENEWAL_LIMIT,
                  POLICY_DECISION_EXPIRED)
 
@@ -590,10 +599,8 @@ def validate(doc, origin, today):
             if code:
                 problems.append((code, 'entry %r: %s' % (e.get('id'), why)))
     if origin == ORIGIN_CENTRAL:
-        for o in unmapped_orgs(doc):
-            problems.append((ORG_NOT_UNDER_ENTERPRISE, 'org %r appears in this register but not in its orgs map; '
-                             'once an enterprise is defined every run in it is refused (KDEC-019). Name it in '
-                             'the orgs map' % o))
+        # An org the orgs map leaves out is not a problem: it runs at the enterprise floor (KDEC-020),
+        # and every entry it would meet is checked against that floor below.
         # Every mapped repository, and each org (named by an entry or the orgs map) with its
         # unmapped repositories.
         orgs = set(_s((e.get('scope') or {}).get('org')).lower()
@@ -620,27 +627,46 @@ def validate(doc, origin, today):
 
 def enterprise_defined(central):
     """True when the central register places any org in an enterprise (a non-empty `orgs` map; an
-    enterprise entry cannot exist without one). From then on every org must be named (KDEC-019)."""
+    enterprise entry cannot exist without one). From then on an org the map does not name runs at
+    the enterprise floor (KDEC-020)."""
     orgs = (central or {}).get('orgs')
     return isinstance(orgs, dict) and any(_s(v) for v in orgs.values())
 
 
-def unmapped_orgs(doc):
-    """The orgs a central register mentions (an entry's org or repository, the repository map) that
-    its orgs map does not name -- each would be refused at every run once an enterprise is defined."""
-    if not enterprise_defined(doc):
-        return []
-    mapped = set(_s(o).lower() for o in doc['orgs'])
-    seen = set()
-    for e in doc.get('policies') or []:
-        sc = e.get('scope') or {}
-        if _s(sc.get('org')):
-            seen.add(_s(sc['org']).lower())
-        if _s(sc.get('repository')):
-            seen.add(_s(sc['repository']).split('/')[0].lower())
-    for rname in doc.get('repositories') or {}:
-        seen.add(_s(rname).split('/')[0].lower())
-    return sorted(o for o in seen if o and o not in mapped)
+def _floor_identity(central, ident, tier, today):
+    """KDEC-020: an org the orgs map does not name is rolled in at the enterprise floor. One
+    enterprise defined -> that one. Several -> at THIS tier the strictest of them, judged on the
+    enterprise entries alone: the higher rung, then the stronger controls, then the stronger deploy
+    approval; a tie goes to the first name, so the choice is deterministic. Never the lower.
+    -> ident, with the enterprise chosen and enterprise_unmapped/enterprise_floor_rung set."""
+    if ident.get('enterprise') or not enterprise_defined(central):
+        return ident
+    ents = sorted(set(_s(v) for v in central['orgs'].values() if _s(v)))
+    only = dict(central, policies=[e for e in central.get('policies') or []
+                                   if (e.get('scope') or {}).get('enterprise')])
+    best, best_key, best_rung = None, None, None
+    for ent in ents:
+        f = _fold(only, None, dict(ident, enterprise=ent), tier, today)
+        eff = _effective(f['rung'], f['overrides'])
+        key = (rl.rung_index(f['rung']), sum(_rank(eff[c]) for c in sorted(eff)),
+               _approval_strength(f['deploy_approval']))
+        if best_key is None or key > best_key:
+            best, best_key, best_rung = ent, key, f['rung']
+    return dict(ident, enterprise=best, enterprise_unmapped=True, enterprise_floor_rung=best_rung,
+                enterprises_defined=ents)
+
+
+def unmapped_notice(ident, tier):
+    """The named, visible notice for an org that ran at the enterprise floor (policy_notice)."""
+    ents = ident.get('enterprises_defined') or []
+    of = (' -- the strictest of the %d enterprises defined (%s)' % (len(ents), ', '.join(ents))
+          if len(ents) > 1 else '')
+    why = ('%s: org %r is not named in the central register\'s orgs map, so it ran at the enterprise floor: '
+           'enterprise %r at rung %s for tier %s%s. Its own entries may only tighten above that floor -- add '
+           'it to the orgs map (KDEC-020)' % (ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR, ident['org'], ident['enterprise'],
+                                             ident.get('enterprise_floor_rung'), tier, of))
+    return {'code': ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR, 'org': ident['org'], 'enterprise': ident['enterprise'],
+            'rung': ident.get('enterprise_floor_rung'), 'tier': tier, 'why': why}
 
 
 def _identity(doc, repository):
@@ -715,6 +741,7 @@ def _approval_strength(da):
 
 def _fold(central, repo_doc, ident, tier, today):
     """Apply every matching entry, least specific first, at one tier."""
+    ident = _floor_identity(central, ident, tier, today)
     chain = _chain(central, repo_doc, ident, tier)
     rung, over, team = 'crawl', {}, None
     da = default_deploy_approval(tier)
@@ -869,9 +896,21 @@ def _blank(state, why, notes=None, defects=None, **extra):
            'unvalidated_human_workflow_paths': [], 'breach_authority': {},
            'tier_behaviour': {'stops_on_evidence_untrusted': True}, 'deploy_approval': {},
            'numbers': {}, 'registration_ref': None, 'max_exception_renewals': None,
-           'secret_exceptions': [], 'secret_exception_refusals': []}
+           'secret_exceptions': [], 'secret_exception_refusals': [], 'notices': []}
     out.update(extra)
     return out
+
+
+def refuse_floor_scan_off(supplied_inputs):
+    """KDEC-020: a received input that switches a crawl-floor scan off is below crawl. -> why or None.
+    The input arrives as toJSON(inputs) (a JSON boolean, read here as text) or as key=value text."""
+    for key, val in (supplied_inputs or {}).items():
+        k = str(key).strip().lower()
+        if k in FLOOR_SCAN_INPUTS and str(val).strip().lower() == 'false':
+            return ('%s is false: the %s scan (OSV MAL- advisories) is part of the crawl floor and cannot be '
+                    'turned off -- a run without it is below crawl (KDEC-020). Remove the input or set it '
+                    'true' % (str(key), FLOOR_SCAN_INPUTS[k]))
+    return None
 
 
 def _refusal_state(codes):
@@ -886,6 +925,9 @@ def resolve(central, repo_doc, repository, environment, event, supplied_inputs, 
     sup = rl.refuse_supplied_policy_mode(dict(supplied_inputs or {}))
     if sup['state'] == rl.POLICY_MODE_SUPPLIED:
         return _blank(sup['state'], sup['why'], defects=[sup['why']])
+    off = refuse_floor_scan_off(supplied_inputs)
+    if off:
+        return _blank(rl.CHERRY_PICK_BELOW_FLOOR, off, defects=[off], environment=_s(environment) or None)
     problems = []
     for origin, doc in ((ORIGIN_CENTRAL, central), (ORIGIN_REPOSITORY, repo_doc)):
         if doc is not None:
@@ -903,14 +945,8 @@ def resolve(central, repo_doc, repository, environment, event, supplied_inputs, 
                 return _blank(POLICY_REGISTER_CONFLICT, why, defects=[why])
             names[n] = t
     ident = _identity(central, repository)
-    # KDEC-019 item 1: once the central register defines an enterprise, an org it does not place
-    # in one is outside the floor, and a run there is refused -- even if it ran before the map.
-    if enterprise_defined(central) and not ident.get('enterprise'):
-        why = ('org %r is not named in the central register\'s orgs map, which defines an enterprise (%s): '
-               'a run outside the enterprise floor is refused. Add the org to the orgs map (KDEC-019)'
-               % (ident['org'], ', '.join(sorted(set(_s(v) for v in central['orgs'].values())))))
-        return _blank(ORG_NOT_UNDER_ENTERPRISE, why, defects=[why], environment=_s(environment) or None,
-                      scope=ident)
+    # KDEC-020 (correcting KDEC-019 item 1): an org the orgs map does not name is NOT refused. Each
+    # tier's fold rolls it in at the enterprise floor (_floor_identity) and the notice says so.
     # A repository-file entry beside a central repository entry for one tier: two registrations.
     if repo_doc:
         mine = set((e.get('scope') or {}).get('environment_tier') for e in repo_doc.get('policies') or [])
@@ -922,7 +958,7 @@ def resolve(central, repo_doc, repository, environment, event, supplied_inputs, 
                 return _blank(POLICY_REGISTER_CONFLICT, why, defects=[why])
     # Which tier.
     env = _s(environment)
-    reach = _merge_reach(central, repo_doc, ident)
+    reach = _merge_reach(central, repo_doc, _floor_identity(central, ident, 'prod', today))
     basis = 'named environment'
     if event in ('pull_request', 'pull_request_target') or not env:
         tier = reach or 'prod'
@@ -955,9 +991,10 @@ def resolve(central, repo_doc, repository, environment, event, supplied_inputs, 
     routes = ROUTE_OF.get(state)
     if routes is None and f['weakenings']:
         routes = rl.PROCEED_WITH_ADVISORY
+    notices = [unmapped_notice(f['identity'], tier)] if f['identity'].get('enterprise_unmapped') else []
     return _blank(
         state, 'resolved at tier %s by %s; chain: %s' % (tier, basis, ', '.join(f['chain']) or 'kit default'),
-        defects=defects, refusals=sorted(set(refusals)), routes_to=routes,
+        notes=[n['why'] for n in notices], notices=notices, defects=defects, refusals=sorted(set(refusals)), routes_to=routes,
         environment=env_name, environment_tier=tier, team_pattern=team, rung_declared=rung,
         rung_effective=rung, policy_mode=rl.derive_policy_mode(rung), policy_mode_source='derived',
         policy_source=REGISTER if f['chain'] else KIT_DEFAULT, chain=f['chain'], scope=f['identity'],
@@ -1011,6 +1048,9 @@ def resolve_from_ref(repo, default_ref, path, central_path, repository, environm
     sup = rl.refuse_supplied_policy_mode(dict(supplied_inputs or {}))
     if sup['state'] == rl.POLICY_MODE_SUPPLIED:
         return _blank(sup['state'], sup['why'], defects=[sup['why']])
+    off = refuse_floor_scan_off(supplied_inputs)
+    if off:
+        return _blank(rl.CHERRY_PICK_BELOW_FLOOR, off, defects=[off], environment=_s(environment) or None)
     docs, notes = {}, []
     ctext, cstat, cnotes = read_central(central_path)
     rtext, rstat, rnotes, sha = read_at_ref(repo, default_ref, path)
@@ -1070,6 +1110,11 @@ def github_output_lines(r):
     # The authority's renewal cap, for the deploy's version-gap exception (it holds the stronger of
     # this and the kit default).
     out.append('policy_max_exception_renewals=%s' % v(r.get('max_exception_renewals')))
+    # Visible notices that are not refusals (policy_notice): e.g. an org the orgs map does not name
+    # that ran at the enterprise floor (KDEC-020). The gate's summary shows each one.
+    out.append('policy_notices=%s' % json.dumps(
+        [dict((k, x.get(k, '')) for k in ('code', 'org', 'enterprise', 'rung', 'tier'))
+         for x in r.get('notices') or []], sort_keys=True))
     return [line.replace('\n', ' ').replace('\r', ' ') for line in out]
 
 
@@ -1168,6 +1213,9 @@ def main(argv=None):
     print('  ' + r['why'])
     for n in r['notes'] + r['defects']:
         print('  ' + n)
+    # A notice is never silent: a workflow warning annotation on the run, as well as the log line.
+    for n in r.get('notices') or []:
+        print('::warning title=%s::%s' % (n['code'], n['why'].replace('\n', ' ')))
     if a.out:
         with io.open(a.out, 'w', encoding='utf-8') as fh:
             json.dump(r, fh, indent=2, sort_keys=True)

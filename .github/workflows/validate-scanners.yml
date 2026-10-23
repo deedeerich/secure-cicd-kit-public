@@ -22,7 +22,13 @@ on:
         description: "Print full scanner output"
         type: boolean
         default: false
+  # Default branch only (lane L-DOC, 2026-10-23). This private repository pays for every Actions
+  # minute, and a push to ANY branch touching these paths started the whole probe (18 private runs
+  # on 2026-10-22 alone). Branch validation happens on the free public mirror, which runs this
+  # workflow on the release candidate, or here by workflow_dispatch on the branch.
+  # tests/prove_validate_scanners_matrix.py M12.
   push:
+    branches: [main]
     paths:
       - ".github/workflows/reusable-security.yml"
       # Scanner job bodies and their pins live in composites since ledger L64.

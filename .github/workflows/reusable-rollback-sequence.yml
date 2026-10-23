@@ -10,22 +10,36 @@ name: "Kit: Sequential rollback (reverse order, end-to-end tests between steps)"
 # each run's deploy evidence (the `deploy-evidence-<run>-<attempt>` artifact the deploy reusables
 # upload), logs in (OIDC), and runs scripts/rollback_sequence.py from the kit at the pinned commit:
 # per step, newest first -- eligibility from a fresh live read, the deploy contract's own reversal
-# (only ROLLBACK_VERIFIED counts), the health probe, then `e2e_test_command` (run by /bin/sh in the
-# caller's checkout, bounded by e2e_timeout_minutes, WITHOUT the deploy identity's Azure session).
-# The record (schemas/rollback-sequence.schema.json) is the job summary and an artifact.
+# (only ROLLBACK_VERIFIED counts) and a live read-back of what it restored, then a TEST PERIOD of
+# e2e_test_period_minutes: the health probe and `e2e_test_command` (run by /bin/sh in the caller's
+# checkout, bounded by e2e_timeout_minutes, WITHOUT the deploy identity's Azure session) at its
+# start, at each e2e_check_interval_minutes, and at its end. Any failure halts for a human. The
+# record (schemas/rollback-sequence.schema.json) is the job summary and an artifact.
+#
+# KDEC-021 (owner, 2026-10-23): "There needs to be an end to end test period." App Service slots
+# "should rollback to the previous code that is being requested": the sequence names its
+# target_version, and production is read back on it at the end. "A deployment rolling mid rollback
+# means the deployment has to be rolled back": see CONCURRENCY below.
 #
 # NO END-TO-END TESTS IS A REFUSAL: an empty e2e_test_command is ROLLBACK_SEQUENCE_REFUSED_NO_E2E
-# before login, and nothing is touched (docs/architecture/ROLLBACK_CONTRACT.md, "Sequential
-# rollback").
+# before login, and a test period of 0 is ROLLBACK_SEQUENCE_REFUSED_NO_TEST_PERIOD; nothing is
+# touched (docs/architecture/ROLLBACK_CONTRACT.md, "Sequential rollback").
 #
 # A MUTATING JOB, SO NO timeout-minutes (ROLLBACK_CONTRACT.md: a timeout is a cancellation nobody
-# chose, mid-reversal). The e2e command is bounded instead. Concurrency is serialised per
-# environment and never cancelled; a deploy to the same target while this runs is caught by each
-# step's fresh eligibility read and by the reversal's own preconditions, but it is not excluded --
-# do not deploy into a target while it is being rolled back.
+# chose, mid-reversal). The e2e command is bounded instead, and so is the period (240 minutes).
+#
+# CONCURRENCY -- DEPLOYS ARE FROZEN WHILE THIS RUNS. The group is the TARGET's
+# (kit-target-<environment>-<target_resource_group>-<target_name>), the same string the deploy
+# reusables use, so a deploy of the target queues behind the rollback and the rollback behind a
+# deploy; never cancelled in progress. A sequence holds ONE target's lock: a step on any other
+# target is refused (ROLLBACK_SEQUENCE_REFUSED_INPUT); a release over several targets is rolled
+# back as one sequence per target. GitHub keeps one PENDING run per group and discards an older
+# pending one -- which mutated nothing, and is re-run by hand. A kit deploy that lands anyway (from
+# outside the lock: another repository, another environment name) is found by the re-read before
+# each step, fetched with `gh run download`, and rolled back FIRST with its own test period.
 #
 # DATA, NEVER CODE: every caller value reaches a script through `env:` (tests/lint_injection.py).
-# STATUS: proven locally against the stub cloud (tests/prove_rollback_sequence.py, S1..S12); NOT
+# STATUS: proven locally against the stub cloud (tests/prove_rollback_sequence.py, S1..S19); NOT
 # run live (risks R-04).
 
 on:
@@ -43,11 +57,22 @@ on:
         description: "Full commit SHA of the kit to check out. A tag or branch can move."
         type: string
         required: true
+      target_resource_group:
+        description: >-
+          Resource group of the target being rolled back. With target_name it keys the concurrency
+          group shared with the deploy reusables, so deploys of the target queue behind this run.
+        type: string
+        required: true
+      target_name:
+        description: "Name of the Container App or web app being rolled back (the deploys' app name)."
+        type: string
+        required: true
       sequence:
         description: >-
-          JSON: {"sequence_id": "...", "steps": [{"run_id", "run_attempt", "adapter"
-          (containerapp | appservice), ["deployment"], ["health_path"], ["forward_fix_only"]}]},
-          steps in DEPLOYMENT order, oldest first. Executed newest first.
+          JSON: {"sequence_id": "...", ["target_version": "the image (registry/repo@digest) or digest
+          to return to; required when a step is appservice"], "steps": [{"run_id", "run_attempt",
+          "adapter" (containerapp | appservice), ["deployment"], ["health_path"],
+          ["forward_fix_only"]}]}, steps in DEPLOYMENT order, oldest first. Executed newest first.
         type: string
         required: true
       e2e_test_command:
@@ -63,6 +88,20 @@ on:
         type: number
         required: false
         default: 30
+      e2e_test_period_minutes:
+        description: >-
+          The test period after EACH step (the final one included): health and e2e at its start, at
+          each interval and at its end; any failure halts. Bounded 0 < m <= 240. 0 is refused
+          (ROLLBACK_SEQUENCE_REFUSED_NO_TEST_PERIOD). Shorter than the baseline 15 reduces the
+          control and is recorded as such.
+        type: number
+        required: false
+        default: 15
+      e2e_check_interval_minutes:
+        description: "Extra checks every N minutes inside the period; 0 checks at its start and end only."
+        type: number
+        required: false
+        default: 0
       health_retries:
         description: "Health probe attempts after each verified reversal before the step is declared failed"
         type: number
@@ -144,7 +183,7 @@ on:
         value: ${{ jobs.rollback.outputs.weakening_record }}
 
 concurrency:
-  group: rollback-sequence-${{ inputs.github_environment }}
+  group: kit-target-${{ inputs.github_environment }}-${{ inputs.target_resource_group }}-${{ inputs.target_name }}
   cancel-in-progress: false
 
 permissions:
@@ -219,24 +258,34 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
           environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
 
-      - name: Roll back newest first, end-to-end tests after each step
+      - name: Roll back newest first, a test period after each step
         id: sequence
         env:
           SEQUENCE: ${{ inputs.sequence }}
           E2E_TEST_COMMAND: ${{ inputs.e2e_test_command }}
           E2E_TIMEOUT_MINUTES: ${{ inputs.e2e_timeout_minutes }}
+          E2E_TEST_PERIOD_MINUTES: ${{ inputs.e2e_test_period_minutes }}
+          E2E_CHECK_INTERVAL_MINUTES: ${{ inputs.e2e_check_interval_minutes }}
+          LOCKED_TARGET: ${{ inputs.target_resource_group }}/${{ inputs.target_name }}
           HEALTH_RETRIES: ${{ inputs.health_retries }}
           HEALTH_INTERVAL_SECONDS: ${{ inputs.health_interval_seconds }}
+          GH_TOKEN: ${{ github.token }}
           KIT_DIR: ${{ github.workspace }}/.kit
         run: |
           set -uo pipefail
           kv="$RUNNER_TEMP/rollback-sequence.out"
           : > "$kv"
           rc=0
+          # A kit deployment that lands mid-sequence is fetched the same way as the listed ones.
+          # shellcheck disable=SC2016
+          fetch='gh run download "$ROLLBACK_FETCH_RUN_ID" -R "$GITHUB_REPOSITORY" -n "deploy-evidence-${ROLLBACK_FETCH_RUN_ID}-${ROLLBACK_FETCH_RUN_ATTEMPT}" -D "$ROLLBACK_FETCH_DIR"'
           python3 "$KIT_DIR/scripts/rollback_sequence.py" run --sequence-env sequence \
             --evidence-root "$RUNNER_TEMP/rollback-evidence" --work "$RUNNER_TEMP/rollback-work" \
             --out "$RUNNER_TEMP/rollback-sequence.json" --e2e-command "$E2E_TEST_COMMAND" \
             --e2e-timeout-seconds "$((E2E_TIMEOUT_MINUTES * 60))" \
+            --test-period-minutes "$E2E_TEST_PERIOD_MINUTES" \
+            --check-interval-minutes "$E2E_CHECK_INTERVAL_MINUTES" \
+            --locked-target "$LOCKED_TARGET" --fetch-evidence-command "$fetch" \
             --summary "$GITHUB_STEP_SUMMARY" --github-output "$kv" || rc=$?
           sequence_result="$(sed -n 's/^sequence_result=//p' "$kv" | tail -1)"
           steps_verified="$(sed -n 's/^steps_verified=//p' "$kv" | tail -1)"
@@ -268,6 +317,7 @@ jobs:
           W_E2E_TEST_COMMAND: ${{ inputs.e2e_test_command }}
           W_HEALTH_RETRIES: ${{ inputs.health_retries }}
           W_HEALTH_INTERVAL_SECONDS: ${{ inputs.health_interval_seconds }}
+          W_E2E_TEST_PERIOD_MINUTES: ${{ inputs.e2e_test_period_minutes }}
           W_WEAKENING_REASON: ${{ inputs.weakening_reason }}
           W_WEAKENING_AUTHORITY: ${{ inputs.weakening_authority }}
           W_WEAKENING_EXCEPTION_REF: ${{ inputs.weakening_exception_ref }}
@@ -281,6 +331,7 @@ jobs:
             case "$2" in
               NONEMPTY) [ -n "$1" ] ;;
               max:*)    [ -n "$1" ] && [ "$1" -le "${2#max:}" ] 2>/dev/null ;;
+              min:*)    [ -n "$1" ] && awk -v v="$1" -v b="${2#min:}" 'BEGIN { exit !(v + 0 >= b + 0) }' ;;
               *)        [ "$1" = "$2" ] ;;
             esac
           }
@@ -306,12 +357,20 @@ jobs:
           posture github_environment       NOT_A_CONTROL_SURFACE - -
           posture kit_repository           NOT_A_CONTROL_SURFACE - -
           posture kit_ref                  NOT_A_CONTROL_SURFACE - -
-          posture sequence                 TARGET_NOT_SUPPLIED NONEMPTY rollback-sequence "$W_SEQUENCE"
+          # The lock key. A wrong value is refused by the sequence (a step outside the locked target).
+          posture target_resource_group    NOT_A_CONTROL_SURFACE - -
+          posture target_name              NOT_A_CONTROL_SURFACE - -
+          posture sequence                TARGET_NOT_SUPPLIED NONEMPTY rollback-sequence "$W_SEQUENCE"
           # Empty is refused by the sequence itself (ROLLBACK_SEQUENCE_REFUSED_NO_E2E); recorded here
           # as the e2e control skipped, so the record and the refusal say the same thing.
           posture e2e_test_command         TARGET_NOT_SUPPLIED NONEMPTY e2e-between-steps "$W_E2E_TEST_COMMAND"
           # A bound on a hung test: a lower value only fails a test sooner.
           posture e2e_timeout_minutes      NOT_A_CONTROL_SURFACE - -
+          # KDEC-021: a period shorter than the baseline 15 minutes watches each restored state for
+          # less time. 0 is refused by the sequence itself (ROLLBACK_SEQUENCE_REFUSED_NO_TEST_PERIOD).
+          posture e2e_test_period_minutes  SEVERITY_RAISED "min:15" e2e-test-period "$W_E2E_TEST_PERIOD_MINUTES"
+          # More checks inside the period only add checks; 0 is the baseline (start and end).
+          posture e2e_check_interval_minutes NOT_A_CONTROL_SURFACE - -
           # More attempts, or a longer wait, tolerates a restored state the shipped probe would fail.
           posture health_retries           SEVERITY_RAISED "max:12" health-probe "$W_HEALTH_RETRIES"
           posture health_interval_seconds  SEVERITY_RAISED "max:10" health-probe "$W_HEALTH_INTERVAL_SECONDS"
@@ -363,7 +422,7 @@ jobs:
           else
             case "$RESULT" in
               ROLLBACK_SEQUENCE_VERIFIED) route=PROCEED ;;
-              ROLLBACK_SEQUENCE_REFUSED_NO_E2E|ROLLBACK_SEQUENCE_REFUSED_INPUT) route=BLOCKED ;;
+              ROLLBACK_SEQUENCE_REFUSED_NO_E2E|ROLLBACK_SEQUENCE_REFUSED_NO_TEST_PERIOD|ROLLBACK_SEQUENCE_REFUSED_INPUT) route=BLOCKED ;;
               ROLLBACK_SEQUENCE_HALTED_ROLLBACK_UNVERIFIED) route=EVIDENCE_UNTRUSTED ;;
               *) route=DECISION_REQUIRED ;;
             esac

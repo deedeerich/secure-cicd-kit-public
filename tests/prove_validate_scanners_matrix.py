@@ -84,6 +84,10 @@ WHAT IT PROVES
         runs and detects. FAILS ON 109cff8: Release 3 candidate run 39801652917 -- the semgrep-php
         docker run ended in under 0.3 s (the sibling leg on the same image took 17 s) with no
         report, and `>/dev/null 2>&1` had discarded the only evidence of why.
+    M12 validate-scanners.yml's push trigger is `branches: [main]` with its paths filter, and the
+        weekly schedule and workflow_dispatch stay (lane L-DOC, cost). FAILS ON 19b5e1d: push had
+        paths only, so any branch push touching tests/** ran the probe on metered private minutes
+        (18 private runs on 2026-10-22); the free public mirror runs it on the release candidate.
 
 EXIT  0 all hold   1 any does not   2 could not be checked
 """
@@ -183,6 +187,38 @@ def check_m8(path):
         if got[ev] is not True:
             bad.append('M8 %s: cancel-in-progress is %r for %s -- an obsolete push run would '
                        'finish at full cost' % (name, got[ev], ev))
+    return bad
+
+
+# M12 (lane L-DOC, 2026-10-23): the probe's push trigger is the default branch only. The private
+# repository pays for every Actions minute, and a push to any branch touching tests/** started the
+# whole probe (18 private runs on 2026-10-22 alone). Branch validation is the free public mirror's
+# run on the release candidate, or a dispatch. Schedule, dispatch and the paths filter stay.
+M12_PATHS = ('.github/workflows/reusable-security.yml', '.github/actions/**', 'tests/**')
+
+
+def check_m12(doc):
+    on = doc.get('on') or doc.get(True) or {}
+    bad = []
+    if not isinstance(on, dict):
+        return ['M12 validate-scanners.yml `on:` is not a mapping (%r)' % (on,)]
+    push = on.get('push')
+    print('  M12 push=%r schedule=%s dispatch=%s pull_request=%s'
+          % (push, 'schedule' in on, 'workflow_dispatch' in on, 'pull_request' in on))
+    if not isinstance(push, dict) or push.get('branches') != ['main']:
+        bad.append('M12 push is not limited to branches [main]: every branch push touching the paths '
+                   'runs the probe on metered private minutes (%r)' % (push,))
+    else:
+        paths = push.get('paths') or []
+        missing = [x for x in M12_PATHS if x not in paths]
+        if missing:
+            bad.append('M12 the push paths filter lost %s' % missing)
+    if 'pull_request' in on or 'pull_request_target' in on:
+        bad.append('M12 a pull_request trigger runs the probe on every PR branch')
+    if not on.get('schedule'):
+        bad.append('M12 the weekly schedule is gone')
+    if 'workflow_dispatch' not in on:
+        bad.append('M12 workflow_dispatch is gone: a branch could not be validated on demand')
     return bad
 
 
@@ -705,6 +741,7 @@ def main():
 
     for wf_path in (VALIDATE, PROBE_CORPORA):
         bad.extend(check_m8(wf_path))
+    bad.extend(check_m12(doc))
 
     script = render_script(doc)
     if script is None:

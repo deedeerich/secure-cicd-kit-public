@@ -279,8 +279,13 @@ on:
 # The key is the APP, never the slot (L99). Every slot path ends in a swap INTO PRODUCTION, so two
 # runs staging into two slots of one app both write production; keyed per slot, they would not
 # queue. Proven by tests/prove_deploy_concurrency.py.
+#
+# KDEC-021 (owner, 2026-10-23): "A deployment rolling mid rollback means the deployment has to be
+# rolled back." The group is the TARGET's, shared with reusable-rollback-sequence.yml
+# (kit-target-<environment>-<resource group>-<name>, no adapter prefix), so a deploy queues behind a
+# rollback of the same target instead of racing it. Proven by tests/prove_rollback_sequence.py S19.
 concurrency:
-  group: deploy-appservice-${{ inputs.github_environment }}-${{ inputs.resource_group }}-${{ inputs.webapp_name }}
+  group: kit-target-${{ inputs.github_environment }}-${{ inputs.resource_group }}-${{ inputs.webapp_name }}
   cancel-in-progress: false
 
 permissions:
@@ -795,13 +800,17 @@ jobs:
                   return 0
               slot = env('slot') or 'production'
               prior_img = (snap.get('images') or {}).get(slot, '')
+              rid, err, prior_stamp = resource_id('appservice', slot, with_stamp=True)
+              # KDEC-021: the slot's previous ownership stamp is kept, as the swap keeps production's, so the
+              # reversal hands the slot back to the release it held before. Without it a stacked sequence
+              # could never reverse the earlier release: the slot still carried the later one's stamp.
               entry = {'action': 'MODIFIED', 'object_type': 'slot-container', 'object': slot,
                        'prior': ('DOCKER|' + prior_img) if prior_img else '', 'post': 'DOCKER|' + ref,
-                       'stamp': stamp_value(ref), 'mutated_at': utc_now()}
+                       'stamp': stamp_value(ref), 'mutated_at': utc_now(), 'object_id': rid,
+                       'prior_stamp': prior_stamp}
               m['entries'].append(entry)
               save_manifest(m)
               output(mutation_started='true')
-              rid, err = resource_id('appservice', slot)
               steps = []
               if rid:
                   steps.append(('tag', 'update', '--resource-id', rid, '--operation', 'Merge', '--tags',
@@ -1363,6 +1372,14 @@ jobs:
                                          'release_ownership_stamp=%s' % (prop.get('prior_stamp') or ''))
                           r['stamp_restored'] = okk
                           err = err or e
+                      elif done and prop['action'] == 'MODIFIED' and prop.get('object_id') \
+                              and 'prior_stamp' in prop:
+                          # The slot's image is restored; so is its previous owner's claim (KDEC-021).
+                          okk, _, e = az('tag', 'update', '--resource-id', prop['object_id'],
+                                         '--operation', 'Merge', '--tags',
+                                         'release_ownership_stamp=%s' % (prop.get('prior_stamp') or ''))
+                          r['stamp_restored'] = okk
+                          err = err or e
                       r['performed'], r['error'] = done, err
                   results.append(r)
               return results
@@ -1475,7 +1492,8 @@ jobs:
 
 
           # ----------------------------------------------------------------------------- provenance
-          def resource_id(adapter, slot=''):
+          def resource_id(adapter, slot='', with_stamp=False):
+              """-> (id, error), or (id, error, ownership stamp) with `with_stamp` -- one read for both."""
               if adapter == 'containerapp':
                   ok, shown, err = az('containerapp', 'show', '-n', env('containerapp_name'),
                                       '-g', env('resource_group'))
@@ -1485,7 +1503,10 @@ jobs:
                       args += ['--slot', slot]
                   ok, shown, err = az(*args)
               if not ok or not isinstance(shown, dict) or not shown.get('id'):
-                  return None, err or 'no resource id in the response'
+                  out = (None, err or 'no resource id in the response')
+                  return out + ('',) if with_stamp else out
+              if with_stamp:
+                  return shown['id'], '', (shown.get('tags') or {}).get('release_ownership_stamp', '')
               return shown['id'], ''
 
 

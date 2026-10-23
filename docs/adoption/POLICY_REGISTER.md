@@ -26,6 +26,12 @@ Only up."*): no rung sits below it, secrets never soften, and no run input — `
 `soft_fail_sast`, `paths`, `language`, … — lets a secret or a scan the kit could not run or trust
 through (`tests/prove_crawl_floor.py` drives every weakening input, attributed, through the gate).
 `paths` narrows every scanner **except the secret scan**, which always covers the repository root.
+**The malicious-package scan is part of the crawl floor** (KDEC-020; owner: these *"should be on if
+needed yes?"*): a run that receives `enable_malicious_pkg_scan: false` is refused by the resolver,
+`CHERRY_PICK_BELOW_FLOOR` (`BLOCKED`), naming the input, and a register entry softening
+`malicious-deps` is refused the same way (`tests/prove_crawl_floor.py` K6/K7). This decides only
+that the scan RUNS; whether a confirmed `MAL-` finding should block at crawl is an open owner
+question (KDEC-020) — the gate's handling of that finding is unchanged.
 
 ## Where the register lives
 
@@ -56,12 +62,18 @@ org's value in the central `orgs` map (`{"org-a": "my-enterprise", "org-b": "my-
 enterprise scope names only `enterprise` (and optionally `environment_tier`) and binds every
 repository of every org mapped to it.
 
-**Once the `orgs` map defines an enterprise, an org it does not name does not run** (KDEC-019 item 1,
-owner 2026-10-22: *"No run with the enterprise floor even if unmapped previously"*). Every run in that
-org — any tier, a pull request too — is refused **`ORG_NOT_UNDER_ENTERPRISE`** (`BLOCKED`), naming the
-org, even if it ran before the map existed. The remedy is to name the org in the map, never to drop
-the map. With no `orgs` map (or an empty one) nothing changes. `--validate` names every org the
-register mentions — an entry's `org` or `repository`, a `repositories` key — that the map leaves out.
+**Once the `orgs` map defines an enterprise, an org it does not name still runs — at the enterprise
+floor** (KDEC-020, which supersedes KDEC-019 item 1; owner 2026-10-23: *"I thought we agreed unmapped
+orgs would be rolled in at whatever level the enterprise or other orgs are at"*). With one enterprise
+defined the org gets that enterprise's entries; with several it gets, at each tier, the **strictest**
+of them (higher rung, then stronger controls, then stronger deploy approval — never the lower). Its
+own org, team, product and repository entries may tighten above that floor; one that goes below it is
+`POLICY_BELOW_AUTHORITY_FLOOR` (`BLOCKED`). It is never a refusal and never silent: the run carries
+the notice **`ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR`** — naming the org, the enterprise and rung used,
+and saying "add it to the orgs map" — in the resolution's `notices` and `notes`, the `policy_notices`
+output, a workflow warning and the gate's policy summary. With no `orgs` map (or an empty one)
+nothing changes. (`ORG_NOT_UNDER_ENTERPRISE`, the refusal briefly built for KDEC-019 item 1, is
+retired and no longer emitted.)
 
 ## The authority floor: narrower scopes only tighten
 
@@ -246,8 +258,8 @@ python3 scripts/policy_registration.py --validate .security/policy-registration.
 ```
 
 It refuses everything resolution would refuse anywhere: schema, conflicts, attribution, expired
-decisions and non-monotone tiers for every mapped repository and every org, and (once an enterprise is
-defined) every org the register mentions that the `orgs` map leaves out (`ORG_NOT_UNDER_ENTERPRISE`).
+decisions and non-monotone tiers for every mapped repository and every org — an org the `orgs` map
+leaves out is checked against the enterprise floor it will run at (KDEC-020), not refused.
 
 ## Deploy approval: read back from the environment
 

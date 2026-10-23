@@ -17,10 +17,10 @@ their own when the date passes. Everything else lives here because a date would 
 |---|---|
 | `validate-scanners` on `main` | ✅ **GREEN at `8b8eb94`**, run `32151286413` |
 | Full consumer contract on `main` | ⚠️ **19/20 at `8b8eb94`**, run `32151289784`. The miss was real: gosec reported module-relative paths, so two files shared one identity and semgrep covered for it. **Fixed at `02b67f6`** — needs re-running |
-| Re-verify at current `main` | ❗ **OPEN.** `main` has moved twice since that evidence — `02b67f6` (gosec identity) and `1452aa0` (timeout bounds). Neither has been run against the contract |
+| Re-verify at current `main` | ✅ **Done (2026-10-16).** The consumer path on `main` `ef4b15d` (Release 1) detected 20/20 seeded signals, each by the scanner that should detect it (run 38934329462). The trunk's later commits owe the same run |
 | Reconcile `sast-java` | ✅ **Resolved from run evidence.** The consumer path detected `sast:java-semgrep` at `java/Vuln.java`. Observed at contract level; no longer under-claimed |
 | `code-quality` detection assertion | ⏸ **Still correctly deferred.** The job runs, but no expected signal asserts it detects anything. Stands until the fixture carries a seeded lint violation |
-| Trivy path normalization | ❗ **OPEN, same class as gosec.** Trivy reports scope-relative URIs where Checkov and Semgrep report repo-relative — one file, two identities. Missed because the IaC signals are not tool-pinned. Batched with discovery-gating |
+| Trivy path normalization | ✅ **Built.** The `iac-scan` composite re-roots Trivy's scope-relative URIs to repo-relative with the kit's SARIF normaliser before counting (`.github/actions/iac-scan/action.yml`, the normalise step), and refuses the run if the normaliser is absent. **Still owed:** the collision regression fixture (two roots, one filename, two identities must survive; `docs/assurance/VALIDATION_DEBT.md`, "Scanner path identity") |
 
 ---
 
@@ -54,6 +54,17 @@ too expensive to leave enabled eventually becomes a disabled security control.
 
 Eleven working detectors produce signal. Without disposition that is just a new way to manufacture
 backlog.
+
+> ### State at trunk `19b5e1d` (2026-10-23)
+>
+> Built locally, wired into the report: durable identity (`scripts/finding_identity.py`), the
+> matching cascade (`finding_match.py`), anchored correlation (`finding_correlation.py`), the
+> hash-chained lineage (`finding_lineage.py`), and tickets from findings (`scripts/reconcile_tickets.py`,
+> proven live on a personal Jira). **Not built:** confidence and disagreement semantics (below), and
+> D4 (findings feeding a roadmap). **D5 is partial:** no starter template calls
+> `reusable-ticket-reconcile.yml`, nothing schedules its sweep, and closure on positive clearance is not
+> built. **D6 is built locally** (version discovery and capability selection, KDEC-010). The text
+> below is the design as it stood, kept.
 
 **Doctrine already exists — use it, do not reinvent it:** the reference estate `ADR-013-correlation-engine.md`,
 `backend/app/appsec/correlation.py`, `docs/specialist-pack/04-correlation-and-identity.md`.
@@ -273,15 +284,15 @@ sensitive findings kept out of logs.
 
 | Gap | Why it is not "nearly done" |
 |---|---|
-| **Swift / Objective-C** | No scanner at all. Needs real iOS tooling, not a generic C scanner wearing a moustache |
-| **Kotlin / Android** | **Java coverage does not imply Android.** Gradle, manifests, exported components, permissions, signing/config, mobile-specific rules. No real repo exists — build a purpose-made consumer |
+| **Swift / Objective-C** | No scanner at all. Needs real iOS tooling, not a generic C scanner wearing a moustache. Swift is a declared `COVERAGE_GAP`; **Objective-C is not even probed** (no `.m` in discovery's unsupported-language sweep), so an ObjC-only repository reports no gap at all |
+| **Kotlin / Android** | **Java coverage does not imply Android.** Gradle, manifests, exported components, permissions, signing/config, mobile-specific rules. No real repo exists — build a purpose-made consumer. A **Kotlin-only** repository gets no scanner: `.kt` is a declared `COVERAGE_GAP`, and `sast-java` reads Java only |
 | **.NET real-repo consumer** | None exists in any accessible account. Only the synthetic fixture |
-| **Build-aware C/C++** | Source-only analysis is proven. Compilation database, resolved includes/macros, linked dependency graph are **not**. Report `CPP_ANALYSIS_PARTIAL` when source exists without build metadata — and **never synthesise a build system to make a scanner happy** |
-| **Shell / bash** | **Not previously listed here.** the reference estate has `shell-scanning.yml`; this kit has no shell scanner at all, while shipping shell inside its own workflows |
-| **GitHub Actions workflows themselves** | The workflows are a scanned surface. the reference estate has `github-actions-lint.yml`; this kit has `workflow-policy-check.yml` for policy, not lint |
-| 5 composite actions | **Expire 2026-09-15.** No infrastructure needed — just probes |
-| `reusable-nvd-cve.yml` | ~~Never run on a runner~~ **has run** (2026-08-18/19, three runs). Remaining gap is the WARM path: only a ~50 min cold build is recorded, cache key/restore behaviour is still marked unvalidated, and any faster run exists only in Actions history and was never written back here. Capture the warm duration from a real run |
-| `context-integrity` negative fixture | Positive path observed; the **refusal** path has none. An assertion that has never failed is decoration |
+| **Build-aware C/C++** | Source-only analysis is proven. Compilation database, resolved includes/macros, linked dependency graph are **not**. Report `CPP_ANALYSIS_PARTIAL` when source exists without build metadata — and **never synthesise a build system to make a scanner happy**. **`CPP_ANALYSIS_PARTIAL` is never emitted** today (only allow-listed in `scripts/reconcile_taxonomy.py`, not a taxonomy term): a source-only C/C++ scan reads like a complete one |
+| **Shell / bash** | the reference estate has `shell-scanning.yml`; this kit has **no shell scanner** (no shellcheck), while shipping shell inside its own workflows. Discovery declares `.sh` (`Shell`) and `.ps1` (`PowerShell`) as `COVERAGE_GAP` (`.github/actions/discover/action.yml`, the unsupported-language sweep), so the gap is reported, not hidden |
+| **GitHub Actions workflows themselves** | The workflows are a scanned surface. the reference estate has `github-actions-lint.yml`; this kit has `workflow-policy-check.yml` for policy, not lint. **actionlint runs only in the kit's own self-test**; a consumer's workflows get no actionlint or zizmor pass (discovery declares them a `GitHubActionsWorkflow` coverage gap) |
+| Composite actions | All observed except `determine-changes` and `setup-terraform` (no consumer yet) and `verify-attestation` (held by plan); each carries a dated deferral to 2026-12-31 in `tests/reconcile_validation.py` |
+| `reusable-nvd-cve.yml` | Has run on a runner (2026-08-18/19, three runs), and its scanners are observed on seeded fixtures. Remaining gap is the WARM path: cache key/restore behaviour has no evidence yet, and the only measured cold updates are 32 min 03 s and 9 min 17 s (runs 32190300370, 32382255986, read by the tool probe). Capture the warm duration from a real run |
+| `context-integrity` negative fixture | ✅ **Refusal observed on the real tenant**: a wrong expected tenant hard-failed after a real login (run 38826929579), the matching case passed (38826938462) |
 | `image-build` / `image-push` | ~~Need a registry. Expire 2026-10-31~~ **closed by proof 2026-10-15** against a real local `registry:2` (`tests/prove_build_push_round_trip.py`): digest, SBOM with the fixture component, retrieval by digest, identity round trip. Remaining gap is an ACR behind Azure identity, and a hosted dispatch of the workflow -- neither is a registry gap |
 
 ---
@@ -359,7 +370,8 @@ gitleaks, semgrep, syft, trivy, sarif-upload. Absent there: detect-secrets, dotn
 gosec, osv-scanner, sonarcloud, zap.
 
 CodeQL ran in the reference estate and in a second consumer repository while this kit — the one whose matrix
-*documented* CodeQL — never invoked it.
+*documented* CodeQL — never invoked it. **Since corrected:** the flagship's `codeql` job runs up to six
+language legs, proven at Level 2 from a separate consumer repository (runs 38817782084, 38820564939).
 
 The policy is **not** "robots skip review". It is:
 
@@ -394,7 +406,7 @@ not recommendations.**
 | Item | Notes |
 |---|---|
 | Organisation + Enterprise migration | 50,000 Actions minutes vs 3,000. **`OIDC subjects contain the owner name`** — every federated credential breaks on transfer, presenting as `AADSTS700213`, which blames authentication and never mentions the move. Also `access_level`, environments, secrets, branch policies, and every `uses:` reference |
-| Export gate maturation | `scripts/export_for_adoption.py` covers the working tree. **It cannot cover history** |
+| Export gate maturation | `scripts/export_for_adoption.py` writes a **fresh tree with no history** (not a clone), so history never crosses the boundary; whatever git does not track is neither scanned nor exported (`904bc7a`, `tests/prove_export_scope.py`). What remains is maturation of the deny list, not history |
 | Promotion path testing | personal → portable → organisation, with **no** tenant IDs, OIDC subjects, environment names, repo IDs, GHAS assumptions or owner-specific permissions surviving the boundary |
 
 ---
@@ -444,9 +456,9 @@ healthy durations plus explicit headroom, with the rationale recorded per class.
 - **A test that proves it.** Terminate a deliberately hung scanner and assert its state is
   `UNAVAILABLE` **while sibling scanners retain independent states**. Use a tiny timeout or a mocked
   sleeper path — do **not** spend six hours proving a six-hour limit.
-- **Re-size `reusable-nvd-cve` from evidence.** Its 60-minute bound is derived from documentation
-  because the workflow has never run (see LM-011). Replace with a measured number after the first
-  real execution.
+- **Re-size `reusable-nvd-cve` from evidence.** Its 60-minute bound was derived from documentation
+  before the workflow ran (see LM-011). It has run since, and the cold database update is measured
+  (32 min 03 s worst, run 32190300370); the bound has not yet been re-sized from those numbers.
 - **Mutating pipelines need their own semantics — deliberately excluded here.**
   `reusable-build-docker`, `reusable-deploy-appservice` and `reusable-deploy-containerapp` are
   unbounded on purpose. For a scan, killing a hung run is safe. For a build or deploy, timing out

@@ -22,7 +22,8 @@ inputs:
   supplied-inputs:
     description: >-
       toJSON(inputs) of the calling workflow -- every input the run RECEIVED. Any spelling of
-      policy_mode among them refuses the run.
+      policy_mode among them refuses the run, and so does enable_malicious_pkg_scan false (below
+      crawl, KDEC-020).
     required: true
   token:
     description: Read-only token used to fetch the default branch (contents read).
@@ -53,6 +54,7 @@ outputs:
   policy_secret_exceptions: {description: JSON secret exceptions in force (finding ticket approver expires entry), value: "${{ steps.r.outputs.policy_secret_exceptions }}"}
   policy_secret_exception_refusals: {description: JSON secret exceptions refused by name, value: "${{ steps.r.outputs.policy_secret_exception_refusals }}"}
   policy_max_exception_renewals: {description: the authority's exception renewal cap (KDEC-018), value: "${{ steps.r.outputs.policy_max_exception_renewals }}"}
+  policy_notices: {description: JSON visible notices that are not refusals (policy_notice; e.g. ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR), value: "${{ steps.r.outputs.policy_notices }}"}
 runs:
   using: composite
   steps:

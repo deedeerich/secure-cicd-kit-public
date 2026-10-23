@@ -26,6 +26,15 @@ secret-scan job as shipped
     K5  THE REGISTER CANNOT GO BELOW CRAWL (tests/prove_authority_floor.py A6): no rung below
         crawl, secrets never soften -- asserted here against the resolver too, so this one proof
         names every path.
+    K6  THE MALICIOUS-PACKAGE SCAN IS PART OF THE CRAWL FLOOR (KDEC-020; owner: these "should be on
+        if needed yes?"). A run that RECEIVED enable_malicious_pkg_scan false (any case, boolean or
+        text) is refused by the resolver as below crawl -- CHERRY_PICK_BELOW_FLOOR, routes BLOCKED,
+        the input named -- at every tier and on a pull request; true or not supplied resolves. A
+        register entry that softens malicious-deps is refused the same way. (Whether a confirmed
+        MAL- FINDING blocks at crawl is NOT decided here: an open owner question, KDEC-020.)
+    K7  NO KIT WORKFLOW TURNS IT OFF: no caller in .github/workflows passes
+        enable_malicious_pkg_scan false to the reusable security workflow, so the kit's own proofs
+        never run below crawl.
 
 EXIT  0 proven   1 a path drops below crawl (named)   2 could not be checked (UNKNOWN, never PASS)
 """
@@ -159,14 +168,66 @@ def main():
         if r['state'] == rl.POLICY_RESOLVED:
             fails.append('K5: a register entry %r below crawl resolved' % fields)
 
+    # ---- K6: the malicious-package scan cannot be turned off (KDEC-020) ----------------------------
+    for tier, event in [(t, 'push') for t in rl.tier_order] + [('', 'pull_request')]:
+        for off in (False, 'false', 'False', 'FALSE'):
+            r = pr.resolve(None, None, 'acme/x', tier, event, {'enable_malicious_pkg_scan': off}, '2026-10-22')
+            if r['state'] != rl.CHERRY_PICK_BELOW_FLOOR or r.get('routes_to') != 'BLOCKED' \
+                    or 'enable_malicious_pkg_scan' not in (r.get('why') or ''):
+                fails.append('K6: enable_malicious_pkg_scan=%r at %s (%s) was not refused below crawl: %r / %r'
+                             % (off, tier or '(pr)', event, r['state'], r.get('routes_to')))
+        for on in ({'enable_malicious_pkg_scan': True}, {'enable_malicious_pkg_scan': 'true'}, {}):
+            r = pr.resolve(None, None, 'acme/x', tier, event, on, '2026-10-22')
+            if r['state'] != rl.POLICY_RESOLVED:
+                fails.append('K6: %r at %s (%s) was refused: %r' % (on, tier or '(pr)', event, r['state']))
+    r = pr.resolve(central([{'id': 'x', 'scope': {'org': 'acme'}, 'decision': dec,
+                             'controls': {'malicious-deps': 'PROCEED_WITH_ADVISORY'}}]),
+                   None, 'acme/x', 'prod', 'push', {}, '2026-10-22')
+    if r['state'] != rl.CHERRY_PICK_BELOW_FLOOR:
+        fails.append('K6: a register entry softening malicious-deps resolved %r' % r['state'])
+    # Through the CLI as the resolve-policy composite calls it (toJSON(inputs) carries a boolean).
+    import json
+    import subprocess
+    repo = tempfile.mkdtemp(prefix='crawl-floor-k6-')
+    try:
+        subprocess.run(['git', 'init', '-q', repo], check=True)
+        subprocess.run(['git', '-C', repo, '-c', 'user.name=k6', '-c', 'user.email=k6@example.invalid',
+                        'commit', '-q', '--allow-empty', '-m', 'k6'], check=True)
+        p = subprocess.run([sys.executable, os.path.join(ROOT, 'scripts', 'policy_registration.py'), '--repo', repo,
+                            '--default-ref', 'HEAD', '--central', os.path.join(repo, 'absent.json'),
+                            '--repository', 'acme/x', '--environment', 'prod', '--event', 'push',
+                            '--supplied-json', json.dumps({'enable_malicious_pkg_scan': False}), '--today', '2026-10-22'],
+                           capture_output=True, text=True)
+        if p.returncode != 1 or rl.CHERRY_PICK_BELOW_FLOOR not in p.stdout:
+            fails.append('K6: the CLI did not refuse enable_malicious_pkg_scan false: rc %d %s'
+                         % (p.returncode, p.stdout[-300:]))
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print('UNKNOWN: the K6 git fixture could not be built: %s' % exc)
+        return 2
+    finally:
+        shutil.rmtree(repo, ignore_errors=True)
+
+    # ---- K7: no kit workflow turns it off ----------------------------------------------------------
+    wfdir = os.path.join(ROOT, '.github', 'workflows')
+    for name in sorted(os.listdir(wfdir)):
+        if not name.endswith(('.yml', '.yaml')):
+            continue
+        wf = yaml.safe_load(io.open(os.path.join(wfdir, name), encoding='utf-8')) or {}
+        for jid, j in sorted((wf.get('jobs') or {}).items()):
+            w = (j or {}).get('with') or {}
+            if 'enable_malicious_pkg_scan' in w and str(w['enable_malicious_pkg_scan']).strip().lower() != 'true':
+                fails.append('K7: %s job %s passes enable_malicious_pkg_scan=%r -- below crawl (KDEC-020)'
+                             % (name, jid, w['enable_malicious_pkg_scan']))
+
     if fails:
         for f in fails:
             print('FAIL: ' + f)
         return 1
     print('PASS: crawl is the absolute floor -- the secret scan always covers the repository root and reads no '
           'weakening input; every weakening input, attributed and unexpired, still BLOCKS a secret and still '
-          'stops on a scan the kit could not run or trust, at dev and at prod; and no register entry goes '
-          'below crawl.')
+          'stops on a scan the kit could not run or trust, at dev and at prod; no register entry goes '
+          'below crawl; and turning the malicious-package scan off is refused as below crawl, and no kit '
+          'workflow does it.')
     return 0
 
 

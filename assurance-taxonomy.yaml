@@ -2511,12 +2511,23 @@ namespaces:
       VERIFIED ONLY WHEN EVERY STEP IS ROLLBACK_STEP_VERIFIED. A halt never rounds up, and the
       sequence never continues past a step whose rollback, health probe or end-to-end tests did not
       hold. No end-to-end tests is a refusal, not a pass (owner, 2026-10-22: tests between each
-      rollback).
+      rollback). KDEC-021 (owner, 2026-10-23): the tests run over a TEST PERIOD after every step
+      (start, interval, end), and a failure at any check halts; a kit deployment that landed
+      mid-sequence is rolled back first; an App Service sequence ends on the version it requested.
     values:
       ROLLBACK_SEQUENCE_VERIFIED:
         definition: >-
-          Every step was eligible, reversed and ROLLBACK_VERIFIED by the deploy contract, answered
-          its health probe, and passed the application's end-to-end tests, newest first.
+          Every step was eligible, reversed and ROLLBACK_VERIFIED by the deploy contract, and
+          answered its health probe and passed the application's end-to-end tests at every check of
+          its test period, newest first; production is on the requested version when one was named.
+      ROLLBACK_SEQUENCE_REFUSED_NO_TEST_PERIOD:
+        definition: >-
+          The end-to-end test period was 0. Refused before login and before the first step; nothing
+          was touched. Registered 2026-10-23 (KDEC-021, lane L-RB2).
+        rule: >-
+          THE SAME FAMILY AS ROLLBACK_SEQUENCE_REFUSED_NO_E2E: one instant is not a period, and the
+          owner's rule is "There needs to be an end to end test period." A period past the bound
+          (240 minutes) is ROLLBACK_SEQUENCE_REFUSED_INPUT.
       ROLLBACK_SEQUENCE_REFUSED_NO_E2E:
         definition: >-
           No end-to-end test command was supplied. Refused before login and before the first step;
@@ -2528,8 +2539,10 @@ namespaces:
       ROLLBACK_SEQUENCE_REFUSED_INPUT:
         definition: >-
           The sequence, or a step's deploy evidence, could not be read whole or was inconsistent (an
-          unknown field, a run named twice, a manifest belonging to another run). Refused before
-          anything was touched.
+          unknown field, a run named twice, a manifest belonging to another run, a step outside the
+          target whose lock is held, an App Service sequence naming no target_version, a
+          target_version the target did not hold before the deployments, a test period past its
+          bound). Refused before anything was touched.
       ROLLBACK_SEQUENCE_STOPPED_INELIGIBLE:
         definition: >-
           A step was not eligible (rollback_step_eligibility) and the sequence stopped BEFORE it.
@@ -2540,12 +2553,14 @@ namespaces:
           rollback is never verified and no test is run on it.
       ROLLBACK_SEQUENCE_HALTED_HEALTH_FAILED:
         definition: >-
-          A step was reversed and verified, but the health probe on the consumer-facing name never
-          answered 200. The end-to-end tests are not run on it; the sequence halts.
+          A step was reversed and verified, but at a check of its test period the health probe on the
+          consumer-facing name never answered 200. The end-to-end tests are not run on it; the
+          sequence halts.
       ROLLBACK_SEQUENCE_HALTED_E2E_FAILED:
         definition: >-
-          A step was reversed, verified and healthy, but the application's end-to-end tests failed
-          or exceeded their bound. The sequence halts for a human decision.
+          A step was reversed, verified and healthy, but at a check of its test period (start,
+          interval or end) the application's end-to-end tests failed or exceeded their bound. The
+          sequence halts for a human decision; a pass at the start is not the period.
         rule: A hung test is a failed test, never a pass.
 
   rollback_sequence_step:
@@ -2574,7 +2589,9 @@ namespaces:
     consumers: [scripts/rollback_sequence.py, tests/prove_rollback_sequence.py]
     rule: >-
       EVERY UNKNOWN RESOLVES TO A HUMAN DECISION, NEVER TO THE REVERSAL. Revisions created by steps
-      this sequence already reversed are its own, not another actor's.
+      this sequence already reversed are its own, not another actor's. A change with no kit stamp is
+      another actor's and always a human decision; a KIT release that landed after the sequence
+      started is not judged here -- it is rolled back first (KDEC-021).
     values:
       ELIGIBLE_UNTOUCHED:
         definition: >-
@@ -3260,15 +3277,15 @@ namespaces:
           (CHERRY_PICK_BELOW_FLOOR).
       ORG_NOT_UNDER_ENTERPRISE:
         definition: >-
-          The central register defines an enterprise (its `orgs` map is non-empty) and the run's org
-          is not named in that map, so the run would sit outside the enterprise floor. KDEC-019 item
-          1 (owner, 2026-10-22): "No run with the enterprise floor even if unmapped previously."
+          RETIRED 2026-10-23, NO LONGER EMITTED. Built 2026-10-22 (lane L-RB, 26ca9e8) as a refusal
+          of a run in an org the central `orgs` map does not name -- a misreading of the owner's
+          "No run with the enterprise floor even if unmapped previously", which meant "No -- RUN
+          with the enterprise floor". KDEC-020 supersedes KDEC-019 item 1: such an org runs at the
+          enterprise floor with the notice policy_notice.ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR.
         rule: >-
-          BLOCKED, naming the org, at every tier and on a pull request -- even for an org that ran
-          before the map existed. The remedy is to name the org in the orgs map, never to drop the
-          map. With no enterprise defined (no map, or an empty one) nothing changes. --validate
-          names every org the register mentions (an entry or the repository map) that the map
-          leaves out, before any run meets it.
+          Kept registered only because earlier records and the explainer's change history name it.
+          Nothing in the kit refuses with it; tests/prove_authority_floor.py A11 proves the resolver
+          no longer carries it.
       EXCEPTION_RENEWAL_LIMIT:
         definition: >-
           A register entry SOFTENS (the authority's softening of the kit default deploy approval)
@@ -3285,7 +3302,9 @@ namespaces:
       CHERRY_PICK_BELOW_FLOOR:
         definition: >-
           A registered control asks for less than the kit permits at all: a secret-class control
-          (secrets, secret-scan, malicious-deps) below BLOCKED, or any control set to PROCEED.
+          (secrets, secret-scan, malicious-deps) below BLOCKED, or any control set to PROCEED; or
+          the run RECEIVED an input that switches a crawl-floor scan off -- enable_malicious_pkg_scan
+          false (KDEC-020: the malicious-package scan is part of the crawl floor).
         rule: >-
           A POLICY DEFECT, named. Not applied-then-overridden and not silently dropped: a
           silently-dropped override reads as applied to everyone who wrote it. The effective set
@@ -3327,6 +3346,31 @@ namespaces:
           NOT A REFUSAL. The record carries both values and the gate obeys the effective one --
           never the reverse, and never a single number that hides which it is. A dashboard
           showing run over an estate running at crawl is the most expensive artefact in the design.
+
+  policy_notice:
+    description: >-
+      Something stage 1 did that a person must see but that is NOT a refusal: the run resolves and
+      proceeds, and the notice travels with it -- in the resolution's `notices` and `notes`, the
+      policy_notices output, a workflow warning annotation and the gate's policy summary.
+    consumers: [scripts/policy_registration.py, .github/actions/resolve-policy,
+                reusable-security.yml (policy summary), tests/prove_authority_floor.py]
+    rule: >-
+      NEVER SILENT, NEVER A REFUSAL. A notice names what happened and the remedy; it does not
+      change the rung, the routing or the verdict.
+    values:
+      ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR:
+        definition: >-
+          The central register defines an enterprise (its `orgs` map is non-empty) and the run's org
+          is not named in that map. The org ran at the enterprise floor: the one enterprise's
+          entries, or with several enterprises the STRICTEST of them at the evaluated tier (higher
+          rung, then stronger controls, then stronger deploy approval; never the lower). KDEC-020
+          (owner, 2026-10-23): "I thought we agreed unmapped orgs would be rolled in at whatever
+          level the enterprise or other orgs are at."
+        rule: >-
+          The run resolves at that floor; the org's own entries may tighten above it and an entry
+          that goes below it is POLICY_BELOW_AUTHORITY_FLOOR. The notice names the org, the
+          enterprise and rung used, and says "add it to the orgs map". With no enterprise defined
+          (no map, or an empty one) there is no notice and nothing changes.
 
   environment_protection:
     description: >-

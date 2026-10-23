@@ -137,7 +137,7 @@ on:
         required: false
         default: true
       enable_malicious_pkg_scan:
-        description: "Scan for KNOWN-MALICIOUS / compromised packages via OSV (MAL- advisories), not just CVEs."
+        description: "Scan for KNOWN-MALICIOUS / compromised packages via OSV (MAL- advisories), not just CVEs. Part of the crawl floor (KDEC-020): false is refused, CHERRY_PICK_BELOW_FLOOR."
         type: boolean
         required: false
         default: true
@@ -292,7 +292,7 @@ on:
         value: ${{ jobs.security-gate.outputs.gate_decision }}
       secret_gate:
         description: >-
-          PASS | FAIL — evaluated SEPARATELY and never suppressed by advisory_mode. A consumer that
+          PASS | EXCEPTED | FAIL — EXCEPTED means every secret found is excepted by a ticketed register entry (never PASS); evaluated SEPARATELY and never suppressed by advisory_mode. A consumer that
           only checks gate_decision would miss that secrets are enforced unconditionally.
         value: ${{ jobs.security-gate.outputs.secret_gate }}
       scanner_states:
@@ -5995,6 +5995,7 @@ jobs:
           P_CHAIN: ${{ steps.policy.outputs.policy_chain }}
           P_REFUSALS: ${{ steps.policy.outputs.policy_refusals }}
           P_DEPLOY_APPROVAL: ${{ steps.policy.outputs.policy_deploy_approval }}
+          P_NOTICES: ${{ steps.policy.outputs.policy_notices }}
         run: |
           set -u
           req=""; exe=""; skp=""; red=""; wk=""; dead=""; inforce=0; badclass=0
@@ -6330,6 +6331,10 @@ jobs:
               printf '%s' "$P_WEAKENINGS" | jq -r '.[] | "| exception: \(.input) (\(.control)) | by \(.authority), expires \(.expires); \(.history // "first exception") |"' 2>/dev/null
             fi
             [ -n "${P_UNVALIDATED:-}" ] && echo "| unvalidated human-workflow paths | \`${P_UNVALIDATED}\` -- reported, never passing |"
+            # Notices are not refusals and never silent (policy_notice; KDEC-020).
+            if [ -n "${P_NOTICES:-}" ] && [ "${P_NOTICES}" != "[]" ]; then
+              printf '%s' "$P_NOTICES" | jq -r '.[] | "| notice: \(.code) | org \(.org) ran at enterprise \(.enterprise) (rung \(.rung), tier \(.tier)) -- add it to the orgs map |"' 2>/dev/null
+            fi
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
 

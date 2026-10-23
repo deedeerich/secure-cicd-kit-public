@@ -49,7 +49,7 @@ with an identical 14-tool set. That is one canonical workflow plus drift, not th
 | A1 | Secret scanning (gitleaks, detect-secrets) | `reusable-secret-scan` ×3 | ✅ |
 | A2 | SAST — Python (bandit) | embedded widely | ✅ |
 | A3 | SAST — generic (semgrep) | `semgrep-security-scan` ×3, `_reusable-security-semgrep` | ✅ |
-| A4 | SAST — CodeQL | `codeql-analysis`, `codeql`, `_reusable-security-codeql` | ❌ **gap** |
+| A4 | SAST — CodeQL | `codeql-analysis`, `codeql`, `_reusable-security-codeql` | ✅ the flagship's `codeql` job, up to six languages; proven at Level 2 (runs 38817782084, 38820564939) |
 | A5 | Shell (shellcheck) | `shell-scanning` | ❌ gap |
 | A6 | Dockerfile (hadolint) | embedded in comprehensive/infra scans | ❌ gap |
 
@@ -58,11 +58,11 @@ with an identical 14-tool set. That is one canonical workflow plus drift, not th
 | # | Capability | Source | Kit |
 |---|---|---|---|
 | B1 | Dependency CVE (trivy fs) | many | ✅ |
-| B2 | NVD deep scan (Dependency-Check) | `nvd-cve-scanning` ×2 | ✅ new, unvalidated |
+| B2 | NVD deep scan (Dependency-Check) | `nvd-cve-scanning` ×2 | ✅ observed on seeded fixtures; live-feed currency unproven |
 | B3 | Python deps (safety, pip-audit) | `code-quality-scans`, `security-scanning` | ⚠️ partial |
 | B4 | Node deps (npm audit) | `frontend-security-scanning`, `json-validation` | ⚠️ partial |
-| B5 | Dependabot integration | `dependabot-security-check`, `dependency-review` | ❌ gap |
-| B6 | SBOM generation (syft) | the image build workflow | ❌ **gap** |
+| B5 | Dependabot integration | `dependabot-security-check`, `dependency-review` | ⚠️ partial: `reusable-dependabot-triage.yml` built locally, no hosted run |
+| B6 | SBOM generation (syft) | the image build workflow | ✅ the flagship's `sbom` job (Syft, CycloneDX, licence verdict) and the build |
 
 ### C · Infrastructure & config
 
@@ -78,13 +78,14 @@ with an identical 14-tool set. That is one canonical workflow plus drift, not th
 
 | # | Capability | Source | Lines | Kit |
 |---|---|---|---|---|
-| D1 | **Vulnerability deduplication** | `deduplicate-vulnerabilities` ×3 | ~300 | ❌ **gap** |
-| D2 | **Issue creation from scans** | `create-issues-from-scans` ×3 | ~294 | ❌ **gap** |
-| D3 | **Scan-result ingestion** | `ingest-scan-results` ×2, `ingest-scan-results-to-dashboard`, `azure-security-ingestion` | ~212 | ❌ gap |
+| D1 | **Vulnerability deduplication** | `deduplicate-vulnerabilities` ×3 | ~300 | ⚠️ partial: durable identity, matching cascade and anchored correlation (`scripts/finding_identity.py`, `finding_match.py`, `finding_correlation.py`) built and wired into the report; confidence and disagreement semantics not built |
+| D2 | **Issue creation from scans** | `create-issues-from-scans` ×3 | ~294 | ⚠️ partial: `scripts/reconcile_tickets.py` + `reusable-ticket-reconcile.yml`, proven live on a personal Jira; no starter template calls it, no hosted run |
+| D3 | **Scan-result ingestion** | `ingest-scan-results` ×2, `ingest-scan-results-to-dashboard`, `azure-security-ingestion` | ~212 | ⚠️ partial: `findings.json` in the evidence artifact, the baseline ledger and hash-chained lineage (`finding_lineage.py`) on the protected branch; no dashboard |
 | D4 | **Roadmap update from findings** | `update-roadmap-from-scans` | 392 | ❌ **gap** |
 
-**This family has zero coverage in the kit and is the least commonly built thing in the whole
-corpus.** Most organizations run scanners and stop; dedup, issue synthesis, and feeding findings into
+*Updated 2026-10-23 (trunk `19b5e1d`): D1–D3 are built locally and partly wired; D4 is still a gap.*
+When this table was first written the family had zero coverage in the kit. **It is the least
+commonly built thing in the whole corpus.** Most organizations run scanners and stop; dedup, issue synthesis, and feeding findings into
 a roadmap is the part that turns scan output into managed work. **Highest-value abstraction target
 after the duplicate consolidation** — and the part with genuine portfolio value.
 
@@ -126,15 +127,16 @@ after the duplicate consolidation** — and the part with genuine portfolio valu
 
 ## Coverage summary — by capability, not lines
 
-**27 capabilities identified · 12 covered · 4 partial · 11 gaps.**
+**27 capabilities identified · 14 covered · 8 partial · 5 gaps** (at trunk `19b5e1d`; when first
+written: 12 · 4 · 11).
 
 The gaps that matter, ranked:
 
-1. **D1–D4 findings management** — 4 capabilities, ~1,200 lines, zero coverage, and the most
-   differentiated work in the corpus.
-2. **B6 SBOM** — table stakes for supply-chain assurance; one workflow away.
-3. **A4 CodeQL** — deliberately absent so far (the kit assumes GHAS may not be available); should at
-   minimum be an optional job.
+1. **D1–D4 findings management** — 4 capabilities, ~1,200 lines, and the most differentiated work in
+   the corpus. D1–D3 are now partial (built locally; confidence/disagreement, a template caller and a
+   dashboard owed); D4 is still a gap.
+2. ~~**B6 SBOM**~~ — built (the flagship's `sbom` job).
+3. ~~**A4 CodeQL**~~ — built (the flagship's `codeql` job, proven at Level 2).
 4. **F3 invariant gate** — 124 lines, unexamined. **Read before classifying.** May be a governance
    mechanism worth more than its size suggests.
 5. **E6 orchestration** — 293 lines; determines whether the kit is a set of parts or a pipeline.

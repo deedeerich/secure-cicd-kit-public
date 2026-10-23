@@ -1,9 +1,46 @@
 # 10 · Change log
 
 Newest first. On every later delivery, read this file first: it says which parts changed and why.
-Commit ids are on the build trunk `fix/normalization-and-discovery`. Versions 1.8 and earlier are in
+Commit ids are on the build trunk `fix/normalization-and-discovery`. Versions 1.10 and earlier are in
 `10b-CHANGE-LOG-EARLIER.md`. A reader whose last copy was v1.10 (`a907dc8`) reads
 `12-CHANGES-SINCE-A907DC8.md` first: it groups every change since by what an integrator must do.
+
+## Unreleased — rollback test period, requested version, per-target freeze (lane L-RB2, 2026-10-23)
+
+KDEC-021 (owner, 2026-10-23; `a0c93c4`). Proven against the stub cloud (`prove_rollback_sequence.py`
+S13..S19, failed first on `19b5e1d`); no hosted or live run. Corrects the L-RB entry below, where the
+e2e command ran once per step.
+
+| change | parts affected |
+|---|---|
+| **A test period after every step, the last included**: `e2e_test_period_minutes` (default 15, 0 < m ≤ 240; 0 → `ROLLBACK_SEQUENCE_REFUSED_NO_TEST_PERIOD`; under 15 a recorded weakening), checks at start, every `e2e_check_interval_minutes`, and end; any failure halts | 07, 09 |
+| **App Service back to the requested version**: `target_version` required for App Service steps, checked first; every affected slot read back live after each reversal, swaps included; a non-kit slot change halts for a human | 07 |
+| **Deploys frozen per target**: deploys and rollback share `kit-target-<env>-<rg>-<app>`; one target per rollback run; a kit deploy landing mid-sequence is prepended and rolled back first with its own period (more than five halts). Record v2 adds `test_period`, `restored`, `inserted`, `lock`, `final_version` | 07, 09 |
+
+## Unreleased — unmapped orgs run at the enterprise floor; malicious-package scan in the floor (lane L-UO, 2026-10-23)
+
+KDEC-020 (owner, 2026-10-23; `c8b3fc2`, merged `5c1b090`), superseding KDEC-019 item 1, which lane
+L-RB built backwards (the L-RB entry below). Proven locally (`prove_authority_floor.py` A1/A11,
+`prove_crawl_floor.py` K6/K7, each failed first); no hosted run.
+
+| change | parts affected |
+|---|---|
+| **An unmapped org runs at the enterprise floor** (the strictest enterprise at each tier when several; tighten-only, `POLICY_BELOW_AUTHORITY_FLOOR` below it), with the notice `ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR` (`policy_notice`; `policy_notices` output, a warning, the gate summary). `ORG_NOT_UNDER_ENTERPRISE` retired, no longer emitted | 03, 05 |
+| **`enable_malicious_pkg_scan: false` is refused** below crawl, `CHERRY_PICK_BELOW_FLOOR` (`BLOCKED`), every tier and on pull requests; no longer a recordable weakening | 02, 04, 05 |
+
+## Unreleased — explainer made current at source (lane L-DOC, 2026-10-23)
+
+Every part re-read against the code at `19b5e1d` and KDEC-017..019, then brought to KDEC-020/021 above.
+Cost: `validate-scanners.yml` runs on a push only to `main` (M12, failed first on `19b5e1d`).
+
+| change | parts affected |
+|---|---|
+| secrets: a ticketed one-finding exception is the only way past a found secret; `secret_gate` `EXCEPTED`; cause `SECRET_EXCEPTION_ATTRIBUTED` listed; "nothing below crawl" a principle; the gate, not an enforce step, decides | 00, 01, 03, 04, 06, 09, 11 |
+| the rung and register are wired (stage 1, built), not Release 2; deploy refusal follows the rung | 07, 09, 11 |
+| actions are SHA-pinned (L82), not by tag; `fail_on_cvss` ships 9.0 (O-12), not 11; counts at `19b5e1d`: 27 inputs, 26 routing and 64 policy scenarios, 12 recorded workflows, 5 deferrals (ratchet 5/5), OIDC exemption to 2026-12-31; `check_stage_phase` runs in self-test | 03, 04, 05, 08, 09 |
+| exception resurfacing described in the ticketing part; new proofs listed; KDEC range 001..019 | 06, 08, 11 |
+| V1 attestation verification runs inside both deploy reusables (P-02, `ae04403`), not template-only; five outcomes, not four | 07, 09, 11 |
+| v1.9 and v1.10 moved to `10b` (size) | 00, 10, 10b |
 
 ## Unreleased — unmapped orgs refused; sequential rollback (lane L-RB, 2026-10-22)
 
@@ -99,32 +136,4 @@ track is neither scanned nor exported (proof E8, failed first); self-test 396223
 
 Deferrals: 3, none blocking — attestation-verify, change-detection, toolchain-terraform (all 2026-12-31).
 
-## Version 1.10 — 2026-10-16 (trunk `af8672c`)
-
-| commit / run | change | parts affected |
-|---|---|---|
-| `4360aeb` | **live ticketing proven on a real Jira**: every broken setting refused by name with zero writes; a repeat run creates nothing; a closed ticket with no reopen setting gets a successor that references it; with the reopen transition named, the closed ticket is reopened; two tickets carrying the same stamp are reported AMBIGUOUS and neither is written. Azure DevOps live is not yet run | 06, 09 |
-| runs 38912063363, 38912546778 | **App Service staging-slot swap proven live**: a healthy release is deployed to the slot, checked there and swapped in; an unhealthy one is caught on the slot, never swapped, production untouched, the slot restored and verified | 07, 09 |
-
-Deferrals: 3, none blocking — attestation signing (needs a public repository; being wired) and two
-capabilities not yet in use.
-
-## Version 1.9 — 2026-10-16 (trunk `c140fe6`)
-
-Live on the owner's personal Azure test subscription (KDEC-012), from the trunk branch the `test`
-environment admits, through `live-deploy-acceptance.yml` calling the deploy workflows as a consumer does.
-
-| commit / run | change | parts affected |
-|---|---|---|
-| runs 38832628162, 38832634828, 38850408850 | **authorization boundary proven on the real tenant**: the kit's own and shared groups reachable; a sibling product's group, an empty opposite-tier group and the subscription REFUSED with their AuthorizationFailed bodies printed; a reachable scope placed in a refused position fails the run | 07 |
-| runs 38857011286–38857024014 | **build once, push to a cloud registry**: the kit's own build pushed three images over OIDC and read each digest back (REGISTRY_IDENTITY_PROVEN); those exact digests were deployed | 05, 07 |
-| runs 38857259257, 38858033863, 38855929525 | **Container Apps deploy proven live**: a kit-built digest pulled with the app's own identity and served healthy; an unhealthy one never received traffic and was rolled back and verified; a later release created mid-run made the reversal defer rather than reverse out of order | 07 |
-| runs 38878189985, 38886279650 | **App Service deploy proven live** (direct path): an unhealthy image rolled back and verified; a second person's change during the health check was detected and NOT overwritten — the run reports ROLLBACK_PARTIAL naming what it refused. The staging-slot swap path is not yet live (needs a Standard tier slot the owner creates) | 07, 09 |
-| `ece9d00`, `fe606ae`, `6ee04c3`, `6e40dad`, `95bd5cc` | **five deploy defects found only by running live, each fixed test-first**: a Container App moved all traffic to an unverified revision; the reversal missed inactive revisions; App Service read a 200 from the PREVIOUS container as the new one's health; an idle free-tier site never started until requested; a refused reversal was summarised as verified | 07 |
-| `72102ad` | eleven places where a caller's input reached a shell script directly now pass through `env:`, and the lint blocks that pattern in every shared workflow | 05 |
-| `e509d6c` | self-test had been intermittently red; a proof crashed when a test registry dropped its connection on Linux. Fixed test-first; self-test green since | 08 |
-
-Deferrals: 4, none blocking. Owed: live ticketing's person-only steps (expires 2026-10-23),
-attestation signing (public repository or Enterprise Cloud), two capabilities not yet in use.
-
-Versions 1.8 and earlier: `10b-CHANGE-LOG-EARLIER.md`.
+Versions 1.10 and earlier: `10b-CHANGE-LOG-EARLIER.md`.
