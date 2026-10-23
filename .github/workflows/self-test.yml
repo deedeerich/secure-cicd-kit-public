@@ -66,6 +66,9 @@ jobs:
         # Release 3 went red here with 27 errors no local gate could see: the config existed only
         # in the heredoc above. tests/check_yamllint.py extracts that heredoc, so the two cannot drift.
         run: python3 tests/check_yamllint.py
+      - name: Action manifests load on GitHub's parser (no unquoted colon in a flow-mapping value)
+        # Run 40007007260: PyYAML read known-exploited/action.yml, GitHub's runner refused it.
+        run: python3 tests/check_action_manifest_flow_scalars.py
 
   actionlint:
     name: actionlint

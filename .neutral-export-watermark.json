@@ -1,5 +1,5 @@
 {
-  "exported_at_utc": "2026-10-23T18:53:01Z",
+  "exported_at_utc": "2026-10-23T19:25:40Z",
   "files": {
     ".custody.json": "56adfbefa20942fd8d03f2927ebe2c8b3d967152252c5b43303566e97928b168",
     ".env.example": "7bc398cc8530884a775da7c78ff4b44e6d44b95f3b6cd82ed98f62de1290b461",
@@ -9,7 +9,7 @@
     ".github/actions/discover/action.yml": "c8b1b34ad5781e730ae21418f12d0d9badae5730c0a66368c8095021d2fa7a33",
     ".github/actions/docker-build-push/action.yml": "d56c6c48a3a794104f7e5270cd7db6e75c9acc8c60a21cd65383e50a8eb2be17",
     ".github/actions/iac-scan/action.yml": "439688aa8540fb1ac0f2999c0493c5cc5617a50e89baf273db8544fa680b2432",
-    ".github/actions/known-exploited/action.yml": "e5ed1fecad493c60114697bcc5f662cb106f33d11d00f6418aaec668cb2a2f15",
+    ".github/actions/known-exploited/action.yml": "450d18bc8d702a6d855a4e9467f0806b3717393eb071e14aae210b979bab6c23",
     ".github/actions/propose-ledger/action.yml": "af023e2c664173436d42a905bb032bcf5f36fe7fe499e9f06e3e228560aafc30",
     ".github/actions/render-version-metadata/action.yml": "cf61d2a18e468bd9f1af10643d0c25f46594ab57ce8b5d2f1ced63c1221c9089",
     ".github/actions/resolve-policy/action.yml": "17ff0dff91dc9d3bf3e65a8fc56a02f16292f43a8780f93f2dffb0cdde8786d7",
@@ -42,7 +42,7 @@
     ".github/workflows/reusable-security.yml": "0706896185d88e1cccb9ae3f2c432a9bad6d7d3f4e67755117a1a68431baf114",
     ".github/workflows/reusable-ticket-reconcile.yml": "15b3b0b203b4ea5b14445d91c10246bd074cb4df5683f3cdcb45c8273f46517b",
     ".github/workflows/reusable-ticket-reference.yml": "ebcc8e5048b1d6d43d33915ee87a0fbcb5a92587c846b664ce2d9edd6dbec5b6",
-    ".github/workflows/self-test.yml": "ce76c47ee89be2617a5c9f99d7bc02acd86090b2650fb842a77c752ba51757c8",
+    ".github/workflows/self-test.yml": "5ec0a1285aaada2e2c65d9b09919c05273b521067496623c9ad03660ee4f8cc6",
     ".github/workflows/validate-scanners.yml": "5ded931886767a69a6f99237f3c8291dc7a51fd81fe0e395cf2e886b0d5abbbd",
     ".github/workflows/verify-azure-oidc.yml": "d7ae64354c71ff1ed3e7303303bfbe4ac224346df314d39402966fa9e630bc47",
     ".github/workflows/workflow-policy-check.yml": "2849e0e456f7349eaf7bd11cc22e78d484be3a2bc6b17d81e48f6ff7bb62a3ad",
@@ -208,6 +208,7 @@
     "tests/_workflow_runner.py": "b93e90cf68b91b1a6aae5af3910bc172592b77e48251f0469709096d514b6ed6",
     "tests/build_pipeline_overlays.py": "10144028d40cc9ae160685e70595d46d53acd20d68951bde3185025919060f36",
     "tests/capability_inventory.py": "a5ed2c884808fcbb919dd4a7770d9be157461ae7e942834c5b26b9fe287fae4c",
+    "tests/check_action_manifest_flow_scalars.py": "aa22cb0bc05e3578b7c38d6a88173f2f980216c4187063bc4975f431002c8df7",
     "tests/check_action_pins.py": "88f28c62fafa53f7d49c8bc4110d810f70b8eb5c1cec6af3e7030b05151566cb",
     "tests/check_actionlint.py": "528c7b6ad44b8657e87daecb088c5f992978414384062186914f77834bcbd762",
     "tests/check_artifact_identity.py": "35e44734b5c1bff2c7476d8e3f0b5092375c61add562e98a31aab6d086deec0f",
@@ -378,7 +379,7 @@
     "tests/prove_image_secret_row.py": "45e3983c5b45dca6fb635225611bf31e81f7b656ece4cb80dcd06d5b95d00f5f",
     "tests/prove_jira_auth_and_routing.py": "e4fe57e313cee48fba70f3b68f113059d4317a27fbf931cc3eeb5e6f1203409a",
     "tests/prove_kit_script_digests.py": "3b64425cd398f1a5247b13a13fa05e5c1f651ae39cf60d70dc2cb59629007ec2",
-    "tests/prove_known_exploited.py": "508ec74a6b7532334301ab43dfeb2352375770892ab20e0e53a5072dfcc16113",
+    "tests/prove_known_exploited.py": "692faff23b2cae9cbfb3f22e6ac538639aee1c74a224d1eca5b71119fd01137c",
     "tests/prove_ledger_read_authority.py": "305a0765ddf7dd5a7eb19256906e6ecce26535c7d6aa7857479865a01fd58be8",
     "tests/prove_lineage_durability.py": "7be2f27ee7f60088aabfe0ecce166bebcb7009da58b4bac99afb512cb32f675d",
     "tests/prove_lineage_integrity.py": "82fc2787b528b9f47736dc33d5fca427d6cffb91fcc9bb3d0a204e6b33e20b02",
@@ -463,7 +464,7 @@
   "note": "Written by scripts/export_for_adoption.py. It records what this copy RECEIVED, so the next export can tell a source change from a change made here. Deleting it does not break anything; it only forces the next export to be told its baseline with --baseline.",
   "profile": "neutral",
   "source": "the kit's source repository (commit recorded; branch names are not)",
-  "source_commit": "5ccf1a8e7b37f3b11f66bbdcafed68740e0a62c1",
+  "source_commit": "4060290e049ef8c1075f0741c7d5dca2d7ef2bc2",
   "source_dirty": false,
   "unresolved_conflicts": {}
 }
