@@ -113,7 +113,7 @@ jobs:
           # A prior run got HTTP 503 from the release CDN. The URL and asset name are
           # correct; the delivery path is not reliable. Extract the binary from the
           # vendor container image instead — no release-asset dependency.
-          IMG=zricethezav/gitleaks:v8.21.2
+          IMG=zricethezav/gitleaks:v8.21.2@sha256:0e99e8821643ea5b235718642b93bb32486af9c8162c8b8731f7cbdc951a7f46
           docker pull -q "$IMG"
           CID=$(docker create "$IMG")
           docker cp "$CID:/usr/bin/gitleaks" ./gitleaks || docker cp "$CID:/gitleaks" ./gitleaks
@@ -574,7 +574,7 @@ jobs:
               # The SHIPPED image, without -no-fail, as the flagship runs it (W4K-116).
               # suppression: EXPECTED_NEGATIVE_RESULT -- gosec exits 1 on findings
               # preserved_by: the absent-report and parse checks below
-              docker run --rm -v "$PWD/fixture/go":/src -w /src securego/gosec:2.24.6 \
+              docker run --rm -v "$PWD/fixture/go":/src -w /src securego/gosec:2.24.6@sha256:2cf71ea78210c496c65e3a987576a9c8317b68e20f2960520b3f6f8f9f539be5 \
                 -fmt json -out /src/out.json ./... >/dev/null 2>&1 || true
               mv fixture/go/out.json out.json 2>/dev/null || true; EXEC=ok
               # A PARSE FAILURE IS NOT ZERO FINDINGS.

@@ -100,8 +100,14 @@ MOVES = {
     # and detect-secrets leaves out the kit's own gitleaks.sarif. The step-level diff against
     # a31c0a6 was `run` on Write the Azure/Entra rules, Install gitleaks, Gitleaks and
     # detect-secrets only. The L-FX pin was dbd82bc7...fc8f.
+    # RE-PINNED 2026-10-27, lane L-MIRROR (KDEC-032, the gaps closed), `--repin secret-scan`. Reason: gitleaks is pinned BY DIGEST and may come from the organisation's image mirror. The canonical diff
+    # against the previous pin is: runs-on becomes `vars.KIT_FEED_MIRROR_RUNNER || 'ubuntu-latest'`; the Install
+    # gitleaks step gains env W_IMAGE_REGISTRY (vars.KIT_SCANNER_IMAGE_REGISTRY) and its IMG line becomes
+    # `zricethezav/gitleaks:v8.21.2@sha256:0e99e882...7f46`, redirected to <registry>/zricethezav/gitleaks@<the
+    # same digest> when the registry is set. Nothing else in the step or the job changed.
+    # The previous pin was 72d388c0...2d9d.
     'secret-scan': ('secret-scan', '11d1d56',
-                    '72d388c0864ee323c486fc21d340757f2074cbba556a1c3d9216968f16ca2d9d'),
+                    'ab72005d155316870bc604ccb193a5fd599a8a2221971225743bf2fcf0ed9134'),
     # RE-PINNED 2026-10-23, integration lane L-INT1, `--repin sast-cpp`, after the merge pin
     # 7981aba5...99f1. Reason: KDEC-027 -- L-SCAN-B's new `C/C++ build metadata` step wrote
     # scan_state/scan_reason as `$(cat ...)` straight into $GITHUB_OUTPUT; each is now read into a
@@ -136,10 +142,23 @@ MOVES = {
     # Trivy step, and its findings_state also reads lint_enforce's. No existing step's name, id,
     # if, uses, with, env, run or shell changed; each job passes the new inputs from discovery.
     # The L-S pins were iac-scan d66edea4...0806 and deps-scan bb038edc...905e.
+    # RE-PINNED 2026-10-27, lane L-MIRROR (KDEC-032, the gaps closed), `--repin iac-scan`. Reason: Trivy's misconfiguration checks bundle may come from the organisation mirror. The canonical diff
+    # against the previous pin is: runs-on becomes `vars.KIT_FEED_MIRROR_RUNNER || 'ubuntu-latest'`, and ONE step
+    # after the Trivy database cache -- `Trivy checks bundle from the organisation mirror (KDEC-032)`, running
+    # scripts/feed_mirror_step.sh with M_FEED trivy-checks and the three vars.KIT_FEED_MIRROR_* values,
+    # `if: always()` because it follows Checkov's enforce step (tests/prove_scanners_survive_enforce.py).
+    # The previous pin was 49d9144a...3093.
     'iac-scan': ('iac-scan', '11d1d56',
-                 '49d9144a4ed65c73595651aebe91506d8d5ba08d685042fde82ab088b6463093'),
+                 'edd6c6c638e7fb0d586840a63266ab81890152248258dcd66a8031b8ca187469'),
+    # RE-PINNED 2026-10-27, lane L-MIRROR (KDEC-032 PROPOSED, Release 4 feed mirrors), `--repin
+    # deps-scan`. Reason: the Trivy database may come from the organisation mirror. Against 9bdbb23 the
+    # canonical diff is ADDITIVE ONLY: runs-on becomes `vars.KIT_FEED_MIRROR_RUNNER || 'ubuntu-latest'`
+    # (the private runner that reaches the mirror, the hosted runner as before when unset), and ONE step
+    # after the Trivy database cache -- `Trivy database from the organisation mirror (KDEC-032)`, running
+    # scripts/feed_mirror_step.sh with the job's three vars.KIT_FEED_MIRROR_* values. No existing step's
+    # name, id, if, uses, with, env, run or shell changed. The L-INT1 pin was 980ac662...8197.
     'deps-scan': ('deps-scan', '11d1d56',
-                  '980ac662828bbc6fde659e65853a849b972a0c3cf712ad5d28f4d9236cff8197'),
+                  '751648420b56b57d32dccb1c3275277a9c92a8f752adf8f637e45fa10c3a405e'),
     # RE-PINNED 2026-10-23, integration lane L-INT1, `--repin sast-dotnet`. Reason: L-PIN (KDEC-027,
     # its pin was 5ffff3c6...cf1d) and L-SCAN-B (KDEC-026, below; its pin was 5194ff9c...94ec) each
     # re-pinned sast-dotnet from c7e1ea9; the merged composite carries both.

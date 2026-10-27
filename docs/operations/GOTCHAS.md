@@ -69,7 +69,7 @@ GUI's three-state dropdown maps to one or the other, never both.
 ## Scanners
 
 **The NVD workflow's data comes from a third-party public datafeed by default** (the
-Dependency-Check project's, no organisation-hosted mirror; one is planned for Release 4), so the
+Dependency-Check project's, no organisation-hosted mirror unless the optional Release 4 organisation mirror is configured -- KDEC-032, built, not yet run live), so the
 runner needs egress to it, and `NVD_API_KEY` is used only if `nvd_datafeed_url` is emptied. In that
 mode **a missing `NVD_API_KEY` does not fail the NVD workflow** — it degrades to unauthenticated and
 rate-limited. *"The scan ran"* and *"the scan had current data"* are different claims.

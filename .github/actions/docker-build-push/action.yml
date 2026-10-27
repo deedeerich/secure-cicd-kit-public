@@ -34,6 +34,20 @@ inputs:
     description: "Push after a clean scan"
     required: false
     default: "true"
+  # Release 4 (KDEC-032): the organisation feed mirror, from the caller's vars.KIT_FEED_MIRROR_*.
+  # Empty mirror URL: NOT_CONFIGURED, Trivy reads its public database exactly as before.
+  feed-mirror-url:
+    description: The organisation feed mirror's base URL. Empty reads Trivy's public database.
+    required: false
+    default: ''
+  feed-mirror-max-age-hours:
+    description: Refuse a mirror refreshed longer ago than this. The policy ceiling (48) applies to anything larger.
+    required: false
+    default: '48'
+  feed-mirror-fallback:
+    description: "`upstream` reads the public database when the mirror is refused, and records it."
+    required: false
+    default: 'none'
 outputs:
   image-digest:
     description: >-
@@ -113,6 +127,16 @@ runs:
         path: ${{ runner.temp }}/trivy-cache
         key: trivy-db-${{ runner.os }}-${{ steps.trivy_install.outputs.day }}
         restore-keys: trivy-db-${{ runner.os }}-
+    # AFTER the cache restore (KDEC-032): a current mirror replaces whatever was restored; a refused
+    # one empties the cache with the update off, so Trivy refuses rather than scan stale data.
+    - name: Trivy database from the organisation mirror (KDEC-032)
+      shell: bash
+      env:
+        M_FEED: trivy
+        M_URL: ${{ inputs.feed-mirror-url }}
+        M_MAX_AGE: ${{ inputs.feed-mirror-max-age-hours }}
+        M_FALLBACK: ${{ inputs.feed-mirror-fallback }}
+      run: bash "$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)/scripts/feed_mirror_step.sh"
     - name: Trivy image scan (gate before push)
       shell: bash
       env:

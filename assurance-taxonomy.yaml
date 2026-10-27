@@ -3361,6 +3361,93 @@ namespaces:
           exception is honoured and the run routes BLOCKED.
 
   # ─────────────────────────────────────────────────────────────────────────
+  # KDEC-032 PROPOSED (Release 4, lane L-MIRROR, 2026-10-27; docs/adoption/FEED_MIRRORS.md). Owner,
+  # 2026-10-27: "release 4 could have the mirrors yes? I could have it in the security platform azure
+  # subscription".
+  feed_mirror:
+    description: >-
+      What a scan established about the organisation-hosted mirror of one external feed (nvd, kev,
+      trivy, trivy-checks, osv) before using it: scripts/feed_mirror.py consume, through .github/actions/feed-mirror and
+      the known-exploited composite. The mirror is a static website behind a private endpoint, written
+      by reusable-feed-mirror-refresh.yml with a manifest per feed (source, upstream version and
+      timestamp, sha256 and size per file, refreshed_at).
+    consumers: [scripts/feed_mirror.py, .github/actions/feed-mirror, .github/actions/known-exploited,
+                scripts/known_exploited.py, reusable-nvd-cve, reusable-security, reusable-build-docker,
+                reusable-deploy-appservice, reusable-deploy-containerapp, reusable-deployed-scan,
+                tests/prove_feed_mirror.py]
+    rule: >-
+      A MIRROR THAT CANNOT BE VOUCHED FOR IS REFUSED BY NAME, NEVER READ AS CLEAN, AND NEVER QUIETLY
+      REPLACED BY THE PUBLIC FEED. The refusal becomes the consumer's existing unavailable state: KEV
+      -> kev_state UNAVAILABLE (advisory_cause.KEV_UNAVAILABLE); NVD -> the database update failed
+      (nvd-dependency-check in controls_unavailable, EVIDENCE_UNTRUSTED); Trivy -> an emptied cache with
+      the update off, so every Trivy call refuses and its scanner is unavailable; the checks bundle ->
+      `trivy config` made fatal (a missing custom-check path), never Trivy's silent embedded fallback;
+      OSV -> offline against an empty database, so osv-scanner fails and malicious-deps is
+      COLLECTION_FAILED. The 48-hour policy is a ceiling a caller may only tighten.
+    values:
+      NOT_CONFIGURED:
+        definition: >-
+          No mirror is named (vars.KIT_FEED_MIRROR_URL empty): the public feed is read exactly as before
+          Release 4. Not a weakening and not a refusal.
+      MIRROR_CURRENT:
+        definition: >-
+          The feed's manifest was read, is for this feed, was refreshed within the policy, and every file
+          the consumer read matched its sha256 and size (nvd: cache.properties and every .meta; the
+          refresh verified each year's bytes against its .meta and read the whole upload back).
+      MIRROR_STALE:
+        definition: The manifest's refreshed_at is older than the policy (48 h, or a tighter caller value).
+        rule: Refused. The refresh stopped; data that stopped updating cannot establish "no known vulnerabilities".
+      MIRROR_UNREACHABLE:
+        definition: >-
+          The manifest or a file could not be fetched (no private network path, DNS, the endpoint down),
+          or the check did not complete. Typically a job on a runner that cannot reach the private
+          endpoint (vars.KIT_FEED_MIRROR_RUNNER).
+        rule: Refused. A mirror that cannot be read is not a mirror that is clean.
+      MIRROR_INTEGRITY_FAILED:
+        definition: >-
+          The manifest is unreadable, for another feed, malformed, refreshed in the future; a file's bytes
+          do not match its sha256; or an archive member escapes its directory.
+        rule: Refused. Never retried against the public feed unless fallback upstream is configured.
+      MIRROR_FALLBACK_UPSTREAM:
+        definition: >-
+          The mirror was refused (its cause is recorded as mirror_cause) and the caller EXPLICITLY set
+          vars.KIT_FEED_MIRROR_FALLBACK to upstream, so the public feed was read. Recorded in the outputs,
+          the step summary and the evidence file.
+        rule: >-
+          Allowed only when configured; it is an exception to the private-only rule (R8) and is reviewed
+          as one. Never taken on a current mirror, never on an unknown fallback value.
+
+  feed_mirror_refresh:
+    description: >-
+      What one run of reusable-feed-mirror-refresh.yml did for one feed: fetched the upstream (the
+      Dependency-Check project's datafeed, the CISA KEV catalog, Trivy's own database download),
+      verified it, published a new generation and manifest, and read the publication back through the
+      consumer path.
+    consumers: [scripts/feed_mirror.py, reusable-feed-mirror-refresh, tests/prove_feed_mirror.py]
+    rule: >-
+      NOTHING UNVERIFIED IS PUBLISHED, AND A PUBLICATION IS NOT DONE UNTIL IT READS BACK. Files go up
+      first, the manifest last (the switch is one blob write), and the run then consumes its own
+      publication with --verify-all. A refusal leaves the previous generation in place, which then ages
+      into MIRROR_STALE at the consumers -- the failure is visible downstream, never hidden.
+    values:
+      MIRROR_PUBLISHED:
+        definition: The generation and its manifest were uploaded and read back MIRROR_CURRENT, every file matching.
+      MIRROR_UPSTREAM_STALE:
+        definition: >-
+          The upstream's own timestamp is older than its limit (NVD datafeed and Trivy DB 48 h; Trivy Java
+          DB 14 days): publishing it would reset refreshed_at over old data.
+      MIRROR_UPSTREAM_UNREACHABLE:
+        definition: The upstream (or a file it names) could not be fetched.
+      MIRROR_UPSTREAM_INTEGRITY_FAILED:
+        definition: >-
+          The upstream's bytes do not match its own checksums (an NVD year against its .meta sha256 and
+          sizes), or the KEV catalog does not parse as a catalog the check would accept.
+      MIRROR_PUBLISH_UNVERIFIED:
+        definition: >-
+          The upload completed but reading it back through the consumer path did not return MIRROR_CURRENT
+          (or an image copied to the registry does not resolve at its source digest). The run fails.
+
+  # ─────────────────────────────────────────────────────────────────────────
   known_exploited_exception_refusal:
     description: >-
       Why the policy register refused ONE known_exploited_exceptions item (KDEC-022 item 3: "a

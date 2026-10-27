@@ -74,6 +74,14 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # same against Azure and a real artifact store needs a live run.
     "reusable-deployed-scan.yml": ["deployed-scan", "deployed-scan-live"],
     "action:deployed-scan": ["deployed-scan"],
+    # KDEC-032 PROPOSED (Release 4, lane L-MIRROR, 2026-10-27): the organisation-hosted feed mirrors.
+    # TWO CAPABILITIES, as the deployed scan has: the manifest, the refusals (stale, unreachable,
+    # tampered), the explicit fallback and the refresh's upstream verification are proven locally on
+    # file:// fixtures with the consumer composites' steps run as shipped; the same against a real
+    # storage account behind a private endpoint needs a live run.
+    "reusable-feed-mirror-refresh.yml": ["feed-mirror", "feed-mirror-live"],
+    "action:feed-mirror-refresh": ["feed-mirror", "feed-mirror-live"],
+    "action:feed-mirror": ["feed-mirror"],
     "workflow-policy-check.yml": ["workflow-policy"],
     # `authorization-boundary-isolation` SPLIT OUT 2026-09-22, when the probe was rewritten from
     # an authentication check into a boundary check. It is NOT azure-oidc-auth at a finer grain:
@@ -494,6 +502,9 @@ VALIDATION_REGISTRY: dict[str, dict] = {
     "rollback-sequence": {"probe": "tests/prove_rollback_sequence.py", "state": "observed",
                           "level": "tool"},
     "deployed-scan": {"probe": "tests/prove_promotion.py", "state": "observed", "level": "tool"},
+    # OBSERVED 2026-10-27, locally (lane L-MIRROR): tests/prove_feed_mirror.py M1..M14. Level `tool`:
+    # no storage account, private endpoint or runner has been involved.
+    "feed-mirror": {"probe": "tests/prove_feed_mirror.py", "state": "observed", "level": "tool"},
     "version-metadata-wired": {"probe": "tests/prove_build_push_round_trip.py",
                                "state": "observed", "level": "tool"},
     }
@@ -717,6 +728,17 @@ DEFERRALS: dict[str, dict] = {
                            "trigger": "the next live deploy acceptance run (KDEC-012), with the "
                                       "hosted promotion KDEC-029 owes",
                            "expires": "2026-12-31"},
+    "feed-mirror-live": {"reason": "a live run needs infra/feed-mirrors applied in a subscription with a "
+                                   "private-endpoint subnet, a private-network runner and the refresh "
+                                   "identity's federated credential; none exists yet",
+                         "owner": "kit-maintainer",
+                         "proves": "reusable-feed-mirror-refresh.yml on a private runner: each feed "
+                                   "MIRROR_PUBLISHED and read back; a scan on the private runner reading "
+                                   "MIRROR_CURRENT for nvd, kev and trivy; the same scan on a standard "
+                                   "hosted runner refused MIRROR_UNREACHABLE; the semgrep image pulled "
+                                   "from the mirror registry at its digest",
+                         "trigger": "the first apply of infra/feed-mirrors (docs/adoption/FEED_MIRRORS.md)",
+                         "expires": "2026-12-31"},
     "attestation-verify":  {"reason": "IMPLEMENTATION_HELD -- the owner's plan (Pro) offers no "
                                       "attestations on private repositories, so V1 cannot be armed "
                                       "there; classification and routing are proven locally only",
@@ -827,7 +849,12 @@ DEFERRALS: dict[str, dict] = {
 
 # Ratchet. Accepted debt may shrink, never grow. A new deferral must displace an old one or
 # raise this number deliberately, in a reviewable diff, with a reason in the commit message.
-MAX_ACCEPTED_DEBT = 6    # RAISED 5 -> 6 on 2026-10-26 for deployed-scan-live (KDEC-029 decision 8,
+MAX_ACCEPTED_DEBT = 7    # RAISED 6 -> 7 on 2026-10-27 for feed-mirror-live (KDEC-032 PROPOSED, lane
+                         # L-MIRROR): a NEW capability -- the organisation feed mirrors against a real
+                         # private storage account -- whose local half is observed; nothing existing
+                         # became provable in this change, so nothing could be displaced. Ratchet it
+                         # back when it closes.
+                         # RAISED 5 -> 6 on 2026-10-26 for deployed-scan-live (KDEC-029 decision 8,
                          # lane L-PROMO): a NEW capability -- the daily scan of what serves, against
                          # Azure -- whose local half is observed; nothing existing became provable in
                          # this change, so nothing could be displaced. Ratchet it back when it closes.

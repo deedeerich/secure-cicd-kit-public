@@ -694,7 +694,8 @@ def main():
     # A tag or a digest: since lane L-SG the job pins semgrep/semgrep@sha256:..., and a pattern
     # that read tags only would find no image and pass by checking nothing.
     images = sorted(set(re.findall(
-        r'image:\s*(semgrep/semgrep(?::[0-9.]+|@sha256:[0-9a-f]{64}))', flagship)))
+        # The public branch of the mirror expression (KDEC-032) is quoted: `|| 'semgrep/semgrep@...'`.
+        r"(?:image:\s*|')(semgrep/semgrep(?::[0-9.]+|@sha256:[0-9a-f]{64}))", flagship)))
     probe_body = io.open(VALIDATE, encoding='utf-8').read()
     print('  M2 flagship semgrep container(s) %s; probe ids %s' % (images, ids))
     if not images:

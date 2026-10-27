@@ -103,7 +103,7 @@ person-only cases (duplicate, close, reopen). `main` is at Release 1 (`ef4b15d`,
 - **The NVD workflow's currency against a live NVD feed**: its CVSS gate ships at 9.0 (owner ruling
   O-12), so it blocks by default, and detection is proven on seeded fixtures. Its NVD data comes by
   default from the Dependency-Check project's public datafeed, a third-party host the runner must
-  reach; there is no organisation-hosted mirror (planned for Release 4), and the API key is used only
+  reach; there is no organisation-hosted mirror unless the optional Release 4 organisation mirror is configured -- KDEC-032, built, not yet run live, and the API key is used only
   if the datafeed is emptied. Feed currency is not established.
 - **Every install pinned**: every remote action is SHA-pinned (L82, `4dfd858`), but detect-secrets
   and ruff/mypy are still installed unpinned (L84).

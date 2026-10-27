@@ -37,6 +37,20 @@ def flagship(path=None):
     doc = yaml.safe_load(text) or {}
     cont = ((doc.get('jobs') or {}).get(JOB) or {}).get('container')
     image = str((cont.get('image') if isinstance(cont, dict) else cont) or '')
+    # THE MIRROR FORM (Release 4, KDEC-032): `${{ vars.KIT_SCANNER_IMAGE_REGISTRY != '' && format('{0}/
+    # semgrep/semgrep@sha256:<d>', ...) || 'semgrep/semgrep@sha256:<d>' }}`. Accepted only when BOTH
+    # branches name the same digest: the mirror may change where the bytes come from, never which bytes.
+    if image.startswith('${{'):
+        pins = set(re.findall(r'semgrep/semgrep@sha256:[0-9a-f]{64}', image))
+        if len(pins) != 1 or "'semgrep/semgrep@sha256:" not in image or "/semgrep/semgrep@sha256:" not in image:
+            return image, None, ('the %s image expression does not name ONE digest in both its mirror and its '
+                                 'public branch: %r' % (JOB, image))
+        line = re.search(r'^\s*image:\s*\$\{\{.*\}\}\s*#\s*(\d+\.\d+\.\d+)\s*$', text, re.M)
+        image = pins.pop()
+        if not line:
+            return image, None, ('the %s image line does not name the version its digest is '
+                                 '(`# X.Y.Z`)' % JOB)
+        return image, line.group(1), None
     if not DIGEST_IMAGE.match(image):
         m = re.match(r'^semgrep/semgrep:(\d+\.\d+\.\d+)$', image)
         return image, (m.group(1) if m else None), (

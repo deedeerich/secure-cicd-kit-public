@@ -264,6 +264,30 @@ INERT_ONLY: dict[str, dict] = {
         'review_label': 'names the label a human-review update receives; it decides nothing',
         'urgent_label': 'names the label an urgent update receives; it decides nothing',
     },
+    # KDEC-032 PROPOSED (Release 4, lane L-MIRROR, 2026-10-27). The refresh scans nothing and gates
+    # nothing: it publishes feeds, and every way it can fall short -- a feed left out of `feeds`, a
+    # wrong source, a run that stops -- reaches the scans as a mirror that ages past the 48 h policy and
+    # is refused by name (MIRROR_STALE), or that fails its manifest (MIRROR_INTEGRITY_FAILED). The
+    # consumers' policy is a ceiling no input here can raise (scripts/feed_mirror.py).
+    'reusable-feed-mirror-refresh.yml': {
+        'storage_account': 'names where the feeds are written; a wrong one fails the upload by name',
+        'mirror_url': 'names where the publication is read back; a wrong one fails the read-back '
+                      '(MIRROR_PUBLISH_UNVERIFIED)',
+        'runner': 'names the runner; one that cannot reach the private endpoint fails the upload',
+        'github_environment': 'names the environment whose federated credential is trusted; a wrong one '
+                              'fails the login',
+        'cloud': 'which Azure cloud the login targets',
+        'feeds': 'which feeds are refreshed; a feed left out ages into MIRROR_STALE at every consumer '
+                 'and is refused there, never read as current',
+        'nvd_upstream_url': 'the datafeed copied; every year is checked against its own .meta sha256 '
+                            'and its age, so a wrong source is refused, never published',
+        'kev_upstream_url': 'the catalog copied; it must parse as the check parses it',
+        'keep_generations': 'how many old generations are kept; the current one is never deleted',
+        'registry': 'names the image mirror registry; empty mirrors no images and the scans pull '
+                    'from the public registry exactly as before',
+        'images': 'which images are copied; each must be pinned by digest (a tag is refused) and '
+                  'resolve at that digest after the copy',
+    },
     'reusable-propose-ledger.yml': {
         'environment': 'names the baseline-ledger environment the proposal is for; it selects which '
                        'ledger is read, and no value of it softens, skips or narrows a control',

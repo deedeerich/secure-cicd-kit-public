@@ -134,8 +134,9 @@ on:
         description: >-
           Where Dependency-Check builds and refreshes its NVD database. Default: the Dependency-Check
           project's public datafeed, which builds the full database in about 1.5 minutes. It is a
-          third-party host: there is no organisation-hosted mirror, so the runner needs egress to it
-          (an organisation mirror is planned for Release 4). NVD_API_KEY is unused while this is set.
+          third-party host the runner needs egress to -- unless the organisation's Release 4 mirror is
+          configured (vars.KIT_FEED_MIRROR_URL, KDEC-032): then the mirror's current generation is read
+          instead, or the update is refused by name. NVD_API_KEY is unused while this is set.
           Empty: the NVD API directly, with NVD_API_KEY -- which, at the NVD API's 2026-10
           throughput, cannot finish a cold build inside this job's limit.
         type: string
@@ -297,7 +298,9 @@ jobs:
       weakening_record: ${{ steps.posture.outputs.weakening_record }}
     # The environment is what makes NVD_API_KEY resolvable at all -- see the input's note.
     environment: ${{ inputs.github_environment }}
-    runs-on: ubuntu-latest
+    # THE FEED MIRRORS ARE PRIVATE (Release 4, KDEC-032; R8): a job that reads them runs where the
+    # private endpoint is reachable -- the caller's private-network runner, when one is named.
+    runs-on: ${{ vars.KIT_FEED_MIRROR_RUNNER || 'ubuntu-latest' }}
     # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
     # converts a dependency failure into uncontrolled cost).
     # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
@@ -363,6 +366,16 @@ jobs:
           path: ${{ runner.temp }}/trivy-cache
           key: trivy-db-${{ runner.os }}-${{ steps.trivy_install.outputs.day }}
           restore-keys: trivy-db-${{ runner.os }}-
+      # AFTER the cache restore, so a restored public copy can never stand in for a refused mirror.
+      - name: Trivy database from the organisation mirror (KDEC-032)
+        id: trivy_mirror
+        if: inputs.enable_trivy
+        uses: $/.github/actions/feed-mirror
+        with:
+          feed: trivy
+          mirror-url: ${{ vars.KIT_FEED_MIRROR_URL }}
+          max-age-hours: ${{ vars.KIT_FEED_MIRROR_MAX_AGE_HOURS }}
+          fallback: ${{ vars.KIT_FEED_MIRROR_FALLBACK }}
       - name: Trivy filesystem scan (SARIF)
         id: trivy_fs
         if: inputs.enable_trivy
@@ -564,14 +577,51 @@ jobs:
           database updates will be heavily rate limited and may not complete within this job. \
           Request a free key at https://nvd.nist.gov/developers/request-an-api-key"
 
+      # THE ORGANISATION MIRROR (Release 4, KDEC-032). Current: its generation is the datafeed below.
+      # Refused (stale, unreachable, tampered): the update is not attempted and the run says so --
+      # Dependency-Check against a database nobody can vouch for would report nothing, and nothing
+      # reads as clean.
+      - name: NVD datafeed from the organisation mirror (KDEC-032)
+        id: nvd_mirror
+        if: inputs.enable_dependency_check
+        uses: $/.github/actions/feed-mirror
+        with:
+          feed: nvd
+          mirror-url: ${{ vars.KIT_FEED_MIRROR_URL }}
+          max-age-hours: ${{ vars.KIT_FEED_MIRROR_MAX_AGE_HOURS }}
+          fallback: ${{ vars.KIT_FEED_MIRROR_FALLBACK }}
+
       - name: Update NVD database
         if: inputs.enable_dependency_check
         id: nvd_update
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
           W_NVD_DATAFEED: ${{ inputs.nvd_datafeed_url }}   # caller input: data, not script text
+          M_STATE: ${{ steps.nvd_mirror.outputs.mirror_state }}
+          M_USABLE: ${{ steps.nvd_mirror.outputs.mirror_usable }}
+          M_URL: ${{ steps.nvd_mirror.outputs.mirror_url }}
+          M_WHY: ${{ steps.nvd_mirror.outputs.mirror_why }}
+          M_CONFIGURED: ${{ vars.KIT_FEED_MIRROR_URL }}
         run: |
           set -euo pipefail
+          # AN ABSENT MIRROR STATE IS NOT A CURRENT ONE. With a mirror configured, a step that reported
+          # nothing is refused like an unreachable mirror; with none configured it is NOT_CONFIGURED.
+          if [ -z "${M_STATE:-}" ]; then
+            if [ -n "${M_CONFIGURED:-}" ]; then
+              M_STATE=MIRROR_UNREACHABLE; M_USABLE=false; M_WHY="the mirror step reported no state"
+            else
+              M_STATE=NOT_CONFIGURED; M_USABLE=true
+            fi
+          fi
+          if [ -z "${M_WHY:-}" ]; then M_WHY="no reason recorded"; fi
+          # A state without its usable flag is not usable: only an explicit `true` proceeds.
+          if [ -z "${M_USABLE:-}" ]; then M_USABLE=false; fi
+          if [ "$M_USABLE" != true ]; then
+            echo "::error title=${M_STATE:-MIRROR_UNREACHABLE}::The NVD mirror was refused (${M_WHY:-}). The database           is NOT updated and Dependency-Check does not run: nvd-dependency-check is unavailable, not clean."
+            { echo "NVD_UPDATE_FAILED=true"; echo "NVD_MIRROR_REFUSED=true"; } >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if [ "${M_STATE:-}" = MIRROR_CURRENT ]; then W_NVD_DATAFEED="$M_URL"; fi
           mkdir -p /tmp/nvd-data
           ARGS=(--updateonly --data /tmp/nvd-data)
           # The same source the scan step below names, so its own update check reads it too.
@@ -630,7 +680,8 @@ jobs:
 
       - name: Run OWASP Dependency-Check
         id: dc_run
-        if: inputs.enable_dependency_check
+        # A refused mirror (KDEC-032) means no database anybody can vouch for: no run, no clean report.
+        if: inputs.enable_dependency_check && env.NVD_MIRROR_REFUSED != 'true'
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
           # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
@@ -638,8 +689,12 @@ jobs:
           W_FAIL_ON_CVSS: ${{ inputs.fail_on_cvss }}
           W_SCAN_PATHS: ${{ inputs.scan_paths }}
           W_NVD_DATAFEED: ${{ inputs.nvd_datafeed_url }}
+          M_STATE: ${{ steps.nvd_mirror.outputs.mirror_state }}
+          M_URL: ${{ steps.nvd_mirror.outputs.mirror_url }}
         run: |
           set -euo pipefail
+          # Only a CURRENT mirror replaces the datafeed; an absent state was refused by the update step.
+          if [ -n "${M_STATE:-}" ] && [ "$M_STATE" = MIRROR_CURRENT ]; then W_NVD_DATAFEED="$M_URL"; fi
           ARGS=(
             --project "$W_PROJECT_NAME"
             --format JSON --format HTML --format SARIF
@@ -770,6 +825,16 @@ jobs:
                echo "result cannot be matched against a deployment record later. Prefer a digest." ;;
           esac
 
+      # Trivy's checks bundle from the organisation mirror (KDEC-032); refused, `trivy config` is fatal.
+      - name: Trivy checks bundle from the organisation mirror (KDEC-032)
+        id: checks_mirror
+        if: always() && inputs.scan_dockerfiles
+        uses: $/.github/actions/feed-mirror
+        with:
+          feed: trivy-checks
+          mirror-url: ${{ vars.KIT_FEED_MIRROR_URL }}
+          max-age-hours: ${{ vars.KIT_FEED_MIRROR_MAX_AGE_HOURS }}
+          fallback: ${{ vars.KIT_FEED_MIRROR_FALLBACK }}
       - name: Scan Dockerfiles for misconfiguration
         id: dockerfile
         if: always() && inputs.scan_dockerfiles
@@ -816,6 +881,9 @@ jobs:
             nvd-scan-results/trivy-nvd.sarif nvd-scan-results/dependency-check/dependency-check-report.sarif
             nvd-scan-results/trivy-sbom-revalidation.sarif nvd-scan-results/trivy-image-revalidation.sarif
           sarif-job: nvd-cve-scan
+          mirror-url: ${{ vars.KIT_FEED_MIRROR_URL }}
+          mirror-max-age-hours: ${{ vars.KIT_FEED_MIRROR_MAX_AGE_HOURS }}
+          mirror-fallback: ${{ vars.KIT_FEED_MIRROR_FALLBACK }}
 
       # --------------------------------------------------------------- Results
 
@@ -1092,8 +1160,9 @@ jobs:
           # install (controls_unavailable), it never softens a control.
           posture dependency_check_sha256   NOT_A_CONTROL_SURFACE - -
           # The database's SOURCE, not a strength setting: an unreachable or failing source fails
-          # the update (NVD_UPDATE_FAILED -> controls_unavailable). NOT ESTABLISHED: this record does
-          # not check how fresh a reachable source is (lane L-NV).
+          # the update (NVD_UPDATE_FAILED -> controls_unavailable). Freshness is established only for
+          # the organisation mirror (KDEC-032: a mirror older than the 48 h policy is refused, the same
+          # NVD_UPDATE_FAILED); a public datafeed's freshness is still not checked here (lane L-NV).
           posture nvd_datafeed_url          NOT_A_CONTROL_SURFACE - -
           posture sbom_path                TARGET_NOT_SUPPLIED  NONEMPTY               nvd-sbom-revalidation   "$W_SBOM_PATH"
           posture image_ref                 TARGET_NOT_SUPPLIED  NONEMPTY               nvd-image-revalidation  "$W_IMAGE_REF"

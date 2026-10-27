@@ -1459,6 +1459,17 @@ jobs:
           # one app -- both ending in a swap into production -- did not queue behind each other.
           python3 tests/prove_deploy_concurrency.py
 
+      - name: A feed mirror is used only when current and intact (KDEC-032 proposed)
+        run: |
+          set -euo pipefail
+          # Release 4: the organisation-hosted NVD datafeed, KEV catalog and Trivy database. A stale,
+          # unreachable or tampered mirror is refused by name and surfaces as the consumer's own
+          # unavailable state -- never clean; the public feed only on an explicit, recorded fallback.
+          python3 scripts/feed_mirror.py --self-test
+          python3 tests/prove_feed_mirror.py
+          # The gaps closed: gosec/gitleaks by digest, Trivy's checks bundle and OSV mirrored, fail closed.
+          python3 tests/prove_feed_mirror_gaps.py
+
       - name: The cross-repository target lease refuses a stale holder (KDEC-030 draft)
         run: |
           set -euo pipefail

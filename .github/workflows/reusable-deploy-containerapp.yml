@@ -281,6 +281,9 @@ on:
           environment; KDEC-030) needs a runner that reaches the lease store's private endpoint -- a
           GitHub-hosted larger runner with Azure private networking, or a self-hosted runner inside
           the network; on a runner that cannot reach it the lease fails closed (LEASE_STORE_UNREACHABLE).
+          The same runner reads the organisation feed mirrors when vars.KIT_FEED_MIRROR_URL is set
+          (KDEC-032): on one that cannot reach them the promotion re-scan's Trivy and KEV are refused
+          MIRROR_UNREACHABLE, never read as clean.
         type: string
         required: false
         default: "ubuntu-latest"
@@ -384,6 +387,8 @@ permissions:
 
 jobs:
   deploy:
+    # ONE caller-owned runner for this job: the lease store (KDEC-030) and the feed mirrors (KDEC-032)
+    # are both private, so the private-network runner named here serves both.
     runs-on: ${{ inputs.runner_label }}
     environment: ${{ inputs.github_environment }}
     outputs:
@@ -5291,6 +5296,15 @@ jobs:
           echo "0510e71e2fd39bf863856d499c8dc19feb4e7336546394c502a8f5cc7ab27460  $t" | sha256sum -c -
           tar -xzf "$t" trivy && sudo mv trivy /usr/local/bin/ && rm -f "$t"
 
+      - name: Trivy database from the organisation mirror (KDEC-032)
+        if: inputs.promote_from_run_id != ''
+        uses: $/.github/actions/feed-mirror
+        with:
+          feed: trivy
+          mirror-url: ${{ vars.KIT_FEED_MIRROR_URL }}
+          max-age-hours: ${{ vars.KIT_FEED_MIRROR_MAX_AGE_HOURS }}
+          fallback: ${{ vars.KIT_FEED_MIRROR_FALLBACK }}
+
       - name: Promotion gate -- the source record, its predecessor, the revocations and an SBOM re-scan
         # Reads run Y's record for environment Y, the predecessor's later records (supersession),
         # .security/promotion-revocations.json on the default branch, and the build's SBOM (sha256
@@ -5309,6 +5323,9 @@ jobs:
         with:
           sarif: ${{ steps.promotion_collect.outputs.rescan_sarif }}
           sarif-job: promotion-rescan
+          mirror-url: ${{ vars.KIT_FEED_MIRROR_URL }}
+          mirror-max-age-hours: ${{ vars.KIT_FEED_MIRROR_MAX_AGE_HOURS }}
+          mirror-fallback: ${{ vars.KIT_FEED_MIRROR_FALLBACK }}
 
       - name: Promotion gate -- decide (refuse before login)
         id: promotion_gate

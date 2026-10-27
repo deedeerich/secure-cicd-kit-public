@@ -11,7 +11,7 @@ templates to this rule.
 | Workflow | Purpose | Cloud deps | Caller grants |
 |---|---|---|---|
 | `reusable-security.yml` | Discovery → secret · code-quality · SAST · CodeQL · dependency · IaC · malware · SBOM · image scans → report → gate → `routing_result` | none | `contents: read`, `security-events: write`, `actions: read` |
-| `reusable-nvd-cve.yml` | Trivy + OWASP Dependency-Check; NVD data from the Dependency-Check project's public datafeed by default (a third-party host the runner must reach; no organisation-hosted mirror, one is planned for Release 4); re-scan of an SBOM or image | none (`NVD_API_KEY` only if `nvd_datafeed_url` is emptied) | `contents: read`, `security-events: write` |
+| `reusable-nvd-cve.yml` | Trivy + OWASP Dependency-Check; NVD data from the Dependency-Check project's public datafeed by default (a third-party host the runner must reach; no organisation-hosted mirror unless the optional Release 4 organisation mirror is configured -- KDEC-032, proven locally only); re-scan of an SBOM or image | none (`NVD_API_KEY` only if `nvd_datafeed_url` is emptied) | `contents: read`, `security-events: write` |
 | `workflow-policy-check.yml` | Governance gate over the calling repo's own workflows | none | `contents: read` |
 | `reusable-build-docker.yml` | Build once → Trivy gate **before** push → Syft SPDX SBOM → push those bytes → digest read back → attest | OIDC | `contents: read`, `id-token: write`, `attestations: write` |
 | `reusable-deploy-containerapp.yml` | Container Apps deploy by digest, verdict-gated, revision probed before traffic, reversible | OIDC | `contents: read`, `id-token: write` |

@@ -59,7 +59,8 @@ permissions:
 jobs:
   scan:
     name: Reconcile and re-scan what serves
-    runs-on: ubuntu-latest
+    # Reads the feed mirrors when named (KDEC-032): the private runner reaches them.
+    runs-on: ${{ vars.KIT_FEED_MIRROR_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -102,6 +103,14 @@ jobs:
           echo "0510e71e2fd39bf863856d499c8dc19feb4e7336546394c502a8f5cc7ab27460  $t" | sha256sum -c -
           tar -xzf "$t" trivy && sudo mv trivy /usr/local/bin/ && rm -f "$t"
 
+      - name: Trivy database from the organisation mirror (KDEC-032)
+        uses: $/.github/actions/feed-mirror
+        with:
+          feed: trivy
+          mirror-url: ${{ vars.KIT_FEED_MIRROR_URL }}
+          max-age-hours: ${{ vars.KIT_FEED_MIRROR_MAX_AGE_HOURS }}
+          fallback: ${{ vars.KIT_FEED_MIRROR_FALLBACK }}
+
       - name: Reconcile what serves; artifact drift; security drift; posture
         id: scan
         uses: $/.github/actions/deployed-scan
@@ -119,6 +128,9 @@ jobs:
         with:
           sarif: ${{ steps.scan.outputs.rescan_sarifs }}
           sarif-job: deployed-image-rescan
+          mirror-url: ${{ vars.KIT_FEED_MIRROR_URL }}
+          mirror-max-age-hours: ${{ vars.KIT_FEED_MIRROR_MAX_AGE_HOURS }}
+          mirror-fallback: ${{ vars.KIT_FEED_MIRROR_FALLBACK }}
 
       - name: Join the KEV verdict to the findings
         uses: $/.github/actions/deployed-scan

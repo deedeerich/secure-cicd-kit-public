@@ -591,17 +591,22 @@ the vending creates the empty target and the deploy identity, and the kit only r
 **Where the NVD data comes from.** By default `reusable-nvd-cve.yml` builds Dependency-Check's NVD
 database from the Dependency-Check project's **public datafeed**,
 `https://dependency-check.github.io/DependencyCheck_Builder/nvd_cache/` (input
-`nvd_datafeed_url`). That is a third-party host. **There is no organisation-hosted mirror**: the
-runner needs outbound access to that host, and the database is only as current and as available as
-that feed. The kit does not claim NVD coverage beyond that. An organisation mirror is planned for
-Release 4. The CISA KEV catalog and Trivy's vulnerability database are likewise fetched from their
-public publishers, not from an organisation mirror.
+`nvd_datafeed_url`). That is a third-party host. **Unless the organisation runs the Release 4 mirror** (below), there
+is no organisation-hosted mirror: the runner needs outbound access to that host, and the database is only as current and as available as
+that feed. The kit does not claim NVD coverage beyond that. The Release 4 mirror (below) is optional, built and proven locally, and not yet
+run live. The CISA KEV catalog and Trivy's vulnerability database are likewise fetched from their
+public publishers unless that mirror is configured.
 
 **The API key is used only if the datafeed is emptied.** With `nvd_datafeed_url: ""` the workflow
 uses the NVD API directly, and then `NVD_API_KEY` matters. Free:
 **https://nvd.nist.gov/developers/request-an-api-key**. In that mode a missing key does **not** fail
 the workflow — it degrades to unauthenticated and rate-limited with a warning. *"The scan ran"* and
 *"the scan had current data"* are different claims.
+
+**At scale (Release 4, KDEC-032 proposed):** the organisation can host the NVD datafeed, the KEV catalog
+and the Trivy database itself, privately, refreshed once a day for every repository — and a scan refuses
+a mirror that is stale or does not match its manifest instead of reading it as clean. Setup, from the
+Azure side to the first verified refresh: [`FEED_MIRRORS.md`](FEED_MIRRORS.md).
 
 ---
 

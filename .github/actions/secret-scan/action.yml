@@ -11,6 +11,12 @@ description: >-
 # one boolean the job used inside an expression (`scan_git_history && '0' || '1'`) is evaluated in
 # the JOB and arrives here as its result, `checkout_fetch_depth`.
 inputs:
+  image-registry:
+    description: >-
+      The organisation's scanner-image mirror (the caller's vars.KIT_SCANNER_IMAGE_REGISTRY, KDEC-032).
+      Empty pulls gitleaks from Docker Hub, by the same digest.
+    required: false
+    default: ''
   paths:
     description: The workflow's `paths` input -- the scope scanned in working-tree mode.
     required: true
@@ -333,11 +339,18 @@ runs:
 
     - name: Install gitleaks
       shell: bash -e {0}
+      env:
+        # The organisation's scanner-image mirror (KDEC-032): the SAME digest, from the private registry.
+        W_IMAGE_REGISTRY: ${{ inputs.image-registry }}
       run: |
         set -euo pipefail
         # The release CDN returned 503 in a prior run. URL and asset name were correct; the
-        # delivery path is not reliable. Extract from the vendor image instead.
-        IMG=zricethezav/gitleaks:v8.21.2
+        # delivery path is not reliable. Extract from the vendor image instead -- PINNED BY DIGEST
+        # (KDEC-032): the tag names the release, the digest is what is pulled.
+        IMG=zricethezav/gitleaks:v8.21.2@sha256:0e99e8821643ea5b235718642b93bb32486af9c8162c8b8731f7cbdc951a7f46
+        if [ -n "${W_IMAGE_REGISTRY:-}" ]; then
+          IMG="$W_IMAGE_REGISTRY/zricethezav/gitleaks@${IMG##*@}"
+        fi
         docker pull -q "$IMG"
         CID=$(docker create "$IMG")
         # Staged in RUNNER_TEMP, not the checkout: the checkout is the scanned scope (KDEC-018).

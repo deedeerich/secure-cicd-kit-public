@@ -24,6 +24,19 @@ inputs:
     description: needs.discover.outputs.dockerfile -- 'true' runs hadolint (lane L-SCAN-A, KDEC-025).
     required: false
     default: 'false'
+  # Release 4 (KDEC-032): Trivy's misconfiguration checks bundle from the organisation mirror.
+  feed-mirror-url:
+    description: The organisation feed mirror's base URL. Empty reads Trivy's public checks bundle.
+    required: false
+    default: ''
+  feed-mirror-max-age-hours:
+    description: Refuse a mirror refreshed longer ago than this. The policy ceiling (48) applies to anything larger.
+    required: false
+    default: '48'
+  feed-mirror-fallback:
+    description: "`upstream` reads the public bundle when the mirror is refused, and records it."
+    required: false
+    default: 'none'
 
 # What the security gate enforces (lane L-S, O-24): FINDINGS when Checkov's threshold fired and
 # advisory_mode did not soften it, '' otherwise. The job reads it through the call's id.
@@ -280,6 +293,18 @@ runs:
         path: ${{ runner.temp }}/trivy-cache
         key: trivy-db-${{ runner.os }}-${{ steps.trivy_install.outputs.day }}
         restore-keys: trivy-db-${{ runner.os }}-
+    # AFTER the cache restore (KDEC-032). A refused mirror does NOT leave Trivy to its embedded checks
+    # (which it would use silently): it makes `trivy config` fatal, so the scan reports unavailable.
+    - name: Trivy checks bundle from the organisation mirror (KDEC-032)
+      # always(): after Checkov's enforce step, like every step here (tests/prove_scanners_survive_enforce.py).
+      if: always()
+      shell: bash
+      env:
+        M_FEED: trivy-checks
+        M_URL: ${{ inputs.feed-mirror-url }}
+        M_MAX_AGE: ${{ inputs.feed-mirror-max-age-hours }}
+        M_FALLBACK: ${{ inputs.feed-mirror-fallback }}
+      run: bash "$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)/scripts/feed_mirror_step.sh"
     - name: Trivy IaC misconfig
       if: always()
       shell: bash

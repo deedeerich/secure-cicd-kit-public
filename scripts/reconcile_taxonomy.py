@@ -388,6 +388,24 @@ NOT_VOCABULARY = {
     # caller passes, the same class as SEARCH_PATHS. Neither is a state; the scripts' refusal
     # reasons ARE states and are registered (prerequisite_readiness, leak_gate_setup_refusal).
     "BASH_VERSION", "REPO_DIR",
+    # KDEC-032 PROPOSED (Release 4 feed mirrors, lane L-MIRROR): SETTINGS and names, never states. The
+    # caller's repository/organisation VARIABLES that name the mirror, its policy, its fallback, the
+    # private runner and the scanner-image registry (KIT_FEED_MIRROR_*, KIT_SCANNER_IMAGE_REGISTRY, the
+    # same class as KIT_DAST_COMMAND); the composites' step environment names (M_*, K_*), set by name
+    # when tests/prove_feed_mirror.py runs those steps as shipped; the NVD path's environment flag
+    # NVD_MIRROR_REFUSED and datafeed variable (the same class as NVD_UPDATE_FAILED); and Trivy's own
+    # update switches (somebody else's identifiers, the same class as the TRIVY_* above). The states
+    # themselves are registered: feed_mirror and feed_mirror_refresh.
+    "KIT_FEED_MIRROR_URL", "KIT_FEED_MIRROR_ACCOUNT", "KIT_FEED_MIRROR_MAX_AGE_HOURS", "KIT_FEED_MIRROR_FALLBACK", "KIT_FEED_MIRROR_RUNNER",
+    "KIT_SCANNER_IMAGE_REGISTRY", "M_FEED", "M_URL", "M_MAX_AGE", "M_FALLBACK", "M_NOW", "M_STATE", "M_USABLE",
+    "M_WHY", "K_CVE_FINDINGS", "K_SARIF", "K_SARIF_JOB", "K_EXCEPTIONS", "K_POLICY_STATE", "K_FEED_URL", "K_DAY",
+    "K_MIRROR_STATE", "K_MIRROR_USABLE", "K_MIRROR_URL", "K_MIRROR_FILE", "K_MIRROR_SHA256", "K_MIRROR_WHY",
+    "NVD_MIRROR_REFUSED", "W_NVD_DATAFEED", "TRIVY_SKIP_DB_UPDATE", "TRIVY_SKIP_JAVA_DB_UPDATE",
+    "TRIVY_SKIP_CHECK_UPDATE", "MAX_AGE_HOURS_CEILING",
+    # The gaps closed (KDEC-032): Trivy's custom-check path and osv-scanner's database directory (somebody
+    # else's identifiers), the kit's own offline switch and image-registry step variable, and two constants.
+    "TRIVY_CONFIG_CHECK", "OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY", "KIT_OSV_OFFLINE", "W_IMAGE_REGISTRY",
+    "CHECKS_FILE", "CHECKS_SUB", "OSV_SUB", "OSV_ECOSYSTEMS", "OSV_UPSTREAM", "DIGEST_RE",
 }
 
 TOKEN = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")

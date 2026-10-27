@@ -220,7 +220,8 @@ jobs:
     # expose that environment's secrets — including its AZURE_SUBSCRIPTION_ID, which is how
     # dev physically cannot reach the prod subscription. Empty = build-only, no Azure auth.
     environment: ${{ inputs.github_environment }}
-    runs-on: ubuntu-latest
+    # Reads the feed mirrors when named (KDEC-032): the private runner reaches them.
+    runs-on: ${{ vars.KIT_FEED_MIRROR_RUNNER || 'ubuntu-latest' }}
     outputs:
       image_digest: ${{ steps.push.outputs.digest }}
       image_config_digest: ${{ steps.built.outputs.config_digest }}
@@ -385,6 +386,13 @@ jobs:
           path: ${{ runner.temp }}/trivy-cache
           key: trivy-db-${{ runner.os }}-${{ steps.trivy_install.outputs.day }}
           restore-keys: trivy-db-${{ runner.os }}-
+      - name: Trivy database from the organisation mirror (KDEC-032)
+        uses: $/.github/actions/feed-mirror
+        with:
+          feed: trivy
+          mirror-url: ${{ vars.KIT_FEED_MIRROR_URL }}
+          max-age-hours: ${{ vars.KIT_FEED_MIRROR_MAX_AGE_HOURS }}
+          fallback: ${{ vars.KIT_FEED_MIRROR_FALLBACK }}
       - name: Trivy image scan (gate before push)
         id: trivy
         shell: bash
