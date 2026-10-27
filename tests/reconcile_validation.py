@@ -68,6 +68,12 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # the sequencing, eligibility and halting are proven locally against the stub cloud with real
     # deploy evidence; the same against Azure, with a real e2e command, needs a live run.
     "reusable-rollback-sequence.yml": ["rollback-sequence", "rollback-sequence-live"],
+    # KDEC-029 decision 8 (lane L-PROMO, 2026-10-26): the daily scan of what is actually serving.
+    # TWO CAPABILITIES, as the rollback sequence has: the reconcile, the two drifts, the re-scan and
+    # the findings for ticketing are proven locally against the stub cloud and a recorded API; the
+    # same against Azure and a real artifact store needs a live run.
+    "reusable-deployed-scan.yml": ["deployed-scan", "deployed-scan-live"],
+    "action:deployed-scan": ["deployed-scan"],
     "workflow-policy-check.yml": ["workflow-policy"],
     # `authorization-boundary-isolation` SPLIT OUT 2026-09-22, when the probe was rewritten from
     # an authentication check into a boundary check. It is NOT azure-oidc-auth at a finer grain:
@@ -110,6 +116,13 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # cve_findings, or the NVD path's SARIF). It scans nothing itself, so it names no capability;
     # it feeds the gate's verdict. Proof: tests/prove_known_exploited.py.
     "action:known-exploited": [],
+    # KDEC-030 DRAFT (lane L-SEAM2, 2026-10-27): the cross-repository target lease. COORDINATION, NOT
+    # AN ASSURANCE CLAIM: it serialises the landing-zone apply and the kit deploy on one target and
+    # fences a stale holder; it establishes nothing about the code or the artefact. Opt-in in both
+    # deploy reusables. Proofs: tests/prove_target_lease.py (the model) and
+    # tests/prove_target_lease_crossrepo.py (two callers against a Blob-service emulation). Never
+    # run against real Azure Storage (the seam contract's U6, U10, U11).
+    "action:target-lease": [],
     # THE RUN RECORD (ledger L36): evidence assembly, not an assurance claim -- it restates what the
     # gate established, validated against the schema. Proof: tests/prove_gate_run_record.py.
     "action:run-record": [],
@@ -480,6 +493,7 @@ VALIDATION_REGISTRY: dict[str, dict] = {
     # reusable workflow has not run on a runner, and nothing has run against Azure.
     "rollback-sequence": {"probe": "tests/prove_rollback_sequence.py", "state": "observed",
                           "level": "tool"},
+    "deployed-scan": {"probe": "tests/prove_promotion.py", "state": "observed", "level": "tool"},
     "version-metadata-wired": {"probe": "tests/prove_build_push_round_trip.py",
                                "state": "observed", "level": "tool"},
     }
@@ -691,6 +705,18 @@ DEFERRALS: dict[str, dict] = {
                                          "untouched; an empty command refused before login",
                                "trigger": "the next live deploy acceptance run (KDEC-012)",
                                "expires": "2026-12-31"},
+    "deployed-scan-live": {"reason": "a live run needs the owner's personal tenant with a kit "
+                                     "deploy standing in prod and test, its promotion records and "
+                                     "build SBOMs as artifacts, and a reader identity per environment",
+                           "owner": "kit-maintainer",
+                           "proves": "reusable-deployed-scan.yml on the personal tenant: what serves "
+                                     "read back with its weights; a serving digest that is not the "
+                                     "promoted one reported as artifact drift; a re-scan of its SBOM "
+                                     "and KEV reported as security drift; the findings ticketed on "
+                                     "the personal Jira; nothing mutated",
+                           "trigger": "the next live deploy acceptance run (KDEC-012), with the "
+                                      "hosted promotion KDEC-029 owes",
+                           "expires": "2026-12-31"},
     "attestation-verify":  {"reason": "IMPLEMENTATION_HELD -- the owner's plan (Pro) offers no "
                                       "attestations on private repositories, so V1 cannot be armed "
                                       "there; classification and routing are proven locally only",
@@ -801,7 +827,11 @@ DEFERRALS: dict[str, dict] = {
 
 # Ratchet. Accepted debt may shrink, never grow. A new deferral must displace an old one or
 # raise this number deliberately, in a reviewable diff, with a reason in the commit message.
-MAX_ACCEPTED_DEBT = 5    # RAISED 4 -> 5 on 2026-10-22 for rollback-sequence-live (KDEC-019 item 4,
+MAX_ACCEPTED_DEBT = 6    # RAISED 5 -> 6 on 2026-10-26 for deployed-scan-live (KDEC-029 decision 8,
+                         # lane L-PROMO): a NEW capability -- the daily scan of what serves, against
+                         # Azure -- whose local half is observed; nothing existing became provable in
+                         # this change, so nothing could be displaced. Ratchet it back when it closes.
+                         # RAISED 4 -> 5 on 2026-10-22 for rollback-sequence-live (KDEC-019 item 4,
                          # lane L-RB): a NEW capability -- sequential rollback against Azure -- whose
                          # local half is observed; nothing existing became provable in this change,
                          # so nothing could be displaced. Ratchet it back when it closes.

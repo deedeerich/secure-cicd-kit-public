@@ -1624,7 +1624,10 @@ namespaces:
     description: >-
       Whether the EXECUTION ENVIRONMENT can service a capability that discovery found applicable.
       Distinct from discovery: discovery is about the repository, this is about the runner.
-    consumers: [scanner jobs, security-gate, assurance reporting]
+      The leak-gate setup helpers use PREREQUISITE_UNAVAILABLE and FITNESS_FAILED for the same
+      facts about the machine that runs them (docs/adoption/LEAK_GATES.md exit tables).
+    consumers: [scanner jobs, security-gate, assurance reporting,
+                developer-safety/gitignore/merge-baseline.sh, developer-safety/branch-protection/apply-push-ruleset.sh]
     lifecycle: >-
       discover applicability -> exercise ACTUAL TOOL fitness -> if fit, scan
       -> if unfit or missing, remediate/acquire -> RE-CHECK FITNESS (only because state changed)
@@ -2760,6 +2763,16 @@ namespaces:
       ROLLBACK_REFUSED_DEPENDENCY_CONFLICT:
         definition: >-
           Every node the release changed is cross-edited or tied to one that is: nothing is reversed.
+      ROLLBACK_REFUSED_PLATFORM_OWNED:
+        definition: >-
+          CANDIDATE (KDEC-030 draft). A node whose type the landing zone owns (a shared entry: Front Door,
+          DNS, WAF, NSG, firewall, route; or a platform resource) is never reversed by an application
+          rollback, whatever its mark; its reverser is the landing zone's recovery. Everything tied to it
+          is held as for a cross-edit. ROLLBACK_REQUIRES_HUMAN_DECISION.
+      ROLLBACK_REFUSED_FOREIGN_EVIDENCE:
+        definition: >-
+          CANDIDATE (KDEC-030 draft). The step's resources.json is not the evidence of a kit deploy of the
+          locked target (for example a landing-zone apply's); refused before anything is read live.
 
   rollback_dependency_check:
     description: >-
@@ -2790,6 +2803,125 @@ namespaces:
       ROLLBACK_DEPENDENCY_CHECK_INCOMPLETE:
         definition: >-
           The marker, the commit or the comparison could not be read: refused before login, with the reason.
+
+  # KDEC-030 DRAFT (PROPOSED, lane L-SEAM, 2026-10-26; docs/architecture/LZ_KIT_SEAM_CONTRACT.md).
+  # target_lease is emitted by scripts/target_lease.py (the model and, since lane L-SEAM2 2026-10-27,
+  # its CLI through the target-lease composite), proven by tests/prove_target_lease.py and
+  # tests/prove_target_lease_crossrepo.py; the deploy reusables emit it only when opted in. The other two namespaces and the two
+  # rollback_dependency_outcome values below are CANDIDATES from the same contract, registered with
+  # their design so the wiring cannot invent a second spelling; nothing emits them until the owner
+  # approves KDEC-030 and the wiring lands.
+  target_lease:
+    description: >-
+      What the cross-repository target lease decided for one acquisition, fence or mutation. One
+      lease per deploy target (an Azure Storage blob lease plus a generation in its metadata, the
+      fencing token), taken by the landing-zone pipeline and the kit alike, because a GitHub
+      concurrency group is evaluated inside one repository and cannot serialise the two.
+    consumers: [scripts/target_lease.py, tests/prove_target_lease.py, tests/prove_target_lease_crossrepo.py,
+                .github/actions/target-lease,
+                "reusable-deploy-appservice, reusable-deploy-containerapp, reusable-rollback-sequence (opt-in: KIT_TARGET_LEASE_ACCOUNT)",
+                scripts/deploy_contract.py, "(owed) the LZ apply and destroy jobs"]
+    rule: >-
+      A LOCK A HOLDER CAN LOSE WITHOUT NOTICING IS NOT A LOCK. Every mutation is fenced before it is
+      sent and checked again after it; a lost lease is never reported as a clean mutation, and a
+      holder that died mid-mutation is never taken over by a machine.
+    values:
+      LEASE_HELD:
+        definition: >-
+          Another live holder (inside its logical expiry) holds the target. The acquirer stops before
+          its first mutation, naming the holder; it does not wait inside a mutating job.
+      STALE_LEASE_HOLDER:
+        definition: >-
+          The token's lease id is no longer the blob's lease (broken, released, taken over), or its
+          generation or holder is not the blob's current one. The mutation is not sent.
+      LEASE_EXPIRED_HOLDER:
+        definition: >-
+          The token is still the blob's lease but past its own logical expiry (it stopped
+          heart-beating); a contender may take over at any moment, so the mutation is not sent.
+      LEASE_ABANDONED_MID_MUTATION:
+        definition: >-
+          The holder expired while its metadata said it was mutating. No automatic takeover: the
+          target's state is unknown and a human (the break authority) decides.
+      RELEASE_MID_MUTATION:
+        definition: The holder tried to release while mid-mutation; refused, so the lease never reads clean over a half change.
+      BREAK_NOT_AUTHORISED:
+        definition: >-
+          A break by an actor outside the break authority. Azure lets any blob writer break a lease,
+          so this refusal is the protocol's, backed by review and the recorded reason, not by RBAC.
+      LEASE_STORE_UNREACHABLE:
+        definition: The lease could not be read or written; fail closed, nothing is mutated. A lease that cannot be read is not free.
+      LEASE_TARGET_NOT_VENDED:
+        definition: >-
+          The target's lease container does not exist: the landing zone vends it with the target, and a
+          pipeline never creates it (its grant is the container). Fail closed, nothing is mutated.
+      LEASE_ACQUIRED:
+        definition: The caller now holds the target's lease at a new generation (a takeover of an expired clean holder is recorded).
+      LEASE_FENCE_PASSED:
+        definition: The token is still the blob's lease, generation and holder, inside its expiry; the expiry was extended (heartbeat).
+      LEASE_MUTATION_MARKED:
+        definition: Fenced, and the lease metadata now reads mutating with what is being changed.
+      LEASE_RELEASED:
+        definition: The holder released a clean lease; the next acquirer takes it at the next generation.
+      LEASE_BROKEN:
+        definition: The break authority broke the lease, recorded who and why, and bumped the generation so every former holder is fenced.
+      LEASE_STATUS:
+        definition: A read-only report of the current holder, generation, state and expiry; decides nothing.
+      LEASE_LOST:
+        definition: >-
+          A renewal during a held step (the e2e test period, a rollback sequence) or a fence before a
+          mutating az call failed. The held step is stopped at once, the loss is recorded beside the
+          token, and every later fence of the run refuses without asking the store: nothing further is mutated.
+      LEASE_NOT_HELD:
+        definition: >-
+          The lease is switched on for this environment but the run holds no token (it never acquired the
+          target). A mutating call is refused before it is sent.
+      MUTATED_UNDER_LEASE:
+        definition: The mutation was fenced before and after; the lease was held throughout.
+      MUTATED_WITHOUT_LEASE:
+        definition: >-
+          The lease was lost while the mutation was in flight (the after-fence failed). The change may
+          have landed; the run ends ROLLBACK_REQUIRES_HUMAN_DECISION.
+      MUTATION_FAILED:
+        definition: >-
+          The mutating call itself failed under the lease; the metadata stays "mutating" so nobody
+          takes the target over automatically, and the run ends ROLLBACK_REQUIRES_HUMAN_DECISION.
+
+  seam_field_drift:
+    description: >-
+      CANDIDATE (KDEC-030 draft). What the landing zone's seam detector found when it compared a
+      kit-owned field of a release target (image, revision, traffic, slot contents, the kit's stamps
+      and tags, kit-assigned setting keys), read live, with the kit's release record for the target.
+    consumers: ["(owed) the landing-zone seam detector beside its daily drift job"]
+    rule: >-
+      DETECTED, NEVER SILENTLY REVERTED. The landing zone reports drift on a field the kit owns to its
+      owner; only a kit run may put it back. A field or record that could not be read is not "no drift".
+    values:
+      KIT_FIELD_MATCHES_RECORD:
+        definition: The live field equals the kit's release record.
+      KIT_FIELD_RELEASED:
+        definition: The field differs from the cached record and a newer kit run of this target explains it.
+      KIT_FIELD_UNAUTHORISED_CHANGE:
+        definition: >-
+          The field differs and no kit run of this target explains it. Reported to the application
+          owner and the platform admins; never reverted by the landing zone.
+      KIT_FIELD_NOT_ATTEMPTED:
+        definition: The field or the record could not be read; the comparison did not happen.
+
+  seam_ownership_refusal:
+    description: >-
+      CANDIDATE (KDEC-030 draft). A write refused because it would change configuration the writer
+      does not own, decided before the write by the landing-zone plan or the kit's deploy.
+    consumers: ["(owed) the kit deploy reusables", "(owed) the landing-zone plan"]
+    rule: Every app-setting or environment key has exactly one owner; a write by the other side, or a key claimed by both, is refused.
+    values:
+      SEAM_SETTING_OWNERSHIP_CONFLICT:
+        definition: >-
+          A key the writer does not own, or a key both sides claim. Refused before anything is
+          written, naming the key and its owner.
+      SEAM_SWAP_MOVES_LZ_SETTING:
+        definition: >-
+          An App Service slot swap would carry a non-sticky landing-zone-owned setting from one slot
+          to the other. The kit refuses the swap; the landing zone makes the key sticky or equal.
 
   # ─────────────────────────────────────────────────────────────────────────
   evidence_confidence:
@@ -4328,3 +4460,248 @@ namespaces:
           so nothing was assessed.
         rule: >-
           Exit 0 and NOT ASSESSED in the summary. Never rendered as a pass: nothing was checked.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # KDEC-029 (owner, 2026-10-26, closing O-11): build once, promote the same digest.
+  promotion_gate:
+    description: >-
+      The answer the promotion preflight and the promotion gate give a deploy, before login. Exactly
+      one value per deploy step: PREFLIGHT_PASSED or a preflight refusal, then (promotion mode only)
+      PROMOTION_ALLOWED or the FIRST refusal; every refusal is listed with its reason in
+      promotion-gate.json and the step summary.
+    consumers: [scripts/promotion.py, reusable-deploy-containerapp, reusable-deploy-appservice, tests/prove_promotion.py]
+    rule: >-
+      EVERY REFUSAL NAMES ITS REASON, AND EVERY REFUSAL IS BEFORE LOGIN. Nothing here may be read as
+      a pass by default: an unreadable source, KEV or SBOM refuses (RECHECK_INCOMPLETE). Break-glass
+      may lift only the testing refusals (NOT_VERIFIED, WRONG_PREDECESSOR, STALE, SUPERSEDED,
+      NEW_FINDING, RECHECK_INCOMPLETE), never a substitution, a non-default branch, an unverified
+      signature or a revocation; a named rollback or hotfix decision may lift STALE only.
+    values:
+      PREFLIGHT_PASSED:
+        definition: The release path, DAST mode, predecessor requirement, break-glass exception and test-period bounds all hold.
+      PROMOTION_ALLOWED:
+        definition: >-
+          The digest was verified-for-promotion in the required predecessor, from the default
+          branch, its signed provenance verified here (V1), within 14 days, not superseded, not
+          revoked, and the SBOM and KEV re-check found nothing new.
+        rule: Allowed is not deployed; the deploy contract still decides the outcome.
+      PROMOTION_REFUSED_SOURCE_UNREADABLE:
+        definition: The named run published no readable promotion record for the named environment.
+      PROMOTION_REFUSED_DIGEST_MISMATCH:
+        definition: The digest to deploy is not the digest the source record verified -- a substituted artefact.
+      PROMOTION_REFUSED_WRONG_PREDECESSOR:
+        definition: >-
+          The source is not the required predecessor, or its record is not a test or uat tier. A dev
+          success never satisfies a test or uat predecessor.
+      PROMOTION_REFUSED_NOT_VERIFIED:
+        definition: The source record does not read verified-for-promotion; the missing conditions are named.
+      PROMOTION_REFUSED_NOT_FROM_MAIN:
+        definition: The record's source ref or its run's branch is not the default branch.
+      PROMOTION_REFUSED_SIGNATURE:
+        definition: V1 in the promoting deploy did not read ATTESTATION_VERIFIED (held by the plan included).
+      PROMOTION_REFUSED_REVOKED:
+        definition: >-
+          Eligibility was revoked: a revocation register entry (digest, signer, approval, test
+          evidence) matches, or the re-check found a new critical or known-exploited finding.
+        rule: Fourteen days is a maximum, never a guarantee; a revocation acts at once.
+      PROMOTION_REFUSED_NEW_FINDING:
+        definition: The SBOM re-scan found a HIGH finding the build gate (HIGH,CRITICAL) did not have.
+      PROMOTION_REFUSED_RECHECK_INCOMPLETE:
+        definition: The SBOM re-scan, the KEV check, the predecessor history or the revocation register could not be read.
+        rule: COULD-NOT-ESTABLISH IS NEVER ESTABLISHED.
+      PROMOTION_REFUSED_STALE:
+        definition: Verified more than 14 days ago, with no attributed rollback or hotfix decision.
+      PROMOTION_REFUSED_SUPERSEDED:
+        definition: A newer build was verified in the same predecessor after this one.
+      PROMOTION_REFUSED_NO_PREDECESSOR:
+        definition: A uat or prod deploy named no promotion source and is not break-glass.
+      PROMOTION_REFUSED_PATH_UNKNOWN:
+        definition: release_path is not normal, hotfix, rollback or break-glass.
+      DAST_REFUSED_PRODUCTION_TARGET:
+        definition: Active DAST was configured against prod. DAST runs against the predecessor.
+      TEST_PERIOD_REFUSED_OUT_OF_BOUNDS:
+        definition: e2e_test_period_minutes is not above 0 and at most 240.
+      BREAK_GLASS_REFUSED_NO_EXCEPTION:
+        definition: Break-glass without a reason, an authority, an exception reference and an expiry.
+      BREAK_GLASS_REFUSED_EXPIRED:
+        definition: The break-glass exception's expiry has passed.
+      BREAK_GLASS_REFUSED_TOO_LONG:
+        definition: The break-glass exception expires more than 7 days out.
+
+  promotion_revocation:
+    description: Why a verified record's eligibility was revoked (the reason PROMOTION_REFUSED_REVOKED carries).
+    consumers: [scripts/promotion.py, tests/prove_promotion.py]
+    rule: >-
+      A REASON, NEVER A NEW GATE. Each value names its evidence: a register entry on the default
+      branch (who and when), or the promotion-time re-scan.
+    values:
+      DIGEST_REVOKED:
+        definition: The revocation register names this digest.
+      SIGNING_IDENTITY_REVOKED:
+        definition: The revocation register names the signer workflow that signed the digest.
+      APPROVAL_REVOKED:
+        definition: The revocation register names an approver of the predecessor deploy.
+      TEST_EVIDENCE_INVALIDATED:
+        definition: The revocation register names the predecessor run's test evidence.
+      NEW_KNOWN_EXPLOITED:
+        definition: The KEV re-check at promotion found a known-exploited CVE in the digest's SBOM.
+      NEW_CRITICAL_FINDING:
+        definition: The SBOM re-scan at promotion found a CRITICAL finding the build did not have.
+
+  promotion_record_state:
+    description: The state a promotion record carries (lower-case verified-for-promotion and not-verified, and BREAK_GLASS).
+    consumers: [scripts/promotion.py, scripts/deploy_contract.py, schemas/promotion-record.schema.json]
+    rule: >-
+      BREAK_GLASS IS NEVER VERIFIED. It records a deploy that proceeded on an exception with its
+      testing owed; the daily deployed scan flags it until a verified record of the digest exists in
+      the predecessor.
+    values:
+      BREAK_GLASS:
+        definition: A healthy deploy that proceeded on an approved, time-limited exception; testing owed.
+
+  promotion_check:
+    description: The result of one "tested" check after a deploy serves (DAST, security settings), or why it was not run.
+    consumers: [scripts/promotion.py, scripts/deploy_contract.py]
+    rule: >-
+      PASSIVE AT PROD IS NOT A SKIP. NOT_APPLICABLE_PASSIVE says the active check ran in the
+      predecessor instead; it is never written below prod.
+    values:
+      NOT_APPLICABLE_PASSIVE:
+        definition: At prod the active checks (the e2e period, DAST) are not run; prod gets health and posture only.
+      DAST_PASSED:
+        definition: The DAST command's SARIF holds no unsuppressed result at level error.
+      DAST_BLOCKING_FINDINGS:
+        definition: The DAST command's SARIF holds at least one unsuppressed result at level error.
+      DAST_INCOMPLETE:
+        definition: The DAST command left no readable SARIF (it failed, timed out, or wrote nothing).
+        rule: Never a pass.
+      POSTURE_PASSED:
+        definition: Every security setting read back from the live target holds.
+      POSTURE_FAILED:
+        definition: A security setting read back from the live target does not hold; the failing ones are named.
+      POSTURE_UNREADABLE:
+        definition: The target's settings could not be read.
+        rule: Never a pass.
+
+  promotion_approval:
+    description: What the run's environment approvals read back as, for the promotion record.
+    consumers: [scripts/promotion.py]
+    values:
+      NONE_REQUIRED_OR_RECORDED:
+        definition: The run's approvals API lists no approval decision (an environment without required reviewers).
+  # -------------------------------------------------------------------------
+  leak_gate_state:
+    description: >-
+      Whether each layer between a committed secret and the default branch is in place (lane
+      L-LEAK, KDEC-031 PROPOSED): push protection, the push ruleset, the branch gate, the local
+      rails and secret scanning, as the discover platform step read them. The security gate's
+      leakgates step emits them as `leak_gates`, and every OFF layer becomes a control_weakening row
+      (CONTROL_DISABLED, WEAKENING_IN_FORCE, WEAKENING_UNATTRIBUTED).
+    consumers: [.github/actions/discover, security-gate leakgates step, tests/prove_leak_gate_posture.py]
+    rule: >-
+      UNKNOWN IS NEVER ON. A 403, a token without the scope, or a body nobody could read is
+      UNKNOWN, and OFF is claimed only where every source that could have said ON was read. At crawl
+      the record does not move routing_result.
+    values:
+      "ON":
+        definition: The layer was read and is in force.
+      "OFF":
+        definition: Every source that could show the layer was read, and none did.
+        rule: A recorded weakening and a warning, never a silent pass. It does not block at crawl.
+      UNKNOWN:
+        definition: The layer could not be read with this run's token.
+        rule: Never ON and never OFF. Not a weakening, and not a clean row either.
+      NO_LEAK_GATE_SHOWN:
+        definition: >-
+          The alarm (`leak_gate_alarm`): none of push protection, the push ruleset or the local
+          rails could be shown ON, so only the CI secret scan stands before the default branch.
+        rule: >-
+          The louder warning, not a block, at crawl. KDEC-031 records how the owner may make it
+          route or block.
+  # -------------------------------------------------------------------------
+  # Beside leak_gate_state, not inside it. leak_gate_state answers "is this layer in force?", read
+  # by discover with the run's token; these answer "why did the helper that puts a layer in place
+  # stop?", printed by an adopter's own run of a script. Folding them into one namespace would let
+  # a setup refusal be read as a posture value (or the reverse). Two causes the helpers share with
+  # every scanner job are NOT here: a missing tool, shell or login is
+  # prerequisite_readiness.PREREQUISITE_UNAVAILABLE and a tool that is present but answers wrongly is
+  # prerequisite_readiness.FITNESS_FAILED (remedy 2: reuse, not a second spelling).
+  leak_gate_setup_refusal:
+    description: >-
+      Why one of the two leak-gate setup helpers (adoption steps 1 and 3 of
+      docs/adoption/LEAK_GATES.md: developer-safety/gitignore/merge-baseline.sh and
+      developer-safety/branch-protection/apply-push-ruleset.sh) refused or failed, so that the
+      layer it sets up (the baseline .gitignore, the push ruleset) is NOT shown to be in place.
+      Each value is printed as `NAME: message` on stderr with its own exit code (the tables in
+      LEAK_GATES.md); the helper stops at the first one.
+    consumers: [developer-safety/gitignore/merge-baseline.sh, developer-safety/branch-protection/apply-push-ruleset.sh,
+                tests/prove_baseline_gitignore.py, tests/prove_push_ruleset_secret_files.py,
+                "the adopter, or a wrapper script, branching on the exit code (docs/adoption/LEAK_GATES.md)"]
+    rule: >-
+      A REFUSAL IS NEVER A SUCCESS AND NEVER A PLAN. Before this vocabulary a dry run with gh missing
+      printed existing_id=none and exited 0, an empty baseline reported "already carries every
+      pattern", and a .gitignore was written into a directory that was no repository. Every value
+      here exits non-zero, prints no plan, and claims nothing about the layer: the layer stays
+      unshown until a re-run exits 0, and the security gate's leak-gate posture (leak_gate_state)
+      reads it independently either way.
+    transitions:
+      - "checks run in a fixed order (prerequisites, then inputs, then the target); the first failure ends the run with its value"
+      - "every value is terminal for that run; the only way out is to clear the cause and re-run, which re-checks everything"
+      - "nothing is written before any value except TARGET_NOT_WRITABLE (an append that failed part-way) and MERGE_NOT_VERIFIED (written, then re-read)"
+      - "never -> exit 0: a helper does not downgrade a refusal to a warning"
+    values:
+      NOT_APPLIED:
+        definition: >-
+          apply-push-ruleset.sh, exit 1. Every prerequisite held and the lookup answered, and GitHub
+          refused the PUT or POST that would create or update the ruleset (403: no repository
+          administration; 422: a personal-account, public, or unlicensed repository).
+        rule: >-
+          The ruleset is not in place. Not REPO_NOT_READABLE: the repository was read and the WRITE
+          was refused, so the remedy is a permission or a plan, not an access fix.
+      REPO_NOT_READABLE:
+        definition: >-
+          apply-push-ruleset.sh, exit 14. GET repos/OWNER/REPO on the run's host failed: no such
+          repository, no access with this token, or the wrong host.
+        rule: Not NOT_APPLIED. Nothing was attempted; whether a write would be allowed is unknown.
+      RULESET_LOOKUP_FAILED:
+        definition: >-
+          apply-push-ruleset.sh, exit 15. The repository was readable but GET .../rulesets failed or
+          returned a non-numeric id, so whether the kit's ruleset already exists is unknown.
+        rule: >-
+          UNKNOWN IS NOT NONE. A failed lookup must never print existing_id=none or choose POST,
+          which would create a duplicate ruleset or plan one that already exists.
+      TEMPLATE_UNREADABLE:
+        definition: >-
+          apply-push-ruleset.sh, exit 16. The kit's push-ruleset-secret-files.json beside the script
+          is missing, is not JSON, or has no name, so there is nothing to apply.
+        rule: A defect in the kit copy, not in the target repository; re-fetch the kit.
+      BASELINE_UNREADABLE:
+        definition: >-
+          merge-baseline.sh, exit 12. The kit's baseline.gitignore beside the script is missing,
+          unreadable, or holds no pattern.
+        rule: >-
+          Never "already carries every baseline pattern". An empty baseline makes that sentence
+          vacuously true, which is the false success this value replaced. A kit-copy defect, as
+          TEMPLATE_UNREADABLE is, for the other helper's input.
+      REPO_DIR_MISSING:
+        definition: merge-baseline.sh, exit 13. The directory named does not exist or is not a directory. Nothing is created.
+        rule: Not NOT_A_GIT_REPO. The path is wrong, not the kind of directory.
+      NOT_A_GIT_REPO:
+        definition: >-
+          merge-baseline.sh, exit 14. The directory exists but holds no .git and git does not place
+          it inside a work tree. Nothing is written.
+        rule: A .gitignore outside a repository protects nothing; writing one there is a false success.
+      TARGET_NOT_WRITABLE:
+        definition: >-
+          merge-baseline.sh, exit 15. The repository's .gitignore is not a readable, writable regular
+          file, cannot be created, or an append to it failed.
+        rule: >-
+          The file may hold part of an append when this is raised mid-write; the re-run's exact-line
+          merge completes it without duplicating lines.
+      MERGE_NOT_VERIFIED:
+        definition: >-
+          merge-baseline.sh, exit 16. The merge wrote, and re-reading the .gitignore found at least
+          one baseline pattern absent (each is named on stderr).
+        rule: >-
+          SUCCESS IS CLAIMED ONLY FOR WHAT THE FILE NOW CARRIES. Not FITNESS_FAILED: the tools passed
+          their self-test, and only the read-back after writing caught the gap.

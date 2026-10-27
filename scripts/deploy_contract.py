@@ -51,8 +51,61 @@ def read_evidence(name):
         return None
 
 
+# KDEC-030 draft (the seam contract, "The kit's wiring"): when the GitHub environment opts into the
+# cross-repository target lease (KIT_TARGET_LEASE_ACCOUNT), EVERY mutating az call below is fenced
+# immediately before it is sent -- this function is the one path every kit mutation takes (the deploy
+# steps, the reversal, the rollback sequence through `reverse`, the generic ARM rollback through
+# rollback_dependencies). A refused fence means the call is NOT sent: (False, None, '<CODE>: why'),
+# and the loss is sticky for the rest of the run (target_lease.py records it beside the token). Reads
+# are never fenced. Off (the variable empty): nothing here runs and az behaves exactly as before.
+# Fencing stops a stale holder before its next call; it cannot recall a call already sent.
+AZ_MUTATING_VERBS = frozenset(['update', 'set', 'swap', 'activate', 'deactivate', 'create', 'delete',
+                               'restart', 'start', 'stop', 'add', 'remove', 'purge', 'deploy', 'import',
+                               'assign', 'unassign', 'reset', 'invoke-action', 'up'])
+AZ_READ_METHODS = frozenset(['get', 'head', 'options'])
+
+
+def az_is_mutating(*args):
+    """True for an az call that changes Azure: a mutating verb among the command words (before the
+    first option), or `az rest` with any method but a read. `--method` defaults to get in az rest."""
+    words = []
+    for a in args:
+        if str(a).startswith('-'):
+            break
+        words.append(str(a))
+    if words[:1] == ['rest']:
+        a = list(args)
+        method = a[a.index('--method') + 1].lower() if '--method' in a and a.index('--method') + 1 < len(a) else 'get'
+        return method not in AZ_READ_METHODS
+    if words[:2] == ['account', 'get-access-token']:
+        return False
+    return any(w in AZ_MUTATING_VERBS for w in words[1:])
+
+
+def lease_fence(args):
+    """-> '' when the call may be sent, else the refusal ('<CODE>: why'). Inert when the lease is off."""
+    if not os.environ.get('KIT_TARGET_LEASE_ACCOUNT') or not az_is_mutating(*args):
+        return ''
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import target_lease
+    except Exception as e:  # noqa: BLE001 -- a fence that cannot run refuses
+        return 'LEASE_STORE_UNREACHABLE: target_lease.py is not beside the deploy contract (%s)' % e
+    try:
+        target_lease.fence_token_file()
+    except target_lease.LeaseError as e:
+        msg = '%s: %s' % (e.code, e)
+        print('::error title=target lease %s::the mutating call az %s was NOT sent: %s'
+              % (e.code, ' '.join(str(x) for x in args[:4]), ' '.join(msg.split())))
+        return msg
+    return ''
+
+
 def az(*args):
     """-> (ok, parsed JSON or None, error text). A failed read is reported, never blanked."""
+    refused = lease_fence(args)
+    if refused:
+        return False, None, refused
     exe = shutil.which('az')
     if not exe:
         return False, None, 'az CLI not found'
@@ -71,6 +124,9 @@ def az(*args):
 
 def az_raw(*args):
     """-> (ok, text, error text) for a call whose answer is not JSON (a log file)."""
+    refused = lease_fence(args)
+    if refused:
+        return False, '', refused
     exe = shutil.which('az')
     if not exe:
         return False, '', 'az CLI not found'
@@ -1282,37 +1338,59 @@ def derive_outcome(adapter, live):
 
 
 # ----------------------------------------------------------------------------- promotion
-# DCR gap 11 / 7.7. Deployment success is not trust progression. Verified-for-promotion is a
-# CONJUNCTION; this run credits the conditions it established and names the rest. The verified
-# state is not emitted while any condition is unestablished -- and three of them have no evidence
-# source in this kit yet, so on today's kit it is never emitted. That is the honest reading.
+# DCR gap 11 / 7.7; KDEC-029 (owner, 2026-10-26, closing O-11). Deployment success is not trust
+# progression. Verified-for-promotion is a CONJUNCTION, and every condition now has a source:
+# identity from the build (artifact_identity) AND V1 in this deploy; running, traffic and
+# reconciliation from the live read-back; the end-to-end test period, DAST and the security-
+# settings posture from the steps after serving (scripts/promotion.py, their evidence files); the
+# release verdict; and the default branch the digest was built from. "Tested" is the owner's
+# definition: health, the e2e test period, DAST (where configured) with no new blocking finding,
+# and the posture check. At prod the active checks are not run (passive only) and read as
+# not-applicable there; DAST not configured is not a failure (decision 3: "where configured").
 PROMOTION_CONDITIONS = ['exact artefact identity established', 'expected artefact observed running',
-                        'intended traffic observed', 'functional tests passed',
-                        'operational validation passed', 'dependencies verified',
-                        'required reviews and gates passed', 'state reconciliation complete']
+                        'intended traffic observed', 'state reconciliation complete',
+                        'end-to-end test period passed', 'dynamic scan shows no new blocking finding',
+                        'security-settings posture passed', 'required reviews and gates passed',
+                        'built from the default branch']
+PASSIVE_OK = ('NOT_APPLICABLE_PASSIVE',)
 
 
 def promotion(outcome):
     v = read_evidence('verification.json') or {}
+    gate = read_evidence('promotion-gate.json') or {}
+    carried = gate.get('carried') or {}
     held = []
-    # P-02: V1 inside the deploy VERIFIED the signed provenance of exactly this digest -- the one
-    # promotion condition this run can establish about identity. A held or absent V1 credits nothing.
-    if outcome == 'DEPLOY_HEALTHY' and env('attestation_outcome') == 'ATTESTATION_VERIFIED':
-        held.append('exact artefact identity established')
     if outcome == 'DEPLOY_HEALTHY':
+        identity = env('artifact_identity') or (carried.get('artifact') or {}).get('artifact_identity')
+        # P-02: V1 inside the deploy VERIFIED the signed provenance of exactly this digest, and the
+        # build proved the registry identity of what it scanned. A held or absent V1 credits nothing.
+        if env('attestation_outcome') == 'ATTESTATION_VERIFIED' and identity == 'REGISTRY_IDENTITY_PROVEN':
+            held.append('exact artefact identity established')
         if v.get('runtime_deployed') is True:
             held.append('expected artefact observed running')
         if v.get('serving_verified') in (True, 'not-applicable'):
             held.append('intended traffic observed')
         held.append('state reconciliation complete')
-        if env('routing_result') == 'PROCEED' and not env('controls_unavailable').strip():
+        tp = (read_evidence('test-period.json') or {}).get('result')
+        if tp == 'PASSED' or tp in PASSIVE_OK:
+            held.append('end-to-end test period passed')
+        da = (read_evidence('dast.json') or {}).get('result')
+        if da in ('DAST_PASSED', 'NOT_CONFIGURED') or da in PASSIVE_OK:
+            held.append('dynamic scan shows no new blocking finding')
+        if (read_evidence('security-settings.json') or {}).get('result') == 'POSTURE_PASSED':
+            held.append('security-settings posture passed')
+        if env('routing_result') in ('PROCEED', 'PROCEED_WITH_ADVISORY'):
             held.append('required reviews and gates passed')
+        branch = env('default_branch') or 'main'
+        ref = (carried.get('provenance') or {}).get('source_ref') if env('promote_from_run_id')             else (env('github_ref') or '')
+        if ref in ('refs/heads/%s' % branch, branch):
+            held.append('built from the default branch')
     missing = [c for c in PROMOTION_CONDITIONS if c not in held]
     return {'state': 'not-verified' if missing else 'verified-for-promotion',
             'established': held, 'missing': missing,
-            'note': 'health is one probe, not functional or operational validation; artefact '
-                    'identity is credited only when V1 in this deploy verified the digest\'s signed '
-                    'build provenance; no dependency verification exists in this kit'}
+            'note': 'KDEC-029: tested = health, the end-to-end test period, DAST where configured, '
+                    'and the security-settings posture; identity needs the build-proven registry '
+                    'identity and V1 verified in this deploy; prod runs passive checks only'}
 
 
 # ----------------------------------------------------------------------------- six questions

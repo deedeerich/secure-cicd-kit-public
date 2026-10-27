@@ -128,6 +128,15 @@ outputs:
   platform_source:
     description: How the platform values were established; "none" when nobody asked successfully.
     value: ${{ steps.platform.outputs.platform_source }}
+  push_ruleset:
+    description: ON / OFF / UNKNOWN -- an active push ruleset refuses .env and key files (leak gate 2b, KDEC-031).
+    value: ${{ steps.platform.outputs.push_ruleset }}
+  branch_gate:
+    description: ON / OFF / UNKNOWN -- the default branch requires a PR and the Security gate check (leak gate 4).
+    value: ${{ steps.platform.outputs.branch_gate }}
+  local_baseline:
+    description: ON / OFF / UNKNOWN -- the checkout's .gitignore ignores .env and keys and a gitleaks pre-commit hook is configured (leak gate 1).
+    value: ${{ steps.platform.outputs.local_baseline }}
 
 runs:
   using: composite
@@ -805,6 +814,78 @@ runs:
           cfg=ABSENT
         fi
 
+        # -- LEAK GATES (lane L-LEAK, KDEC-031 PROPOSED) -------------------------------------
+        # The layers between a developer's `.env` and the default branch, each ON / OFF / UNKNOWN.
+        # OFF only where every source that could say ON was read and none did; a 403, a missing
+        # scope or an unreadable body is UNKNOWN, never ON. Same token, same host (GH_HOST above).
+        # The security-gate job records them (step `leakgates`); tests/prove_leak_gate_posture.py.
+        prs=UNKNOWN; bgate=UNKNOWN; lrails=UNKNOWN
+        R="${GITHUB_REPOSITORY:-}"
+        defb=""; [ -n "${repo_json:-}" ] && defb=$(printf '%s' "$repo_json" | jq -r '.default_branch // empty' 2>/dev/null)
+        case "$defb" in *[!A-Za-z0-9._/-]*) defb="" ;; esac
+        # 2b: an ACTIVE push ruleset that refuses .env and keys/certificates by path or extension.
+        # GitHub stores extensions as `*.ext` (it refuses a bare `.ext` with 422); the leading `*` is
+        # stripped before comparing.
+        covers='[.rules[]? | select(.type=="file_path_restriction") | .parameters.restricted_file_paths[]?] as $p
+          | [.rules[]? | select(.type=="file_extension_restriction") | .parameters.restricted_file_extensions[]? | ltrimstr("*")] as $e
+          | ($p | any(. == ".env" or . == "**/.env"))
+            and ([".pem", ".key"] | all(. as $x | ($e | index($x)) != null or ($p | any(. == ("*" + $x) or . == ("**/*" + $x)))))'
+        if rs=$(gh api "repos/$R/rulesets?includes_parents=true&per_page=100" 2>/dev/null) &&
+           printf '%s' "$rs" | jq -e 'type == "array"' >/dev/null 2>&1; then
+          prs=OFF; unread=0
+          for id in $(printf '%s' "$rs" | jq -r '.[] | select(.target == "push" and .enforcement == "active") | .id' 2>/dev/null); do
+            case "$id" in ''|*[!0-9]*) continue ;; esac
+            if one=$(gh api "repos/$R/rulesets/$id" 2>/dev/null) &&
+               printf '%s' "$one" | jq -e 'type == "object" and has("rules")' >/dev/null 2>&1; then
+              if printf '%s' "$one" | jq -e "$covers" >/dev/null 2>&1; then prs=ON; break; fi
+            else
+              unread=1
+            fi
+          done
+          [ "$prs" = OFF ] && [ "$unread" = 1 ] && prs=UNKNOWN
+        fi
+        # 4: the default branch requires a PR AND the `Security gate` check -- from rulesets
+        # (rules/branches, readable with read access) or classic protection (the branch GET shows
+        # its required checks; only the admin-only protection endpoint shows a required PR).
+        if [ -n "$defb" ]; then
+          pr=UNKNOWN; chk=UNKNOWN; rules_ok=0; classic=UNKNOWN; prot_read=0
+          gate_re='(^| )Security gate$'
+          if rb=$(gh api "repos/$R/rules/branches/$defb" 2>/dev/null) &&
+             printf '%s' "$rb" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            rules_ok=1
+            printf '%s' "$rb" | jq -e 'any(.[]; .type == "pull_request")' >/dev/null 2>&1 && pr=ON
+            printf '%s' "$rb" | jq -e --arg re "$gate_re" 'any(.[]; .type == "required_status_checks" and any(.parameters.required_status_checks[]?; (.context // "") | test($re)))' >/dev/null 2>&1 && chk=ON
+          fi
+          if br=$(gh api "repos/$R/branches/$defb" 2>/dev/null) &&
+             printf '%s' "$br" | jq -e 'type == "object" and has("protected")' >/dev/null 2>&1; then
+            if printf '%s' "$br" | jq -e '.protected == true' >/dev/null 2>&1; then
+              classic=SOME
+              printf '%s' "$br" | jq -e --arg re "$gate_re" '[.protection.required_status_checks.contexts[]?, .protection.required_status_checks.checks[]?.context] | any(test($re))' >/dev/null 2>&1 && chk=ON
+            else
+              classic=NONE
+            fi
+          fi
+          if [ "$pr" != ON ] && [ "$classic" = SOME ]; then
+            bp=$(gh api "repos/$R/branches/$defb/protection" 2>&1) && prot_read=1
+            case "$bp" in *"Branch not protected"*) prot_read=1 ;; esac
+            if [ "$prot_read" = 1 ] && printf '%s' "$bp" | jq -e '.required_pull_request_reviews != null' >/dev/null 2>&1; then pr=ON; fi
+          fi
+          if [ "$rules_ok" = 1 ] && { [ "$classic" = NONE ] || [ "$prot_read" = 1 ]; }; then [ "$pr" = ON ] || pr=OFF; fi
+          if [ "$rules_ok" = 1 ] && [ "$classic" != UNKNOWN ]; then [ "$chk" = ON ] || chk=OFF; fi
+          if [ "$pr" = ON ] && [ "$chk" = ON ]; then bgate=ON
+          elif [ "$pr" = OFF ] || [ "$chk" = OFF ]; then bgate=OFF; fi
+        fi
+        # 1: local rails in the checkout -- the .gitignore ignores .env and a key, and a pre-commit
+        # config runs gitleaks. Hooks are feedback, not enforcement; this says only whether the
+        # repository ships them.
+        if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+          lrails=OFF
+          n=$(printf '.env\n.env.local\nleak-probe.pem\n' | git check-ignore --no-index --stdin 2>/dev/null | grep -c . || true)
+          if [ "${n:-0}" = 3 ] && grep -qs 'gitleaks' .pre-commit-config.yaml .pre-commit-config.yml; then
+            lrails=ON
+          fi
+        fi
+
         {
           echo "ghas_available=$ghas"
           echo "code_scanning=$codescan"
@@ -815,6 +896,9 @@ runs:
           echo "dependabot_config=$cfg"
           echo "visibility=${vis//[$'\r\n']/ }"
           echo "platform_source=$how"
+          echo "push_ruleset=$prs"
+          echo "branch_gate=$bgate"
+          echo "local_baseline=$lrails"
         } >> "$GITHUB_OUTPUT"
 
         {
@@ -831,6 +915,9 @@ runs:
           echo "| Dependabot updates | $depupd | $how |"
           echo "| dependabot.yml | $cfg | file presence |"
           echo "| Repository visibility | $vis | repos API |"
+          echo "| Push ruleset refusing secret files (leak gate 2b) | $prs | rulesets API; private/internal repositories only |"
+          echo "| Branch gate: PR + Security gate required (leak gate 4) | $bgate | rules/branches + branch protection |"
+          echo "| Local rails: .gitignore + gitleaks hook (leak gate 1) | $lrails | the checkout |"
           echo ""
           if [ "$how" = "none" ]; then
             echo "**The settings object was not readable by this token.** That is expected for a"

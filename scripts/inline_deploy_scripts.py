@@ -29,7 +29,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKFLOWS = ['.github/workflows/reusable-deploy-appservice.yml',
              '.github/workflows/reusable-deploy-containerapp.yml']
 SCRIPTS = ['deploy_contract.py', 'derive_reversal_disposition.py', 'environment_protection.py',
-           'rollback_hold.py']
+           'rollback_hold.py', 'promotion.py', 'target_lease.py']
 STEP_NAME = 'Materialise the deploy contract scripts'
 INDENT = ' ' * 10
 V1_ACTION = '.github/actions/verify-attestation/action.yml'

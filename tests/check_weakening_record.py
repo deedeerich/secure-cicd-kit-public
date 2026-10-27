@@ -217,6 +217,17 @@ EXEMPT_FIELDS = ('reason', 'owner', 'weakening_inputs_unrecorded', 'closes', 'ex
 # exemption: they are checked for totality (W1/W2) and laundering (W7) like any other, and a new input
 # that is not listed here fails W1 until it is classified or the workflow gains a posture step.
 INERT_ONLY: dict[str, dict] = {
+    # KDEC-029 decision 8, 2026-10-26. The daily deployed scan's inputs NAME what serves (which
+    # environments, which adapter, which slots, which cloud); none can soften, skip or relax a check:
+    # every named environment is reconciled, re-scanned and checked in full, and an environment that
+    # cannot be read is a finding (KIT-SERVING-UNREADABLE), never a clean row.
+    'reusable-deployed-scan.yml': {
+        'environments': 'the environments whose serving state is read -- the caller inventory, as '
+                        'resource_group names a target; each named one is scanned in full',
+        'adapter': 'which platform API reads what serves; a wrong one cannot read and is reported',
+        'slots': 'App Service slots read beside production; production is always read',
+        'cloud': 'which Azure cloud the reader logs in to',
+    },
     # KDEC-013, 2026-10-16. Every input either names the reference shape or NARROWS what is
     # accepted; none can soften, skip or relax the gate. An empty host or key makes the gate FAIL as
     # unconfigured (tests/prove_ticket_reference_gate.py G5), and a range can only reject more.

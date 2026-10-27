@@ -85,6 +85,10 @@ def lookup(path, ctx):
             v = st['outputs'].get(parts[3], '') if len(parts) > 3 else ''
         else:
             v = st.get(parts[2], '')
+    elif parts[0] == 'env' and len(parts) == 2:
+        # The env context a step's `if:` sees: the job's env (resolved) with the harness's
+        # extra_env over it. KDEC-030's opt-in lease steps read env.KIT_TARGET_LEASE_ACCOUNT.
+        v = ctx.get('env', {}).get(parts[1], '')
     elif parts == ['job', 'status']:
         # job.status as GitHub reports it to a step: cancelled > failure > success.
         v = ctx.get('job_status', 'success')
@@ -105,8 +109,12 @@ def stringify(v):
     return '' if v is None else str(v)
 
 
-def run_job(path, inputs, path_prepend=None, extra_env=None, cancel_after=None, workdir=None):
-    """-> dict(steps={id_or_name: {...}}, order=[...], log=str, summary=str, rc=job result)."""
+def run_job(path, inputs, path_prepend=None, extra_env=None, cancel_after=None, workdir=None,
+            uses_outputs=None):
+    """-> dict(steps={id_or_name: {...}}, order=[...], log=str, summary=str, rc=job result).
+    `uses_outputs`: {step id: {output: value}} answered by a `uses:` step (a composite this harness
+    does not run, e.g. the known-exploited check): recorded stand-ins; absent, a `uses:` step has
+    no outputs, which every consumer reads as not established."""
     doc = D.load(path)
     bash, why = D.bash()
     if not bash:
@@ -134,6 +142,14 @@ def run_job(path, inputs, path_prepend=None, extra_env=None, cancel_after=None, 
                          'failure()': job_failed, 'cancelled()': cancelled}
             ctx['job_status'] = 'cancelled' if cancelled else ('failure' if job_failed else 'success')
             cond = step.get('if')
+            if cond is not None and 'env.' in str(cond):
+                for sname, st in ctx['steps'].items():
+                    for k, v in st['outputs'].items():
+                        values['steps.%s.outputs.%s' % (sname, k)] = v
+                    values['steps.%s.outcome' % sname] = st['outcome']
+                job_env = {k: expr_value(v, ctx, values) for k, v in (D.job(doc).get('env') or {}).items()}
+                job_env.update(extra_env or {})
+                ctx['env'] = job_env
             if cond is None:
                 run_it = not job_failed and not cancelled
             else:
@@ -145,7 +161,8 @@ def run_job(path, inputs, path_prepend=None, extra_env=None, cancel_after=None, 
                 order.append((name, 'skipped'))
                 continue
             if 'run' not in step:
-                ctx['steps'][sid] = {'outcome': 'success', 'conclusion': 'success', 'outputs': {}}
+                ctx['steps'][sid] = {'outcome': 'success', 'conclusion': 'success',
+                                     'outputs': dict((uses_outputs or {}).get(sid) or {})}
                 order.append((name, 'success'))
                 continue
             for sname, st in ctx['steps'].items():
@@ -217,6 +234,87 @@ def stub_bin(fake_state_path, log_path):
     return d
 
 
+def break_glass(inputs):
+    """KDEC-029 (owner, 2026-10-26): uat and prod are PROMOTED from a predecessor's verified record;
+    a deploy there that names none is refused PROMOTION_REFUSED_NO_PREDECESSOR before login, unless
+    it is break-glass under an attributed, time-limited exception. Proofs written before KDEC-029
+    that exercise a production-tier deploy's OTHER controls take this path, so they keep proving
+    those controls; tests/prove_promotion.py proves the promotion path itself."""
+    import datetime
+    exp = (datetime.date.today() + datetime.timedelta(days=3)).isoformat()
+    out = dict(inputs)
+    out['release_path'] = 'break-glass'
+    out.setdefault('weakening_reason', 'proof of a production-tier control (KDEC-029 break-glass)')
+    out.setdefault('weakening_authority', 'release-approvers')
+    out.setdefault('weakening_exception_ref', 'EXC-PROOF-1')
+    out.setdefault('weakening_expires', exp)
+    return out
+
+
+PROMOTION_SIGNER = 'o/secure-cicd-kit/.github/workflows/reusable-build-docker.yml'
+_GH_VERIFIED = r'''
+import json, sys
+ref = [x for x in sys.argv[1:] if x.startswith('oci://')]
+d = ref[0].rsplit('@sha256:', 1)[1] if ref else ''
+print(json.dumps([{'verificationResult': {'statement': {'subject': [{'name': 'x', 'digest': {'sha256': d}}]}}}]))
+'''
+_TRIVY_CLEAN = r'''
+import json, sys
+a = sys.argv[1:]
+if '--version' in a:
+    print('Version: 0.71.2'); sys.exit(0)
+out = a[a.index('--output') + 1]
+doc = {'Results': []} if a[0] == 'sbom' else {'version': '2.1.0', 'runs': [{'tool': {'driver': {'name': 'Trivy'}}, 'results': []}]}
+json.dump(doc, open(out, 'w'))
+'''
+
+
+def promoted(inputs, source_environment='test', source_run='90'):
+    """KDEC-029: a uat/prod deploy is a PROMOTION of a record its predecessor verified. Proofs written
+    before KDEC-029 that exercise a production-tier deploy's OTHER controls (the version-gap ruling)
+    deploy as a clean promotion of the same digest: a verified test record, the build's SBOM, a
+    verifying V1, a clean re-scan and KEV. -> (inputs, run_world keyword arguments).
+    tests/prove_promotion.py proves the promotion gate itself."""
+    import datetime
+    import hashlib
+    import json
+    import zipfile
+    digest = inputs.get('image_digest') or NEW
+    sbom = b'{"spdxVersion": "SPDX-2.3", "packages": []}'
+    at = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    rec = {'schema': 'kit-promotion-record/1', 'record_id': '%s-1-%s' % (source_run, source_environment),
+           'state': 'verified-for-promotion',
+           'artifact': {'digest': digest, 'sbom_sha256': hashlib.sha256(sbom).hexdigest(),
+                        'artifact_identity': 'REGISTRY_IDENTITY_PROVEN'},
+           'environment': {'name': source_environment, 'tier': 'test'},
+           'provenance': {'source_ref': 'refs/heads/main', 'build_workflow': PROMOTION_SIGNER,
+                          'build_run_id': source_run},
+           'conditions': {'established': [], 'missing': []}, 'validity': {'verified_at': at},
+           'run': {'id': source_run}, 'approval': {'approvers': []}}
+
+    def zipped(name, body):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as zf:
+            zf.writestr(name, body)
+        return buf.getvalue()
+    arts = [{'id': 1, 'name': 'kit-promotion-record-%s' % source_environment, 'expired': False,
+             'created_at': at, 'archive_download_url': '@API_ROOT@/zips/rec.zip',
+             'workflow_run': {'id': int(source_run), 'head_branch': 'main'}},
+            {'id': 2, 'name': 'sbom-' + digest.split(':', 1)[1], 'expired': False, 'created_at': at,
+             'archive_download_url': '@API_ROOT@/zips/sbom.zip',
+             'workflow_run': {'id': int(source_run), 'head_branch': 'main'}}]
+    out = dict(inputs, promote_from_run_id=source_run, promote_from_environment=source_environment,
+               promotion_predecessor=source_environment, attestation_signer_workflow=PROMOTION_SIGNER,
+               attestations_available=True, artifact_identity='REGISTRY_IDENTITY_PROVEN')
+    kw = {'api_files': {'repos/o/r/actions/artifacts': json.dumps({'total_count': 2, 'artifacts': arts})},
+          'api_binary': {'zips/rec.zip': zipped('promotion-record.json', json.dumps(rec)),
+                         'zips/sbom.zip': zipped('sbom.spdx.json', sbom)},
+          'tools': {'gh': _GH_VERIFIED, 'trivy': _TRIVY_CLEAN},
+          'uses_outputs': {'promotion_kev': {'kev_state': 'AVAILABLE', 'kev_verdict': 'CLEAR', 'kev_blocking': ''}},
+          'env_extra': {'GITHUB_REF': 'refs/heads/main'}}
+    return out, kw
+
+
 GOOD = 'sha256:' + 'a' * 64
 NEW = 'sha256:' + 'b' * 64
 REG, REPO = 'registry.example', 'shop/web'
@@ -260,6 +358,20 @@ PROTECTED_ENVIRONMENT = {'protection_rules': [
      'reviewers': [{'type': 'Team', 'reviewer': {'slug': 'release-approvers', 'name': 'Release approvers'}}]}]}
 
 
+def add_tools(bin_dir, tools):
+    """More stand-ins beside az and curl: {name: python source}. Each is reachable from bash (an
+    extensionless wrapper) and from Python's subprocess on Windows (a .cmd wrapper), like az."""
+    py = sys.executable
+    for name, src in tools.items():
+        script = os.path.join(bin_dir, '_tool_%s.py' % name)
+        io.open(script, 'w', encoding='utf-8').write(src)
+        io.open(os.path.join(bin_dir, name), 'w', encoding='utf-8', newline='\n').write(
+            '#!/bin/bash\nexec "%s" "%s" "$@"\n' % (py.replace('\\', '/'), script.replace('\\', '/')))
+        os.chmod(os.path.join(bin_dir, name), 0o755)
+        io.open(os.path.join(bin_dir, name + '.cmd'), 'w', encoding='utf-8', newline='\r\n').write(
+            '@echo off\r\n"%s" "%s" %%*\r\n' % (py, script))
+
+
 def write_default_api(api_root):
     """The answers every deploy job reads from the GitHub API besides its environment: no artifact
     (so no rollback marker for the target, KDEC-023) and the commit it was built from."""
@@ -272,7 +384,7 @@ def write_default_api(api_root):
 
 
 def run_world(path, inputs, state, cancel_after=None, environment_answer=PROTECTED_ENVIRONMENT,
-              api_files=None, env_extra=None):
+              api_files=None, env_extra=None, tools=None, uses_outputs=None, api_binary=None):
     """Run the job against a fresh fake cloud. -> (result, final_state, az_calls). `api_files`:
     {path under the API root: body} answered by the recorded GitHub API (KDEC-023's rollback
     marker, commits, comparisons); `env_extra`: more job environment (the commit and the run id)."""
@@ -288,13 +400,22 @@ def run_world(path, inputs, state, cancel_after=None, environment_answer=PROTECT
             p = os.path.join(work, 'api', *rel.split('/'))
             if not os.path.isdir(os.path.dirname(p)):
                 os.makedirs(os.path.dirname(p))
-            io.open(p, 'w', encoding='utf-8').write(body)
+            # '@API_ROOT@' in a recorded answer is the file:// URL of this API (an artifact's
+            # archive_download_url points into it).
+            root_url = 'file:///' + os.path.join(work, 'api').replace('\\', '/').lstrip('/')
+            io.open(p, 'w', encoding='utf-8').write(body.replace('@API_ROOT@', root_url))
         write_default_api(os.path.join(work, 'api'))
         state_path = os.path.join(work, 'state.json')
         log_path = os.path.join(work, 'calls.jsonl')
         io.open(state_path, 'w', encoding='utf-8').write(json.dumps(state))
         io.open(log_path, 'w').close()
+        for rel, data in (api_binary or {}).items():
+            p = os.path.join(work, 'api', *rel.split('/'))
+            if not os.path.isdir(os.path.dirname(p)):
+                os.makedirs(os.path.dirname(p))
+            io.open(p, 'wb').write(data)
         bin_dir = stub_bin(state_path, log_path)
+        add_tools(bin_dir, tools or {})
         try:
             # Git Bash rewrites environment values that look like POSIX paths ("/health") into
             # Windows paths when it starts a native program -- a harness artefact no Linux
@@ -307,7 +428,8 @@ def run_world(path, inputs, state, cancel_after=None, environment_answer=PROTECT
             env.update(env_extra or {})
             rt = os.path.join(work, 'runner-temp')
             os.makedirs(rt)
-            res = run_job(path, inputs, path_prepend=bin_dir, extra_env=env,
+            env['FAKE_API_ROOT'] = os.path.join(work, 'api')
+            res = run_job(path, inputs, path_prepend=bin_dir, extra_env=env, uses_outputs=uses_outputs,
                           cancel_after=cancel_after, workdir=rt)
             final = json.load(io.open(state_path, encoding='utf-8'))
             calls = [json.loads(l) for l in io.open(log_path, encoding='utf-8') if l.strip()]

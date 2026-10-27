@@ -51,6 +51,8 @@ PARTS = {"d": ("survey", "d"), "platform": ("platform", "platform")}
 # PSScriptAnalyzer) and iac-scan (hadolint), so each linter runs only where its files are.
 # `kotlin`, `swift` and `mobile` are the next (lane L-SCAN-B, KDEC-026): Kotlin and Swift stopped
 # being coverage gaps, and Objective-C / Android / iOS configuration became a class sast-mobile reads.
+# `push_ruleset`, `branch_gate` and `local_baseline` are the next (lane L-LEAK, KDEC-031): the leak
+# gates the security-gate job records ON / OFF / UNKNOWN (tests/prove_leak_gate_posture.py).
 BASE_OUTPUTS = dict(
     [(k, "${{ steps.d.outputs.%s }}" % k) for k in
      ("python", "node", "go", "dotnet", "java", "cpp", "php", "kotlin", "swift", "mobile", "iac",
@@ -59,7 +61,7 @@ BASE_OUTPUTS = dict(
     [(k, "${{ steps.platform.outputs.%s }}" % k) for k in
      ("ghas_available", "code_scanning", "secret_scanning", "push_protection",
       "dependabot_alerts", "dependabot_updates", "dependabot_config", "visibility",
-      "platform_source")])
+      "platform_source", "push_ruleset", "branch_gate", "local_baseline")])
 
 
 def load_job_and_composite():

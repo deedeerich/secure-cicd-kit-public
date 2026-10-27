@@ -137,6 +137,16 @@ on:
         type: string
         required: false
         default: ""
+      runner_label:
+        description: >-
+          The runner this job runs on: one runner label or name. The default is ubuntu-latest. A job
+          that takes the cross-repository target lease (KIT_TARGET_LEASE_ACCOUNT set in the
+          environment; KDEC-030) needs a runner that reaches the lease store's private endpoint -- a
+          GitHub-hosted larger runner with Azure private networking, or a self-hosted runner inside
+          the network; on a runner that cannot reach it the lease fails closed (LEASE_STORE_UNREACHABLE).
+        type: string
+        required: false
+        default: "ubuntu-latest"
     secrets:
       AZURE_TENANT_ID:
         description: "Entra tenant ID for OIDC login (a variable of the environment is used when absent)."
@@ -200,8 +210,13 @@ permissions:
 jobs:
   rollback:
     name: Roll back in reverse order, end-to-end tests between steps
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner_label }}
     environment: ${{ inputs.github_environment }}
+    env:
+      # KDEC-030 (DRAFT): the cross-repository target lease, OFF unless the landing zone vends its
+      # lease account into this environment. Empty: the lease steps are skipped and the sequence
+      # runs exactly as before. tests/prove_target_lease_crossrepo.py W9.
+      KIT_TARGET_LEASE_ACCOUNT: ${{ vars.KIT_TARGET_LEASE_ACCOUNT }}
     outputs:
       sequence_result: ${{ steps.sequence.outputs.sequence_result }}
       steps_verified: ${{ steps.sequence.outputs.steps_verified }}
@@ -267,6 +282,42 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
           environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
 
+      - name: Target lease -- acquire once for the whole sequence (KDEC-030, opt-in)
+        # The same lock the landing-zone apply and every kit deploy of this target take (a
+        # concurrency group is evaluated inside one repository and cannot). Held -> LEASE_HELD,
+        # naming the holder, and nothing is rolled back. The target is the app: Microsoft.App/
+        # containerApps or Microsoft.Web/sites from the steps' adapter; a generic (arm) sequence is
+        # resolved by one live read of the named resource, and an ambiguous name refuses.
+        id: lease_acquire
+        if: env.KIT_TARGET_LEASE_ACCOUNT != '' && inputs.e2e_test_command != ''
+        env:
+          SEQUENCE: ${{ inputs.sequence }}
+          LEASE_SUBSCRIPTION: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
+          LEASE_RESOURCE_GROUP: ${{ inputs.target_resource_group }}
+          LEASE_NAME: ${{ inputs.target_name }}
+          LEASE_CLOUD: ${{ inputs.cloud }}
+          KIT_DIR: ${{ github.workspace }}/.kit
+        run: |
+          set -euo pipefail
+          adapter="$(python3 -c 'import json, os
+          s = json.loads(os.environ["SEQUENCE"])
+          a = {st.get("adapter") for st in (s.get("steps") or [])}
+          print(a.pop() if len(a) == 1 else "")' || true)"
+          case "$adapter" in
+            containerapp|appservice)
+              target=(--adapter "$adapter" --subscription "$LEASE_SUBSCRIPTION" --resource-group "$LEASE_RESOURCE_GROUP" --name "$LEASE_NAME") ;;
+            *)
+              ids="$(az resource list --resource-group "$LEASE_RESOURCE_GROUP" --name "$LEASE_NAME" --query '[].id' -o tsv)"
+              if [ "$(printf '%s\n' "$ids" | grep -c .)" -ne 1 ]; then
+                echo "::error title=target lease LEASE_TARGET_NOT_VENDED::'$LEASE_NAME' in '$LEASE_RESOURCE_GROUP' does not name exactly one resource; the lease target cannot be known, so nothing is rolled back."
+                exit 1
+              fi
+              target=(--resource-id "$ids") ;;
+          esac
+          python3 "$KIT_DIR/scripts/target_lease.py" acquire --account "$KIT_TARGET_LEASE_ACCOUNT" \
+            --cloud "${LEASE_CLOUD:-commercial}" "${target[@]}" \
+            --holder "kit-rollback:${GITHUB_REPOSITORY}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
       - name: Roll back newest first, a test period after each step
         id: sequence
         env:
@@ -290,7 +341,16 @@ jobs:
           # A kit deployment that lands mid-sequence is fetched the same way as the listed ones.
           # shellcheck disable=SC2016
           fetch='gh run download "$ROLLBACK_FETCH_RUN_ID" -R "$GITHUB_REPOSITORY" -n "deploy-evidence-${ROLLBACK_FETCH_RUN_ID}-${ROLLBACK_FETCH_RUN_ATTEMPT}" -D "$ROLLBACK_FETCH_DIR"'
-          python3 "$KIT_DIR/scripts/rollback_sequence.py" run --sequence-env sequence \
+          hold=()
+          if [ -n "${KIT_TARGET_LEASE_ACCOUNT:-}" ]; then
+            # KDEC-030: the whole sequence runs HOLDING the target lease, renewed every 180 s through
+            # every step and every test period, and marked `mutating` until it ends verified (a
+            # halted sequence stays mutating: a human decides). Every mutating az call of every
+            # step is fenced before it is sent (deploy_contract.az). A failed renewal stops the
+            # sequence at once: LEASE_LOST, nothing further is mutated.
+            hold=(python3 "$KIT_DIR/scripts/target_lease.py" hold --every 180 --mark-mutating "rollback sequence ${GITHUB_RUN_ID}" --)
+          fi
+          ${hold[@]+"${hold[@]}"} python3 "$KIT_DIR/scripts/rollback_sequence.py" run --sequence-env sequence \
             --evidence-root "$RUNNER_TEMP/rollback-evidence" --work "$RUNNER_TEMP/rollback-work" \
             --out "$RUNNER_TEMP/rollback-sequence.json" --e2e-command "$E2E_TEST_COMMAND" \
             --e2e-timeout-seconds "$((E2E_TIMEOUT_MINUTES * 60))" \
@@ -308,6 +368,13 @@ jobs:
             echo "rollback_state=${rollback_state//[$'\r\n']/ }"
           } >> "$GITHUB_OUTPUT"
           exit "$rc"
+
+      - name: Target lease -- release (refused while a halted sequence left it mutating)
+        id: lease_release
+        if: "!cancelled() && env.KIT_TARGET_LEASE_ACCOUNT != '' && steps.lease_acquire.outcome == 'success'"
+        env:
+          KIT_DIR: ${{ github.workspace }}/.kit
+        run: python3 "$KIT_DIR/scripts/target_lease.py" release
 
       - name: Mark the target as rolled back (what an incoming deploy is checked against)
         id: marker
@@ -420,6 +487,9 @@ jobs:
           posture health_retries           SEVERITY_RAISED "max:12" health-probe "$W_HEALTH_RETRIES"
           posture health_interval_seconds  SEVERITY_RAISED "max:10" health-probe "$W_HEALTH_INTERVAL_SECONDS"
           posture cloud                    NOT_A_CONTROL_SURFACE - -
+          # Where the job runs. The lease (KDEC-030) needs a runner that reaches its private store;
+          # the label changes no control, and an unreachable store refuses rather than skips.
+          posture runner_label             NOT_A_CONTROL_SURFACE - -
           posture weakening_reason         EXCEPTION_ATTRIBUTION - -
           posture weakening_authority      EXCEPTION_ATTRIBUTION - -
           posture weakening_exception_ref  EXCEPTION_ATTRIBUTION - -

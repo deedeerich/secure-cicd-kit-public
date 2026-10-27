@@ -133,9 +133,11 @@ on:
       nvd_datafeed_url:
         description: >-
           Where Dependency-Check builds and refreshes its NVD database. Default: the Dependency-Check
-          project's own NVD mirror, which builds the full database in about 1.5 minutes. Empty: the
-          NVD API directly, with NVD_API_KEY -- which, at the NVD API's 2026-10 throughput, cannot
-          finish a cold build inside this job's limit.
+          project's public datafeed, which builds the full database in about 1.5 minutes. It is a
+          third-party host: there is no organisation-hosted mirror, so the runner needs egress to it
+          (an organisation mirror is planned for Release 4). NVD_API_KEY is unused while this is set.
+          Empty: the NVD API directly, with NVD_API_KEY -- which, at the NVD API's 2026-10
+          throughput, cannot finish a cold build inside this job's limit.
         type: string
         required: false
         # WHY NOT THE NVD API (lane L-NV, 2026-10-21, measured): it now delivers ~10-40 kB/s per

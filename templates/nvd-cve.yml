@@ -2,8 +2,12 @@
 # Copy to .github/workflows/nvd-cve.yml in the consuming repo, replace YOUR_ORG, and pin the kit by
 # its 40-hex commit SHA (a branch or moving tag means the result came from code nobody chose).
 #
-# NVD_API_KEY (strongly recommended; without it the DB update is rate-limited, 20-40 minutes):
-#   Free, self-service: https://nvd.nist.gov/developers/request-an-api-key
+# NVD data: by default the NVD database is built from the Dependency-Check project's public
+#   datafeed (https://dependency-check.github.io/DependencyCheck_Builder/nvd_cache/). There is no
+#   organisation-hosted mirror: the runner needs egress to that third-party host. An organisation
+#   mirror is planned for Release 4.
+# NVD_API_KEY is used only if you set nvd_datafeed_url to "" (the NVD API directly; without a key
+#   that update is rate-limited, 20-40 minutes). Free: https://nvd.nist.gov/developers/request-an-api-key
 #   A repository or organisation secret is passed as below. If the key is an ENVIRONMENT secret,
 #   also pass `github_environment: <env>` -- a caller job cannot declare an environment, and
 #   `secrets: inherit` does not carry environment secrets on its own.

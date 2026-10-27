@@ -185,6 +185,10 @@ NOT_VOCABULARY = {
     # constant is a setting on somebody else's platform -- this kit branches on nothing
     # about it, and registering it would claim a vocabulary the kit does not own.
     "DISALLOW_FILE_EDIT", "WP_DEBUG",
+    # Python's own zipfile compression constant, used by the export's --zip step
+    # (scripts/export_for_adoption.py, tests/prove_export_scope.py E10). A standard-library
+    # identifier, not a state the kit defines or branches on.
+    "ZIP_DEFLATED",
     # The same class, read by the resolve job's version probes and seeded in their fixtures: a
     # CMake variable name and a Gradle enum member are somebody else's identifiers. The kit
     # reads them to learn a C++ standard or a Java level; it defines nothing by them.
@@ -361,6 +365,29 @@ NOT_VOCABULARY = {
     # the token-host pin the pin checker reads, both set to local stand-ins by the ghe.com proofs.
     # The same class as PIN_ACTIONS' GITHUB_API_URL and SEARCH_PATHS above.
     "PIN_ACTIONS_API", "PIN_CHECK_TOKEN_HOST",
+    # KDEC-029 (lane L-PROMO): SETTINGS and names, never states. The environment the promotion steps
+    # read (the KEV composite's outputs passed in, the e2e command's PROMOTION_* context, the clock
+    # override KIT_PROMOTION_NOW, the template's repository variable KIT_DAST_COMMAND, the runner's
+    # GITHUB_REF, the deployed-scan composite's RESOURCE_GROUP/CONTAINERAPP_NAME), the proofs' stand-in
+    # switches (FAKE_*, API_ROOT), two document titles cited by name, and a Python constant name.
+    "KEV_STATE", "KEV_BLOCKING", "PROMOTION_APP_URL", "PROMOTION_CHECK_PHASE", "PROMOTION_ENVIRONMENT",
+    "KIT_PROMOTION_NOW", "KIT_DAST_COMMAND", "PROMOTION_DAST_SARIF", "GITHUB_REF", "RESOURCE_GROUP", "CONTAINERAPP_NAME",
+    "FAKE_API_ROOT", "FAKE_DAST_RESULTS", "FAKE_DAST_NO_REPORT", "API_ROOT",
+    "KIT_E2E_TEST_COMMAND", "KIT_PROMOTION_PREDECESSOR",
+    "COMPLETION_LEDGER", "DEPLOYMENT_CONTRACT_RECONCILIATION", "NOT_VERIFIED",
+    # KDEC-030 draft (lane L-SEAM2): SETTINGS, never states. The environment variable the landing zone
+    # vends to opt a deploy into the target lease, the lease CLI's bearer override (the proof's
+    # stand-in token) and break-authority list, and the LZ snippet's variable naming the target.
+    "KIT_TARGET_LEASE_ACCOUNT", "TARGET_LEASE_BEARER", "TARGET_LEASE_BREAK_AUTHORITY", "TARGET_RESOURCE_ID",
+    # The token-file override the az fence and the hold read, and the proof's az stand-in log.
+    "KIT_TARGET_LEASE_TOKEN", "AZ_STUB_LOG",
+    # The leak-gate helpers (developer-safety/, docs/adoption/LEAK_GATES.md): bash's own version
+    # variable, which both scripts test to refuse a non-bash shell (tests/prove_push_ruleset_secret_files.py
+    # looks for the guard by that name) -- somebody else's identifier, the same class as GH_HOST --
+    # and merge-baseline.sh's positional-argument NAME in its usage line and exit table, a path the
+    # caller passes, the same class as SEARCH_PATHS. Neither is a state; the scripts' refusal
+    # reasons ARE states and are registered (prerequisite_readiness, leak_gate_setup_refusal).
+    "BASH_VERSION", "REPO_DIR",
 }
 
 TOKEN = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")

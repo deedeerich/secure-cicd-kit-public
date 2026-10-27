@@ -373,6 +373,13 @@ on:
       weakening_record:
         description: "Reason, authority, exception reference and expiry as one JSON object."
         value: ${{ jobs.security-gate.outputs.weakening_record }}
+      # THE LEAK GATES (lane L-LEAK, KDEC-031 PROPOSED): recorded, not routed, at crawl.
+      leak_gates:
+        description: "JSON: secret_scanning, push_protection, push_ruleset, branch_gate, local_baseline -- each ON, OFF or UNKNOWN (never ON unread)."
+        value: ${{ jobs.security-gate.outputs.leak_gates }}
+      leak_gate_weakenings:
+        description: "JSON array, one control_weakening row (CONTROL_DISABLED, WEAKENING_IN_FORCE, WEAKENING_UNATTRIBUTED) per leak gate that is OFF."
+        value: ${{ jobs.security-gate.outputs.leak_gate_weakenings }}
       # THE POLICY THE VERDICT WAS REACHED UNDER (stage 1; scripts/policy_registration.py).
       policy_resolution:
         description: "POLICY_RESOLVED, or the refusal by name (assurance-taxonomy.yaml policy_resolution)."
@@ -1787,6 +1794,10 @@ jobs:
       dependabot_config: ${{ steps.platform.outputs.dependabot_config }}
       visibility: ${{ steps.platform.outputs.visibility }}
       platform_source: ${{ steps.platform.outputs.platform_source }}
+      # Leak gates 2b, 4 and 1 (lane L-LEAK, KDEC-031): ON / OFF / UNKNOWN, never ON unread.
+      push_ruleset: ${{ steps.platform.outputs.push_ruleset }}
+      branch_gate: ${{ steps.platform.outputs.branch_gate }}
+      local_baseline: ${{ steps.platform.outputs.local_baseline }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # THE STEP BODIES RUN FROM THE KIT, NOT FROM THIS FILE. Inline, the survey and the platform
@@ -5232,6 +5243,9 @@ jobs:
       weakenings: ${{ steps.posture.outputs.weakenings }}
       weakening_attribution: ${{ steps.posture.outputs.weakening_attribution }}
       weakening_record: ${{ steps.posture.outputs.weakening_record }}
+      leak_gates: ${{ steps.leakgates.outputs.leak_gates }}
+      leak_gate_weakenings: ${{ steps.leakgates.outputs.leak_gate_weakenings }}
+      leak_gate_alarm: ${{ steps.leakgates.outputs.leak_gate_alarm }}
       policy_resolution: ${{ steps.posture.outputs.policy_resolution }}
       policy_source: ${{ steps.posture.outputs.policy_source }}
       policy_chain: ${{ steps.posture.outputs.policy_chain }}
@@ -6684,6 +6698,63 @@ jobs:
               printf '%s' "$P_NOTICES" | jq -r '.[] | "| notice: \(.code) | org \(.org) ran at enterprise \(.enterprise) (rung \(.rung), tier \(.tier)) -- add it to the orgs map |"' 2>/dev/null
             fi
             echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── LEAK GATES (lane L-LEAK, KDEC-031 PROPOSED) ───────────────────────────────────────
+      # A PAT leaked through a committed `.env` with none of these in place, and Tines GitSync
+      # pushes run no local hook. Each layer is ON, OFF or UNKNOWN as discover read it; OFF is a
+      # control_weakening row (CONTROL_DISABLED, WEAKENING_IN_FORCE, WEAKENING_UNATTRIBUTED) and a
+      # warning; UNKNOWN is never ON. None of push protection, push ruleset or local rails shown
+      # ON is the louder NO_LEAK_GATE_SHOWN. At crawl this RECORDS and does not route: deploys
+      # refuse unregistered advisory causes, so routing it is the owner's KDEC-031 decision.
+      # The CI secret scan (gate 3) blocks in every mode regardless. tests/prove_leak_gate_posture.py.
+      - name: Leak-gate posture — push protection, push ruleset, branch gate, local rails
+        id: leakgates
+        if: always()
+        env:
+          L_SECRET_SCANNING: ${{ needs.discover.outputs.secret_scanning }}
+          L_PUSH_PROTECTION: ${{ needs.discover.outputs.push_protection }}
+          L_PUSH_RULESET: ${{ needs.discover.outputs.push_ruleset }}
+          L_BRANCH_GATE: ${{ needs.discover.outputs.branch_gate }}
+          L_LOCAL_BASELINE: ${{ needs.discover.outputs.local_baseline }}
+        run: |
+          set -u
+          tri() { case "$1" in ENABLED|ON) echo ON ;; NOT_CONFIGURED|UNAVAILABLE|OFF) echo OFF ;; *) echo UNKNOWN ;; esac; }
+          js=""; wk=""; rows=""
+          # layer value owner-role action -- one record entry, a weakening row when OFF.
+          layer() {
+            v="$(tri "$2")"; js="$js,\"$1\":\"$v\""
+            rows="$rows| $1 | $v | $3 | $4 |"$'\n'
+            if [ "$v" = OFF ]; then
+              wk="$wk,{\"input\":\"platform:$1\",\"class\":\"CONTROL_DISABLED\",\"control\":\"$1\",\"baseline\":\"ON\",\"value\":\"OFF\",\"state\":\"WEAKENING_IN_FORCE\",\"attribution\":\"WEAKENING_UNATTRIBUTED\"}"
+              echo "::warning title=Leak gate missing: $1::$4 (owner: $3). Recorded as a weakening; it does not block at crawl (KDEC-031)."
+            fi
+          }
+          layer push_protection "${L_PUSH_PROTECTION:-UNKNOWN}" "repository administrator (licence: organisation owner)" "enable secret scanning push protection where licensed"
+          layer push_ruleset    "${L_PUSH_RULESET:-UNKNOWN}"    "repository administrator" "apply developer-safety/branch-protection/push-ruleset-secret-files.json (private/internal repositories)"
+          layer branch_gate     "${L_BRANCH_GATE:-UNKNOWN}"     "repository administrator" "require a pull request and the Security gate check on the default branch"
+          layer local_baseline  "${L_LOCAL_BASELINE:-UNKNOWN}"  "repository maintainer" "merge the baseline .gitignore and add the gitleaks pre-commit hook"
+          layer secret_scanning "${L_SECRET_SCANNING:-UNKNOWN}" "repository administrator (licence: organisation owner)" "enable secret scanning where licensed"
+          alarm=""
+          case "$js" in *'"push_protection":"ON"'*|*'"push_ruleset":"ON"'*|*'"local_baseline":"ON"'*) ;;
+            *) alarm=NO_LEAK_GATE_SHOWN
+               echo "::warning title=NO_LEAK_GATE_SHOWN: nothing stops a committed .env before CI::Neither push protection, a push ruleset nor the local rails could be shown ON. A secret pushed here is caught only by the CI secret scan, after it has left the machine. Not blocking at crawl (KDEC-031 PROPOSED)." ;;
+          esac
+          {
+            echo "leak_gates={${js#,}}"
+            echo "leak_gate_weakenings=[${wk#,}]"
+            echo "leak_gate_alarm=$alarm"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Leak gates — what stands between a committed secret and the default branch"
+            echo ""
+            [ -n "$alarm" ] && { echo "> **No leak gate shown ON before CI (\`$alarm\`).** Only the CI secret scan stands here."; echo ""; }
+            echo "| layer | state | owner role | action |"
+            echo "|---|---|---|---|"
+            printf '%s' "$rows"
+            echo "| ci secret scan | blocks in every mode | - | - |"
+            echo ""
+            echo "UNKNOWN means the token could not read the setting; it is never read as ON. OFF is a recorded weakening, not a block, at crawl (KDEC-031). Tines GitSync pushes run no local hook: only push protection, the push ruleset and CI apply to them."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Emit the run record (schemas/assurance-result.schema.json)

@@ -107,8 +107,12 @@ def check(root):
     md = io.open(md_path, encoding='utf-8').read() if os.path.exists(md_path) else ''
     for p in profiles:
         prof = os.path.splitext(os.path.basename(p))[0]
-        ctx = ((json.load(io.open(p, encoding='utf-8')).get('required_status_checks') or {})
-               .get('contexts') or [])
+        pdoc = json.load(io.open(p, encoding='utf-8'))
+        # A push RULESET (lane L-LEAK) is not a branch-protection profile: it refuses files by path
+        # and requires no check. tests/prove_push_ruleset_secret_files.py proves it instead.
+        if pdoc.get('target') == 'push':
+            continue
+        ctx = ((pdoc.get('required_status_checks') or {}).get('contexts') or [])
         for c in ctx:
             if c not in names:
                 fails.append('B1 %s requires `%s`, which no shipped workflow emits -- GitHub would '

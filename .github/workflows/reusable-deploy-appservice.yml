@@ -212,6 +212,94 @@ on:
         type: string
         required: false
         default: ""
+      # ── KDEC-029: BUILD ONCE, PROMOTE THE SAME DIGEST (owner, 2026-10-26) ─────────────────
+      # dev and test deploy in parallel from the build; uat and prod are PROMOTED from the prior
+      # environment's verified record of exactly this digest. scripts/promotion.py;
+      # tests/prove_promotion.py.
+      promote_from_run_id:
+        description: >-
+          PROMOTION MODE: the run id whose deploy into promote_from_environment verified this
+          digest. Set, this deploy builds nothing: before login the promotion gate reads that run's
+          promotion record and refuses, naming its reason, unless the digest was verified-for-promotion
+          in the required predecessor, built from the default branch, its signature verifies (V1), it
+          is neither stale (14 days), superseded nor revoked, and the SBOM and KEV re-check find no new
+          blocking finding. Empty: a deploy of this run's build (dev and test only).
+        type: string
+        required: false
+        default: ""
+      promote_from_environment:
+        description: "PROMOTION MODE: the GitHub environment whose record is promoted (the predecessor)."
+        type: string
+        required: false
+        default: ""
+      promotion_predecessor:
+        description: >-
+          Product policy: the environment whose verified record a promotion INTO this environment
+          requires -- test or uat for prod, test for uat. A dev or sandbox record never satisfies it.
+        type: string
+        required: false
+        default: "test"
+      release_path:
+        description: >-
+          normal | hotfix | rollback | break-glass. hotfix: the same path with a shorter test period
+          (recorded). rollback/hotfix: an attributed exception (the weakening record) may promote a
+          build older than 14 days that is not superseded. break-glass: an approved exception
+          (weakening_reason, weakening_authority, weakening_exception_ref, weakening_expires at most
+          7 days out) lets the deploy proceed past the testing refusals; it records BREAK_GLASS and the
+          testing stays owed, flagged by the daily deployed scan until done.
+        type: string
+        required: false
+        default: "normal"
+      artifact_identity:
+        description: "The build's artifact_identity output (REGISTRY_IDENTITY_PROVEN). Half of 'exact artefact identity established'; V1 here is the other half."
+        type: string
+        required: false
+        default: ""
+      e2e_test_command:
+        description: >-
+          The end-to-end tests (run by /bin/sh in the caller's checkout, without the deploy
+          identity's Azure session; PROMOTION_APP_URL names the target) at the start of the test
+          period, at each interval and at its end. Empty: the period is NOT_CONFIGURED and the deploy
+          cannot be verified for promotion. Not run at prod (passive checks only).
+        type: string
+        required: false
+        default: ""
+      e2e_test_period_minutes:
+        description: "KDEC-021's test period, 0 < m <= 240; under 15 is recorded (a hotfix compresses it)."
+        type: number
+        required: false
+        default: 15
+      e2e_check_interval_minutes:
+        description: "Checks inside the period besides start and end; 0 = start and end only."
+        type: number
+        required: false
+        default: 0
+      e2e_timeout_minutes:
+        description: "Bound on each run of the e2e command; a run past it fails the period."
+        type: number
+        required: false
+        default: 10
+      dast_command:
+        description: >-
+          DAST where configured: the caller's command (run by /bin/sh in the caller's checkout,
+          without the deploy identity's Azure session, bounded at 30 minutes) against
+          PROMOTION_APP_URL, writing its report as SARIF to PROMOTION_DAST_SARIF. A result at level
+          error that the tool did not record as accepted is a blocking finding; no readable SARIF is
+          DAST_INCOMPLETE.
+          Empty: not configured. Refused at prod before login: never active DAST against prod.
+        type: string
+        required: false
+        default: ""
+      runner_label:
+        description: >-
+          The runner this job runs on: one runner label or name. The default is ubuntu-latest. A job
+          that takes the cross-repository target lease (KIT_TARGET_LEASE_ACCOUNT set in the
+          environment; KDEC-030) needs a runner that reaches the lease store's private endpoint -- a
+          GitHub-hosted larger runner with Azure private networking, or a self-hosted runner inside
+          the network; on a runner that cannot reach it the lease fails closed (LEASE_STORE_UNREACHABLE).
+        type: string
+        required: false
+        default: "ubuntu-latest"
     secrets:
       AZURE_TENANT_ID:
         description: "Entra tenant ID for OIDC federated login. Not a secret value in the cryptographic sense, but org-identifying — keep it in secrets."
@@ -275,6 +363,12 @@ on:
           ENVIRONMENT_APPROVER_GROUP_MISSING | ENVIRONMENT_PROTECTION_NOT_ESTABLISHED. At uat and prod only
           the first two proceed.
         value: ${{ jobs.deploy.outputs.environment_protection }}
+      promotion_state:
+        description: "KDEC-029: verified-for-promotion | not-verified | BREAK_GLASS -- the promotion record's state."
+        value: ${{ jobs.deploy.outputs.promotion_state }}
+      promotion_gate:
+        description: "PROMOTION_ALLOWED or the PROMOTION_REFUSED_* code, in promotion mode; empty otherwise."
+        value: ${{ jobs.deploy.outputs.promotion_gate }}
 
 # Concurrency for a CHANGE workflow is the opposite of concurrency for a validation
 # workflow. Validation cancels the superseded run — the answer is stale, killing it costs
@@ -307,7 +401,7 @@ permissions:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner_label }}
     environment: ${{ inputs.github_environment }}
     outputs:
       app_url: ${{ steps.serving.outputs.app_url }}
@@ -321,6 +415,8 @@ jobs:
       weakening_attribution: ${{ steps.posture.outputs.weakening_attribution }}
       weakening_record: ${{ steps.posture.outputs.weakening_record }}
       environment_protection: ${{ steps.protection.outputs.environment_protection }}
+      promotion_state: ${{ steps.promotion_record.outputs.promotion_state }}
+      promotion_gate: ${{ steps.promotion_gate.outputs.promotion_gate }}
     # SAFE_ENV_TRANSPORT (L100/L38). Every caller input reaches the scripts below as DATA in the
     # environment, never as text substituted into a script body. The digest guard used to read
     # `d='${{ inputs.image_digest }}'` -- validation that ran after bash had already parsed the
@@ -362,6 +458,23 @@ jobs:
       KIT_BOUND_ACR_LOGIN_SERVER: ${{ vars.KIT_ACR_LOGIN_SERVER }}
       KIT_BOUND_IMAGE_REPOSITORY: ${{ vars.KIT_IMAGE_REPOSITORY }}
       KIT_BOUND_CLOUD: ${{ vars.KIT_CLOUD }}
+      # KDEC-030 (DRAFT): the cross-repository target lease, OFF unless the landing zone vends its
+      # lease account into this environment. Empty: every lease step below is skipped and the
+      # deploy is exactly as before. tests/prove_target_lease_crossrepo.py W1-W6.
+      KIT_TARGET_LEASE_ACCOUNT: ${{ vars.KIT_TARGET_LEASE_ACCOUNT }}
+      # KDEC-029: promotion and the checks that make a deploy "tested".
+      PROMOTE_FROM_RUN_ID: ${{ inputs.promote_from_run_id }}
+      PROMOTE_FROM_ENVIRONMENT: ${{ inputs.promote_from_environment }}
+      PROMOTION_PREDECESSOR: ${{ inputs.promotion_predecessor }}
+      RELEASE_PATH: ${{ inputs.release_path }}
+      ARTIFACT_IDENTITY: ${{ inputs.artifact_identity }}
+      E2E_TEST_COMMAND: ${{ inputs.e2e_test_command }}
+      E2E_TEST_PERIOD_MINUTES: ${{ inputs.e2e_test_period_minutes }}
+      E2E_CHECK_INTERVAL_MINUTES: ${{ inputs.e2e_check_interval_minutes }}
+      E2E_TIMEOUT_MINUTES: ${{ inputs.e2e_timeout_minutes }}
+      DAST_COMMAND: ${{ inputs.dast_command }}
+      ATTESTATION_SIGNER_WORKFLOW: ${{ inputs.attestation_signer_workflow }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
       - name: Materialise the deploy contract scripts
         # GENERATED by scripts/inline_deploy_scripts.py from scripts/ -- do not edit
@@ -423,8 +536,61 @@ jobs:
                   return None
 
 
+          # KDEC-030 draft (the seam contract, "The kit's wiring"): when the GitHub environment opts into the
+          # cross-repository target lease (KIT_TARGET_LEASE_ACCOUNT), EVERY mutating az call below is fenced
+          # immediately before it is sent -- this function is the one path every kit mutation takes (the deploy
+          # steps, the reversal, the rollback sequence through `reverse`, the generic ARM rollback through
+          # rollback_dependencies). A refused fence means the call is NOT sent: (False, None, '<CODE>: why'),
+          # and the loss is sticky for the rest of the run (target_lease.py records it beside the token). Reads
+          # are never fenced. Off (the variable empty): nothing here runs and az behaves exactly as before.
+          # Fencing stops a stale holder before its next call; it cannot recall a call already sent.
+          AZ_MUTATING_VERBS = frozenset(['update', 'set', 'swap', 'activate', 'deactivate', 'create', 'delete',
+                                         'restart', 'start', 'stop', 'add', 'remove', 'purge', 'deploy', 'import',
+                                         'assign', 'unassign', 'reset', 'invoke-action', 'up'])
+          AZ_READ_METHODS = frozenset(['get', 'head', 'options'])
+
+
+          def az_is_mutating(*args):
+              """True for an az call that changes Azure: a mutating verb among the command words (before the
+              first option), or `az rest` with any method but a read. `--method` defaults to get in az rest."""
+              words = []
+              for a in args:
+                  if str(a).startswith('-'):
+                      break
+                  words.append(str(a))
+              if words[:1] == ['rest']:
+                  a = list(args)
+                  method = a[a.index('--method') + 1].lower() if '--method' in a and a.index('--method') + 1 < len(a) else 'get'
+                  return method not in AZ_READ_METHODS
+              if words[:2] == ['account', 'get-access-token']:
+                  return False
+              return any(w in AZ_MUTATING_VERBS for w in words[1:])
+
+
+          def lease_fence(args):
+              """-> '' when the call may be sent, else the refusal ('<CODE>: why'). Inert when the lease is off."""
+              if not os.environ.get('KIT_TARGET_LEASE_ACCOUNT') or not az_is_mutating(*args):
+                  return ''
+              try:
+                  sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                  import target_lease
+              except Exception as e:  # noqa: BLE001 -- a fence that cannot run refuses
+                  return 'LEASE_STORE_UNREACHABLE: target_lease.py is not beside the deploy contract (%s)' % e
+              try:
+                  target_lease.fence_token_file()
+              except target_lease.LeaseError as e:
+                  msg = '%s: %s' % (e.code, e)
+                  print('::error title=target lease %s::the mutating call az %s was NOT sent: %s'
+                        % (e.code, ' '.join(str(x) for x in args[:4]), ' '.join(msg.split())))
+                  return msg
+              return ''
+
+
           def az(*args):
               """-> (ok, parsed JSON or None, error text). A failed read is reported, never blanked."""
+              refused = lease_fence(args)
+              if refused:
+                  return False, None, refused
               exe = shutil.which('az')
               if not exe:
                   return False, None, 'az CLI not found'
@@ -443,6 +609,9 @@ jobs:
 
           def az_raw(*args):
               """-> (ok, text, error text) for a call whose answer is not JSON (a log file)."""
+              refused = lease_fence(args)
+              if refused:
+                  return False, '', refused
               exe = shutil.which('az')
               if not exe:
                   return False, '', 'az CLI not found'
@@ -1654,37 +1823,59 @@ jobs:
 
 
           # ----------------------------------------------------------------------------- promotion
-          # DCR gap 11 / 7.7. Deployment success is not trust progression. Verified-for-promotion is a
-          # CONJUNCTION; this run credits the conditions it established and names the rest. The verified
-          # state is not emitted while any condition is unestablished -- and three of them have no evidence
-          # source in this kit yet, so on today's kit it is never emitted. That is the honest reading.
+          # DCR gap 11 / 7.7; KDEC-029 (owner, 2026-10-26, closing O-11). Deployment success is not trust
+          # progression. Verified-for-promotion is a CONJUNCTION, and every condition now has a source:
+          # identity from the build (artifact_identity) AND V1 in this deploy; running, traffic and
+          # reconciliation from the live read-back; the end-to-end test period, DAST and the security-
+          # settings posture from the steps after serving (scripts/promotion.py, their evidence files); the
+          # release verdict; and the default branch the digest was built from. "Tested" is the owner's
+          # definition: health, the e2e test period, DAST (where configured) with no new blocking finding,
+          # and the posture check. At prod the active checks are not run (passive only) and read as
+          # not-applicable there; DAST not configured is not a failure (decision 3: "where configured").
           PROMOTION_CONDITIONS = ['exact artefact identity established', 'expected artefact observed running',
-                                  'intended traffic observed', 'functional tests passed',
-                                  'operational validation passed', 'dependencies verified',
-                                  'required reviews and gates passed', 'state reconciliation complete']
+                                  'intended traffic observed', 'state reconciliation complete',
+                                  'end-to-end test period passed', 'dynamic scan shows no new blocking finding',
+                                  'security-settings posture passed', 'required reviews and gates passed',
+                                  'built from the default branch']
+          PASSIVE_OK = ('NOT_APPLICABLE_PASSIVE',)
 
 
           def promotion(outcome):
               v = read_evidence('verification.json') or {}
+              gate = read_evidence('promotion-gate.json') or {}
+              carried = gate.get('carried') or {}
               held = []
-              # P-02: V1 inside the deploy VERIFIED the signed provenance of exactly this digest -- the one
-              # promotion condition this run can establish about identity. A held or absent V1 credits nothing.
-              if outcome == 'DEPLOY_HEALTHY' and env('attestation_outcome') == 'ATTESTATION_VERIFIED':
-                  held.append('exact artefact identity established')
               if outcome == 'DEPLOY_HEALTHY':
+                  identity = env('artifact_identity') or (carried.get('artifact') or {}).get('artifact_identity')
+                  # P-02: V1 inside the deploy VERIFIED the signed provenance of exactly this digest, and the
+                  # build proved the registry identity of what it scanned. A held or absent V1 credits nothing.
+                  if env('attestation_outcome') == 'ATTESTATION_VERIFIED' and identity == 'REGISTRY_IDENTITY_PROVEN':
+                      held.append('exact artefact identity established')
                   if v.get('runtime_deployed') is True:
                       held.append('expected artefact observed running')
                   if v.get('serving_verified') in (True, 'not-applicable'):
                       held.append('intended traffic observed')
                   held.append('state reconciliation complete')
-                  if env('routing_result') == 'PROCEED' and not env('controls_unavailable').strip():
+                  tp = (read_evidence('test-period.json') or {}).get('result')
+                  if tp == 'PASSED' or tp in PASSIVE_OK:
+                      held.append('end-to-end test period passed')
+                  da = (read_evidence('dast.json') or {}).get('result')
+                  if da in ('DAST_PASSED', 'NOT_CONFIGURED') or da in PASSIVE_OK:
+                      held.append('dynamic scan shows no new blocking finding')
+                  if (read_evidence('security-settings.json') or {}).get('result') == 'POSTURE_PASSED':
+                      held.append('security-settings posture passed')
+                  if env('routing_result') in ('PROCEED', 'PROCEED_WITH_ADVISORY'):
                       held.append('required reviews and gates passed')
+                  branch = env('default_branch') or 'main'
+                  ref = (carried.get('provenance') or {}).get('source_ref') if env('promote_from_run_id')             else (env('github_ref') or '')
+                  if ref in ('refs/heads/%s' % branch, branch):
+                      held.append('built from the default branch')
               missing = [c for c in PROMOTION_CONDITIONS if c not in held]
               return {'state': 'not-verified' if missing else 'verified-for-promotion',
                       'established': held, 'missing': missing,
-                      'note': 'health is one probe, not functional or operational validation; artefact '
-                              'identity is credited only when V1 in this deploy verified the digest\'s signed '
-                              'build provenance; no dependency verification exists in this kit'}
+                      'note': 'KDEC-029: tested = health, the end-to-end test period, DAST where configured, '
+                              'and the security-settings posture; identity needs the build-proven registry '
+                              'identity and V1 verified in this deploy; prod runs passive checks only'}
 
 
           # ----------------------------------------------------------------------------- six questions
@@ -2861,6 +3052,1835 @@ jobs:
           if __name__ == '__main__':
               sys.exit(main(sys.argv[1:]))
           kit_rollback_hold_py
+          cat > "$RUNNER_TEMP/kit-deploy/promotion.py" <<'kit_promotion_py'
+          #!/usr/bin/env python3
+          """Build once, promote the same digest: the promotion record, the promotion gate, the checks that
+          make a deploy "tested", and the daily scan of what is actually serving. (KDEC-029, owner 2026-10-26.)
+
+          WHY THIS EXISTS
+
+              The deploy contract computed `promotion` and could never read "verified" (COMPLETION_LEDGER
+              DCR-11, open decision O-11): three of its conditions had no evidence source, and nothing
+              consumed the answer. The owner closed O-11 on 2026-10-26:
+
+                1  A merge to main builds ONCE; that exact digest moves through the environments.
+                2  dev and test deploy in parallel from the same build; uat and prod are PROMOTED from the
+                   prior environment (prod's predecessor is test or uat, per product; default test).
+                3  "Tested" = health, the end-to-end test period (KDEC-021), DAST (where configured) with
+                   no new blocking finding, and the security-settings posture check.
+                   Only then does the record read `verified-for-promotion`.
+                4  14 days is a MAXIMUM: a newer verified build in the same predecessor supersedes an older
+                   one; and eligibility is revocable at once (a new critical or known-exploited finding, a
+                   revoked signing identity, a revoked approval, invalidated test evidence).
+                5  The promotion gate refuses, naming its reason, before the deploy identity is used.
+                6  Hotfix = the same path compressed; break-glass = an approved, time-limited exception,
+                   recorded BREAK_GLASS, with the testing owed afterwards and flagged until done.
+                7  Prod gets passive checks only (health, posture); active DAST against prod is refused.
+                8  A daily scan reconciles what is serving, rescans that digest (never a rebuild), and
+                   reports artifact drift and security drift separately; it never rolls anything back.
+
+          WHERE IT RUNS
+
+              Inlined into both deploy reusables beside deploy_contract.py (scripts/inline_deploy_scripts.py),
+              one subcommand per step, and run from the kit checkout by the deployed-scan composite:
+
+                preflight     every deploy, before login: release path, DAST vs prod, uat/prod need a
+                              predecessor, the break-glass exception, the test-period bounds
+                gate-collect  promotion only, before login: the source record (exactly run Y, environment
+                              Y, digest X), the predecessor's history, the revocation register, the build's
+                              SBOM (sha256 checked) re-scanned by the pinned Trivy
+                gate-decide   promotion only, before login: the verdict, with the KEV re-check and V1
+                test-period   after serving: health + the caller's e2e command at start/intervals/end
+                dast          after serving: the caller's DAST command (its report as SARIF); never at prod
+
+              DAST IS A NEUTRAL HOOK. The owner's decision names ZAP baseline; ZAP is recorded as overlay
+              custody (the overlay's CAPABILITY_CUSTODY.csv, tests/check_custody.py), so the core runs the
+              caller's `dast_command` against PROMOTION_APP_URL and reads the SARIF it writes to
+              PROMOTION_DAST_SARIF; an overlay supplies ZAP baseline through it (docs/adoption/USAGE.md).
+                posture       after serving: the target's security settings, read live
+                record        always: the promotion record (schemas/promotion-record.schema.json)
+                deployed-scan the daily scan (reconcile, artifact drift, security drift, break-glass owed)
+
+              GitHub API: $GITHUB_API_URL, $GITHUB_REPOSITORY, $GH_TOKEN (rollback_hold's client). A file://
+              API is the local stand-in (tests).
+          """
+          import argparse
+          import base64
+          import datetime
+          import hashlib
+          import io
+          import json
+          import os
+          import re
+          import shutil
+          import subprocess
+          import sys
+          import tempfile
+          import time
+          import zipfile
+
+          sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+          import deploy_contract as dc  # noqa: E402  (materialised beside this file)
+          import rollback_hold as rh  # noqa: E402
+
+          SCHEMA = 'kit-promotion-record/1'
+          VERIFIED = 'verified-for-promotion'
+          NOT_VERIFIED = 'not-verified'
+          BREAK_GLASS = 'BREAK_GLASS'
+          MAX_AGE_DAYS = 14            # the owner's number: a maximum, never a guarantee
+          BREAK_GLASS_MAX_DAYS = 7     # lane default: a break-glass exception lives a week at most
+          DEFAULT_PERIOD_MINUTES = 15  # KDEC-021
+          MAX_PERIOD_MINUTES = 240
+          PREDECESSOR_TIERS = ('test', 'uat')   # a dev or sandbox success never satisfies a predecessor
+          RELEASE_PATHS = ('normal', 'hotfix', 'rollback', 'break-glass')
+          DAST_TIMEOUT_SECONDS = 1800   # bound on the caller's DAST command
+          TRIVY_VERSION = '0.71.2'
+          REVOCATIONS_PATH = '.security/promotion-revocations.json'
+          REVOCATION_KINDS = ('digest', 'signer', 'approval', 'test-evidence')
+
+          # Every refusal the gate and the preflight can give. The code is the reason's name; the text says
+          # what to do about it.
+          REFUSALS = {
+              'PROMOTION_REFUSED_SOURCE_UNREADABLE': 'the source record (run, environment) could not be read',
+              'PROMOTION_REFUSED_DIGEST_MISMATCH': 'the digest to deploy is not the digest the source record '
+                                                   'verified: a substituted artefact',
+              'PROMOTION_REFUSED_WRONG_PREDECESSOR': 'the source is not the required predecessor environment '
+                                                     '(a dev success never satisfies a test or uat predecessor)',
+              'PROMOTION_REFUSED_NOT_VERIFIED': 'the digest was not verified-for-promotion in the predecessor',
+              'PROMOTION_REFUSED_NOT_FROM_MAIN': 'the digest was not built from the default branch',
+              'PROMOTION_REFUSED_SIGNATURE': 'the digest\'s signed build provenance did not verify (V1)',
+              'PROMOTION_REFUSED_REVOKED': 'eligibility was revoked',
+              'PROMOTION_REFUSED_NEW_FINDING': 'a new blocking finding exists against the digest since it was built',
+              'PROMOTION_REFUSED_RECHECK_INCOMPLETE': 'the promotion-time re-check (SBOM re-scan, KEV) could '
+                                                      'not be completed; never a pass',
+              'PROMOTION_REFUSED_STALE': 'verified more than %d days ago' % MAX_AGE_DAYS,
+              'PROMOTION_REFUSED_SUPERSEDED': 'a newer build has since been verified in the same predecessor',
+              'PROMOTION_REFUSED_NO_PREDECESSOR': 'uat and prod are promoted from the prior environment, '
+                                                  'never deployed from a build',
+              'PROMOTION_REFUSED_PATH_UNKNOWN': 'release_path is not normal, hotfix, rollback or break-glass',
+              'DAST_REFUSED_PRODUCTION_TARGET': 'active DAST against prod is refused: it runs against the '
+                                                'predecessor (test or uat)',
+              'TEST_PERIOD_REFUSED_OUT_OF_BOUNDS': 'e2e_test_period_minutes must be > 0 and <= %d'
+                                                   % MAX_PERIOD_MINUTES,
+              'BREAK_GLASS_REFUSED_NO_EXCEPTION': 'break-glass needs an attributed exception: weakening_reason, '
+                                                  'weakening_authority, weakening_exception_ref, weakening_expires',
+              'BREAK_GLASS_REFUSED_EXPIRED': 'the break-glass exception has expired',
+              'BREAK_GLASS_REFUSED_TOO_LONG': 'a break-glass exception lives at most %d days'
+                                              % BREAK_GLASS_MAX_DAYS,
+          }
+          # What break-glass may override at the gate, and what nothing overrides. A revoked signer, a
+          # substituted digest or a build from another branch is not an emergency the exception covers.
+          BREAK_GLASS_OVERRIDES = ('PROMOTION_REFUSED_NOT_VERIFIED', 'PROMOTION_REFUSED_WRONG_PREDECESSOR',
+                                   'PROMOTION_REFUSED_STALE', 'PROMOTION_REFUSED_SUPERSEDED',
+                                   'PROMOTION_REFUSED_NEW_FINDING', 'PROMOTION_REFUSED_RECHECK_INCOMPLETE')
+
+          env = dc.env
+          output = dc.output
+          summary = dc.summary
+
+
+          # ----------------------------------------------------------------------------- small helpers
+          def now_dt():
+              """The clock, overridable for tests (KIT_PROMOTION_NOW, ISO-8601 Z)."""
+              fixed = env('kit_promotion_now')
+              if fixed:
+                  return parse_ts(fixed)
+              return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+
+
+          def iso(dt):
+              return dt.strftime('%Y-%m-%dT%H:%M:%SZ') if dt else None
+
+
+          def parse_ts(text):
+              try:
+                  t = str(text or '').strip().replace('Z', '+00:00')
+                  d = datetime.datetime.fromisoformat(t)
+                  return d if d.tzinfo else d.replace(tzinfo=datetime.timezone.utc)
+              except ValueError:
+                  return None
+
+
+          def parse_day(text):
+              try:
+                  return datetime.date.fromisoformat(str(text or '').strip())
+              except ValueError:
+                  return None
+
+
+          def record_key(environment):
+              """The artifact name a record is published under: one per environment, every run."""
+              slug = re.sub(r'[^A-Za-z0-9._-]', '-', environment or 'env')[:40]
+              return 'kit-promotion-record-%s' % slug
+
+
+          def default_branch():
+              return env('default_branch') or 'main'
+
+
+          def is_default_ref(ref):
+              return ref in ('refs/heads/%s' % default_branch(), default_branch())
+
+
+          def wdir(*parts):
+              d = os.path.join(os.environ.get('RUNNER_TEMP') or '.', 'promotion', *parts)
+              os.makedirs(d, exist_ok=True)
+              return d
+
+
+          def jload(path):
+              try:
+                  return json.load(io.open(path, encoding='utf-8'))
+              except (OSError, ValueError):
+                  return None
+
+
+          def jsave(path, obj):
+              io.open(path, 'w', encoding='utf-8').write(json.dumps(obj, indent=1, sort_keys=True))
+
+
+          def metadata():
+              try:
+                  m = json.loads(env('version_metadata') or '{}')
+                  return m if isinstance(m, dict) else {}
+              except ValueError:
+                  return {}
+
+
+          def exception_record():
+              return {'reason': env('weakening_reason'), 'authority': env('weakening_authority'),
+                      'exception_ref': env('weakening_exception_ref'), 'expires': env('weakening_expires')}
+
+
+          def exception_state(exc, today, max_days=None):
+              """-> None when the attributed exception is valid, else the BREAK_GLASS_REFUSED_* code."""
+              if not all((exc.get(k) or '').strip() for k in ('reason', 'authority', 'exception_ref', 'expires')):
+                  return 'BREAK_GLASS_REFUSED_NO_EXCEPTION'
+              exp = parse_day(exc['expires'])
+              if exp is None:
+                  return 'BREAK_GLASS_REFUSED_NO_EXCEPTION'
+              if exp < today:
+                  return 'BREAK_GLASS_REFUSED_EXPIRED'
+              if max_days is not None and (exp - today).days > max_days:
+                  return 'BREAK_GLASS_REFUSED_TOO_LONG'
+              return None
+
+
+          # ----------------------------------------------------------------------------- GitHub reads
+          class Missing(Exception):
+              """The API answered that the thing does not exist (HTTP 404, or no recorded file)."""
+
+
+          def api_optional(path, params=None):
+              """-> the JSON answer, raising Missing on a 404 and rh.Unreadable on any other failure."""
+              base = env('GITHUB_API_URL', 'https://api.github.com').rstrip('/')  # unset means github.com
+              if base.startswith('file:'):
+                  local = rh.urllib.request.url2pathname(rh.urllib.parse.urlparse(
+                      '%s/repos/%s/%s' % (base, env('github_repository'), path)).path)
+                  if not os.path.exists(local):
+                      raise Missing(path)
+              try:
+                  return rh.api(path, params)
+              except rh.Unreadable as exc:
+                  if 'HTTPError' in str(exc) and _status(path, params) == 404:
+                      raise Missing(path)
+                  raise
+
+
+          def _status(path, params):
+              import urllib.error
+              import urllib.parse
+              base = env('GITHUB_API_URL', 'https://api.github.com').rstrip('/')  # unset means github.com
+              url = '%s/repos/%s/%s' % (base, env('github_repository'), path)
+              if params:
+                  url += '?' + urllib.parse.urlencode(params)
+              try:
+                  rh._open(url)
+                  return 200
+              except urllib.error.HTTPError as exc:
+                  return exc.code
+              except Exception:  # noqa: BLE001
+                  return 0
+
+
+          def artifacts(name):
+              """Every unexpired artifact of this name in the repository, newest first."""
+              listing = rh.api('actions/artifacts', {'name': name, 'per_page': 100})
+              found = [a for a in (listing or {}).get('artifacts') or []
+                       if isinstance(a, dict) and a.get('name') == name and not a.get('expired')]
+              return sorted(found, key=lambda a: a.get('created_at') or '', reverse=True)
+
+
+          def download(artifact, suffix):
+              """-> bytes of the first member ending `suffix` in the artifact's zip."""
+              data = rh._open(artifact['archive_download_url'])
+              with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                  names = [n for n in zf.namelist() if n.endswith(suffix)]
+                  if not names:
+                      raise rh.Unreadable('%s holds no %s' % (artifact.get('name'), suffix))
+                  return zf.read(names[0])
+
+
+          def read_record(artifact):
+              rec = json.loads(download(artifact, 'promotion-record.json').decode('utf-8'))
+              if not isinstance(rec, dict) or rec.get('schema') != SCHEMA:
+                  raise rh.Unreadable('%s is not a %s record' % (artifact.get('name'), SCHEMA))
+              rec['_artifact'] = {'id': artifact.get('id'), 'created_at': artifact.get('created_at'),
+                                  'run_id': str((artifact.get('workflow_run') or {}).get('id') or ''),
+                                  'head_branch': (artifact.get('workflow_run') or {}).get('head_branch')}
+              return rec
+
+
+          def revocations():
+              """-> the revocation register's entries ([] when the file does not exist on the default
+              branch). Unreadable raises: a register nobody could read is not an empty one."""
+              try:
+                  doc = api_optional('contents/' + REVOCATIONS_PATH, {'ref': default_branch()})
+              except Missing:
+                  return []
+              if isinstance(doc, dict) and 'content' in doc:
+                  doc = json.loads(base64.b64decode(doc['content']).decode('utf-8'))
+              entries = doc.get('revocations') if isinstance(doc, dict) else doc
+              if not isinstance(entries, list):
+                  raise rh.Unreadable('%s is not a list of revocations' % REVOCATIONS_PATH)
+              return [e for e in entries if isinstance(e, dict)]
+
+
+          def approvals(run_id):
+              """-> the environment approvals of a run, as the API reports them."""
+              try:
+                  doc = rh.api('actions/runs/%s/approvals' % run_id)
+              except rh.Unreadable as exc:
+                  return {'state': 'UNREADABLE', 'why': str(exc), 'approvers': []}
+              out = []
+              for a in doc if isinstance(doc, list) else []:
+                  out.append({'login': ((a.get('user') or {}).get('login') or ''), 'state': a.get('state'),
+                              'environments': [e.get('name') for e in a.get('environments') or []],
+                              'comment': (a.get('comment') or '')[:200]})
+              state = 'APPROVED' if any(a['state'] == 'approved' for a in out) else (
+                  'REJECTED' if any(a['state'] == 'rejected' for a in out) else 'NONE_REQUIRED_OR_RECORDED')
+              return {'state': state, 'approvers': out, 'recorded_at': iso(now_dt())}
+
+
+          # ----------------------------------------------------------------------------- the judgement
+          def revoked_reasons(rec, entries, rescan, kev):
+              """-> [reason] that revoke this record's eligibility now."""
+              out = []
+              digest = (rec.get('artifact') or {}).get('digest')
+              signer = (rec.get('provenance') or {}).get('build_workflow') or ''
+              logins = set(a.get('login') for a in ((rec.get('approval') or {}).get('approvers') or []))
+              run = str((rec.get('run') or {}).get('id') or '')
+              envname = (rec.get('environment') or {}).get('name') or ''
+              for e in entries:
+                  kind, match = e.get('kind'), str(e.get('match') or '')
+                  why = '%s (%s, %s)' % (e.get('reason') or 'no reason given', e.get('revoked_by') or '?',
+                                         e.get('revoked_at') or '?')
+                  if kind == 'digest' and match == digest:
+                      out.append('DIGEST_REVOKED: ' + why)
+                  elif kind == 'signer' and match and signer and (match == signer or signer.startswith(match + '@')):
+                      out.append('SIGNING_IDENTITY_REVOKED: ' + why)
+                  elif kind == 'approval' and match in logins:
+                      out.append('APPROVAL_REVOKED: %s: %s' % (match, why))
+                  elif kind == 'test-evidence' and match in (run, '%s/%s' % (run, envname)):
+                      out.append('TEST_EVIDENCE_INVALIDATED: ' + why)
+              for f in (kev or {}).get('blocking') or []:
+                  out.append('NEW_KNOWN_EXPLOITED: %s' % f)
+              for f in (rescan or {}).get('critical') or []:
+                  out.append('NEW_CRITICAL_FINDING: %s' % f)
+              return out
+
+
+          def judge(ctx):
+              """The promotion gate, as a pure function. ctx keys:
+                   digest, required_predecessor, source_environment, source (record or None), source_error,
+                   history ([records in the predecessor]), revocations, rescan {state, critical, high},
+                   kev {state, blocking}, attestation, release_path, exception, now
+                 -> {verdict: PROMOTION_ALLOWED | <code>, refusals: [{code, why}], overridden: [...]}"""
+              refusals = []
+
+              def refuse(code, why):
+                  refusals.append({'code': code, 'why': why})
+
+              rec = ctx.get('source')
+              if rec is None:
+                  refuse('PROMOTION_REFUSED_SOURCE_UNREADABLE', ctx.get('source_error') or 'no record')
+                  return finish_judgement(refusals, ctx)
+              art, envd = rec.get('artifact') or {}, rec.get('environment') or {}
+              if art.get('digest') != ctx['digest']:
+                  refuse('PROMOTION_REFUSED_DIGEST_MISMATCH', 'deploying %s; the record verified %s'
+                         % (ctx['digest'], art.get('digest')))
+              if (ctx['source_environment'] != ctx['required_predecessor'] or
+                      envd.get('name') != ctx['required_predecessor'] or envd.get('tier') not in PREDECESSOR_TIERS):
+                  refuse('PROMOTION_REFUSED_WRONG_PREDECESSOR', 'required %s (a %s tier); the source is %s '
+                         '(record environment %s, tier %s)' % (
+                             ctx['required_predecessor'], ' or '.join(PREDECESSOR_TIERS),
+                             ctx['source_environment'], envd.get('name'), envd.get('tier')))
+              if rec.get('state') != VERIFIED:
+                  refuse('PROMOTION_REFUSED_NOT_VERIFIED', 'the record reads %s; missing: %s' % (
+                      rec.get('state'), ', '.join((rec.get('conditions') or {}).get('missing') or []) or '?'))
+              prov = rec.get('provenance') or {}
+              branch = (rec.get('_artifact') or {}).get('head_branch')
+              if not is_default_ref(prov.get('source_ref') or '') or (branch and branch != default_branch()):
+                  refuse('PROMOTION_REFUSED_NOT_FROM_MAIN', 'built from %s (run on %s); the default branch is %s'
+                         % (prov.get('source_ref') or 'unknown', branch or 'unknown', default_branch()))
+              if ctx.get('attestation') != 'ATTESTATION_VERIFIED':
+                  refuse('PROMOTION_REFUSED_SIGNATURE', 'V1 in this deploy read %s'
+                         % (ctx.get('attestation') or 'nothing'))
+              rescan, kev = ctx.get('rescan') or {}, ctx.get('kev') or {}
+              revoked = revoked_reasons(rec, ctx.get('revocations') or [], rescan, kev)
+              if revoked:
+                  refuse('PROMOTION_REFUSED_REVOKED', '; '.join(revoked))
+              if rescan.get('high'):
+                  refuse('PROMOTION_REFUSED_NEW_FINDING', 'found now, absent at build (the build gate passed '
+                         'HIGH,CRITICAL clean): %s' % ', '.join(rescan['high'][:10]))
+              if rescan.get('state') != 'COMPLETE' or kev.get('state') != 'AVAILABLE':
+                  refuse('PROMOTION_REFUSED_RECHECK_INCOMPLETE', 'SBOM re-scan %s (%s); KEV %s' % (
+                      rescan.get('state') or 'not run', rescan.get('why') or '', kev.get('state') or 'not run'))
+              verified_at = parse_ts((rec.get('validity') or {}).get('verified_at'))
+              age = (ctx['now'] - verified_at) if verified_at else None
+              if age is None or age > datetime.timedelta(days=MAX_AGE_DAYS):
+                  why = ('verified %s (%s days ago); the maximum is %d' % (
+                      iso(verified_at), age.days, MAX_AGE_DAYS)) if age else 'no verification time recorded'
+                  if (verified_at and ctx.get('release_path') in ('hotfix', 'rollback') and
+                          exception_state(ctx.get('exception') or {}, ctx['now'].date()) is None):
+                      ctx.setdefault('overridden', []).append({
+                          'code': 'PROMOTION_REFUSED_STALE', 'why': why,
+                          'by': 'a named %s decision (attributed exception %s)' % (
+                              ctx['release_path'], (ctx.get('exception') or {}).get('exception_ref'))})
+                  else:
+                      refuse('PROMOTION_REFUSED_STALE', why)
+              newer = [h for h in ctx.get('history') or []
+                       if h.get('state') == VERIFIED and (h.get('artifact') or {}).get('digest') != art.get('digest')
+                       and verified_at and (parse_ts((h.get('validity') or {}).get('verified_at')) or verified_at) > verified_at]
+              if newer:
+                  n = sorted(newer, key=lambda h: (h.get('validity') or {}).get('verified_at') or '')[-1]
+                  ctx['superseded_by'] = {'digest': (n.get('artifact') or {}).get('digest'),
+                                          'run_id': (n.get('run') or {}).get('id'),
+                                          'verified_at': (n.get('validity') or {}).get('verified_at')}
+                  refuse('PROMOTION_REFUSED_SUPERSEDED', '%s was verified in %s at %s, after this one' % (
+                      ctx['superseded_by']['digest'], ctx['required_predecessor'],
+                      ctx['superseded_by']['verified_at']))
+              return finish_judgement(refusals, ctx)
+
+
+          def finish_judgement(refusals, ctx):
+              overridden = list(ctx.get('overridden') or [])
+              if ctx.get('release_path') == 'break-glass':
+                  kept = []
+                  for r in refusals:
+                      if r['code'] in BREAK_GLASS_OVERRIDES:
+                          overridden.append(dict(r, by='break-glass exception %s'
+                                                 % (ctx.get('exception') or {}).get('exception_ref')))
+                      else:
+                          kept.append(r)
+                  refusals = kept
+              return {'verdict': refusals[0]['code'] if refusals else 'PROMOTION_ALLOWED',
+                      'refusals': refusals, 'overridden': overridden,
+                      'superseded_by': ctx.get('superseded_by')}
+
+
+          def preflight_codes(tier, promoting, path, has_dast, period, has_e2e, exc, today):
+              """-> [(code, why)] refusals before login, for every deploy."""
+              out = []
+              if path not in RELEASE_PATHS:
+                  out.append(('PROMOTION_REFUSED_PATH_UNKNOWN', 'release_path %r' % path))
+              if has_dast and tier == 'prod':
+                  out.append(('DAST_REFUSED_PRODUCTION_TARGET', 'a dast_command is configured at tier prod'))
+              if tier in ('uat', 'prod') and not promoting and path != 'break-glass':
+                  out.append(('PROMOTION_REFUSED_NO_PREDECESSOR', 'a %s deploy names no promote_from_run_id'
+                              % tier))
+              if path == 'break-glass':
+                  code = exception_state(exc, today, BREAK_GLASS_MAX_DAYS)
+                  if code:
+                      out.append((code, 'expires %r' % exc.get('expires')))
+              if has_e2e:
+                  try:
+                      p = float(period)
+                  except (TypeError, ValueError):
+                      p = -1
+                  if not 0 < p <= MAX_PERIOD_MINUTES:
+                      out.append(('TEST_PERIOD_REFUSED_OUT_OF_BOUNDS', 'e2e_test_period_minutes %r' % period))
+              return out
+
+
+          # ----------------------------------------------------------------------------- preflight
+          def cmd_preflight(a):
+              tier = env('environment_tier')
+              codes = preflight_codes(tier, bool(env('promote_from_run_id')), env('release_path') or 'normal',
+                                      bool(env('dast_command').strip()), env('e2e_test_period_minutes') or DEFAULT_PERIOD_MINUTES,
+                                      bool(env('e2e_test_command').strip()), exception_record(), now_dt().date())
+              if env('promote_from_run_id') and env('promotion_predecessor') == env('deploy_environment'):
+                  codes.append(('PROMOTION_REFUSED_WRONG_PREDECESSOR', 'an environment cannot be its own predecessor'))
+              doc = {'preflight': codes[0][0] if codes else 'PREFLIGHT_PASSED',
+                     'refusals': [{'code': c, 'why': w} for c, w in codes],
+                     'release_path': env('release_path') or 'normal', 'tier': tier}
+              dc.write_evidence('promotion-preflight.json', doc)
+              output(promotion_preflight=doc['preflight'])
+              if codes:
+                  for c, w in codes:
+                      print('::error title=%s::%s -- %s. Nothing was deployed.' % (c, REFUSALS.get(c, c), w))
+                  summary('### Deploy refused before login (KDEC-029)\n\n' + '\n'.join(
+                      '- `%s`: %s (%s)' % (c, REFUSALS.get(c, c), w) for c, w in codes))
+                  return 1
+              print('Promotion preflight passed: release path %s, tier %s.' % (doc['release_path'], tier))
+              return 0
+
+
+          # ----------------------------------------------------------------------------- gate
+          def sbom_rescan(sbom_path, out_dir):
+              """-> {state, critical, high, sarif, why}. The pinned Trivy re-scans the build's SBOM at the
+              build gate's thresholds (HIGH,CRITICAL, unfixed ignored): the build passed clean, so anything
+              found now is new since the build. Never a rebuild, never a registry pull."""
+              exe = shutil.which('trivy')
+              if not exe:
+                  return {'state': 'NOT_ESTABLISHED', 'why': 'trivy is not installed', 'critical': [], 'high': []}
+              rj, rs = os.path.join(out_dir, 'rescan.json'), os.path.join(out_dir, 'rescan.sarif')
+              p = subprocess.run([exe, 'sbom', '--quiet', '--scanners', 'vuln', '--severity', 'HIGH,CRITICAL',
+                                  '--ignore-unfixed', '--format', 'json', '--output', rj, sbom_path],
+                                 capture_output=True, text=True, encoding='utf-8', errors='replace')
+              doc = jload(rj)
+              if p.returncode != 0 or not isinstance(doc, dict):
+                  return {'state': 'NOT_ESTABLISHED', 'why': 'trivy sbom exit %d' % p.returncode,
+                          'critical': [], 'high': []}
+              subprocess.run([exe, 'convert', '--format', 'sarif', '--output', rs, rj],
+                             capture_output=True, text=True, encoding='utf-8', errors='replace')
+              crit, high = [], []
+              for res in doc.get('Results') or []:
+                  for v in res.get('Vulnerabilities') or []:
+                      tok = '%s@%s:%s' % (v.get('VulnerabilityID'), v.get('PkgName'), v.get('InstalledVersion'))
+                      (crit if v.get('Severity') == 'CRITICAL' else high).append(tok)
+              return {'state': 'COMPLETE', 'why': '', 'critical': sorted(set(crit)), 'high': sorted(set(high)),
+                      'sarif': rs if os.path.exists(rs) else ''}
+
+
+          def fetch_sbom(digest, want_sha, out_dir):
+              """-> (path, why). The build's SBOM artifact `sbom-<hex>`, its sha256 checked against the
+              record (the identity chain: the SBOM is the one the build hashed)."""
+              hexd = (digest or '').split(':', 1)[-1]
+              try:
+                  found = artifacts('sbom-%s' % hexd)
+              except rh.Unreadable as exc:
+                  return None, 'the SBOM listing could not be read: %s' % exc
+              if not found:
+                  return None, 'no SBOM artifact sbom-%s (expired, or never uploaded)' % hexd[:12]
+              try:
+                  data = download(found[0], '.json')
+              except Exception as exc:  # noqa: BLE001
+                  return None, 'the SBOM could not be downloaded: %s' % type(exc).__name__
+              got = hashlib.sha256(data).hexdigest()
+              if want_sha and got != want_sha:
+                  return None, 'the SBOM sha256 %s is not the recorded %s' % (got[:12], want_sha[:12])
+              path = os.path.join(out_dir, 'sbom.spdx.json')
+              io.open(path, 'wb').write(data)
+              return path, ''
+
+
+          def cmd_gate_collect(a):
+              """Before login: the source record, the predecessor's history, the revocations, and the
+              re-scan of the build's SBOM. Writes promotion/collected.json; the decision is gate-decide."""
+              out = wdir()
+              run_id, src_env = env('promote_from_run_id'), env('promote_from_environment')
+              col = {'run_id': run_id, 'source_environment': src_env,
+                     'required_predecessor': env('promotion_predecessor') or 'test',
+                     'source': None, 'source_error': '', 'history': [], 'revocations': [],
+                     'rescan': {'state': 'NOT_ESTABLISHED', 'why': 'not reached', 'critical': [], 'high': []}}
+              try:
+                  mine = [x for x in artifacts(record_key(src_env))
+                          if str((x.get('workflow_run') or {}).get('id') or '') == run_id]
+                  if not mine:
+                      raise rh.Unreadable('run %s published no %s' % (run_id, record_key(src_env)))
+                  col['source'] = read_record(mine[0])
+              except Exception as exc:  # noqa: BLE001 -- any failure is "could not read", never a pass
+                  col['source_error'] = str(exc)[:300]
+              try:
+                  hist = artifacts(record_key(col['required_predecessor']))[:30]
+                  col['history'] = [read_record(x) for x in hist]
+              except Exception as exc:  # noqa: BLE001
+                  col['history_error'] = str(exc)[:300]
+                  col['rescan']['why'] = 'the predecessor history could not be read'
+              try:
+                  col['revocations'] = revocations()
+              except Exception as exc:  # noqa: BLE001
+                  col['revocations_error'] = str(exc)[:300]
+              if col['source']:
+                  sbom, why = fetch_sbom(env('image_digest'),
+                                         (col['source'].get('artifact') or {}).get('sbom_sha256'), out)
+                  col['rescan'] = sbom_rescan(sbom, out) if sbom else {
+                      'state': 'NOT_ESTABLISHED', 'why': why, 'critical': [], 'high': []}
+                  if col.get('history_error') or col.get('revocations_error'):
+                      col['rescan']['state'] = 'NOT_ESTABLISHED'
+                      col['rescan']['why'] = (col.get('history_error') or col.get('revocations_error'))
+              jsave(os.path.join(out, 'collected.json'), col)
+              output(rescan_sarif=col['rescan'].get('sarif') or '', rescan_state=col['rescan']['state'])
+              print('Promotion source: %s; rescan %s.' % (
+                  'read' if col['source'] else 'UNREADABLE (%s)' % col['source_error'], col['rescan']['state']))
+              return 0
+
+
+          def cmd_gate_decide(a):
+              col = jload(os.path.join(wdir(), 'collected.json')) or {}
+              kev = {'state': env('kev_state') or 'UNAVAILABLE',
+                     'blocking': [t for t in (env('kev_blocking') or '').split() if t]}
+              ctx = {'digest': env('image_digest'), 'required_predecessor': col.get('required_predecessor') or
+                     env('promotion_predecessor') or 'test',
+                     'source_environment': col.get('source_environment') or env('promote_from_environment'),
+                     'source': col.get('source'), 'source_error': col.get('source_error') or 'not collected',
+                     'history': col.get('history') or [], 'revocations': col.get('revocations') or [],
+                     'rescan': col.get('rescan') or {}, 'kev': kev, 'attestation': env('attestation_outcome'),
+                     'release_path': env('release_path') or 'normal', 'exception': exception_record(),
+                     'now': now_dt()}
+              if col.get('revocations_error'):
+                  ctx['rescan'] = dict(ctx['rescan'], state='NOT_ESTABLISHED',
+                                       why='the revocation register could not be read')
+              res = judge(ctx)
+              src = col.get('source') or {}
+              gate = {'promotion_gate': res['verdict'], 'refusals': res['refusals'],
+                      'overridden': res['overridden'], 'superseded_by': res['superseded_by'],
+                      'source': {'run_id': col.get('run_id'), 'environment': col.get('source_environment'),
+                                 'record_id': src.get('record_id'),
+                                 'verified_at': (src.get('validity') or {}).get('verified_at')},
+                      'required_predecessor': ctx['required_predecessor'],
+                      'carried': {k: src.get(k) for k in ('artifact', 'provenance')},
+                      'rescan': {k: v for k, v in (col.get('rescan') or {}).items() if k != 'sarif'},
+                      'kev': kev, 'attestation': ctx['attestation'], 'decided_at': iso(ctx['now'])}
+              dc.write_evidence('promotion-gate.json', gate)
+              output(promotion_gate=res['verdict'])
+              lines = ['### Promotion gate (KDEC-029): `%s`' % res['verdict'], '',
+                       'Promote `%s` from run `%s` in `%s`; required predecessor `%s`.' % (
+                           ctx['digest'], col.get('run_id'), ctx['source_environment'], ctx['required_predecessor'])]
+              for r in res['refusals']:
+                  lines.append('- REFUSED `%s`: %s -- %s' % (r['code'], REFUSALS.get(r['code'], ''), r['why']))
+              for r in res['overridden']:
+                  lines.append('- OVERRIDDEN `%s` by %s: %s' % (r['code'], r['by'], r['why']))
+              summary('\n'.join(lines))
+              print('\n'.join(lines))
+              if res['refusals']:
+                  for r in res['refusals']:
+                      print('::error title=%s::%s -- %s. Nothing was deployed.' % (
+                          r['code'], REFUSALS.get(r['code'], r['code']), r['why'][:400]))
+                  return 1
+              return 0
+
+
+          # ----------------------------------------------------------------------------- tested
+          def end_to_end(cmd, timeout, extra):
+              """-> ('passed'|'failed'|'timed-out', exit code). Without the deploy identity's Azure session."""
+              cfg = tempfile.mkdtemp(prefix='e2e-azure-config-')
+              e = dict(os.environ)
+              for k in ('GITHUB_OUTPUT', 'GITHUB_STEP_SUMMARY'):
+                  e.pop(k, None)
+              e.update(extra)
+              e['AZURE_CONFIG_DIR'] = cfg
+              try:
+                  p = subprocess.run(cmd, shell=True, env=e, timeout=timeout)  # noqa: S602 (the caller's own tests)
+                  return ('passed' if p.returncode == 0 else 'failed'), p.returncode
+              except subprocess.TimeoutExpired:
+                  return 'timed-out', None
+              finally:
+                  shutil.rmtree(cfg, ignore_errors=True)
+
+
+          def period_plan(period, interval):
+              plan = [('start', 0.0)]
+              if interval and interval > 0:
+                  k = 1
+                  while interval * k < period - 1e-9:
+                      plan.append(('interval', interval * k))
+                      k += 1
+              plan.append(('end', float(period)))
+              return plan
+
+
+          def cmd_test_period(a):
+              tier, cmd = env('environment_tier'), env('e2e_test_command').strip()
+              rec = {'result': None, 'checks': [], 'period_minutes': None, 'release_path': env('release_path') or 'normal'}
+              if tier == 'prod':
+                  rec['result'] = 'NOT_APPLICABLE_PASSIVE'
+                  rec['why'] = 'prod gets passive checks only (health, posture); the e2e period ran in the predecessor'
+              elif not cmd:
+                  rec['result'] = 'NOT_CONFIGURED'
+                  rec['why'] = 'no e2e_test_command: the end-to-end test period cannot pass, so this deploy cannot be verified for promotion'
+              else:
+                  period = float(env('e2e_test_period_minutes') or DEFAULT_PERIOD_MINUTES) * 60
+                  interval = float(env('e2e_check_interval_minutes') or 0) * 60
+                  timeout = max(1, int(float(env('e2e_timeout_minutes') or 10) * 60))
+                  url = env('app_url').rstrip('/')
+                  rec.update(period_minutes=period / 60, interval_minutes=interval / 60, url=url or None,
+                             command_sha256=hashlib.sha256(cmd.encode('utf-8')).hexdigest(),
+                             started_at=iso(now_dt()))
+                  t0 = time.time()
+                  result = 'PASSED'
+                  for phase, offset in period_plan(period, interval):
+                      wait = t0 + offset - time.time()
+                      if wait > 0:
+                          time.sleep(wait)
+                      c = {'phase': phase, 'offset_seconds': round(time.time() - t0, 3)}
+                      good = bool(url) and dc.probe(url + (env('health_path') or '/health'))
+                      c['health'] = 'passed' if good else 'failed'
+                      if good:
+                          c['e2e'], c['exit_code'] = end_to_end(cmd, timeout, {
+                              'PROMOTION_APP_URL': url, 'PROMOTION_CHECK_PHASE': phase,
+                              'PROMOTION_ENVIRONMENT': env('deploy_environment')})
+                      rec['checks'].append(c)
+                      if not good or c.get('e2e') != 'passed':
+                          result = 'FAILED'
+                          break
+                  rec['result'] = result
+                  rec['ended_at'] = iso(now_dt())
+                  if rec['period_minutes'] < DEFAULT_PERIOD_MINUTES:
+                      rec['compressed'] = ('hotfix: a compressed period, recorded' if rec['release_path'] == 'hotfix'
+                                           else 'under the %d-minute default: a recorded weakening' % DEFAULT_PERIOD_MINUTES)
+              dc.write_evidence('test-period.json', rec)
+              output(test_period=rec['result'])
+              summary('End-to-end test period (KDEC-021/029): `%s`%s' % (
+                  rec['result'], ' -- ' + rec['why'] if rec.get('why') else ''))
+              print('test period: %s' % rec['result'])
+              return 1 if rec['result'] == 'FAILED' else 0
+
+
+          def sarif_blocking(path):
+              """-> list of blocking results, or None when the report cannot be read. Blocking = level
+              `error` and not suppressed (an accepted suppression is the DAST tool's own baseline: what is
+              accepted is not new)."""
+              doc = jload(path)
+              if not isinstance(doc, dict) or not isinstance(doc.get('runs'), list):
+                  return None
+              out = []
+              for run in doc['runs']:
+                  if not isinstance(run.get('results'), list):
+                      return None
+                  for r in run['results']:
+                      sup = [x for x in r.get('suppressions') or [] if x.get('status', 'accepted') == 'accepted']
+                      if r.get('level', 'warning') == 'error' and not sup:
+                          out.append('%s %s' % (r.get('ruleId') or '?', ((r.get('message') or {}).get('text') or '')[:80]))
+              return out
+
+
+          def cmd_dast(a):
+              tier, cmd = env('environment_tier'), env('dast_command').strip()
+              rec = {'configured': bool(cmd), 'result': None, 'blocking': []}
+              if tier == 'prod':
+                  rec['result'] = 'NOT_APPLICABLE_PASSIVE'
+                  rec['why'] = 'never active DAST against prod; it runs against the predecessor'
+              elif not cmd:
+                  rec['result'] = 'NOT_CONFIGURED'
+              else:
+                  url = env('app_url').rstrip('/')
+                  report = os.path.join(wdir('dast'), 'dast.sarif')
+                  if os.path.exists(report):
+                      os.remove(report)
+                  res, code = end_to_end(cmd, DAST_TIMEOUT_SECONDS, {
+                      'PROMOTION_APP_URL': url, 'PROMOTION_DAST_SARIF': report,
+                      'PROMOTION_ENVIRONMENT': env('deploy_environment')})
+                  rec.update(exit_code=code, url=url or None,
+                             command_sha256=hashlib.sha256(cmd.encode('utf-8')).hexdigest())
+                  blocking = sarif_blocking(report)
+                  if blocking is None:
+                      rec['result'] = 'DAST_INCOMPLETE'
+                      rec['why'] = 'the command %s and left no readable SARIF at PROMOTION_DAST_SARIF' % res
+                  else:
+                      rec['blocking'] = blocking
+                      rec['result'] = 'DAST_BLOCKING_FINDINGS' if blocking else 'DAST_PASSED'
+              dc.write_evidence('dast.json', rec)
+              output(dast=rec['result'])
+              summary('DAST (KDEC-029): `%s`%s' % (rec['result'], (
+                  ' -- ' + ', '.join(rec['blocking'][:10])) if rec['blocking'] else ''))
+              print('dast: %s' % rec['result'])
+              return 1 if rec['result'] in ('DAST_BLOCKING_FINDINGS', 'DAST_INCOMPLETE') else 0
+
+
+          def security_settings(adapter):
+              """-> (result, [failed checks], [checks read]). Passive: reads only."""
+              failed, read = [], []
+              if adapter == 'containerapp':
+                  ok, shown, err = dc.az('containerapp', 'show', '-n', env('containerapp_name'),
+                                         '-g', env('resource_group'))
+                  if not ok or not isinstance(shown, dict):
+                      return 'POSTURE_UNREADABLE', [err or 'no answer'], read
+                  ing = ((shown.get('properties') or {}).get('configuration') or {}).get('ingress') or {}
+                  read.append('ingress.allowInsecure=%s' % ing.get('allowInsecure', False))
+                  if ing.get('allowInsecure') is True:
+                      failed.append('ingress allows plain HTTP (allowInsecure true)')
+                  return ('POSTURE_FAILED' if failed else 'POSTURE_PASSED'), failed, read
+              ok, site, err = dc.az('webapp', 'show', '-n', env('webapp_name'), '-g', env('resource_group'))
+              ok2, cfg, err2 = dc.az('webapp', 'config', 'show', '-n', env('webapp_name'), '-g', env('resource_group'))
+              if not ok or not ok2 or not isinstance(site, dict) or not isinstance(cfg, dict):
+                  return 'POSTURE_UNREADABLE', [err or err2 or 'no answer'], read
+              checks = [('httpsOnly', site.get('httpsOnly'), lambda v: v is True, 'HTTPS is not enforced'),
+                        ('minTlsVersion', cfg.get('minTlsVersion'),
+                         lambda v: str(v or '') in ('1.2', '1.3'), 'minimum TLS below 1.2'),
+                        ('ftpsState', cfg.get('ftpsState'), lambda v: v in ('Disabled', 'FtpsOnly'),
+                         'plain FTP is allowed'),
+                        ('remoteDebuggingEnabled', cfg.get('remoteDebuggingEnabled'), lambda v: v is not True,
+                         'remote debugging is on')]
+              for name, val, good, why in checks:
+                  read.append('%s=%s' % (name, val))
+                  if not good(val):
+                      failed.append(why)
+              return ('POSTURE_FAILED' if failed else 'POSTURE_PASSED'), failed, read
+
+
+          def cmd_posture(a):
+              result, failed, read = security_settings(a.adapter)
+              rec = {'result': result, 'failed': failed, 'read': read, 'at': iso(now_dt())}
+              dc.write_evidence('security-settings.json', rec)
+              output(security_settings=result)
+              summary('Security-settings posture (live, passive): `%s`%s' % (
+                  result, ' -- ' + '; '.join(failed) if failed else ''))
+              print('security settings: %s %s' % (result, '; '.join(failed)))
+              return 0 if result == 'POSTURE_PASSED' else 1
+
+
+          # ----------------------------------------------------------------------------- the record
+          def cmd_record(a):
+              """Always: what this deploy establishes about this digest in this environment."""
+              outcome = dc.read_evidence('outcome.json') or {}
+              prom = outcome.get('promotion') or {}
+              gate = dc.read_evidence('promotion-gate.json') or {}
+              pre = dc.read_evidence('promotion-preflight.json') or {}
+              prov_ev = dc.read_evidence('provenance.json') or {}
+              snap = dc.read_evidence('snapshot.json') or {}
+              meta = metadata()
+              carried = gate.get('carried') or {}
+              path = env('release_path') or 'normal'
+              tier = env('environment_tier')
+              now = now_dt()
+              promoted = bool(env('promote_from_run_id'))
+              state = prom.get('state') or NOT_VERIFIED
+              if path == 'break-glass' and outcome.get('deployment_outcome') == 'DEPLOY_HEALTHY':
+                  state = BREAK_GLASS
+              if outcome.get('deployment_outcome') != 'DEPLOY_HEALTHY':
+                  state = NOT_VERIFIED
+              rid = prov_ev.get('resource_id') or snap.get('resource_id') or None
+              if rid is None and snap:
+                  rid, _ = dc.resource_id(a.adapter)
+              artifact = dict(carried.get('artifact') or {}) if promoted else {}
+              artifact.update({'digest': env('image_digest'),
+                               'image': dc.intended_ref(),
+                               'sbom_sha256': artifact.get('sbom_sha256') or meta.get('sbom_sha256') or None,
+                               'artifact_identity': artifact.get('artifact_identity') or
+                               env('artifact_identity') or meta.get('artifact_identity') or None,
+                               # The build's stamp, carried so a promotion stamps the same provenance.
+                               'version_metadata': artifact.get('version_metadata') or env('version_metadata') or None})
+              if promoted and carried.get('provenance'):
+                  provenance = dict(carried['provenance'])
+              else:
+                  provenance = {'source_sha': meta.get('git_sha') or env('github_sha') or None,
+                                'source_ref': meta.get('git_ref') or env('github_ref') or None,
+                                'build_run_id': meta.get('run_id') or env('github_run_id') or None,
+                                'build_workflow': env('attestation_signer_workflow') or None,
+                                'scanner_evidence': [x for x in (
+                                    'sbom-%s' % env('image_digest').split(':', 1)[-1] if env('image_digest') else '',
+                                    'build-evidence-%s' % (meta.get('run_id') or env('github_run_id'))) if x],
+                                'gate_routing_result': env('routing_result') or None,
+                                'controls_unavailable': [c for c in env('controls_unavailable').split(',') if c.strip()],
+                                'advisory_causes': [c for c in env('advisory_causes').split(',') if c.strip()]}
+              provenance['attestation_outcome'] = env('attestation_outcome') or None
+              run = {'id': env('github_run_id') or None, 'attempt': env('github_run_attempt') or None,
+                     'url': '%s/%s/actions/runs/%s' % (env('github_server_url', 'https://github.com'),
+                                                        env('github_repository'), env('github_run_id'))}
+              tests = {'health': outcome.get('health'),
+                       'e2e_test_period': dc.read_evidence('test-period.json'),
+                       'dast': dc.read_evidence('dast.json'),
+                       'security_settings': dc.read_evidence('security-settings.json')}
+              rec = {
+                  'schema': SCHEMA,
+                  'record_id': '%s-%s-%s' % (run['id'], run['attempt'], env('deploy_environment')),
+                  'state': state,
+                  'release_path': path,
+                  'artifact': artifact,
+                  'provenance': provenance,
+                  'environment': {'name': env('deploy_environment'), 'tier': tier, 'adapter': a.adapter,
+                                  'target_resource_id': rid,
+                                  'oidc_subject': 'repo:%s:environment:%s' % (env('github_repository'),
+                                                                              env('deploy_environment'))},
+                  'predecessor': {'required': (env('promotion_predecessor') or 'test') if tier in ('uat', 'prod') else None,
+                                  'promoted_from': gate.get('source') if promoted else None,
+                                  'gate': gate.get('promotion_gate') if promoted else None,
+                                  'overridden': gate.get('overridden') or []},
+                  'tests': tests,
+                  'conditions': {'established': prom.get('established') or [],
+                                 'missing': prom.get('missing') or []},
+                  'approval': approvals(env('github_run_id')) if env('github_run_id') else
+                  {'state': 'UNREADABLE', 'why': 'no run id', 'approvers': []},
+                  'validity': {'verified_at': iso(now) if state == VERIFIED else None,
+                               'expires_at': iso(now + datetime.timedelta(days=MAX_AGE_DAYS)) if state == VERIFIED else None,
+                               'superseded_by': None, 'revoked': None,
+                               'note': 'eligibility is re-judged at every promotion: superseded, revoked and '
+                                       'stale are computed then, never trusted from this file'},
+                  'live_state': {'deployment_outcome': outcome.get('deployment_outcome'),
+                                 'now_serving': outcome.get('now_serving') or [],
+                                 'verified_serving': 'expected artefact observed running' in (prom.get('established') or [])},
+                  'run': run,
+                  'preflight': pre.get('preflight'),
+                  'break_glass': None,
+              }
+              if path == 'break-glass':
+                  rec['break_glass'] = {'exception': exception_record(),
+                                        'testing_owed': sorted(set((prom.get('missing') or []) +
+                                                                   ['verified-for-promotion in %s' % (
+                                                                       env('promotion_predecessor') or 'test')])),
+                                        'flagged_until': 'a verified-for-promotion record for this digest in the '
+                                                         'predecessor; the daily deployed scan raises a ticket until then'}
+              out = wdir('record')
+              jsave(os.path.join(out, 'promotion-record.json'), rec)
+              dc.write_evidence('promotion-record.json', rec)
+              output(promotion_state=state, promotion_record_name=record_key(env('deploy_environment')))
+              summary('Promotion record (`%s`): **`%s`**%s' % (
+                  record_key(env('deploy_environment')), state,
+                  '; not yet established: ' + ', '.join(rec['conditions']['missing']) if rec['conditions']['missing'] else ''))
+              print('promotion record: %s' % state)
+              return 0
+
+
+          # ----------------------------------------------------------------------------- daily scan
+          def serving_now(adapter):
+              """-> list of {where, weight, image, digest} actually serving, or None when unreadable.
+              Container Apps: every revision receiving traffic, with its weight. App Service: the production
+              slot's configured image and every named slot's."""
+              if adapter == 'containerapp':
+                  live = dc.containerapp_serving()
+                  if live is None:
+                      return None
+                  return [{'where': 'revision %s' % t['revision'], 'weight': t['weight'], 'image': t['image'],
+                           'digest': t['image'].split('@', 1)[1] if '@' in t['image'] else None} for t in live]
+              out = []
+              for slot in ['production'] + [s for s in (env('slots') or '').split(',') if s.strip()]:
+                  img = dc.appservice_slot_image(slot.strip())
+                  if img is None:
+                      return None
+                  out.append({'where': 'slot %s' % slot.strip(), 'weight': 100 if slot == 'production' else 0,
+                              'image': img, 'digest': img.split('@', 1)[1] if '@' in img else None})
+              return out
+
+
+          def finding(rule, text, where, level='error', props=None):
+              return {'ruleId': rule, 'level': level, 'message': {'text': text},
+                      'locations': [{'physicalLocation': {'artifactLocation': {'uri': where},
+                                                          'region': {'startLine': 1}}}],
+                      'properties': dict(props or {})}
+
+
+          def sarif(results, tool, rules):
+              return {'version': '2.1.0', '$schema': 'https://json.schemastore.org/sarif-2.1.0.json',
+                      'runs': [{'tool': {'driver': {'name': tool, 'version': '1',
+                                                    'rules': [{'id': r, 'shortDescription': {'text': d}}
+                                                              for r, d in rules.items()]}},
+                                'invocations': [{'executionSuccessful': True}], 'results': results}]}
+
+
+          DRIFT_RULES = {'KIT-ARTIFACT-DRIFT': 'the serving digest is not the last promoted digest',
+                         'KIT-SERVING-UNREADABLE': 'what is serving could not be read',
+                         'KIT-SECURITY-SETTINGS': 'the security-settings posture check failed',
+                         'KIT-BREAK-GLASS-TESTING-OWED': 'a break-glass deploy is still owed its testing',
+                         'KIT-RESCAN-NOT-ESTABLISHED': 'the serving digest could not be re-scanned'}
+
+
+          def cmd_deployed_scan(a):
+              """Phase 1 of the daily scan for ONE environment (the job's own): reconcile, then the two
+              drifts. Writes promotion/deployed/: deployed-state.json, state SARIFs, and the re-scan SARIF the
+              KEV composite reads. Never mutates, never rolls back, never rebuilds."""
+              out = wdir('deployed')
+              envname, adapter = env('deploy_environment'), a.adapter
+              doc = {'environment': envname, 'adapter': adapter, 'at': iso(now_dt()), 'serving': None,
+                     'promoted': None, 'artifact_drift': None, 'security_drift': None, 'rescans': [],
+                     'posture': None, 'break_glass_owed': None}
+              results = []
+              where = 'deployed/%s/%s' % (envname, env('containerapp_name') or env('webapp_name'))
+              serving = serving_now(adapter)
+              doc['serving'] = serving
+              try:
+                  recs = [read_record(x) for x in artifacts(record_key(envname))[:30]]
+              except Exception as exc:  # noqa: BLE001
+                  recs, doc['records_error'] = [], str(exc)[:300]
+              healthy = [r for r in recs if (r.get('live_state') or {}).get('deployment_outcome') == 'DEPLOY_HEALTHY']
+              last = healthy[0] if healthy else None
+              doc['promoted'] = {'digest': (last.get('artifact') or {}).get('digest'), 'run_id': (last.get('run') or {}).get('id'),
+                                 'state': last.get('state')} if last else None
+              if serving is None:
+                  results.append(finding('KIT-SERVING-UNREADABLE', 'What %s serves could not be read; nothing '
+                                         'about it is established.' % envname, where))
+              else:
+                  want = (doc['promoted'] or {}).get('digest')
+                  drift = [s for s in serving if s['weight'] > 0 and s['digest'] != want]
+                  doc['artifact_drift'] = bool(drift) if want else None
+                  for s in drift:
+                      results.append(finding('KIT-ARTIFACT-DRIFT', '%s serves %s at %d%%; the last promoted '
+                                             'digest is %s.' % (s['where'], s['digest'] or s['image'], s['weight'],
+                                                                want or 'none on record'),
+                                             '%s/%s' % (where, s['where'].replace(' ', '-'))))
+              # Security drift: re-scan EVERY digest truly serving -- never a nominal tag -- from its build SBOM.
+              vuln_results = []
+              for s in [x for x in (serving or []) if x['digest']]:
+                  rec = next((r for r in recs if (r.get('artifact') or {}).get('digest') == s['digest']), None)
+                  sbom, why = fetch_sbom(s['digest'], ((rec or {}).get('artifact') or {}).get('sbom_sha256'),
+                                         wdir('deployed', s['digest'].split(':', 1)[-1][:16]))
+                  r = sbom_rescan(sbom, os.path.dirname(sbom)) if sbom else {'state': 'NOT_ESTABLISHED', 'why': why,
+                                                                             'critical': [], 'high': []}
+                  r['digest'] = s['digest']
+                  doc['rescans'].append({k: v for k, v in r.items()})
+                  if r['state'] != 'COMPLETE':
+                      results.append(finding('KIT-RESCAN-NOT-ESTABLISHED', 'The serving digest %s could not be '
+                                             're-scanned: %s.' % (s['digest'], r.get('why')),
+                                             '%s/%s' % (where, s['digest'].split(':', 1)[-1][:16])))
+                  elif r.get('sarif'):
+                      vuln_results.append(r['sarif'])
+              doc['security_drift'] = any(r.get('critical') or r.get('high') for r in doc['rescans']) if doc['rescans'] else None
+              result, failed, read = security_settings(adapter)
+              doc['posture'] = {'result': result, 'failed': failed, 'read': read}
+              if result != 'POSTURE_PASSED':
+                  results.append(finding('KIT-SECURITY-SETTINGS', 'Security settings of %s: %s (%s).' % (
+                      envname, result, '; '.join(failed)), where))
+              if last and last.get('state') == BREAK_GLASS:
+                  dig = (last.get('artifact') or {}).get('digest')
+                  pred = (last.get('predecessor') or {}).get('required') or 'test'
+                  try:
+                      done = any(r.get('state') == VERIFIED and (r.get('artifact') or {}).get('digest') == dig
+                                 for r in [read_record(x) for x in artifacts(record_key(pred))[:30]])
+                  except Exception:  # noqa: BLE001
+                      done = False
+                  doc['break_glass_owed'] = not done
+                  if not done:
+                      results.append(finding('KIT-BREAK-GLASS-TESTING-OWED', 'Break-glass deploy of %s (exception '
+                                             '%s) is still owed: %s.' % (dig, ((last.get('break_glass') or {}).get('exception') or {}).get('exception_ref'),
+                                                                         ', '.join((last.get('break_glass') or {}).get('testing_owed') or [])),
+                                             '%s/break-glass' % where))
+              # The state rows the core report reads (scripts/scan_report.py --batch): one for the state
+              # findings, one per re-scan SARIF, named by environment so every environment's rows can be
+              # merged into one report. Coverage rows are what let a ticket close on clearance.
+              slug = record_key(envname)[len('kit-promotion-record-'):]
+              jsave(os.path.join(out, 'deployed-state-%s.sarif' % slug), sarif(results, 'kit-deployed-state', DRIFT_RULES))
+              rows = [{'scanner': 'deployed-state-%s' % slug, 'applicability': 'APPLICABLE', 'execution': 'COMPLETE',
+                       'scope': where, 'artifact': 'UPLOADED', 'upload': 'NOT_APPLICABLE', 'gate': 'REPORTED',
+                       'sarif': 'deployed-state-%s.sarif' % slug}]
+              for i, p in enumerate(vuln_results):
+                  name = 'deployed-rescan-%s-%d.sarif' % (slug, i)
+                  shutil.copy(p, os.path.join(out, name))
+                  rows.append({'scanner': 'deployed-image-rescan-%s' % slug, 'applicability': 'APPLICABLE',
+                               'execution': 'COMPLETE', 'scope': where, 'artifact': 'UPLOADED',
+                               'upload': 'NOT_APPLICABLE', 'gate': 'REPORTED', 'sarif': name})
+              jsave(os.path.join(out, 'state-deployed-%s.json' % slug), rows)
+              jsave(os.path.join(out, 'deployed-scan-%s.json' % slug), doc)
+              output(artifact_drift=str(doc['artifact_drift']).lower(), security_drift=str(doc['security_drift']).lower(),
+                     rescan_sarifs=' '.join(os.path.join(out, r['sarif']) for r in rows[1:]),
+                     findings=str(len(results)))
+              lines = ['### Deployed scan: `%s` (%s)' % (envname, adapter), '',
+                       '| serving | weight | digest |', '|---|---|---|']
+              for s in serving or []:
+                  lines.append('| %s | %s | `%s` |' % (s['where'], s['weight'], s['digest'] or s['image']))
+              lines += ['', 'Last promoted: `%s`' % ((doc['promoted'] or {}).get('digest') or 'none on record'),
+                        'Artifact drift: **%s**; security drift: **%s**; posture: `%s`; break-glass owed: %s' % (
+                            doc['artifact_drift'], doc['security_drift'], result, doc['break_glass_owed']),
+                        'Nothing is rolled back by this scan: findings change promotion eligibility and tickets.']
+              summary('\n'.join(lines))
+              print('\n'.join(lines))
+              return 0
+
+
+          def cmd_deployed_finish(a):
+              """Phase 2: the KEV composite's verdict on the serving digests' re-scan joins the state
+              findings. A known-exploited CVE on what serves is security drift, at every tier."""
+              envname = env('deploy_environment')
+              slug = record_key(envname)[len('kit-promotion-record-'):]
+              out = wdir('deployed')
+              sp = os.path.join(out, 'deployed-state-%s.sarif' % slug)
+              doc = jload(sp)
+              scan = jload(os.path.join(out, 'deployed-scan-%s.json' % slug)) or {}
+              if not doc:
+                  print('::error::the deployed scan wrote no state; nothing to finish')
+                  return 1
+              res = doc['runs'][0]['results']
+              state = env('kev_state') or 'UNAVAILABLE'
+              where = 'deployed/%s/%s' % (envname, env('containerapp_name') or env('webapp_name'))
+              if state != 'AVAILABLE' and scan.get('rescans'):
+                  res.append(finding('KIT-RESCAN-NOT-ESTABLISHED', 'The KEV re-check of what %s serves could not '
+                                     'be completed (kev_state %s).' % (envname, state), where + '/kev'))
+              for tok in [t for t in (env('kev_blocking') or '').split() if t]:
+                  res.append(finding('KIT-KNOWN-EXPLOITED-SERVING', 'A known-exploited CVE is in what %s serves: %s.'
+                                     % (envname, tok), '%s/%s' % (where, tok.split('@', 1)[0])))
+                  scan['security_drift'] = True
+              rules = doc['runs'][0]['tool']['driver']['rules']
+              if not any(r['id'] == 'KIT-KNOWN-EXPLOITED-SERVING' for r in rules):
+                  rules.append({'id': 'KIT-KNOWN-EXPLOITED-SERVING',
+                                'shortDescription': {'text': 'a known-exploited CVE is in what is serving'}})
+              jsave(sp, doc)
+              jsave(os.path.join(out, 'deployed-scan-%s.json' % slug), scan)
+              output(security_drift=str(scan.get('security_drift')).lower(), kev_state=state)
+              print('deployed scan finished: kev %s, security drift %s' % (state, scan.get('security_drift')))
+              return 0
+
+
+          def cmd_deployed_report(a):
+              """Phase 3, one job for every environment: the core report over the merged state rows, so the
+              reconcile path tickets what the scans found (findings.json beside findings-coverage.json)."""
+              d = a.state_dir
+              here = os.path.dirname(os.path.abspath(__file__))
+              p = subprocess.run([sys.executable, os.path.join(here, 'scan_report.py'), '--batch', d,
+                                  '--findings-out', os.path.join(d, 'findings.json'), '--out',
+                                  os.environ.get('GITHUB_STEP_SUMMARY', '')],
+                                 capture_output=True, text=True, encoding='utf-8', errors='replace')
+              sys.stdout.write(p.stdout[-4000:])
+              ok = os.path.exists(os.path.join(d, 'findings.json'))
+              output(findings_written=str(ok).lower())
+              if not ok:
+                  print('::error::the report wrote no findings.json (exit %d): %s' % (p.returncode, p.stderr[-400:]))
+                  return 1
+              return 0
+
+
+          # ----------------------------------------------------------------------------- self-test
+          def self_test():
+              fails = []
+              now = parse_ts('2026-10-26T12:00:00Z')
+              d1, d2 = 'sha256:' + '1' * 64, 'sha256:' + '2' * 64
+
+              def rec(digest=d1, envname='test', tier='test', state=VERIFIED, at='2026-10-25T12:00:00Z'):
+                  return {'schema': SCHEMA, 'state': state, 'artifact': {'digest': digest},
+                          'environment': {'name': envname, 'tier': tier},
+                          'provenance': {'source_ref': 'refs/heads/main', 'build_workflow': 'o/k/.github/workflows/b.yml'},
+                          'validity': {'verified_at': at}, 'run': {'id': '7'}, 'approval': {'approvers': []},
+                          '_artifact': {'head_branch': 'main'}}
+
+              def ctx(**o):
+                  c = {'digest': d1, 'required_predecessor': 'test', 'source_environment': 'test', 'source': rec(),
+                       'history': [], 'revocations': [], 'rescan': {'state': 'COMPLETE', 'critical': [], 'high': []},
+                       'kev': {'state': 'AVAILABLE', 'blocking': []}, 'attestation': 'ATTESTATION_VERIFIED',
+                       'release_path': 'normal', 'exception': {}, 'now': now}
+                  c.update(o)
+                  return c
+              cases = [('allowed', ctx(), 'PROMOTION_ALLOWED'),
+                       ('dev', ctx(source=rec(envname='dev', tier='dev'), source_environment='dev'),
+                        'PROMOTION_REFUSED_WRONG_PREDECESSOR'),
+                       ('swap', ctx(digest=d2), 'PROMOTION_REFUSED_DIGEST_MISMATCH'),
+                       ('stale', ctx(source=rec(at='2026-10-01T00:00:00Z')), 'PROMOTION_REFUSED_STALE'),
+                       ('super', ctx(history=[rec(digest=d2, at='2026-10-26T00:00:00Z')]), 'PROMOTION_REFUSED_SUPERSEDED'),
+                       ('kev', ctx(kev={'state': 'AVAILABLE', 'blocking': ['CVE-1@x']}), 'PROMOTION_REFUSED_REVOKED')]
+              for label, c, want in cases:
+                  got = judge(c)['verdict']
+                  if got != want:
+                      fails.append('%s: %s, wanted %s' % (label, got, want))
+              if fails:
+                  print('promotion self-test FAILED: ' + '; '.join(fails))
+                  return 1
+              print('promotion self-test ok')
+              return 0
+
+
+          def main(argv):
+              ap = argparse.ArgumentParser(description='KDEC-029 promotion')
+              sub = ap.add_subparsers(dest='cmd', required=True)
+              cmds = {'preflight': cmd_preflight, 'gate-collect': cmd_gate_collect, 'gate-decide': cmd_gate_decide,
+                      'test-period': cmd_test_period, 'dast': cmd_dast, 'posture': cmd_posture,
+                      'record': cmd_record, 'deployed-scan': cmd_deployed_scan,
+                      'deployed-finish': cmd_deployed_finish, 'deployed-report': cmd_deployed_report}
+              for name in cmds:
+                  p = sub.add_parser(name)
+                  p.add_argument('--adapter', choices=('containerapp', 'appservice'), default='containerapp')
+                  p.add_argument('--state-dir', default='')
+              sub.add_parser('self-test')
+              a = ap.parse_args(argv)
+              if a.cmd == 'self-test':
+                  return self_test()
+              return cmds[a.cmd](a)
+
+
+          if __name__ == '__main__':
+              sys.exit(main(sys.argv[1:]))
+          kit_promotion_py
+          cat > "$RUNNER_TEMP/kit-deploy/target_lease.py" <<'kit_target_lease_py'
+          #!/usr/bin/env python3
+          """The cross-repository target lease, as a model: one lease per deploy target, a fencing token.
+          (KDEC-030 draft, lane L-SEAM; docs/architecture/LZ_KIT_SEAM_CONTRACT.md, "The lease".)
+
+          WHY THIS EXISTS
+
+              A GitHub Actions concurrency group is evaluated inside one repository. The landing-zone apply
+              runs in the platform repository and the kit's deploy runs in the application repository, so
+              the two never wait for each other, whatever their groups are called. KDEC-030 proposes ONE
+              lease per target that every pipeline mutating the target acquires first: an Azure Storage blob
+              lease on a blob named for the target, plus a GENERATION number kept in the blob's metadata.
+              The pair (lease id, generation) is the fencing token. A holder checks it again immediately
+              before every mutation, and once more after it; a holder that lost the lease -- broken, taken
+              over, past its own expiry -- is refused before it touches the target, or reported after.
+
+              This module is the model only: pure Python, standard library, no network. `BlobLeaseStore`
+              emulates the Lease Blob REST operation's documented states and status codes (Microsoft Learn,
+              "Lease Blob": acquire / renew / change / release / break; Available, Leased, Expired,
+              Breaking, Broken; 409 and 412). `TargetLease` is the seam protocol on top of it;
+              tests/prove_target_lease.py proves the protocol.
+
+              Since lane L-SEAM2 (2026-10-27): `AzureBlobLeaseStore` sends the same calls to the Blob REST
+              API with an Entra bearer token, keyed by the target's ARM resource id, and `run_cli` gives
+              each pipeline step a subcommand (acquire, begin, fence, end, release, status, break). The
+              composite .github/actions/target-lease runs it for BOTH sides -- the landing-zone apply and
+              the kit's deploy reusables (opt-in: KIT_TARGET_LEASE_ACCOUNT). tests/prove_target_lease_crossrepo.py
+              proves it across two independent callers against a local Blob-service emulation. Not yet
+              run against real Azure Storage.
+
+          THE PROTOCOL
+              acquire     an INFINITE blob lease (an apply runs 4-27 minutes, a rollback sequence up to 240;
+                          a 15-60 s lease would need a renewer that can die silently) with a LOGICAL expiry,
+                          `expires_at`, in the metadata, extended by heartbeat. Generation + 1. A target held
+                          by a live holder is refused LEASE_HELD, naming the holder.
+              takeover    a holder past `expires_at` that left the target CLEAN is broken and replaced
+                          automatically, recorded (`took_over`). One that left it MID-MUTATION is not:
+                          LEASE_ABANDONED_MID_MUTATION -- a human decides (the break authority).
+              fence       before every mutation: a read conditional on the lease id (the service answers
+                          409/412 when the id is no longer the blob's lease), the generation and holder
+                          compared with the token, and the logical expiry checked. Any miss is
+                          STALE_LEASE_HOLDER or LEASE_EXPIRED_HOLDER; the mutation does not happen.
+              mutate      fence, mark `mutating`, mutate, fence again. A lease lost during the mutation is
+                          MUTATED_WITHOUT_LEASE and ROLLBACK_REQUIRES_HUMAN_DECISION, never a clean result.
+              break       only an actor in the break authority (the platform admins by default). The blob
+                          service lets ANY caller with blob write break a lease (Lease Blob: "Any authorized
+                          request can break the lease"), so the authority is enforced by this protocol and by
+                          audit, not by Azure RBAC; the generation bump makes every broken holder fenced.
+
+          WHAT THE FENCE DOES NOT CLOSE (stated in the contract): fencing stops a stale holder before its
+          next call; it cannot recall an Azure mutation already sent. The Azure target itself does not check
+          the token, so a mutation already sent when the lease is lost lands. The after-fence detects it.
+          """
+          import argparse
+          import base64
+          import copy
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+          import uuid
+          from email.utils import formatdate
+          from urllib.parse import urlparse
+
+          # ----------------------------------------------------------------------------- the blob service
+          AVAILABLE, LEASED, EXPIRED, BREAKING, BROKEN = 'available', 'leased', 'expired', 'breaking', 'broken'
+
+
+          class LeaseError(Exception):
+              """`code` is an HTTP status (int) from the blob emulation, or a seam outcome (str)."""
+
+              def __init__(self, code, message=''):
+                  Exception.__init__(self, '%s: %s' % (code, message) if message else str(code))
+                  self.code = code
+
+
+          class BlobLeaseStore(object):
+              """In-memory emulation of the Lease Blob operation over named blobs (one per target).
+
+              Times are plain numbers (seconds) passed in, so a proof controls the clock."""
+
+              def __init__(self):
+                  self._b = {}
+
+              def _blob(self, key):
+                  return self._b.setdefault(key, {'state': AVAILABLE, 'lease_id': None, 'duration': None,
+                                                   'expires': None, 'break_at': None, 'md': {},
+                                                   'written_after_expiry': False})
+
+              def _tick(self, key, now):
+                  b = self._blob(key)
+                  if b['state'] == LEASED and b['duration'] != -1 and now >= b['expires']:
+                      b['state'], b['written_after_expiry'] = EXPIRED, False
+                  if b['state'] == BREAKING and now >= b['break_at']:
+                      b['state'] = BROKEN
+                  return b
+
+              def state(self, key, now):
+                  return self._tick(key, now)['state']
+
+              def acquire(self, key, duration, proposed_id, now):
+                  if not (duration == -1 or 15 <= duration <= 60):
+                      raise LeaseError(400, 'a lease is 15-60 seconds or -1 (infinite)')
+                  b = self._tick(key, now)
+                  lid = proposed_id or str(uuid.uuid4())
+                  if b['state'] == BREAKING or (b['state'] == LEASED and lid != b['lease_id']):
+                      raise LeaseError(409, 'the blob has an active lease')
+                  b.update(state=LEASED, lease_id=lid, duration=duration,
+                           expires=None if duration == -1 else now + duration, break_at=None)
+                  return lid
+
+              def renew(self, key, lease_id, now):
+                  b = self._tick(key, now)
+                  if lease_id != b['lease_id'] or b['state'] in (AVAILABLE, BREAKING, BROKEN):
+                      raise LeaseError(409, 'the lease cannot be renewed')
+                  if b['state'] == EXPIRED and b['written_after_expiry']:
+                      raise LeaseError(409, 'the blob was modified since the lease expired')
+                  b.update(state=LEASED, expires=None if b['duration'] == -1 else now + b['duration'])
+                  return lease_id
+
+              def release(self, key, lease_id, now):
+                  b = self._tick(key, now)
+                  if b['state'] == AVAILABLE or lease_id != b['lease_id']:
+                      raise LeaseError(409, 'the lease id does not match')
+                  b.update(state=AVAILABLE, lease_id=None, break_at=None)
+
+              def break_lease(self, key, period, now):
+                  """No lease id needed. Returns the seconds until a new lease can be acquired."""
+                  b = self._tick(key, now)
+                  if b['state'] == AVAILABLE:
+                      raise LeaseError(409, 'there is currently no lease on the blob')
+                  if b['state'] in (BROKEN, EXPIRED):
+                      b['state'] = BROKEN
+                      return 0
+                  remaining = None if (b['state'] == LEASED and b['duration'] == -1) else \
+                      ((b['expires'] if b['state'] == LEASED else b['break_at']) - now)
+                  if period is None:
+                      wait = 0 if remaining is None else remaining
+                  else:
+                      wait = period if remaining is None else min(period, remaining)
+                  if wait <= 0:
+                      b['state'] = BROKEN
+                      return 0
+                  b.update(state=BREAKING, break_at=now + wait)
+                  return wait
+
+              def write(self, key, lease_id, md, now):
+                  """Set Blob Metadata: the write rules of the documented outcome table."""
+                  b = self._tick(key, now)
+                  st, held = b['state'], b['lease_id']
+                  if st == LEASED:
+                      if lease_id is None:
+                          raise LeaseError(412, 'there is a lease on the blob and no lease id was given')
+                      if lease_id != held:
+                          raise LeaseError(409, 'the lease id does not match')
+                  elif st == BREAKING:
+                      if lease_id != held:
+                          raise LeaseError(412, 'the lease is breaking')
+                  elif lease_id is not None:
+                      raise LeaseError(412, 'there is no active lease with that id')
+                  elif st in (BROKEN, EXPIRED):
+                      b.update(state=AVAILABLE, lease_id=None)
+                  if st == EXPIRED:
+                      b['written_after_expiry'] = True
+                  b['md'] = copy.deepcopy(md)
+
+              def read(self, key, lease_id, now):
+                  """Get Blob Properties, conditional on the lease id when one is given."""
+                  b = self._tick(key, now)
+                  if lease_id is not None:
+                      st = b['state']
+                      if st in (AVAILABLE, BROKEN, EXPIRED):
+                          raise LeaseError(412, 'there is no active lease with that id')
+                      if lease_id != b['lease_id']:
+                          raise LeaseError(409, 'the lease id does not match')
+                  return copy.deepcopy(b['md'])
+
+
+          # ----------------------------------------------------------------------------- the seam protocol
+          CLEAN, MUTATING, broken_mark = 'clean', 'mutating', 'broken'
+          HUMAN = 'ROLLBACK_REQUIRES_HUMAN_DECISION'
+
+
+          class Token(object):
+              """The fencing token a holder carries: (target, lease id, generation, holder)."""
+
+              def __init__(self, target, lease_id, generation, holder, took_over=None):
+                  self.target, self.lease_id, self.generation = target, lease_id, generation
+                  self.holder, self.took_over = holder, took_over
+
+              def __repr__(self):
+                  return 'Token(%s gen=%s holder=%s)' % (self.target, self.generation, self.holder)
+
+
+          class TargetLease(object):
+              def __init__(self, store, heartbeat_ttl=600, break_authority=()):
+                  self.store, self.ttl = store, heartbeat_ttl
+                  self.authority = set(break_authority)
+
+              # -- acquisition
+              def acquire(self, target, holder, now):
+                  lid, took_over = str(uuid.uuid4()), None
+                  try:
+                      self.store.acquire(target, -1, lid, now)
+                  except LeaseError as e:
+                      if e.code != 409:
+                          raise
+                      md = self.store.read(target, None, now)
+                      exp = md.get('expires_at')
+                      if exp is None or now <= exp:
+                          raise LeaseError('LEASE_HELD', 'target %s is held by %s (generation %s) until %s'
+                                           % (target, md.get('holder', '?'), md.get('generation'), exp))
+                      if md.get('state') == MUTATING:
+                          raise LeaseError('LEASE_ABANDONED_MID_MUTATION',
+                                           '%s expired at %s while mutating (%s); a human decides before '
+                                           'anyone takes the target' % (md.get('holder'), exp,
+                                                                        md.get('mutation')))
+                      self.store.break_lease(target, 0, now)
+                      took_over = md.get('holder')
+                      self.store.acquire(target, -1, lid, now)
+                  md = self.store.read(target, lid, now)
+                  gen = int(md.get('generation') or 0) + 1
+                  hist = list(md.get('history') or [])
+                  hist.append({'generation': gen, 'holder': holder, 'acquired_at': now,
+                               'took_over': took_over})
+                  self.store.write(target, lid, {'generation': gen, 'holder': holder,
+                                                 'expires_at': now + self.ttl, 'state': CLEAN,
+                                                 'mutation': None, 'history': hist[-20:]}, now)
+                  return Token(target, lid, gen, holder, took_over)
+
+              # -- the fence
+              def fence(self, token, now):
+                  try:
+                      md = self.store.read(token.target, token.lease_id, now)
+                  except LeaseError as e:
+                      if e.code in UNKNOWN_CODES:   # a store that cannot be read is not a lost lease: fail closed
+                          raise
+                      raise LeaseError('STALE_LEASE_HOLDER', '%r no longer holds the lease (%s)' % (token, e.code))
+                  if md.get('generation') != token.generation or md.get('holder') != token.holder:
+                      raise LeaseError('STALE_LEASE_HOLDER', '%r: the blob is at generation %s, holder %s'
+                                       % (token, md.get('generation'), md.get('holder')))
+                  if now > md.get('expires_at', -1):
+                      raise LeaseError('LEASE_EXPIRED_HOLDER', '%r expired at %s' % (token, md.get('expires_at')))
+                  return md
+
+              def _put(self, token, md, now):
+                  self.store.write(token.target, token.lease_id, md, now)
+
+              def heartbeat(self, token, now):
+                  md = self.fence(token, now)
+                  md['expires_at'] = now + self.ttl
+                  self._put(token, md, now)
+
+              def begin_mutation(self, token, what, now):
+                  md = self.fence(token, now)
+                  md.update(state=MUTATING, mutation=what)
+                  self._put(token, md, now)
+
+              def end_mutation(self, token, now):
+                  md = self.fence(token, now)
+                  md.update(state=CLEAN, mutation=None)
+                  self._put(token, md, now)
+
+              def mutate(self, token, what, fn, now, after):
+                  """Fence, mark, mutate, fence again. -> a result dict; never raises for a lost lease."""
+                  self.begin_mutation(token, what, now)
+                  try:
+                      fn()
+                  except Exception as e:  # noqa: BLE001 -- the mutation's own failure, recorded
+                      return {'outcome': 'MUTATION_FAILED', 'rollback_state': HUMAN, 'reason': str(e)}
+                  try:
+                      self.end_mutation(token, after)
+                  except LeaseError as e:
+                      return {'outcome': 'MUTATED_WITHOUT_LEASE', 'rollback_state': HUMAN,
+                              'reason': '%s: the lease was lost while "%s" was in flight' % (e.code, what)}
+                  return {'outcome': 'MUTATED_UNDER_LEASE', 'rollback_state': None, 'reason': ''}
+
+              def release(self, token, now):
+                  md = self.fence(token, now)
+                  if md.get('state') == MUTATING:
+                      raise LeaseError('RELEASE_MID_MUTATION', '%r is mid-mutation (%s); end or record it '
+                                       'first' % (token, md.get('mutation')))
+                  self.store.release(token.target, token.lease_id, now)
+
+              # -- break authority
+              def break_lease(self, target, actor, reason, now):
+                  if actor not in self.authority:
+                      raise LeaseError('BREAK_NOT_AUTHORISED', '%s is not in the break authority' % actor)
+                  md = self.store.read(target, None, now)
+                  self.store.break_lease(target, 0, now)
+                  md.update(generation=int(md.get('generation') or 0) + 1, broken_by=actor, reason=reason,
+                            broken_at=now, state_at_break=md.get('state'), state=broken_mark,
+                            expires_at=now)
+                  self.store.write(target, None, md, now)
+                  return md
+
+
+          # ----------------------------------------------------------------------------- the live adapter
+          API_VERSION = '2021-12-02'
+          STORAGE_RESOURCE = 'https://storage.azure.com/'
+          BLOB_SUFFIX = {'public': 'blob.core.windows.net', 'gov': 'blob.core.usgovcloudapi.net'}
+          LEASE_BLOB = 'lease'
+          META_KEY = 'seam'      # the whole metadata dict, JSON then base64: Azure metadata values are strings
+
+
+          def normalise_target(resource_id):
+              """An ARM resource id, lower-cased (ARM ids are case-insensitive): one target, one lease."""
+              rid = (resource_id or '').strip().rstrip('/').lower()
+              if not re.match(r'^/subscriptions/[0-9a-f-]+/resourcegroups/[^/]+/providers/[^/]+/[^/]+/[^/]+', rid):
+                  raise ValueError('not an ARM resource id: %r' % resource_id)
+              return rid
+
+
+          def container_for(target):
+              """The per-target container the LZ vend creates: 't-' + the first 40 hex of sha256(id)."""
+              return 't-' + hashlib.sha256(normalise_target(target).encode('utf-8')).hexdigest()[:40]
+
+
+          def bearer_from_az():
+              """A storage-scoped Entra token for the identity `az login` (azure/login) signed in."""
+              try:
+                  p = subprocess.run(['az', 'account', 'get-access-token', '--resource', STORAGE_RESOURCE,
+                                      '--query', 'accessToken', '-o', 'tsv'],
+                                     capture_output=True, text=True, timeout=60)
+              except (OSError, subprocess.SubprocessError) as e:
+                  raise LeaseError('LEASE_STORE_UNREACHABLE', 'no storage token: %s' % e)
+              if p.returncode != 0 or not p.stdout.strip():
+                  raise LeaseError('LEASE_STORE_UNREACHABLE', 'no storage token: %s'
+                                   % (p.stderr.strip().splitlines() or ['az failed'])[-1])
+              return p.stdout.strip()
+
+
+          class AzureBlobLeaseStore(object):
+              """The same five calls as BlobLeaseStore, sent to the Blob service's REST API.
+
+              Entra (OAuth bearer) only; shared keys are never used. One container per target, vended by the
+              landing zone; the blob `lease` inside it is created on first use. `now` is accepted for the
+              model's signature and ignored: the service keeps its own clock, and the protocol's logical
+              expiry is the caller's clock (TargetLease). HTTP status codes become LeaseError(status), as the
+              emulation raises them; anything that is not a lease answer fails closed."""
+
+              def __init__(self, account=None, endpoint=None, cloud='public', bearer=None, timeout=30):
+                  if endpoint:
+                      u = urlparse(endpoint)
+                      if u.scheme != 'https' and not (u.scheme == 'http' and u.hostname in ('127.0.0.1', 'localhost')):
+                          raise ValueError('the lease store is reached over https (plain http only to a local '
+                                           'test emulator): %s' % endpoint)
+                      self.base = endpoint.rstrip('/')
+                  else:
+                      if not re.match(r'^[a-z0-9]{3,24}$', account or ''):
+                          raise ValueError('not a storage account name: %r' % account)
+                      self.base = 'https://%s.%s' % (account, BLOB_SUFFIX.get(cloud, BLOB_SUFFIX['public']))
+                  self._bearer, self.timeout = bearer, timeout
+
+              def _token(self):
+                  if not self._bearer:
+                      self._bearer = os.environ.get('TARGET_LEASE_BEARER') or bearer_from_az()
+                  return self._bearer
+
+              def _call(self, method, key, comp='', headers=None):
+                  url = '%s/%s/%s' % (self.base, container_for(key), LEASE_BLOB) + ('?comp=' + comp if comp else '')
+                  h = {'Authorization': 'Bearer ' + self._token(), 'x-ms-version': API_VERSION,
+                       'x-ms-date': formatdate(usegmt=True)}
+                  h.update({k: v for k, v in (headers or {}).items() if v is not None})
+                  data = b'' if method == 'PUT' else None
+                  req = urllib.request.Request(url, data=data, method=method, headers=h)
+                  try:
+                      with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                          return r.status, {k.lower(): v for k, v in r.headers.items()}
+                  except urllib.error.HTTPError as e:
+                      code, err = e.code, (e.headers.get('x-ms-error-code') or '')
+                      if code == 404 and err == 'ContainerNotFound':
+                          raise LeaseError('LEASE_TARGET_NOT_VENDED', 'no lease container %s for %s: the landing '
+                                           'zone vends it with the target' % (container_for(key), key))
+                      if code in (404, 409, 412):
+                          raise LeaseError(code, err or 'blob service %s' % code)
+                      raise LeaseError('LEASE_STORE_UNREACHABLE', 'blob service answered %s %s' % (code, err))
+                  except (urllib.error.URLError, OSError) as e:
+                      raise LeaseError('LEASE_STORE_UNREACHABLE', '%s: %s' % (self.base, getattr(e, 'reason', e)))
+
+              def _ensure_blob(self, key):
+                  try:
+                      self._call('PUT', key, headers={'x-ms-blob-type': 'BlockBlob', 'If-None-Match': '*',
+                                                      'Content-Length': '0'})
+                  except LeaseError as e:
+                      if e.code not in (409, 412):      # it exists already (or is leased): both fine
+                          raise
+
+              def state(self, key, now=None):
+                  try:
+                      return self._call('HEAD', key)[1].get('x-ms-lease-state', AVAILABLE)
+                  except LeaseError as e:
+                      if e.code == 404:
+                          return AVAILABLE
+                      raise
+
+              def acquire(self, key, duration, proposed_id, now=None):
+                  hdr = {'x-ms-lease-action': 'acquire', 'x-ms-lease-duration': str(duration),
+                         'x-ms-proposed-lease-id': proposed_id or str(uuid.uuid4())}
+                  try:
+                      return self._call('PUT', key, 'lease', hdr)[1].get('x-ms-lease-id', hdr['x-ms-proposed-lease-id'])
+                  except LeaseError as e:
+                      if e.code != 404:
+                          raise
+                  self._ensure_blob(key)
+                  return self._call('PUT', key, 'lease', hdr)[1].get('x-ms-lease-id', hdr['x-ms-proposed-lease-id'])
+
+              def release(self, key, lease_id, now=None):
+                  self._call('PUT', key, 'lease', {'x-ms-lease-action': 'release', 'x-ms-lease-id': lease_id})
+
+              def break_lease(self, key, period, now=None):
+                  h = self._call('PUT', key, 'lease', {'x-ms-lease-action': 'break',
+                                                       'x-ms-lease-break-period': None if period is None else str(period)})[1]
+                  return int(h.get('x-ms-lease-time') or 0)
+
+              def write(self, key, lease_id, md, now=None):
+                  enc = base64.b64encode(json.dumps(md, sort_keys=True).encode('utf-8')).decode('ascii')
+                  self._call('PUT', key, 'metadata', {'x-ms-lease-id': lease_id, 'x-ms-meta-' + META_KEY: enc})
+
+              def read(self, key, lease_id, now=None):
+                  try:
+                      h = self._call('HEAD', key, headers={'x-ms-lease-id': lease_id})[1]
+                  except LeaseError as e:
+                      if e.code == 404 and lease_id is None:
+                          return {}
+                      raise
+                  raw = h.get('x-ms-meta-' + META_KEY)
+                  if not raw:
+                      return {}
+                  try:
+                      return json.loads(base64.b64decode(raw).decode('utf-8'))
+                  except (ValueError, TypeError) as e:
+                      raise LeaseError('LEASE_STORE_UNREACHABLE', 'the lease metadata is unreadable (%s)' % e)
+
+
+          # ----------------------------------------------------------------------------- the command line
+          # One subcommand per pipeline step; the token file carries the fencing token between steps.
+          # Prints `target_lease=<VALUE>` and `target_lease_reason=<text>` (and appends them to
+          # $GITHUB_OUTPUT when set). EXIT 0 done; 1 refused, by name; 2 could not check -- fail closed.
+          #
+          #   hold  runs a long step (the e2e test period, a whole rollback sequence) as a child process
+          #         and renews the lease every --every seconds (default 180, below a third of the 10-minute
+          #         TTL). A failed renewal stops the child at once and ends LEASE_LOST, exit 1; the loss is
+          #         recorded beside the token, so every later fence of this run -- including the one each
+          #         mutating az call takes (deploy_contract.az) -- is refused LEASE_LOST without asking the
+          #         store again: no further mutation. --mark-mutating marks the lease `mutating` for the
+          #         child's whole run and clean only when it exits 0 (a halted rollback stays a human decision).
+          UNKNOWN_CODES = ('LEASE_STORE_UNREACHABLE', 'LEASE_TARGET_NOT_VENDED')
+          ARM_TYPES = {'containerapp': 'Microsoft.App/containerApps', 'appservice': 'Microsoft.Web/sites'}
+          LOST_SUFFIX = '.lost'
+          DEFAULT_TOKEN = os.path.join('kit-target-lease', 'token.json')
+
+
+          def default_token_file():
+              """Where a job keeps its token: KIT_TARGET_LEASE_TOKEN, else $RUNNER_TEMP/kit-target-lease/token.json."""
+              return os.environ.get('KIT_TARGET_LEASE_TOKEN') or os.path.join(
+                  os.environ.get('RUNNER_TEMP') or '.', DEFAULT_TOKEN)
+
+
+          def target_id(adapter, subscription, resource_group, name):
+              """The ARM resource id of a kit target. App Service: the SITE, never a slot (a swap changes both)."""
+              if adapter not in ARM_TYPES:
+                  raise ValueError('no lease target type for adapter %r' % adapter)
+              return '/subscriptions/%s/resourceGroups/%s/providers/%s/%s' % (subscription, resource_group,
+                                                                              ARM_TYPES[adapter], name)
+
+
+          def _emit(values, github_output):
+              lines = []
+              for k, v in values.items():
+                  lines.append('%s=%s' % (k, ' '.join(str(v if v is not None else '').split())))
+              print('\n'.join(lines))
+              sys.stdout.flush()
+              if github_output:
+                  with open(github_output, 'a', encoding='utf-8') as f:
+                      f.write('\n'.join(lines) + '\n')
+
+
+          def _store(a):
+              return AzureBlobLeaseStore(account=a.account, endpoint=a.endpoint, cloud=a.cloud)
+
+
+          def _load_token(path):
+              with open(path, encoding='utf-8') as f:
+                  d = json.load(f)
+              a = argparse.Namespace(account=d.get('account'), endpoint=d.get('endpoint'), cloud=d.get('cloud'),
+                                     ttl=d.get('ttl', 600))
+              return a, Token(d['target'], d['lease_id'], d['generation'], d['holder'], d.get('took_over'))
+
+
+          def check_not_lost(path):
+              marker = path + LOST_SUFFIX
+              if os.path.exists(marker):
+                  with open(marker, encoding='utf-8') as f:
+                      why = f.read().strip()
+                  raise LeaseError('LEASE_LOST', 'this run lost the lease earlier (%s); nothing further is mutated' % why)
+
+
+          def mark_lost(path, why):
+              with open(path + LOST_SUFFIX, 'w', encoding='utf-8') as f:
+                  f.write(' '.join(str(why).split()))
+
+
+          def fence_token_file(path=None, now=None, mark=True):
+              """The fence a mutating call takes, and the hold's renewal: fence + heartbeat. -> the token.
+
+              Raises LeaseError: LEASE_NOT_HELD (no token: this run never acquired the target), LEASE_LOST
+              (lost earlier in this run), or the fence's own refusal. With `mark`, any refusal is recorded as
+              lost, so nothing later in the run mutates on a lease that failed once."""
+              path = path or default_token_file()
+              if not os.path.exists(path):
+                  raise LeaseError('LEASE_NOT_HELD', 'no lease token at %s: this run never acquired the target' % path)
+              check_not_lost(path)
+              cfg, tok = _load_token(path)
+              lease = TargetLease(_store(cfg), heartbeat_ttl=int(cfg.ttl or 600))
+              try:
+                  lease.heartbeat(tok, time.time() if now is None else now)
+              except LeaseError as e:
+                  if mark:
+                      mark_lost(path, '%s: %s' % (e.code, e))
+                  raise
+              return tok
+
+
+          def _stop(child):
+              try:
+                  if os.name == 'posix':
+                      import signal
+                      os.killpg(child.pid, signal.SIGTERM)
+                  else:
+                      child.terminate()
+                  child.wait(timeout=15)
+              except Exception:  # noqa: BLE001 -- stopping is best effort, then forced
+                  try:
+                      if os.name == 'posix':
+                          import signal
+                          os.killpg(child.pid, signal.SIGKILL)
+                      else:
+                          child.kill()
+                  except Exception:  # noqa: BLE001
+                      pass
+
+
+          def _hold(a, cmd, done):
+              if not cmd:
+                  raise ValueError('hold needs the command to run after --')
+              path = a.token_file or default_token_file()
+
+              def lost(e):
+                  return done('LEASE_LOST', '%s: %s; the held step was stopped and nothing further is mutated'
+                              % (e.code, e), 1)
+              try:
+                  tok = fence_token_file(path)
+                  if a.mark_mutating:
+                      cfg, _ = _load_token(path)
+                      TargetLease(_store(cfg), heartbeat_ttl=int(cfg.ttl or 600)).begin_mutation(
+                          tok, a.mark_mutating, time.time())
+              except LeaseError as e:
+                  if not os.path.exists(path + LOST_SUFFIX) and os.path.exists(path):
+                      mark_lost(path, '%s: %s' % (e.code, e))
+                  return lost(e)
+              kw = {'start_new_session': True} if os.name == 'posix' else {}
+              child = subprocess.Popen(cmd, **kw)
+              while True:
+                  try:
+                      rc = child.wait(timeout=max(1, a.every))
+                      break
+                  except subprocess.TimeoutExpired:
+                      try:
+                          fence_token_file(path)
+                      except LeaseError as e:
+                          _stop(child)
+                          return lost(e)
+              try:
+                  tok = fence_token_file(path)
+                  if a.mark_mutating and rc == 0:
+                      cfg, _ = _load_token(path)
+                      TargetLease(_store(cfg), heartbeat_ttl=int(cfg.ttl or 600)).end_mutation(tok, time.time())
+              except LeaseError as e:
+                  if not os.path.exists(path + LOST_SUFFIX):
+                      mark_lost(path, '%s: %s' % (e.code, e))
+                  return lost(e)
+              return done('LEASE_FENCE_PASSED', '%r held through the step (exit %s)%s' % (
+                  tok, rc, '' if not a.mark_mutating else (', clean' if rc == 0 else ', left mutating: a human decides')),
+                  rc)
+
+
+          def run_cli(argv=None):
+              argv = list(sys.argv[1:] if argv is None else argv)
+              cmd = []
+              if '--' in argv:
+                  k = argv.index('--')
+                  argv, cmd = argv[:k], argv[k + 1:]
+              p = argparse.ArgumentParser(description='The cross-repository target lease (KDEC-030 draft).')
+              p.add_argument('op', choices=['acquire', 'fence', 'begin', 'end', 'release', 'status', 'break', 'hold'])
+              p.add_argument('--resource-id', default='')
+              p.add_argument('--adapter', default='', help='with --subscription --resource-group --name: builds the id')
+              p.add_argument('--subscription', default='')
+              p.add_argument('--resource-group', default='')
+              p.add_argument('--name', default='')
+              p.add_argument('--holder', default='')
+              p.add_argument('--account', default='')
+              p.add_argument('--endpoint', default='', help='test emulator only; the account name decides the URL')
+              p.add_argument('--cloud', default=os.environ.get('CLOUD') or 'public')
+              p.add_argument('--ttl', type=int, default=600, help='heartbeat TTL in seconds (KDEC-030 O-5)')
+              p.add_argument('--token-file', default='')
+              p.add_argument('--what', default='')
+              p.add_argument('--every', type=int, default=180, help='hold: seconds between renewals (below TTL/3)')
+              p.add_argument('--mark-mutating', default='', help='hold: mark the lease mutating for the child run')
+              p.add_argument('--actor', default='')
+              p.add_argument('--reason', default='')
+              p.add_argument('--authority', default=os.environ.get('TARGET_LEASE_BREAK_AUTHORITY') or 'platform-admins')
+              p.add_argument('--now', type=float, default=None, help='a fixed clock, for proofs only')
+              p.add_argument('--github-output', default=os.environ.get('GITHUB_OUTPUT') or '')
+              a = p.parse_args(argv)
+              now = a.now if a.now is not None else time.time()
+              out = {}
+
+              def done(value, reason='', code=0, **extra):
+                  out.update(target_lease=value, target_lease_reason=reason, **extra)
+                  _emit(out, a.github_output)
+                  return code
+
+              try:
+                  if a.op == 'hold':
+                      return _hold(a, cmd, done)
+                  if a.op in ('acquire', 'status', 'break'):
+                      rid = a.resource_id or (target_id(a.adapter, a.subscription, a.resource_group, a.name)
+                                              if a.adapter else '')
+                      target = normalise_target(rid)
+                      store = _store(a)
+                      lease = TargetLease(store, heartbeat_ttl=a.ttl, break_authority=a.authority.split(','))
+                      if a.op == 'status':
+                          md = store.read(target, None, now)
+                          return done('LEASE_STATUS', 'holder %s generation %s state %s expires_at %s'
+                                      % (md.get('holder'), md.get('generation'), md.get('state'), md.get('expires_at')))
+                      if a.op == 'break':
+                          md = lease.break_lease(target, a.actor, a.reason, now)
+                          return done('LEASE_BROKEN', '%s broke generation %s (%s): %s' % (
+                              a.actor, int(md['generation']) - 1, md.get('state_at_break'), a.reason))
+                      if not a.holder:
+                          raise ValueError('acquire needs --holder')
+                      token_file = a.token_file or default_token_file()
+                      tok = lease.acquire(target, a.holder, now)
+                      d = os.path.dirname(os.path.abspath(token_file))
+                      os.makedirs(d, exist_ok=True)
+                      if os.path.exists(token_file + LOST_SUFFIX):
+                          os.remove(token_file + LOST_SUFFIX)
+                      with open(token_file, 'w', encoding='utf-8') as f:
+                          json.dump({'target': tok.target, 'lease_id': tok.lease_id, 'generation': tok.generation,
+                                     'holder': tok.holder, 'took_over': tok.took_over, 'account': a.account,
+                                     'endpoint': a.endpoint, 'cloud': a.cloud, 'ttl': a.ttl}, f)
+                      return done('LEASE_ACQUIRED', '%s holds %s at generation %s' % (tok.holder, target, tok.generation),
+                                  target_lease_generation=tok.generation, target_lease_took_over=tok.took_over or '')
+                  token_file = a.token_file or default_token_file()
+                  if not os.path.exists(token_file):
+                      raise LeaseError('LEASE_NOT_HELD', 'no lease token at %s: this run never acquired the target'
+                                       % token_file)
+                  check_not_lost(token_file)
+                  cfg, tok = _load_token(token_file)
+                  lease = TargetLease(_store(cfg), heartbeat_ttl=int(cfg.ttl or 600))
+                  if a.op == 'fence':
+                      lease.heartbeat(tok, now)
+                      return done('LEASE_FENCE_PASSED', '%r, renewed for %ss' % (tok, lease.ttl))
+                  if a.op == 'begin':
+                      lease.heartbeat(tok, now)
+                      lease.begin_mutation(tok, a.what or 'mutation', now)
+                      return done('LEASE_MUTATION_MARKED', '%r: %s' % (tok, a.what or 'mutation'))
+                  if a.op == 'end':
+                      try:
+                          lease.end_mutation(tok, now)
+                      except LeaseError as e:
+                          if e.code in UNKNOWN_CODES:
+                              raise
+                          return done('MUTATED_WITHOUT_LEASE', '%s: %s; %s' % (e.code, e, HUMAN), 1)
+                      return done('MUTATED_UNDER_LEASE', repr(tok))
+                  lease.release(tok, now)
+                  return done('LEASE_RELEASED', repr(tok))
+              except LeaseError as e:
+                  code = e.code if isinstance(e.code, str) else 'LEASE_STORE_UNREACHABLE'
+                  return done(code, str(e), 2 if code in UNKNOWN_CODES else 1)
+              except ValueError as e:
+                  print('UNKNOWN: %s' % e, file=sys.stderr)
+                  return 2
+
+
+          if __name__ == '__main__':
+              sys.exit(run_cli())
+          kit_target_lease_py
 
       - name: Bind the tier and target to the GitHub environment (refuse before login)
         id: bind
@@ -3291,6 +5311,53 @@ jobs:
           echo "rollback_check=${outcome}" >> "$GITHUB_OUTPUT"
           exit "$rc"
 
+      - name: Promotion preflight (refuse before login)
+        # KDEC-029 (owner, 2026-10-26). uat and prod are promoted, never deployed from a build
+        # (PROMOTION_REFUSED_NO_PREDECESSOR); active DAST against prod is refused
+        # (DAST_REFUSED_PRODUCTION_TARGET); break-glass needs an attributed exception that expires
+        # within 7 days; the test period is bounded. scripts/promotion.py; tests/prove_promotion.py.
+        id: promotion_preflight
+        run: python3 "$RUNNER_TEMP/kit-deploy/promotion.py" preflight --adapter appservice
+
+      - name: Install the pinned Trivy (promotion re-scan of the build's SBOM)
+        if: inputs.promote_from_run_id != ''
+        run: |
+          set -euo pipefail
+          if trivy --version 2>/dev/null | grep -q 'Version: 0.71.2'; then echo "trivy 0.71.2 present"; exit 0; fi
+          # Pinned (ledger L84): the same release and digest as reusable-nvd-cve.yml.
+          t=trivy_0.71.2_Linux-64bit.tar.gz
+          curl -sSfLO "https://github.com/aquasecurity/trivy/releases/download/v0.71.2/$t"
+          echo "0510e71e2fd39bf863856d499c8dc19feb4e7336546394c502a8f5cc7ab27460  $t" | sha256sum -c -
+          tar -xzf "$t" trivy && sudo mv trivy /usr/local/bin/ && rm -f "$t"
+
+      - name: Promotion gate -- the source record, its predecessor, the revocations and an SBOM re-scan
+        # Reads run Y's record for environment Y, the predecessor's later records (supersession),
+        # .security/promotion-revocations.json on the default branch, and the build's SBOM (sha256
+        # checked against the record), re-scanned by Trivy at the build gate's thresholds. Never a
+        # rebuild, never a registry pull. The verdict is the decide step's.
+        id: promotion_collect
+        if: inputs.promote_from_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 "$RUNNER_TEMP/kit-deploy/promotion.py" gate-collect --adapter appservice
+
+      - name: Promotion gate -- known exploited re-check of the re-scan (KDEC-022)
+        id: promotion_kev
+        if: inputs.promote_from_run_id != ''
+        uses: $/.github/actions/known-exploited
+        with:
+          sarif: ${{ steps.promotion_collect.outputs.rescan_sarif }}
+          sarif-job: promotion-rescan
+
+      - name: Promotion gate -- decide (refuse before login)
+        id: promotion_gate
+        if: inputs.promote_from_run_id != ''
+        env:
+          KEV_STATE: ${{ steps.promotion_kev.outputs.kev_state }}
+          KEV_BLOCKING: ${{ steps.promotion_kev.outputs.kev_blocking }}
+          ATTESTATION_OUTCOME: ${{ steps.attestation.outputs.outcome }}
+        run: python3 "$RUNNER_TEMP/kit-deploy/promotion.py" gate-decide --adapter appservice
+
       - name: Azure login (OIDC)
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         # The hand-off contract vends the identifiers as VARIABLES of this environment (the
@@ -3300,6 +5367,20 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
           environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
+
+      - name: Target lease -- acquire (KDEC-030, opt-in; refuse before the first capture)
+        # The ONE lock the landing-zone apply and this deploy both take (a concurrency group
+        # cannot: it is evaluated inside one repository). Held by someone else -> LEASE_HELD,
+        # naming the holder, and nothing below runs. docs/architecture/LZ_KIT_SEAM_CONTRACT.md.
+        id: lease_acquire
+        if: env.KIT_TARGET_LEASE_ACCOUNT != ''
+        uses: $/.github/actions/target-lease
+        with:
+          op: acquire
+          account: ${{ env.KIT_TARGET_LEASE_ACCOUNT }}
+          cloud: ${{ inputs.cloud }}
+          resource-id: /subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${{ inputs.resource_group }}/providers/Microsoft.Web/sites/${{ inputs.webapp_name }}
+          holder: kit-deploy:${{ github.repository }}/${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Capture pre-change state (rollback point)
         # DCR gap 4 / L97. App Service captured NOTHING before mutating: the image set below was
@@ -3318,6 +5399,16 @@ jobs:
         # recorded in deploy-evidence/capability.json.
         id: capability
         run: python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" capability --adapter appservice
+
+      - name: Target lease -- fence and mark the mutation
+        # From here to the end step the lease reads `mutating`: a run that dies inside this
+        # window is never taken over by a machine (LEASE_ABANDONED_MID_MUTATION).
+        id: lease_begin
+        if: env.KIT_TARGET_LEASE_ACCOUNT != ''
+        uses: $/.github/actions/target-lease
+        with:
+          op: begin
+          what: appservice by digest (${{ github.run_id }})
 
       - name: Set container image (digest-pinned) and restart
         # DCR gap 6. The change manifest (deploy-evidence/manifest.json) is written as `planned`
@@ -3338,6 +5429,13 @@ jobs:
         continue-on-error: true
         run: python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" verify --adapter appservice
 
+      - name: Target lease -- fence before swap slot into production
+        id: lease_fence_move
+        if: env.KIT_TARGET_LEASE_ACCOUNT != '' && steps.health.outcome == 'success' && inputs.swap_on_healthy && inputs.slot != ''
+        uses: $/.github/actions/target-lease
+        with:
+          op: fence
+
       - name: Swap slot into production
         id: swap
         if: steps.health.outcome == 'success' && inputs.swap_on_healthy && inputs.slot != ''
@@ -3355,6 +5453,14 @@ jobs:
           SWAPPED: ${{ steps.swap.outcome }}
         run: python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" serving --adapter appservice
 
+      - name: Target lease -- fence before the reversal
+        # A stale holder reverses nothing: the change may be someone else's by now.
+        id: lease_fence_reversal
+        if: "!cancelled() && env.KIT_TARGET_LEASE_ACCOUNT != '' && steps.deploy.outcome == 'success'"
+        uses: $/.github/actions/target-lease
+        with:
+          op: fence
+
       - name: Reverse this run's changes
         # DCR gaps 1(c) and 5. App Service had NO reversal step: a failed direct deploy left
         # production serving the failed digest. Reversal reads the CHANGE MANIFEST, and each
@@ -3369,8 +5475,16 @@ jobs:
         if: >-
           !cancelled() && steps.deploy.outcome == 'success' && inputs.rollback_on_failure &&
           (steps.health.outcome == 'failure' || steps.swap.outcome == 'failure' ||
-          steps.serving.outcome == 'failure')
+          steps.serving.outcome == 'failure') &&
+          (env.KIT_TARGET_LEASE_ACCOUNT == '' || steps.lease_fence_reversal.outcome == 'success')
         run: python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" reverse --adapter appservice
+
+      - name: Target lease -- fence before the provenance stamp
+        id: lease_fence_provenance
+        if: env.KIT_TARGET_LEASE_ACCOUNT != '' && steps.serving.outcome == 'success' && inputs.version_metadata != ''
+        uses: $/.github/actions/target-lease
+        with:
+          op: fence
 
       - name: Stamp provenance (after health and a live read)
         # DCR gap 3. Provenance means "this is running and it works". It was stamped as an app
@@ -3383,6 +5497,16 @@ jobs:
         env:
           SWAPPED: ${{ steps.swap.outcome }}
         run: python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" provenance --adapter appservice
+
+      - name: Target lease -- end the mutation (after-fence)
+        # MUTATED_WITHOUT_LEASE if the lease was lost while a change was in flight: the change
+        # may have landed and the fence cannot recall it. A failed mutate or reversal leaves the
+        # lease `mutating` on purpose: the target's state is unknown and a human decides.
+        id: lease_end
+        if: "!cancelled() && env.KIT_TARGET_LEASE_ACCOUNT != '' && steps.lease_begin.outcome == 'success' && steps.deploy.outcome != 'failure' && steps.reversal.outcome != 'failure'"
+        uses: $/.github/actions/target-lease
+        with:
+          op: end
 
       - name: Report an unhealthy target
         # DCR gap 1(b). This step was gated on `inputs.slot != ''`, so the only path that printed
@@ -3399,6 +5523,57 @@ jobs:
           else
             python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" unhealthy --adapter appservice
           fi
+
+      - name: Check out the repository (its end-to-end tests and DAST configuration)
+        if: >-
+          steps.serving.outcome == 'success' && inputs.environment_tier != 'prod' &&
+          (inputs.e2e_test_command != '' || inputs.dast_command != '')
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: End-to-end test period (KDEC-021, KDEC-029)
+        # "Tested" part 2. Health and the e2e command at start, at each interval and at the end;
+        # any failure fails the period (and this job), never the deploy outcome. Not run at prod.
+        id: test_period
+        if: "!cancelled() && steps.serving.outcome == 'success'"
+        env:
+          APP_URL: ${{ steps.serving.outputs.app_url }}
+        run: |
+          if [ -n "${KIT_TARGET_LEASE_ACCOUNT:-}" ]; then
+            # KDEC-030: the period runs HOLDING the target lease, renewed every 180 s (below a
+            # third of its 10-minute expiry), so no landing-zone apply lands mid-test. A failed
+            # renewal stops the period at once: LEASE_LOST, this step fails, and every later
+            # mutating az call of this run is refused (scripts/target_lease.py hold).
+            exec python3 "$RUNNER_TEMP/kit-deploy/target_lease.py" hold --every 180 -- \
+              python3 "$RUNNER_TEMP/kit-deploy/promotion.py" test-period --adapter appservice
+          fi
+          exec python3 "$RUNNER_TEMP/kit-deploy/promotion.py" test-period --adapter appservice
+
+      - name: Target lease -- release
+        # After the e2e test period, which ran HOLDING the lease (renewed every 180 s). Refused
+        # (RELEASE_MID_MUTATION) while the lease still reads `mutating`, and LEASE_LOST if a
+        # renewal failed during the period.
+        id: lease_release
+        if: "!cancelled() && env.KIT_TARGET_LEASE_ACCOUNT != '' && steps.lease_acquire.outcome == 'success'"
+        uses: $/.github/actions/target-lease
+        with:
+          op: release
+
+      - name: DAST baseline against this environment (never prod)
+        # "Tested" part 3: DAST where configured (the caller's command; an overlay supplies ZAP
+        # baseline through it), no new blocking finding.
+        id: dast
+        if: "!cancelled() && steps.serving.outcome == 'success'"
+        env:
+          APP_URL: ${{ steps.serving.outputs.app_url }}
+        run: python3 "$RUNNER_TEMP/kit-deploy/promotion.py" dast --adapter appservice
+
+      - name: Security-settings posture (live, passive)
+        # "Tested" part 4, and prod's passive check: the target's security settings read back.
+        id: target_posture
+        if: "!cancelled() && steps.serving.outcome == 'success'"
+        run: python3 "$RUNNER_TEMP/kit-deploy/promotion.py" posture --adapter appservice
 
       - name: Reconcile and report outcome
         id: report
@@ -3470,6 +5645,14 @@ jobs:
           TIER_OUTCOME: ${{ steps.tier.outcome }}
           CAPABILITY_OUTCOME: ${{ steps.capability.outcome }}
           ROLLBACK_CHECK_OUTCOME: ${{ steps.rollback_check.outcome }}
+          PREFLIGHT_OUTCOME: ${{ steps.promotion_preflight.outcome }}
+          PROMOTION_GATE_OUTCOME: ${{ steps.promotion_gate.outcome }}
+          TEST_PERIOD_OUTCOME: ${{ steps.test_period.outcome }}
+          DAST_OUTCOME: ${{ steps.dast.outcome }}
+          TARGET_POSTURE_OUTCOME: ${{ steps.target_posture.outcome }}
+          W_RELEASE_PATH: ${{ inputs.release_path }}
+          W_E2E_TEST_COMMAND: ${{ inputs.e2e_test_command }}
+          W_E2E_TEST_PERIOD_MINUTES: ${{ inputs.e2e_test_period_minutes }}
           ROLLBACK_CHECK: ${{ steps.rollback_check.outputs.rollback_check }}
           ROLLBACK_CAPABILITY: ${{ steps.capability.outputs.rollback_capability }}
           REPORT_OUTCOME: ${{ steps.report.outcome }}
@@ -3486,6 +5669,7 @@ jobs:
             case "$2" in
               NONEMPTY) [ -n "$1" ] ;;
               max:*)    [ -n "$1" ] && [ "$1" -le "${2#max:}" ] 2>/dev/null ;;
+              min:*)    [ -n "$1" ] && [ "${1%.*}" -ge "${2#min:}" ] 2>/dev/null ;;
               *)        [ "$1" = "$2" ] ;;
             esac
           }
@@ -3540,6 +5724,9 @@ jobs:
           posture image_repository        NOT_A_CONTROL_SURFACE - -
           posture image_digest            NOT_A_CONTROL_SURFACE - -
           posture cloud                   NOT_A_CONTROL_SURFACE - -
+          # Where the job runs. The lease (KDEC-030) needs a runner that reaches its private store;
+          # the label changes no control, and an unreachable store refuses rather than skips.
+          posture runner_label             NOT_A_CONTROL_SURFACE - -
           posture environment_tier        NOT_A_CONTROL_SURFACE - -
           # Can only TIGHTEN the environment-protection demand: the step holds the stronger of it
           # and the kit default (tests/prove_deploy_environment_protection.py), so no value weakens.
@@ -3580,6 +5767,25 @@ jobs:
           W_ATTESTATION_RUNG="${W_ATTESTATION_RUNG:-run}"
           posture attestation_rung        GATE_SOFTENED         "run"           attestation-verify "$W_ATTESTATION_RUNG"
 
+          # KDEC-029. The promotion source and policy are what the gate examines; the gate always
+          # runs in promotion mode and has no off switch. A release path other than normal is a
+          # change someone owns (break-glass must be attributed before it is accepted at all).
+          posture promote_from_run_id      NOT_A_CONTROL_SURFACE - -
+          posture promote_from_environment NOT_A_CONTROL_SURFACE - -
+          posture promotion_predecessor    NOT_A_CONTROL_SURFACE - -
+          posture artifact_identity        NOT_A_CONTROL_SURFACE - -
+          W_RELEASE_PATH="${W_RELEASE_PATH:-normal}"
+          posture release_path             GATE_SOFTENED         "normal"        promotion-gate     "$W_RELEASE_PATH"
+          # No e2e command: the test period is not run and the deploy can never be verified.
+          posture e2e_test_command         TARGET_NOT_SUPPLIED   NONEMPTY        e2e-test-period    "$W_E2E_TEST_COMMAND"
+          # The input defaults to 15; an absent value reads as that default, as V1 reads an empty rung.
+          W_E2E_TEST_PERIOD_MINUTES="${W_E2E_TEST_PERIOD_MINUTES:-15}"
+          posture e2e_test_period_minutes  SEVERITY_RAISED       "min:15"        e2e-test-period    "$W_E2E_TEST_PERIOD_MINUTES"
+          posture e2e_check_interval_minutes NOT_A_CONTROL_SURFACE - -
+          posture e2e_timeout_minutes      NOT_A_CONTROL_SURFACE - -
+          # DAST is "where configured" (KDEC-029 decision 3); its absence is in the record.
+          posture dast_command             NOT_A_CONTROL_SURFACE - -
+
           # THE GUARDS BEFORE THE POINT OF NO RETURN ARE CONTROLS TOO. Each is required and
           # executed when it ran -- whether it permitted or REFUSED (a refusal is the control
           # working) -- and absent from the record when an earlier guard stopped the job first.
@@ -3592,6 +5798,11 @@ jobs:
           ran tier-guard "${TIER_OUTCOME:-}"
           ran rollback-capability "${CAPABILITY_OUTCOME:-}"
           ran rollback-check "${ROLLBACK_CHECK_OUTCOME:-}"
+          ran promotion-preflight "${PREFLIGHT_OUTCOME:-}"
+          ran promotion-gate "${PROMOTION_GATE_OUTCOME:-}"
+          ran e2e-test-period "${TEST_PERIOD_OUTCOME:-}"
+          ran dast "${DAST_OUTCOME:-}"
+          ran security-settings "${TARGET_POSTURE_OUTCOME:-}"
 
           # UNAVAILABLE IS NOT CLEAN. Reversal was REQUIRED (the caller did not switch it off)
           # and the capability step established it could not be provided -- no prior state, or a
@@ -3756,6 +5967,28 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           printf 'routing_result=%s attribution=%s in_force=%s\n' "$route" "$auth" "$inforce"
+
+      - name: Write the promotion record (KDEC-029)
+        # The record promotion verifies and consumes: digest, build provenance, the required
+        # predecessor, per-environment test evidence, the environment identity, approval, validity
+        # and the live read-back. Written on every path; only a healthy, tested deploy reads
+        # verified-for-promotion. schemas/promotion-record.schema.json.
+        id: promotion_record
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ATTESTATION_OUTCOME: ${{ steps.attestation.outputs.outcome }}
+        run: python3 "$RUNNER_TEMP/kit-deploy/promotion.py" record --adapter appservice
+
+      - name: Publish the promotion record
+        if: always() && steps.promotion_record.outputs.promotion_record_name != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.promotion_record.outputs.promotion_record_name }}
+          path: ${{ runner.temp }}/promotion/record/promotion-record.json
+          if-no-files-found: warn
+          overwrite: true
+          retention-days: 30
 
       - name: Keep the run record (deploy evidence)
         # The snapshot, change manifest, capability, verification, reversal and outcome files are

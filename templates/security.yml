@@ -3,11 +3,14 @@
 # code nobody chose). Wiring a deploy as well: use templates/build-deploy.yml.
 name: Security
 
+# LONG-LIVED BRANCHES (lane L-LEAK, docs/adoption/LEAK_GATES.md): a secret pushed to `dev` or a release
+# branch is scanned only when a PR from it targets main. Recommended: list every long-lived branch in
+# BOTH triggers, e.g. `branches: [main, dev]` -- one more full scan per push to it is the cost.
 on:
   push:
-    branches: [main]
+    branches: [main]          # recommended: [main, dev, <other long-lived branches>]
   pull_request:
-    branches: [main]
+    branches: [main]          # recommended: the same list
   workflow_dispatch:
 
 # Everything the kit's jobs request must be granted here, or GitHub refuses the whole run before any

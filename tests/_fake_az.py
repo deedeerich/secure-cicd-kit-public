@@ -112,7 +112,8 @@ def ca_view(s):
             'properties': {'latestRevisionName': a['latestRevisionName'],
                            'configuration': {'activeRevisionsMode': a['revisionMode'],
                                              'ingress': {'fqdn': a['fqdn'],
-                                                         'traffic': a['traffic']}},
+                                                         'traffic': a['traffic'],
+                                                         'allowInsecure': a.get('allowInsecure', False)}},
                            'template': {'containers': [{'image': a['revisions'][a['latestRevisionName']]['image'],
                                                         'env': [{'name': k, 'value': v} for k, v in
                                                                 a['revisions'][a['latestRevisionName']]['env'].items()]}]}
@@ -220,7 +221,8 @@ def wa(s, args):
     sl = w['slots'][slot]
     if sub == 'show':
         return emit({'name': w['name'], 'id': sl['id'], 'defaultHostName': sl['host'],
-                     'tags': sl.get('tags', {}), 'state': 'Running'})
+                     'tags': sl.get('tags', {}), 'state': 'Running',
+                     'httpsOnly': sl.get('httpsOnly', True)})
     if sub == 'restart':
         # The platform's container log (what Kudu serves at /api/logs/docker): a restart creates a
         # container from the configured image and, unless injected otherwise, the site starts.
@@ -240,7 +242,11 @@ def wa(s, args):
         return emit({})
     if sub == 'config':
         if args[2] == 'show':
-            return emit({'linuxFxVersion': sl['linuxFxVersion']})
+            # KDEC-029's security-settings posture reads these; secure unless a scenario says not.
+            return emit({'linuxFxVersion': sl['linuxFxVersion'],
+                         'minTlsVersion': sl.get('minTlsVersion', '1.2'),
+                         'ftpsState': sl.get('ftpsState', 'Disabled'),
+                         'remoteDebuggingEnabled': sl.get('remoteDebuggingEnabled', False)})
         if args[2] == 'set':
             sl['linuxFxVersion'] = opt(args, '--linux-fx-version', default='')
             s['mutated'] = True

@@ -101,8 +101,10 @@ person-only cases (duplicate, close, reopen). `main` is at Release 1 (`ef4b15d`,
   other finding kept, routed `COVERAGE_PARTIAL` -- proven locally, including in the job's image; no
   hosted run yet.
 - **The NVD workflow's currency against a live NVD feed**: its CVSS gate ships at 9.0 (owner ruling
-  O-12), so it blocks by default, and detection is proven on seeded fixtures; feed currency without a
-  sustained key-backed run is not established.
+  O-12), so it blocks by default, and detection is proven on seeded fixtures. Its NVD data comes by
+  default from the Dependency-Check project's public datafeed, a third-party host the runner must
+  reach; there is no organisation-hosted mirror (planned for Release 4), and the API key is used only
+  if the datafeed is emptied. Feed currency is not established.
 - **Every install pinned**: every remote action is SHA-pinned (L82, `4dfd858`), but detect-secrets
   and ruff/mypy are still installed unpinned (L84).
 - **The kit as a landing-zone deploy engine** — there is no plan/apply/destroy/vend pipeline.

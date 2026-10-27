@@ -461,9 +461,10 @@ def prove_job(bad):
 
     for wf, inputs, state in worlds:
         name = os.path.basename(wf)
-        res, _final, calls = W.run_world(wf, inputs(routing_result='PROCEED_WITH_ADVISORY',
-                                                    environment_tier='prod',
-                                                    advisory_causes='VERSION_GAP'), state())
+        # KDEC-029: a uat/prod deploy is a promotion; these exercise the version-gap ruling on one.
+        inp, kw = W.promoted(inputs(routing_result='PROCEED_WITH_ADVISORY', environment_tier='prod',
+                                    advisory_causes='VERSION_GAP'))
+        res, _final, calls = W.run_world(wf, inp, state(), **kw)
         login = [o for n, o in res['order'] if n == 'Azure login (OIDC)']
         o = outcome_of(res)
         print('  job    %-30s refused: az calls=%d login=%s outcome=%s'
@@ -478,9 +479,9 @@ def prove_job(bad):
             bad.append('%s job: refused run outcome=%r gate=%r'
                        % (name, o.get('deployment_outcome'), o.get('gate')))
 
-        res, _final, calls = W.run_world(wf, inputs(routing_result='PROCEED_WITH_ADVISORY',
-                                                    environment_tier='uat', github_environment='uat-env',
-                                                    advisory_causes='VERSION_GAP', **VALID), state())
+        inp, kw = W.promoted(inputs(routing_result='PROCEED_WITH_ADVISORY', environment_tier='uat',
+                                    github_environment='uat-env', advisory_causes='VERSION_GAP', **VALID))
+        res, _final, calls = W.run_world(wf, inp, state(), **kw)
         o = outcome_of(res)
         g = o.get('gate', {})
         print('  job    %-30s accepted: outcome=%s ruling=%s exception=%s env=%r'
@@ -499,9 +500,9 @@ def prove_job(bad):
             bad.append('%s job: outcome.json does not record the accepted exception and the '
                        'environment: gate=%r' % (name, g))
 
-        res, _final, calls = W.run_world(wf, inputs(routing_result='PROCEED_WITH_ADVISORY',
-                                                    environment_tier='prod', github_environment='prod-env',
-                                                    advisory_causes='VERSION_GAP_UNVERIFIED'), state())
+        inp, kw = W.promoted(inputs(routing_result='PROCEED_WITH_ADVISORY', environment_tier='prod',
+                                    github_environment='prod-env', advisory_causes='VERSION_GAP_UNVERIFIED'))
+        res, _final, calls = W.run_world(wf, inp, state(), **kw)
         o = outcome_of(res)
         g = o.get('gate', {})
         print('  job    %-30s unverified: outcome=%s ruling=%s'

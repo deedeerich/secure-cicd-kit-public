@@ -18,7 +18,7 @@ Trivy refusal in the build routes `BLOCKED` (L85). Proven live against a cloud r
 | 3 the template branches on `artifact_identity` and on the security verdict | BUILT, proven (L87) |
 | 4 a separate attest job holding `attestations: write` at job level only | BUILT; signing itself needs a hosted run (L88) |
 | 5 verify at deploy (V1), five outcomes routed by rung, inside both deploy reusables before login (P-02, `ae04403`) and in the starter template; a plan that offers no attestations is held (`PROCEED_WITH_ADVISORY`) | BUILT against recorded answers (`prove_deploy_attestation.py`); live lookup held by plan (L89) |
-| 6 scheduled revalidation of what is running (V3) | design owed |
+| 6 scheduled revalidation of what is running (V3) | BUILT (KDEC-029 decision 8: `reusable-deployed-scan.yml`, daily; reconciles what serves, re-scans its SBOM and KEV, reports artifact and security drift); proven locally against the stub cloud, hosted run owed |
 
 The version stamp (`render-version-metadata`) defaults to the weakest claim: `technical_provenance:
 NOT_ESTABLISHED` until something proves otherwise (BUILT).
@@ -76,6 +76,35 @@ yet registered — `deployment_outcome` registers values as they are emitted, ne
 Readiness is reported in layers that never imply each other: infrastructure ready, dependencies ready,
 inputs ready, runtime deployed, health verified, serving verified. "The health endpoint returned 200" can
 come from the old revision; serving is proven by reading back the running digest.
+
+## Promotion: build once, promote the same digest (KDEC-029; BUILT; proven locally, NOT live)
+
+The owner closed O-11 on 2026-10-26. Deployment success is still not trust progression, but every
+condition of the conjunction now has a source, so a deploy record can read `verified-for-promotion`:
+
+| condition | source |
+|---|---|
+| exact artefact identity | the build's `artifact_identity` (`REGISTRY_IDENTITY_PROVEN`) AND V1 in this deploy (`ATTESTATION_VERIFIED`) |
+| running, traffic, reconciliation | the deploy contract's live read-back |
+| end-to-end test period | the caller's e2e command at start, intervals and end (KDEC-021's period) |
+| DAST, where configured | the caller's DAST command's SARIF: no unsuppressed `error` result (an overlay supplies ZAP baseline) |
+| security-settings posture | the live target read back (HTTPS-only, TLS 1.2+, no plain FTP, no remote debugging; no insecure ingress) |
+| gates | the release verdict was PROCEED-class |
+| source | built from the default branch |
+
+**Shape.** A merge to main builds once and deploys dev and test **in parallel**; each writes its own
+record (`kit-promotion-record-<environment>`). uat and prod are **promoted** from the prior environment
+(prod's predecessor is test or uat, per product; default test) by a dispatch that builds nothing. The
+promotion gate, before login, refuses with a named code: source unreadable, digest mismatch, wrong
+predecessor (a dev success never counts), not verified, not from main, signature, revoked, new
+finding, re-check incomplete, stale (14 days is a maximum), superseded. Prod runs passive checks only
+and refuses active DAST. Hotfix compresses the path; break-glass proceeds on an attributed exception
+of at most 7 days, records `BREAK_GLASS`, and the deployed scan tickets the testing owed.
+
+**What is not proven.** Everything above runs against the stub cloud and a recorded GitHub API
+(`tests/prove_promotion.py`). A hosted promotion on the owner's personal tenant -- real `gh
+attestation verify`, a real artifact listing, a real Trivy SBOM re-scan, real environment approvals
+-- is owed.
 
 ## Rollback (BUILT; proven live for the cases above)
 

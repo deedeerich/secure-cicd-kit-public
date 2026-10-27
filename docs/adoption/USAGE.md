@@ -11,7 +11,7 @@ templates to this rule.
 | Workflow | Purpose | Cloud deps | Caller grants |
 |---|---|---|---|
 | `reusable-security.yml` | Discovery → secret · code-quality · SAST · CodeQL · dependency · IaC · malware · SBOM · image scans → report → gate → `routing_result` | none | `contents: read`, `security-events: write`, `actions: read` |
-| `reusable-nvd-cve.yml` | Trivy + OWASP Dependency-Check against the public NIST NVD; re-scan of an SBOM or image | none (optional `NVD_API_KEY`) | `contents: read`, `security-events: write` |
+| `reusable-nvd-cve.yml` | Trivy + OWASP Dependency-Check; NVD data from the Dependency-Check project's public datafeed by default (a third-party host the runner must reach; no organisation-hosted mirror, one is planned for Release 4); re-scan of an SBOM or image | none (`NVD_API_KEY` only if `nvd_datafeed_url` is emptied) | `contents: read`, `security-events: write` |
 | `workflow-policy-check.yml` | Governance gate over the calling repo's own workflows | none | `contents: read` |
 | `reusable-build-docker.yml` | Build once → Trivy gate **before** push → Syft SPDX SBOM → push those bytes → digest read back → attest | OIDC | `contents: read`, `id-token: write`, `attestations: write` |
 | `reusable-deploy-containerapp.yml` | Container Apps deploy by digest, verdict-gated, revision probed before traffic, reversible | OIDC | `contents: read`, `id-token: write` |
@@ -50,14 +50,22 @@ Nothing reads a profile at runtime yet, and their vocabulary predates `iac_mode`
 
 ## Adoption sequence
 
-1. Host the kit in a repository your organisation owns and let it be consumed (SETUP.md §1.5).
-2. Pick a kit **commit SHA** to consume. Branches and tags move; a verdict is only as trustworthy as
+1. **Install the leak gates in the repository first** ([`LEAK_GATES.md`](LEAK_GATES.md)):
+   - merge `developer-safety/gitignore/baseline.gitignore` into its `.gitignore` (`merge-baseline.sh`; never replace it);
+   - install the gitleaks pre-commit hook;
+   - apply the push ruleset (`apply-push-ruleset.sh`);
+   - enable push protection where it is licensed.
+
+   Tines GitSync and other server-side pushes run no local hook. Only the push ruleset, push
+   protection and CI stand in front of them.
+2. Host the kit in a repository your organisation owns and let it be consumed (SETUP.md §1.5).
+3. Pick a kit **commit SHA** to consume. Branches and tags move; a verdict is only as trustworthy as
    the code that produced it.
-3. In a **pilot repo**: copy `templates/security.yml`, point it at that SHA, and let it run. The first
+4. In a **pilot repo**: copy `templates/security.yml`, point it at that SHA, and let it run. The first
    run will find things — that is the system working ([`FINDING_CLASSIFICATION.md`](../operations/FINDING_CLASSIFICATION.md)).
-4. Add `templates/policy.yml` with `soft_fail: true` (an attributed weakening), fix what it reports,
+5. Add `templates/policy.yml` with `soft_fail: true` (an attributed weakening), fix what it reports,
    then flip it to blocking.
-5. Only then wire build + deploy (`templates/build-deploy.yml`), and add the checks to branch
+6. Only then wire build + deploy (`templates/build-deploy.yml`), and add the checks to branch
    protection. The required check is the caller job's `Security gate`, e.g. `security / Security gate`.
 
 ## Cloud identity
@@ -81,9 +89,9 @@ itself more than the caller has. The kit's policy gate rejects workflow-level `i
 Build emits `image_digest`, `image_config_digest`, `artifact_identity` and `sbom_sha256`. Deploy takes
 `image_digest` and refuses anything that isn't a full `sha256:` value. Deploy is only safe to treat as
 deployment provenance when `artifact_identity` is `REGISTRY_IDENTITY_PROVEN`: the artifact that was
-scanned is provably the artifact that ships. **The deploy reusables do not read
-`artifact_identity` themselves** — `templates/build-deploy.yml` checks it in its `verdict` job, and a
-caller that calls a deploy reusable directly must make that check itself.
+scanned is provably the artifact that ships. `templates/build-deploy.yml` checks it in its `verdict`
+job; since KDEC-029 the deploy reusables also take `artifact_identity` as an input, and a deploy whose
+build did not prove it can never be `verified-for-promotion`.
 
 The deploy reusables read the security verdict: `routing_result` is a **required** input, and anything
 but `PROCEED` or `PROCEED_WITH_ADVISORY` is refused **before login**, naming the value. At `uat` and
@@ -94,10 +102,81 @@ serving object (`deploy_provenance_digest`, `deploy_provenance_metadata_sha256`,
 `deploy_provenance_run`) from the `render-version-metadata` stamp the template passes as
 `version_metadata`.
 
-Deploys are gated by a GitHub Environment and reached by `workflow_dispatch`, never by a bare push.
+Deploys are gated by a GitHub Environment. A merge to `main` deploys **dev and test** (the build of
+that merge, in parallel); everything else is a `workflow_dispatch`.
 Health checks run **before** traffic moves: Container Apps probes the new revision on its own name
 before any traffic shifts and reverses only what the run changed; App Service health-checks the slot
 and never swaps an unhealthy one (a direct deploy with `slot: ''` is refused at `uat`/`prod`).
+
+## Build once, promote the same digest (KDEC-029)
+
+A merge to `main` passes the full gate, builds **once**, signs, and produces its SBOM and provenance.
+That exact digest is what moves through the environments; nothing is rebuilt per environment.
+
+```
+merge to main ─▶ security + policy ─▶ build (sign, SBOM) ─▶ verdict ─┬─▶ deploy-dev   (parallel)
+                                                                     └─▶ deploy-test  (parallel)
+dispatch promote_from_run_id=<run> promote_from_environment=test ─▶ promote ─▶ uat or prod
+```
+
+- **dev and test deploy in parallel** from the same build (`deploy-dev`, `deploy-test` in
+  `templates/build-deploy.yml`). Each writes its own **promotion record**, published as the artifact
+  `kit-promotion-record-<environment>` (`schemas/promotion-record.schema.json`).
+- **uat and prod are promoted**, never deployed from a build: a dispatch with `promote_from_run_id`
+  runs no gate and no build. A uat/prod deploy that names no source is refused
+  `PROMOTION_REFUSED_NO_PREDECESSOR` before login.
+- **The predecessor is product policy**: `vars.KIT_PROMOTION_PREDECESSOR` (`test` or `uat`, default
+  `test`) for prod; uat's predecessor is always `test`. A dev success never satisfies it.
+- **"Tested"** — the record reads `verified-for-promotion` only when health passed, the end-to-end
+  test period passed (`vars.KIT_E2E_TEST_COMMAND`, `e2e_test_period_minutes`, KDEC-021), DAST where
+  configured shows no blocking finding (`vars.KIT_DAST_COMMAND`), the security-settings posture read
+  back from the live target holds, the build proved `artifact_identity` and V1 verified the
+  signature, the release verdict was PROCEED-class, and the digest was built from the default branch.
+  No e2e command means the deploy can never be verified for promotion.
+- **DAST is a neutral hook**: `dast_command` runs against `PROMOTION_APP_URL` and writes SARIF to
+  `PROMOTION_DAST_SARIF`; an unsuppressed `error`-level result blocks. An overlay supplies ZAP
+  baseline through it (for example: run the pinned ZAP image with `zap-baseline.py -t
+  "$PROMOTION_APP_URL"` and convert its JSON report to SARIF). It is **refused at prod**
+  (`DAST_REFUSED_PRODUCTION_TARGET`): prod gets passive checks only (health, posture).
+
+**The promotion gate** runs in the deploy reusable, before login, and refuses with the reason named:
+
+| Code | Why |
+|---|---|
+| `PROMOTION_REFUSED_SOURCE_UNREADABLE` | run Y published no readable record for environment Y |
+| `PROMOTION_REFUSED_DIGEST_MISMATCH` | the digest to deploy is not the one the record verified |
+| `PROMOTION_REFUSED_WRONG_PREDECESSOR` | not the required predecessor (or a dev/sandbox record) |
+| `PROMOTION_REFUSED_NOT_VERIFIED` | the record is not `verified-for-promotion`; the missing conditions are named |
+| `PROMOTION_REFUSED_NOT_FROM_MAIN` | not built from the default branch |
+| `PROMOTION_REFUSED_SIGNATURE` | V1 in this deploy did not read `ATTESTATION_VERIFIED` |
+| `PROMOTION_REFUSED_REVOKED` | a revocation (digest, signer, approval, test evidence) or a new critical / known-exploited finding |
+| `PROMOTION_REFUSED_NEW_FINDING` | the SBOM re-scan finds a HIGH finding the build gate did not have |
+| `PROMOTION_REFUSED_RECHECK_INCOMPLETE` | the SBOM re-scan, KEV, history or revocation register could not be read |
+| `PROMOTION_REFUSED_STALE` | verified more than 14 days ago |
+| `PROMOTION_REFUSED_SUPERSEDED` | a newer build was verified in the same predecessor since |
+
+14 days is a **maximum**. Revoke at once by committing an entry to
+`.security/promotion-revocations.json` on the default branch (CODEOWNERS-protected):
+`{"revocations": [{"kind": "digest|signer|approval|test-evidence", "match": "...", "reason": "...",
+"revoked_by": "...", "revoked_at": "YYYY-MM-DD"}]}`. At promotion time the gate re-scans the build's
+SBOM (sha256 checked against the record) with the pinned Trivy and re-checks KEV; it never rebuilds.
+Prod keeps its environment approvals and self-review prevention.
+
+**Hotfix** is the same path compressed: `release_path: hotfix` with a shorter `e2e_test_period_minutes`
+(recorded), then promote. A **named rollback or hotfix decision** (`release_path: rollback|hotfix`
+with the weakening record: reason, authority, exception reference, unexpired expiry) may promote an
+older build that is not superseded. **Break-glass** (`release_path: break-glass`) needs an attributed
+exception expiring within 7 days; the deploy proceeds past the testing refusals (never past a
+substitution, a non-default branch, an unverified signature or a revocation), records
+`BREAK_GLASS`, and the template immediately runs the deployed scan, which tickets the testing owed
+until a verified record of that digest exists in the predecessor.
+
+**Daily deployed scan** (`templates/deployed-scan.yml`, `reusable-deployed-scan.yml`): per
+environment it reconciles what actually serves (revisions and their traffic weights, or slots, and
+their image digests), reports **artifact drift** (not the last promoted digest) and **security
+drift** (the serving digest re-scanned from its build SBOM plus KEV) separately, checks the security
+settings, and flags break-glass testing still owed. One report job feeds the existing ticket
+reconcile path. It never rolls a healthy production system back.
 
 ## Branching model — what runs where
 
@@ -105,7 +184,8 @@ and never swaps an unhealthy one (a direct deploy with `slot: ''` is refused at 
 scanners      →  all branches  ·  no environment  ·  no Azure credential at all
 build only    →  all branches  ·  github_environment: ""  ·  push: false
 build + push  →  main only     ·  github_environment: <env>  ·  push: true
-deploy        →  main only     ·  environment + approval
+deploy        →  main only     ·  dev + test from the merge build; uat/prod by promotion
+promote       →  dispatch      ·  no build  ·  environment + approval  ·  promotion gate
 ```
 
 **Restrict branches with the Environment's deployment branch policy, never with the federated

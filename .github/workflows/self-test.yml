@@ -1205,6 +1205,11 @@ jobs:
           # applied as shipped blocked every pull request forever. The names are derived from the
           # starter templates and the reusables they call.
           python3 tests/check_branch_protection_profiles.py
+          # Leak gates (lane L-LEAK, KDEC-031): the push ruleset template has the documented REST shape,
+          # blocks every named secret-file path and lets .env.example through; the baseline .gitignore
+          # ignores what it claims, by `git check-ignore`, and merge-baseline.sh merges.
+          python3 tests/prove_push_ruleset_secret_files.py
+          python3 tests/prove_baseline_gitignore.py
 
       - name: No fragile shell line-joining in any workflow or script
         run: |
@@ -1454,6 +1459,23 @@ jobs:
           # one app -- both ending in a swap into production -- did not queue behind each other.
           python3 tests/prove_deploy_concurrency.py
 
+      - name: The cross-repository target lease refuses a stale holder (KDEC-030 draft)
+        run: |
+          set -euo pipefail
+          # A concurrency group is evaluated inside one repository, so it cannot serialise the
+          # landing-zone apply against a kit deploy. The proposed lease (a blob lease plus a
+          # generation, the fencing token) is proven here as a model; the next step proves the CLI
+          # and the opt-in wiring across two callers.
+          python3 tests/prove_target_lease.py
+
+      - name: Two repositories contend for one target lease over the wire (KDEC-030 draft)
+        run: |
+          set -euo pipefail
+          # Two independent callers (separate processes and token files) run the shipped CLI through
+          # its live REST adapter against a local Blob-service emulation; plus the opt-in wiring of
+          # both deploy reusables, checked statically.
+          python3 tests/prove_target_lease_crossrepo.py
+
       - name: App Service slot '' may not touch a production tier, and says so when unhealthy
         run: |
           set -euo pipefail
@@ -1491,6 +1513,17 @@ jobs:
           python3 scripts/rollback_dependencies.py --self-test
           python3 scripts/rollback_hold.py --self-test
           python3 tests/prove_rollback_dependencies.py
+
+      - name: Build once, promote the same digest; every promotion refusal names its reason
+        run: |
+          set -euo pipefail
+          # KDEC-029 (owner, 2026-10-26, closing O-11). The gate and the preflight as pure functions,
+          # then the deploy JOB as shipped: dev and test from one build in parallel, the test record
+          # promoted into prod, each refusal provoked before login; hotfix, break-glass, prod's
+          # passive checks; the daily deployed scan's reconcile and its two drifts. STUBBED: the
+          # hosted promotion on the owner's personal tenant is owed.
+          python3 scripts/promotion.py self-test
+          python3 tests/prove_promotion.py
 
       - name: Harness teardown only behind PRE and POST zero-count assertions
         run: |
@@ -1646,6 +1679,9 @@ jobs:
           # FAILS, which must force everything on rather than producing a tidy row of
           # NOT_APPLICABLE over code nobody scanned. It also pins the job's outputs contract.
           python3 tests/test_discovery.py
+          # The leak gates read by the platform step and recorded by the gate's leakgates step: ON, OFF
+          # or UNKNOWN, never ON unread; a missing one a weakening that does not block at crawl.
+          python3 tests/prove_leak_gate_posture.py
           # A language beyond the 8-level search bound is UNDETERMINED and declared, never
           # NOT_APPLICABLE; root enumeration searches the same depth (W4K-120).
           python3 tests/prove_discovery_depth.py

@@ -1,0 +1,81 @@
+name: deployed-scan
+description: >-
+  KDEC-029 decision 8: the daily scan of what is ACTUALLY serving. Phase scan (in the environment's
+  own job, logged in with its reader identity): reconcile the serving revisions or slots, their
+  traffic weights and image digests; compare with the last promoted digest (artifact drift); re-scan
+  every serving digest from its build SBOM with the pinned Trivy, never a rebuild and never a
+  nominal tag (security drift); read the security settings; flag a break-glass deploy still owed its
+  testing. Phase finish adds the KEV composite's verdict. Phase report (one job for every
+  environment) runs the core report so the reconcile path tickets the findings. Nothing here
+  mutates or rolls back. scripts/promotion.py; tests/prove_promotion.py.
+inputs:
+  phase:
+    description: scan | finish | report
+    required: true
+  adapter:
+    description: containerapp | appservice
+    required: false
+    default: containerapp
+  environment:
+    description: The GitHub environment scanned (phase scan and finish).
+    required: false
+    default: ''
+  resource-group:
+    description: The target's resource group (the environment's KIT_RESOURCE_GROUP).
+    required: false
+    default: ''
+  app-name:
+    description: The Container App or Web App name (the environment's KIT_APP_NAME).
+    required: false
+    default: ''
+  slots:
+    description: App Service only, comma-separated named slots read beside production.
+    required: false
+    default: ''
+  kev-state:
+    description: Phase finish, the known-exploited composite's kev_state.
+    required: false
+    default: ''
+  kev-blocking:
+    description: Phase finish, the known-exploited composite's kev_blocking.
+    required: false
+    default: ''
+  state-dir:
+    description: Phase report, the directory holding every environment's merged state rows.
+    required: false
+    default: ''
+outputs:
+  rescan_sarifs: {description: the serving digests' re-scan SARIF paths, value: "${{ steps.p.outputs.rescan_sarifs }}"}
+  artifact_drift: {description: true when what serves is not the last promoted digest, value: "${{ steps.p.outputs.artifact_drift }}"}
+  security_drift: {description: true when what serves has a new blocking or known-exploited finding, value: "${{ steps.p.outputs.security_drift }}"}
+  findings_written: {description: phase report wrote findings.json, value: "${{ steps.p.outputs.findings_written }}"}
+runs:
+  using: composite
+  steps:
+    - name: Deployed scan (phase)
+      id: p
+      shell: bash
+      env:
+        # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
+        D_PHASE: ${{ inputs.phase }}
+        D_ADAPTER: ${{ inputs.adapter }}
+        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+        RESOURCE_GROUP: ${{ inputs.resource-group }}
+        CONTAINERAPP_NAME: ${{ inputs.app-name }}
+        WEBAPP_NAME: ${{ inputs.app-name }}
+        SLOTS: ${{ inputs.slots }}
+        KEV_STATE: ${{ inputs.kev-state }}
+        KEV_BLOCKING: ${{ inputs.kev-blocking }}
+        D_STATE_DIR: ${{ inputs.state-dir }}
+        GH_TOKEN: ${{ github.token }}
+        HEALTH_RETRIES: "1"
+      run: |
+        set -uo pipefail
+        kit_root="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)"
+        script="${kit_root}/scripts/promotion.py"
+        case "$D_PHASE" in
+          scan)   python3 "$script" deployed-scan --adapter "$D_ADAPTER" ;;
+          finish) python3 "$script" deployed-finish --adapter "$D_ADAPTER" ;;
+          report) python3 "$script" deployed-report --state-dir "$D_STATE_DIR" ;;
+          *) echo "::error title=Unknown phase::'$D_PHASE' is not scan, finish or report."; exit 1 ;;
+        esac
