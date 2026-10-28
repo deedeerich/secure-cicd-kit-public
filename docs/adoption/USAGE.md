@@ -67,6 +67,13 @@ Nothing reads a profile at runtime yet, and their vocabulary predates `iac_mode`
    then flip it to blocking.
 6. Only then wire build + deploy (`templates/build-deploy.yml`), and add the checks to branch
    protection. The required check is the caller job's `Security gate`, e.g. `security / Security gate`.
+   **`templates/build-deploy.yml` REPLACES `templates/security.yml`**: delete `security.yml` in the
+   same change (one security caller per repository, KDEC-033). Its `security` job runs on the same
+   push, pull_request and dispatch triggers under the same job id, so the required check keeps its
+   name; with both installed the full suite ran twice per event. The one deliberate difference: a
+   *promotion* dispatch scans nothing, because the promoted record carries its verdict.
+   `tests/prove_security_caller_triggers.py` proves the replacement from the templates; confirm it on
+   your pilot repo (the required check reports from the new workflow) before deleting the old file.
 
 ## Cloud identity
 

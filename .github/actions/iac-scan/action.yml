@@ -21,7 +21,7 @@ inputs:
     description: The workflow's `paths` input (string), passed through unchanged.
     required: true
   dockerfile:
-    description: needs.discover.outputs.dockerfile -- 'true' runs hadolint (lane L-SCAN-A, KDEC-025).
+    description: needs.plan.outputs.dockerfile -- 'true' runs hadolint (lane L-SCAN-A, KDEC-025).
     required: false
     default: 'false'
   # Release 4 (KDEC-032): Trivy's misconfiguration checks bundle from the organisation mirror.

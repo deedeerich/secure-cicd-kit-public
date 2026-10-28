@@ -104,7 +104,7 @@ ACTIONS = os.path.join(ROOT, ".github", "actions")
 # The one job that materialises the scripts. It is excluded from the fetch step for the obvious
 # reason, and included in the redaction step for a less obvious one: it uploads an artifact, and
 # "every job that uploads redacts first" is a stronger invariant than one with a carve-out in it.
-BOOTSTRAP_JOB = "kit-scripts"
+BOOTSTRAP_JOB = "plan"   # G1 (KDEC-033): the kit-scripts part of the plan job
 ARTIFACT = "kit-scripts-${{ github.run_attempt }}"
 
 # Jobs that invoke at least one of the scripts. Anything here gets the download step as its FIRST
@@ -118,7 +118,9 @@ FETCH_JOBS = [
     # A job listed in COMPOSITES fetches INSIDE its composite (COMPOSITES above).
     "code-quality", "sast-semgrep", "sast-bandit", "codeql", 
     "sast-go", "malicious-deps",
-    "sbom", "report",
+    "sbom",
+    # G3 (KDEC-033): the report is the first part of security-gate, so the gate job fetches.
+    "security-gate",
     # image-scan joined when its reports stopped dying with the runner (ledger L12): it now
     # redacts before uploading, and the redactor lives in this bundle.
     "image-scan",

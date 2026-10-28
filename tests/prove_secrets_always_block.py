@@ -138,9 +138,9 @@ def main():
             vals = pbf.ctx(advisory=values['inputs.advisory_mode'])
             vals.update({'needs.secret-scan.outputs.findings_state': emitted.get('findings_state', ''),
                          'needs.secret-scan.outputs.secret_count': emitted.get('secret_count', ''),
-                         'needs.report.outputs.jobs_with_findings': 'secret-scan',
-                         'needs.report.outputs.blocking_findings': '3',
-                         'needs.report.outputs.secret_findings': 'a1b2c3d4e5f6 0f1e2d3c4b5a 112233445566'})
+                         'steps.render.outputs.jobs_with_findings': 'secret-scan',
+                         'steps.render.outputs.blocking_findings': '3',
+                         'steps.render.outputs.secret_findings': 'a1b2c3d4e5f6 0f1e2d3c4b5a 112233445566'})
             gbody, _s = pbf.substitute(gate, vals)
             grc, gout, _glog, _gs = pbf.run(bash, gbody, pbf.gate_env(vals))
             print('  %-18s gate exit=%d secret_gate=%s' % ('', grc, gout.get('secret_gate')))

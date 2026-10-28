@@ -37,7 +37,7 @@ false on measurement: gitleaks prints no byte count in the mode the kit uses, an
 | neutrality and export | `check_export_safety.py`, `prove_deny_samples.py` (every deny pattern has a sample it must match), `prove_export_scope.py`, `prove_census_outside_kit.py` |
 | the assurance tracer | `scripts/trace_assurance_flow.py` (every producer-to-consumer hand-off guarded), `prove_trace_reads_env.py` |
 | documents | `check_doc_currency.py` (prose may not call an observed capability untested; consumer documents may not set a dead input or claim secrets are softened in advisory mode) |
-| the tests themselves | `prove_tests_leave_tree_clean.py` (every test in a throwaway clone; none may change a tracked file), `prove_digest_proof_spares_tmp.py` |
+| the tests themselves | `prove_tests_leave_tree_clean.py` (every test in a throwaway clone; none may change a tracked file; its own self-test job `tree-clean`, on the same pinned tools as `Normalizer drift` from one composite, held by `prove_tree_clean_job.py`), `prove_digest_proof_spares_tmp.py` |
 
 ## The registries that refuse drift
 

@@ -34,18 +34,18 @@ inputs:
   # ── KDEC-010: the capability selection, as the resolve job publishes it ──────────────────
   capped-jobs:
     description: >-
-      needs.resolve.outputs.capped_jobs -- space-separated scanner jobs pointed at a VERSION_GAP
+      needs.plan.outputs.capped_jobs -- space-separated scanner jobs pointed at a VERSION_GAP
       no carried scanner can read. Their PASS row renders PARTIAL, never PASS.
     required: false
     default: ''
   not-selected-jobs:
     description: >-
-      needs.resolve.outputs.not_selected_jobs -- jobs not selected for a target another scanner
+      needs.plan.outputs.not_selected_jobs -- jobs not selected for a target another scanner
       serves. Their PASS row renders PARTIAL, labelled as a substitution, never equivalence.
     required: false
     default: ''
   fitness-notes:
-    description: needs.resolve.outputs.fitness_notes -- the resolver's note per capped or not-selected job.
+    description: needs.plan.outputs.fitness_notes -- the resolver's note per capped or not-selected job.
     required: false
     default: ''
 

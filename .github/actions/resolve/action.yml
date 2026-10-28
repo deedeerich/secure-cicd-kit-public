@@ -51,59 +51,59 @@ inputs:
     default: ''
   # ── what discovery established. Read as DATA; empty is "discovery did not say", an unknown ──
   discovered-python:
-    description: needs.discover.outputs.python -- "true", "false" or "".
+    description: needs.plan.outputs.python -- "true", "false" or "".
     required: false
     default: ''
   discovered-node:
-    description: needs.discover.outputs.node.
+    description: needs.plan.outputs.node.
     required: false
     default: ''
   discovered-go:
-    description: needs.discover.outputs.go.
+    description: needs.plan.outputs.go.
     required: false
     default: ''
   discovered-dotnet:
-    description: needs.discover.outputs.dotnet.
+    description: needs.plan.outputs.dotnet.
     required: false
     default: ''
   discovered-java:
-    description: needs.discover.outputs.java.
+    description: needs.plan.outputs.java.
     required: false
     default: ''
   discovered-cpp:
-    description: needs.discover.outputs.cpp.
+    description: needs.plan.outputs.cpp.
     required: false
     default: ''
   discovered-php:
-    description: needs.discover.outputs.php (lane L-PHP).
+    description: needs.plan.outputs.php (lane L-PHP).
     required: false
     default: ''
   discovered-kotlin:
-    description: needs.discover.outputs.kotlin (lane L-SCAN-B, KDEC-026).
+    description: needs.plan.outputs.kotlin (lane L-SCAN-B, KDEC-026).
     required: false
     default: ''
   discovered-swift:
-    description: needs.discover.outputs.swift (lane L-SCAN-B, KDEC-026).
+    description: needs.plan.outputs.swift (lane L-SCAN-B, KDEC-026).
     required: false
     default: ''
   discovered-mobile:
-    description: needs.discover.outputs.mobile (KDEC-026) -- decides sast-mobile in the plan.
+    description: needs.plan.outputs.mobile (KDEC-026) -- decides sast-mobile in the plan.
     required: false
     default: ''
   discovered-iac:
-    description: needs.discover.outputs.iac.
+    description: needs.plan.outputs.iac.
     required: false
     default: ''
   discovery-state:
-    description: needs.discover.outputs.state -- COMPLETE, DISCOVERY_PARTIAL or DISCOVERY_UNAVAILABLE.
+    description: needs.plan.outputs.state -- COMPLETE, DISCOVERY_PARTIAL or DISCOVERY_UNAVAILABLE.
     required: false
     default: ''
   coverage-gaps:
-    description: needs.discover.outputs.coverage_gaps -- the classes present that no scanner here reads.
+    description: needs.plan.outputs.coverage_gaps -- the classes present that no scanner here reads.
     required: false
     default: ''
   unsupported:
-    description: needs.discover.outputs.unsupported.
+    description: needs.plan.outputs.unsupported.
     required: false
     default: ''
   # ── the trigger context, for the advisory plan's depth (EXECUTION_PLANNING section 3.2) ──
@@ -113,45 +113,45 @@ inputs:
     default: ''
   # ── the platform-probe values discover established once (PIPELINE_ORDERING section 6) ──
   ghas-available:
-    description: needs.discover.outputs.ghas_available.
+    description: needs.plan.outputs.ghas_available.
     required: false
     default: ''
   code-scanning:
-    description: needs.discover.outputs.code_scanning -- ENABLED, NOT_CONFIGURED, UNAVAILABLE or UNKNOWN.
+    description: needs.plan.outputs.code_scanning -- ENABLED, NOT_CONFIGURED, UNAVAILABLE or UNKNOWN.
     required: false
     default: ''
   secret-scanning:
-    description: needs.discover.outputs.secret_scanning.
+    description: needs.plan.outputs.secret_scanning.
     required: false
     default: ''
   push-protection:
-    description: needs.discover.outputs.push_protection.
+    description: needs.plan.outputs.push_protection.
     required: false
     default: ''
   dependabot-alerts:
-    description: needs.discover.outputs.dependabot_alerts.
+    description: needs.plan.outputs.dependabot_alerts.
     required: false
     default: ''
   dependabot-updates:
-    description: needs.discover.outputs.dependabot_updates.
+    description: needs.plan.outputs.dependabot_updates.
     required: false
     default: ''
   dependabot-config:
-    description: needs.discover.outputs.dependabot_config -- PRESENT or ABSENT.
+    description: needs.plan.outputs.dependabot_config -- PRESENT or ABSENT.
     required: false
     default: ''
   visibility:
-    description: needs.discover.outputs.visibility.
+    description: needs.plan.outputs.visibility.
     required: false
     default: ''
   platform-source:
-    description: needs.discover.outputs.platform_source -- how the platform values were established.
+    description: needs.plan.outputs.platform_source -- how the platform values were established.
     required: false
     default: ''
 
 outputs:
   # The job maps every one of these to a job output of the same name, so consumers read
-  # `needs.resolve.outputs.<name>` and never learn where the step runs.
+  # `needs.plan.outputs.<name>` and never learn where the step runs.
   state:
     description: COMPLETE / DISCOVERY_PARTIAL / DISCOVERY_UNAVAILABLE for this position.
     value: ${{ steps.r.outputs.state }}

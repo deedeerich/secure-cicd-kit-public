@@ -102,7 +102,7 @@ def p1_gating(dep, iac, bash):
         st = dep.get(name) or iac.get(name)
         on = str((st.get('env') or {}).get('APPLIES', ''))
         for c in classes:
-            if '${{ needs.discover.outputs.%s }}' % c not in on:
+            if '${{ needs.plan.outputs.%s }}' % c not in on:
                 bad.append('P1: %r is not gated on discovery output %r (env APPLIES=%r)' % (name, c, on))
     if not bash or bad:
         return bad
@@ -156,7 +156,7 @@ def p7_report_rows(bash):
     """The report's state builder, as shipped: one row per linter, and a row whose linter NAMED a
     file it could not read is PARTIAL, never PASS. Runs on any host with bash and jq."""
     bad = []
-    step = h.steps_by_name('report').get('Build per-scanner state')
+    step = h.steps_by_name('security-gate').get('Build per-scanner state')
     if not step:
         return ['P7: the report job has no "Build per-scanner state" step']
     if not h.have(bash, 'jq'):
@@ -166,10 +166,10 @@ def p7_report_rows(bash):
     try:
         ws = sb.workspace('rows', {'_sarif/actionlint.sarif': sarif, '_sarif/zizmor.sarif': sarif,
                                    '_sarif/shellcheck.sarif': sarif, '_sarif/hadolint.sarif': sarif})
-        vals = {'needs.discover.outputs.state': 'COMPLETE', 'needs.deps-scan.result': 'success',
+        vals = {'needs.plan.outputs.state': 'COMPLETE', 'needs.deps-scan.result': 'success',
                 'needs.iac-scan.result': 'success'}
         for c in ('workflows', 'shell', 'powershell', 'dockerfile', 'iac'):
-            vals['needs.discover.outputs.%s' % c] = 'true'
+            vals['needs.plan.outputs.%s' % c] = 'true'
         vals['needs.deps-scan.outputs.lint_version_gaps'] = 'scripts/fancy.sh ops/future.ps1'
         vals['needs.iac-scan.outputs.lint_version_gaps'] = ''
         rc, log, _out, _unk = sb.run(bash, step, vals, ws)
@@ -253,7 +253,7 @@ def values_for(classes, advisory='false'):
     v = {'inputs.paths': '.', 'inputs.advisory_mode': advisory, 'inputs.fail_on_severity': 'CRITICAL,HIGH',
          'github.run_attempt': '1', 'github.workspace': '.'}
     for c in ('workflows', 'shell', 'powershell', 'dockerfile'):
-        v['needs.discover.outputs.%s' % c] = 'true' if c in classes else 'false'
+        v['needs.plan.outputs.%s' % c] = 'true' if c in classes else 'false'
     return v
 
 

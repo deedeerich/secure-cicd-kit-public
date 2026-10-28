@@ -348,9 +348,9 @@ def main():
     wants = {L('secret_scanning'): 'secret_scanning', L('push_protection'): 'push_protection',
              L('push_ruleset'): 'push_ruleset', L('branch_gate'): 'branch_gate',
              L('local_baseline'): 'local_baseline'}
-    wired = all('needs.discover.outputs.%s' % v in str(gstep_env.get(k, '')) for k, v in wants.items())
+    wired = all('needs.plan.outputs.%s' % v in str(gstep_env.get(k, '')) for k, v in wants.items())
     check(wired, 'wiring: the leakgates step reads all five layers from needs.discover.outputs, as data')
-    outs = (wf['jobs']['discover'].get('outputs') or {})
+    outs = (wf['jobs']['plan'].get('outputs') or {})   # G1: discovery is a part of plan
     check(all('steps.platform.outputs.%s' % v in str(outs.get(v, '')) for v in
               ('push_ruleset', 'branch_gate', 'local_baseline')),
           'wiring: the discover job exposes push_ruleset, branch_gate and local_baseline')

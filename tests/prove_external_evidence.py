@@ -98,7 +98,7 @@ def case_rows(bad):
     bash, why = pbf.usable_bash()
     if not bash:
         return ('UNKNOWN', 'UNKNOWN: no usable bash (%s)' % why)
-    step = h.steps_by_name('report').get('Build per-scanner state')
+    step = h.steps_by_name('security-gate').get('Build per-scanner state')
     if step is None:
         bad.append('R: the report job has no "Build per-scanner state" step')
         return None
@@ -121,9 +121,9 @@ def case_rows(bad):
         '_sarif/state-ext-forge.json': json.dumps(row('ext-forge', 'external', 'gitleaks.sarif')),
         '_sarif/gitleaks.sarif': json.dumps({'version': '2.1.0', 'runs': []}),
     }
-    vals = {'needs.discover.outputs.state': 'COMPLETE', 'inputs.image_ref': ''}
+    vals = {'needs.plan.outputs.state': 'COMPLETE', 'inputs.image_ref': ''}
     for flag in ('python', 'node', 'go', 'dotnet', 'java', 'cpp', 'iac'):
-        vals['needs.discover.outputs.%s' % flag] = 'false'
+        vals['needs.plan.outputs.%s' % flag] = 'false'
     sb = h.Sandbox('external-rows-')
     try:
         ws = sb.workspace('rows', files)
@@ -246,8 +246,8 @@ def case_gate(bad, work):
 
     def seeded(jobs):
         d = gp.scanners()
-        d['needs.report.outputs.jobs_with_findings'] = jobs
-        d['needs.report.outputs.blocking_findings'] = '2' if jobs else '0'
+        d['steps.render.outputs.jobs_with_findings'] = jobs
+        d['steps.render.outputs.blocking_findings'] = '2' if jobs else '0'
         return d
     crawl = gp.policy_outputs(work, None, environment='dev')
     walk = gp.policy_outputs(work, gp.central([{'id': 'w', 'scope': {'org': 'acme'},

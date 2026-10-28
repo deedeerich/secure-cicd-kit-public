@@ -22,15 +22,15 @@ inputs:
     required: true
   # Discovery's artefact answers (lane L-SCAN-A, KDEC-025): each linter runs only on 'true'.
   workflows:
-    description: needs.discover.outputs.workflows -- 'true' runs actionlint + zizmor.
+    description: needs.plan.outputs.workflows -- 'true' runs actionlint + zizmor.
     required: false
     default: 'false'
   shell:
-    description: needs.discover.outputs.shell -- 'true' runs shellcheck.
+    description: needs.plan.outputs.shell -- 'true' runs shellcheck.
     required: false
     default: 'false'
   powershell:
-    description: needs.discover.outputs.powershell -- 'true' runs PSScriptAnalyzer.
+    description: needs.plan.outputs.powershell -- 'true' runs PSScriptAnalyzer.
     required: false
     default: 'false'
   # Release 4 (KDEC-032): the organisation feed mirror, from the caller's vars.KIT_FEED_MIRROR_*.

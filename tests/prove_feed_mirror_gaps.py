@@ -346,7 +346,7 @@ def main():
         mdt = json.dumps(md)
         check('vars.KIT_FEED_MIRROR_RUNNER' in str(md.get('runs-on', '')), 'G5: malicious-deps cannot run on the private runner')
         om = [s for s in md['steps'] if str(s.get('uses', '')).endswith('feed-mirror') and (s.get('with') or {}).get('feed') == 'osv']
-        check(om and 'needs.discover.outputs' in json.dumps(om[0].get('with') or {}),
+        check(om and 'needs.plan.outputs' in json.dumps(om[0].get('with') or {}),
               'G5: malicious-deps does not read the OSV mirror for the ecosystems discovery found')
         scan = next((s for s in md['steps'] if s.get('id') == 'osv_scan'), {})
         check('KIT_OSV_OFFLINE' in scan.get('run', '') and '--offline-vulnerabilities' in scan.get('run', ''),

@@ -78,7 +78,7 @@ def main():
         def scan(name, files, config, kotlin):
             ws = sb.workspace(name, files)
             vals = {'inputs.paths': '.', 'inputs.semgrep_config': config,
-                    'needs.discover.outputs.php': 'false', 'needs.discover.outputs.kotlin': kotlin,
+                    'needs.plan.outputs.php': 'false', 'needs.plan.outputs.kotlin': kotlin,
                     'inputs.soft_fail_sast': 'false', 'inputs.advisory_mode': 'false'}
             rc, log, out, _unk = sb.run(bash, step, vals, ws, env={'SEMGREP_APP_TOKEN': ''})
             if 'Failed to download' in log or 'ConnectionError' in log:

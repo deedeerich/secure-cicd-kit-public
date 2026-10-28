@@ -29,17 +29,17 @@
 #                   holds its write scope to the proposal branch.
 
 jobs:
-  kit-scripts:    {class: infrastructure, composite: null}
-  # Its two step bodies (the survey and the platform probe) run from the composite through `$/`
-  # since 2026-10-15, invoked once per part under the ids its outputs always read; inline they
-  # held the flagship over the 475 KB fail line. tests/test_discovery.py runs them from there.
-  discover:       {class: infrastructure, composite: discover}
-  # The position between discover and the scanners (SINGLE_PIPELINE_TARGET §5.1; PIPELINE_ORDERING
-  # §1.6). Versions, capability, coverage, plan. Registered 2026-10-14. Since 2026-10-15 the gate
-  # waits for it and reads needs.resolve.result as itself (failure or skipped is tooling, never
-  # NOT_APPLICABLE), and its step bodies run from the composite through `$/` -- inline, they took
-  # the flagship to 518 KB, past the ceiling at which a workflow never starts.
-  resolve:        {class: infrastructure, composite: resolve}
+  # G1 (cost redesign step 3, owner ruling 1, KDEC-033): kit-scripts, discover and resolve are ONE job,
+  # `plan`, and three PARTS. The kit-scripts part runs before the checkout (tests/prove_plan_job.py).
+  # The gate still reads each part AS ITSELF, now as needs.plan.outputs.<part>_result, and
+  # tests/check_scanner_registry.py requires every part below to be read. The notes the three rows
+  # carried:
+  #   discover -- its two step bodies (the survey and the platform probe) run from the composite
+  #     through `$/` since 2026-10-15; inline they held the flagship over the 475 KB fail line.
+  #   resolve -- the position between discover and the scanners (SINGLE_PIPELINE_TARGET §5.1;
+  #     PIPELINE_ORDERING §1.6), registered 2026-10-14; failure or skipped is tooling, never
+  #     NOT_APPLICABLE; inline it took the flagship to 518 KB.
+  plan:           {class: infrastructure, composite: [discover, resolve], parts: [kit-scripts, discover, resolve]}
   secret-scan:    {class: scanner, capability: secret-scan,    applies: always,                    composite: secret-scan}
   # python OR node, as the job's own condition reads since the ESLint-behind-a-Python-gate fix.
   # `applies` is read by nothing that enforces; the resolve job's advisory plan states the same rule.
@@ -58,8 +58,10 @@ jobs:
   image-scan:     {class: scanner, capability: image-scan,     applies: input.image_ref,           composite: null}
   malicious-deps: {class: scanner, capability: malicious-deps, applies: input.enable_malicious_pkg_scan, composite: null}
   sbom:           {class: scanner, capability: sbom,           applies: input.enable_sbom,         composite: null}
-  report:         {class: evidence, composite: scan-report}
-  security-gate:  {class: gate, capability: security-gate, composite: null}
+  # G3 (cost redesign step 3, owner ruling 1, KDEC-033): the report is the FIRST PART of security-gate,
+  # read by the verdict as itself (steps.report_part), never as a scanner. The display name stays
+  # `Security gate`. The scan-report composite runs in that job; tests/prove_report_and_gate.py.
+  security-gate:  {class: gate, capability: security-gate, composite: scan-report, parts: [report]}
   # propose-ledger MOVED 2026-10-15 to .github/workflows/reusable-propose-ledger.yml: a write-scoped job
   # inside this workflow forced every consumer to grant write to the security scan (startup_failure).
 

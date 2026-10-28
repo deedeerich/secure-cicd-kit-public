@@ -167,7 +167,7 @@ def prove_gate(bash, bad):
     for label, proven, want in (('unproven', '', 'VERSION_GAP_UNVERIFIED'),
                                 ('proven', 'iac-scan', 'VERSION_GAP')):
         values = pbf.ctx(capped_jobs='iac-scan', capability_gaps='iac@infra', capability_gap_count='1')
-        values['needs.resolve.outputs.proven_gap_jobs'] = proven
+        values['needs.plan.outputs.proven_gap_jobs'] = proven
         body, _seen = pbf.substitute(gate, values)
         rc, emitted, log, _summ = pbf.run(bash, body, pbf.gate_env(values))
         env, unknown = G.resolve_env(step.get('env'), G.BASELINE, emitted)
@@ -201,8 +201,8 @@ def prove_gate(bash, bad):
         values['needs.sast-semgrep.outputs.scan_state'] = 'PARTIAL'
         values['needs.sast-semgrep.outputs.parse_partial_files'] = '["web/new85.php"]'
         if findings:
-            values['needs.report.outputs.blocking_findings'] = '3'
-            values['needs.report.outputs.jobs_with_findings'] = findings
+            values['steps.render.outputs.blocking_findings'] = '3'
+            values['steps.render.outputs.jobs_with_findings'] = findings
         body, _seen = pbf.substitute(gate, values)
         rc, emitted, log, summ = pbf.run(bash, body, pbf.gate_env(values))
         inputs = dict(G.BASELINE, advisory_mode=advisory, **(G.ATTRIB if advisory == 'true' else {}))
@@ -526,7 +526,7 @@ def prove_static(bad):
     if 'steps.posture.outputs.advisory_causes' not in str((jobs[GATE_JOB].get('outputs') or {})
                                                           .get('advisory_causes')):
         bad.append('reusable-security.yml: the security-gate job does not export advisory_causes')
-    if 'steps.resolve.outputs.proven_gap_jobs' not in str((jobs['resolve'].get('outputs') or {})
+    if 'steps.resolve.outputs.proven_gap_jobs' not in str((jobs['plan'].get('outputs') or {})
                                                           .get('proven_gap_jobs')):
         bad.append('reusable-security.yml: the resolve job does not export proven_gap_jobs')
     t = D.load(TEMPLATE)

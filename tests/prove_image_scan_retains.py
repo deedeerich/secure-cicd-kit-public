@@ -50,8 +50,9 @@ def order_problems(job):
     bad = []
     needs = job.get('needs') or []
     needs = [needs] if isinstance(needs, str) else needs
-    if 'kit-scripts' not in needs:
-        bad.append('image-scan does not need kit-scripts, so the redactor never reaches it')
+    # G1 (KDEC-033): the bundle is produced by the kit-scripts part of `plan`.
+    if 'plan' not in needs:
+        bad.append('image-scan does not need plan (the kit-scripts producer), so the redactor never reaches it')
     steps = job.get('steps') or []
     if not any('download-artifact' in uses(s) and 'kit-scripts' in str((s.get('with') or {})
                                                                        .get('name', ''))

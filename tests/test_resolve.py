@@ -55,7 +55,8 @@ WF = os.path.join(ROOT, ".github", "workflows", "reusable-security.yml")
 REG = os.path.join(ROOT, "scanner-registry.yaml")
 ACTION = os.path.join(ROOT, ".github", "actions", "resolve", "action.yml")
 USES = "$/.github/actions/resolve"
-JOB = "resolve"
+# G1 (KDEC-033): the resolver is the third part of the `plan` job, after discovery.
+JOB = "plan"
 STEP = "r"
 SCANNERS = ["secret-scan", "code-quality", "sast-semgrep", "sast-bandit", "codeql", "deps-scan",
             "iac-scan", "sast-dotnet", "sast-java", "sast-go", "sast-cpp", "sast-mobile", "image-scan",
@@ -194,11 +195,18 @@ def position_checks(doc):
     job = (doc.get("jobs") or {}).get(JOB) or {}
     needs = job.get("needs") or []
     needs = [needs] if isinstance(needs, str) else list(needs)
-    ok &= check("L21 resolve needs discover", "discover" in needs, "needs=%s" % needs)
+    # G1: the resolver follows discovery inside `plan` and runs only on a completed discovery.
+    ids = [s.get("id") for s in job.get("steps") or []]
+    rstep = next((s for s in job.get("steps") or [] if s.get("id") == "resolve"), {})
+    ok &= check("L21 resolve runs after discovery, only on a completed one",
+                "d" in ids and "resolve" in ids and ids.index("d") < ids.index("resolve")
+                and "steps.disc_part.outputs.discover_result == 'success'" in " ".join(str(rstep.get("if", "")).split()),
+                "steps=%s if=%r" % (ids, rstep.get("if")))
     ok &= check("L21 resolve waits for no scanner, report or gate",
                 not (set(needs) & set(SCANNERS)), "needs=%s" % needs)
     outputs = job.get("outputs") or {}
-    ok &= check("L21 resolve declares a state output", "state" in outputs,
+    ok &= check("L21 resolve declares a state output (resolve_state in plan)",
+                str(outputs.get("resolve_state", "")).strip() == "${{ steps.resolve.outputs.state }}",
                 "outputs=%s" % sorted(outputs))
     perms = job.get("permissions") or {}
     ok &= check("L21 resolve declares least privilege (no write)",
@@ -206,14 +214,17 @@ def position_checks(doc):
     reg = yaml.safe_load(io.open(REG, encoding="utf-8")) or {}
     row = (reg.get("jobs") or {}).get(JOB)
     ok &= check("L21 scanner-registry.yaml has a row for resolve (infrastructure)",
-                (row or {}).get("class") == "infrastructure", "row=%s" % row)
+                (row or {}).get("class") == "infrastructure" and "resolve" in ((row or {}).get("parts") or []),
+                "row=%s" % row)
     # ── the steps ship in the composite, and the job is wired to it completely ─────────────
-    # The job's outputs are what every consumer reads (needs.resolve.outputs.<name>); a composite
+    # The job's outputs are what every consumer reads (needs.plan.outputs.<name>); a composite
     # output the job does not map is an answer nobody can hear, and a composite input the job
     # does not pass is a value the step reads as "nobody said" -- an unknown, silently.
     comp, csteps = load_composite(doc)
+    comps = (row or {}).get("composite")
+    comps = [comps] if isinstance(comps, str) else list(comps or [])
     ok &= check("L21 the registry names the composite the job uses",
-                (row or {}).get("composite") == "resolve", "row=%s" % row)
+                "resolve" in comps, "row=%s" % row)
     use = next((s for s in job.get("steps") or [] if s.get("uses") == USES), {})
     passed = set((use.get("with") or {}))
     declared = set(comp.get("inputs") or {})
@@ -221,10 +232,11 @@ def position_checks(doc):
                 passed == declared, "missing=%s extra=%s" % (sorted(declared - passed),
                                                              sorted(passed - declared)))
     cout = set(comp.get("outputs") or {})
+    # In `plan` the resolver's `state` is published as resolve_state (discovery owns `state`).
+    jname = lambda k: "resolve_state" if k == "state" else k  # noqa: E731
     ok &= check("L21 every composite output is a job output of the same name",
-                cout == set(outputs) and all(
-                    str(outputs[k]).strip() == "${{ steps.%s.outputs.%s }}" % (use.get("id"), k)
-                    for k in cout),
+                all(str(outputs.get(jname(k), "")).strip()
+                    == "${{ steps.%s.outputs.%s }}" % (use.get("id"), k) for k in cout),
                 "composite=%s job=%s" % (sorted(cout), sorted(outputs)))
     ok &= check("L21 every composite run step declares shell: bash (a composite runs nothing without it)",
                 csteps and all(s.get("shell") == "bash" for s in csteps if s.get("run")),
@@ -233,7 +245,7 @@ def position_checks(doc):
     # selection says (KDEC-010), so no scanner needs to wait for resolve. What consumes the
     # selection is the gate (tests/prove_bootstrap_failure.py, capability_gap_* and
     # substitution_not_selected) and the report (tests/prove_capability_selection.py); the gate's
-    # reading of needs.resolve.result is asserted by tests/check_scanner_registry.py.
+    # reading of needs.plan.outputs.resolve_result is asserted by tests/check_scanner_registry.py.
     return ok
 
 
@@ -894,7 +906,7 @@ def php_checks(doc, shell):
     use = next((s for s in job.get("steps") or [] if s.get("uses") == USES), {})
     ok &= check("PHP the resolve job passes discover's php answer",
                 str((use.get("with") or {}).get("discovered-php", "")).strip()
-                == "${{ needs.discover.outputs.php }}", "with=%s" % (use.get("with") or {}))
+                == "${{ steps.d.outputs.php }}", "with=%s" % (use.get("with") or {}))
 
     r = run_case(shell, {"web/composer.json": '{"require": {"php": "^8.1"}}\n',
                          "web/index.php": "<?php echo 1;\n"}, discover=ph)

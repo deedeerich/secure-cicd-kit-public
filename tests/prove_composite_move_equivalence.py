@@ -76,6 +76,14 @@ STATUS_STEP = 'Result summary'
 # (findings_state, secret_count) and exits 0 instead of failing the job; the gate blocks them at
 # every tier unless each is excepted. The step-level diff against 5b06ccb was the job `outputs` key
 # and `id` + `run` on the Enforce step only. The L-H pin was 12d86c1c...51f5.
+# RE-PINNED 2026-10-27, lane cost-step1-3 (KDEC-033, cost redesign G1), all six with `--repin <job>`.
+# Reason: kit-scripts, discover and resolve became ONE job, `plan`, so every moved job's `needs:` is
+# [plan] instead of [discover, kit-scripts], and every `${{ needs.discover.outputs.X }}` it passes is
+# `${{ needs.plan.outputs.X }}` (the same value, published by plan under the same name). Verified
+# mechanically before the re-pin: each job's canonical form at fecc3a5, with exactly those two
+# rewrites applied, is byte-identical to its canonical form now. Nothing else changed. The fecc3a5
+# pins were: deps-scan 75164842...405e  iac-scan edd6c6c6...7469  sast-cpp b90b7c74...148e
+#   sast-dotnet 7390c584...04c2  sast-java c8e8ce39...4571  secret-scan ab72005d...9134
 MOVES = {
     # RE-PINNED 2026-10-23, lane L-PIN (KDEC-027), `--repin deps-scan` and `--repin iac-scan`. Reason:
     # aquasecurity/trivy-action -> setup-trivy checks out `aquasecurity/trivy` against github.server_url,
@@ -107,7 +115,7 @@ MOVES = {
     # same digest> when the registry is set. Nothing else in the step or the job changed.
     # The previous pin was 72d388c0...2d9d.
     'secret-scan': ('secret-scan', '11d1d56',
-                    'ab72005d155316870bc604ccb193a5fd599a8a2221971225743bf2fcf0ed9134'),
+                    'e290ce74bf8a507d130c43e4200a899602092cca648b17faca0f5754d36f3804'),
     # RE-PINNED 2026-10-23, integration lane L-INT1, `--repin sast-cpp`, after the merge pin
     # 7981aba5...99f1. Reason: KDEC-027 -- L-SCAN-B's new `C/C++ build metadata` step wrote
     # scan_state/scan_reason as `$(cat ...)` straight into $GITHUB_OUTPUT; each is now read into a
@@ -122,7 +130,7 @@ MOVES = {
     # outputs scan_state and scan_reason (CPP_ANALYSIS_PARTIAL). No other step changed. The pin
     # before was 2763b67b...eeeb. tests/prove_cpp_build_aware.py runs the changed steps.
     'sast-cpp': ('sast-cpp', '11d1d56',
-                 'b90b7c7495d9a02fe32b4c03cd937d16ff47caa878674bb5610014c6ccbe148e'),
+                 'a5e34d2b6a7e81d84b8532fd48bb6a3c1799d4ce3bee35acada07818f33eb9fe'),
     # RE-PINNED 2026-10-23, integration lane L-INT1, `--repin iac-scan` and `--repin deps-scan`.
     # Reason: L-SCAN-A (KDEC-025, the lint steps below) and L-PIN (KDEC-027, the pinned Trivy
     # binary and sanitised output writes above) each re-pinned these two from c7e1ea9; merged, the
@@ -149,7 +157,7 @@ MOVES = {
     # `if: always()` because it follows Checkov's enforce step (tests/prove_scanners_survive_enforce.py).
     # The previous pin was 49d9144a...3093.
     'iac-scan': ('iac-scan', '11d1d56',
-                 'edd6c6c638e7fb0d586840a63266ab81890152248258dcd66a8031b8ca187469'),
+                 '95ee17cfcc354061155ac94e817c31fcb656c269ff2469641a6b47847c51d2ad'),
     # RE-PINNED 2026-10-27, lane L-MIRROR (KDEC-032 PROPOSED, Release 4 feed mirrors), `--repin
     # deps-scan`. Reason: the Trivy database may come from the organisation mirror. Against 9bdbb23 the
     # canonical diff is ADDITIVE ONLY: runs-on becomes `vars.KIT_FEED_MIRROR_RUNNER || 'ubuntu-latest'`
@@ -158,7 +166,7 @@ MOVES = {
     # scripts/feed_mirror_step.sh with the job's three vars.KIT_FEED_MIRROR_* values. No existing step's
     # name, id, if, uses, with, env, run or shell changed. The L-INT1 pin was 980ac662...8197.
     'deps-scan': ('deps-scan', '11d1d56',
-                  '751648420b56b57d32dccb1c3275277a9c92a8f752adf8f637e45fa10c3a405e'),
+                  '26ecd570ea7438d44b2219a7977340ddd71bc3943768eb5ff25745a3fbf80d69'),
     # RE-PINNED 2026-10-23, integration lane L-INT1, `--repin sast-dotnet`. Reason: L-PIN (KDEC-027,
     # its pin was 5ffff3c6...cf1d) and L-SCAN-B (KDEC-026, below; its pin was 5194ff9c...94ec) each
     # re-pinned sast-dotnet from c7e1ea9; the merged composite carries both.
@@ -168,9 +176,9 @@ MOVES = {
     # result against the project dotnet reports. No other step changed. The pin before was
     # 08291421...bdf4.
     'sast-dotnet': ('sast-dotnet', '11d1d56',
-                    '7390c5846d1d2b05a1334050ebec771c60b9aca342f3cc5b4f1a6e9e621e04c2'),
+                    '83aefdff3e89429c4426e2dbf7e6f3bee6ae12f5df161a9eacf24dee8d73c293'),
     'sast-java': ('sast-java', '11d1d56',
-                  'c8e8ce39fc7e1baef5b733affb890d387fd726645e739e269cd9261f7b5a4571'),
+                  'f6b45164e5eb28edb5036b03e84f6dd84440b34992c8fbe80a663cb4355def21'),
 }
 
 
@@ -298,7 +306,7 @@ def self_test():
                 ('a boolean input inside an expression', "if: inputs.paths != ''",
                  "if: inputs.flag"),
                 ('needs inside a composite', 'IN_PATHS: ${{ inputs.paths }}',
-                 'IN_PATHS: ${{ needs.discover.outputs.cpp }}')):
+                 'IN_PATHS: ${{ needs.plan.outputs.cpp }}')):
             io.open(ap, 'w', encoding='utf-8').write(action.replace(old_s, new_s))
             c, p = canonical(new, 'j', tmp)
             if c == a and not p:

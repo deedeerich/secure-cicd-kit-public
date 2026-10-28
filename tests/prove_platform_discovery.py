@@ -96,37 +96,40 @@ def main():
 
     doc = yaml.safe_load(io.open(WF, encoding='utf-8'))
     jobs = doc.get('jobs') or {}
-    outs = (jobs.get('discover') or {}).get('outputs') or {}
+    outs = (jobs.get('plan') or {}).get('outputs') or {}   # G1: discovery is a part of plan
     ok &= td.check_bool('W1 discover publishes kotlin/swift/mobile',
                         all(str(outs.get(n, '')).strip() == '${{ steps.d.outputs.%s }}' % n
                             for n in ('kotlin', 'swift', 'mobile')), 'outputs=%s' % sorted(outs))
-    cq = jobs.get('codeql') or {}
-    legs = {i.get('lang'): str(i.get('gate')) for i in
-            (((cq.get('strategy') or {}).get('matrix') or {}).get('include') or [])}
+    # The CodeQL legs are built from discovery (cost redesign step 1): the java-kotlin leg starts
+    # on java OR kotlin, and the job starts whenever any leg does. All 128 combinations are run by
+    # tests/prove_codeql_dynamic_matrix.py; this checks the Kotlin wiring by name.
+    cqm = [s for j in jobs.values() for s in (j.get('steps') or []) if s.get('id') == 'cqm']
+    cqm = cqm[0] if cqm else {}
     ok &= td.check_bool('W2 codeql starts on kotlin; java-kotlin gated java OR kotlin',
-                        'needs.discover.outputs.kotlin' in str(cq.get('if', ''))
-                        and 'outputs.kotlin' in legs.get('java-kotlin', '')
-                        and 'outputs.java' in legs.get('java-kotlin', ''),
-                        'if=%r java-kotlin gate=%r' % (cq.get('if'), legs.get('java-kotlin')))
+                        str((cqm.get('env') or {}).get('D_KOTLIN', '')).strip() == '${{ steps.d.outputs.kotlin }}'
+                        and str((cqm.get('env') or {}).get('D_JAVA', '')).strip() == '${{ steps.d.outputs.java }}'
+                        and '[ "$D_JAVA" = "true" ] || [ "$D_KOTLIN" = "true" ]; then leg java-kotlin'
+                        in str(cqm.get('run', '')),
+                        'cqm env=%s' % sorted((cqm.get('env') or {})))
     sg = [s for s in (jobs.get('sast-semgrep') or {}).get('steps') or [] if s.get('id') == 'semgrep']
     sg = sg[0] if sg else {}
     ok &= td.check_bool('W3 semgrep reads kotlin as data, adds p/kotlin',
                         str((sg.get('env') or {}).get('IN_DISCOVERED_KOTLIN', '')).strip()
-                        == '${{ needs.discover.outputs.kotlin }}'
+                        == '${{ needs.plan.outputs.kotlin }}'
                         and re.search(r'--config p/kotlin', str(sg.get('run', ''))) is not None
                         and '${{' not in re.sub(r'\$\{\{ steps\.[^}]*\}\}', '', str(sg.get('run', ''))),
                         'env=%s' % sorted((sg.get('env') or {})))
     mob = jobs.get('sast-mobile') or {}
     uses = [s.get('uses') for s in mob.get('steps') or []]
     ok &= td.check_bool('W4 sast-mobile runs on discover mobile',
-                        str(mob.get('if', '')).replace('"', "'").strip() == "needs.discover.outputs.mobile == 'true'"
+                        str(mob.get('if', '')).replace('"', "'").strip() == "needs.plan.outputs.mobile == 'true'"
                         and '$/.github/actions/sast-mobile' in uses,
                         'if=%r uses=%r' % (mob.get('if'), uses))
-    rs = [s for s in (jobs.get('resolve') or {}).get('steps') or [] if s.get('uses') == '$/.github/actions/resolve']
+    rs = [s for s in (jobs.get('plan') or {}).get('steps') or [] if s.get('uses') == '$/.github/actions/resolve']
     w = (rs[0].get('with') or {}) if rs else {}
     ok &= td.check_bool('W5 resolve receives kotlin and swift',
-                        str(w.get('discovered-kotlin', '')).strip() == '${{ needs.discover.outputs.kotlin }}'
-                        and str(w.get('discovered-swift', '')).strip() == '${{ needs.discover.outputs.swift }}',
+                        str(w.get('discovered-kotlin', '')).strip() == '${{ steps.d.outputs.kotlin }}'
+                        and str(w.get('discovered-swift', '')).strip() == '${{ steps.d.outputs.swift }}',
                         'with=%s' % sorted(w))
     print()
     if not ok:

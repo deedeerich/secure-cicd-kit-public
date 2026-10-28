@@ -147,7 +147,7 @@ def report_row(bash, bad):
     read PASS, the report could not know the scan was partial."""
     sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'scripts'))
     import scan_report
-    step = h.steps_by_name('report').get('Build per-scanner state')
+    step = h.steps_by_name('security-gate').get('Build per-scanner state')
     if step is None:
         bad.append('S11 the report job has no "Build per-scanner state" step')
         return
@@ -159,7 +159,7 @@ def report_row(bash, bad):
     sb = h.Sandbox('semgrep-report-row-')
     try:
         for label, state, want in (('partial', 'PARTIAL', 'PARTIAL'), ('complete', 'COMPLETE', 'PASS')):
-            vals = {'needs.sast-semgrep.result': 'success', 'needs.discover.outputs.state': 'COMPLETE',
+            vals = {'needs.sast-semgrep.result': 'success', 'needs.plan.outputs.state': 'COMPLETE',
                     'needs.sast-semgrep.outputs.scan_state': state,
                     'needs.sast-semgrep.outputs.parse_partial_files':
                         '["web/new85.php"]' if state == 'PARTIAL' else ''}
@@ -196,15 +196,15 @@ def main():
     bad = []
     step = steps[SCAN]
     env = step.get('env') or {}
-    reads = [k for k, v in env.items() if 'needs.discover.outputs.php' in str(v)]
+    reads = [k for k, v in env.items() if 'needs.plan.outputs.php' in str(v)]
     if not reads:
         bad.append('S1 the scan step does not read discover\'s php answer (no env carries '
-                   'needs.discover.outputs.php)')
-    if 'needs.discover.outputs.php' in str(step.get('run') or ''):
+                   'needs.plan.outputs.php)')
+    if 'needs.plan.outputs.php' in str(step.get('run') or ''):
         bad.append('S1 discover\'s php answer is interpolated into the script, not passed as data')
     needs = h.job(JOB).get('needs') or []
-    if 'discover' not in needs:
-        bad.append('S1 sast-semgrep does not need discover (needs=%s)' % needs)
+    if 'plan' not in needs:   # G1 (KDEC-033): discovery is a part of plan
+        bad.append('S1 sast-semgrep does not need plan, whose discovery part answers php (needs=%s)' % needs)
 
     sb = h.Sandbox('semgrep-php-').with_bundle()
     try:
@@ -228,7 +228,7 @@ def main():
         def scan(name, files, config, php):
             ws = sb.workspace(name, files)
             vals = {'inputs.paths': '.', 'inputs.semgrep_config': config,
-                    'needs.discover.outputs.php': php,
+                    'needs.plan.outputs.php': php,
                     'inputs.soft_fail_sast': 'false', 'inputs.advisory_mode': 'false'}
             rc, log, out, _unk = sb.run(bash, step, vals, ws, env={'SEMGREP_APP_TOKEN': ''})
             if 'Failed to download' in log or 'ConnectionError' in log:
@@ -363,7 +363,7 @@ def main():
             os.chmod(os.path.join(wrap, 'semgrep'), 0o755)
             ws = sb.workspace('nophp', PY_ONLY)
             vals = {'inputs.paths': '.', 'inputs.semgrep_config': 'p/python',
-                    'needs.discover.outputs.php': 'false',
+                    'needs.plan.outputs.php': 'false',
                     'inputs.soft_fail_sast': 'false', 'inputs.advisory_mode': 'false'}
             rc, log, out, _unk = sb.run(bash, step, vals, ws, extra_path=wrap,
                                         env={'SEMGREP_APP_TOKEN': ''})

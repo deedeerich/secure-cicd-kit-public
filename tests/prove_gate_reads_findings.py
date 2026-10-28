@@ -40,11 +40,11 @@ def ctx(count, jobs='', results=None, advisory='false'):
     for job, res in (results or {}).items():
         d['needs.%s.result' % job] = res
     if count is None:
-        d.pop('needs.report.outputs.blocking_findings', None)
-        d.pop('needs.report.outputs.jobs_with_findings', None)
+        d.pop('steps.render.outputs.blocking_findings', None)
+        d.pop('steps.render.outputs.jobs_with_findings', None)
     else:
-        d['needs.report.outputs.blocking_findings'] = count
-        d['needs.report.outputs.jobs_with_findings'] = jobs
+        d['steps.render.outputs.blocking_findings'] = count
+        d['steps.render.outputs.jobs_with_findings'] = jobs
     return d
 
 

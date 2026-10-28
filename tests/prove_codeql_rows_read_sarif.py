@@ -89,7 +89,7 @@ def main():
     if not bash:
         print('UNKNOWN: no usable bash (%s).' % why)
         return 2
-    step = h.steps_by_name('report').get('Build per-scanner state')
+    step = h.steps_by_name('security-gate').get('Build per-scanner state')
     if step is None:
         print('UNKNOWN: the report job has no "Build per-scanner state" step.')
         return 2
@@ -105,11 +105,11 @@ def main():
     try:
         def states_for(name, discovered, platform, files):
             vals = {'needs.codeql.result': 'success', 'inputs.image_ref': '',
-                    'needs.discover.outputs.state': 'COMPLETE',
-                    'needs.discover.outputs.code_scanning': platform,
-                    'needs.discover.outputs.platform_source': 'api'}
+                    'needs.plan.outputs.state': 'COMPLETE',
+                    'needs.plan.outputs.code_scanning': platform,
+                    'needs.plan.outputs.platform_source': 'api'}
             for flag in ('python', 'node', 'go', 'dotnet', 'java', 'cpp', 'iac'):
-                vals['needs.discover.outputs.%s' % flag] = 'true' if flag in discovered else 'false'
+                vals['needs.plan.outputs.%s' % flag] = 'true' if flag in discovered else 'false'
             ws = sb.workspace(name, dict({'_sarif/.keep': ''}, **files))
             rc, log, _o, _u = sb.run(bash, step, vals, ws)
             if rc != 0:

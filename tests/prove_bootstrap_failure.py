@@ -101,34 +101,38 @@ def ctx(scanner='success', kit='success', report='success', advisory='false',
         version_gap_count = '0' if resolve_result == 'success' else ''
     if capability_gap_count is None:
         capability_gap_count = '0' if resolve_result == 'success' else ''
-    d = {'needs.kit-scripts.result': kit,
-         'needs.discover.result': discover_result,
+    d = {'needs.plan.outputs.kit_scripts_result': kit,
+         'needs.plan.outputs.discover_result': discover_result,
          # The resolve job (versions, capability, coverage, plan), read by the gate as itself.
          # Its outputs are '' when the job did not complete, exactly as GitHub renders them;
          # a completed resolver with nothing unsupported publishes a positively counted '0',
          # and one that failed SAFE (exit 0, every answer unknown) publishes UNDETERMINED.
-         'needs.resolve.result': resolve_result,
-         'needs.resolve.outputs.version_gaps': version_gaps,
-         'needs.resolve.outputs.version_gap_count': version_gap_count,
+         'needs.plan.outputs.resolve_result': resolve_result,
+         'needs.plan.outputs.version_gaps': version_gaps,
+         'needs.plan.outputs.version_gap_count': version_gap_count,
          # KDEC-010: the capability selection the gate consumes. Jobs pointed at a VERSION_GAP
          # (capped: PASS -> PARTIAL, claim unestablished), jobs not selected for a target another
          # scanner serves (PASS -> PARTIAL, claim carried by the selected one), the substitutions
          # and gaps by name, and the resolver's notes for the summary.
-         'needs.resolve.outputs.capped_jobs': capped_jobs,
-         'needs.resolve.outputs.not_selected_jobs': not_selected_jobs,
-         'needs.resolve.outputs.substitutions': substitutions,
-         'needs.resolve.outputs.capability_gaps': capability_gaps,
-         'needs.resolve.outputs.capability_gap_count': capability_gap_count,
-         'needs.resolve.outputs.fitness_notes': fitness_notes,
+         'needs.plan.outputs.capped_jobs': capped_jobs,
+         'needs.plan.outputs.not_selected_jobs': not_selected_jobs,
+         'needs.plan.outputs.substitutions': substitutions,
+         'needs.plan.outputs.capability_gaps': capability_gaps,
+         'needs.plan.outputs.capability_gap_count': capability_gap_count,
+         'needs.plan.outputs.fitness_notes': fitness_notes,
          # The findings evidence the report publishes (C3). Zero, positively counted, for the
          # control; tests/prove_gate_reads_findings.py varies it.
-         'needs.report.outputs.blocking_findings': '0',
-         'needs.report.outputs.jobs_with_findings': '',
-         'needs.report.result': report,
+         'steps.render.outputs.blocking_findings': '0',
+         'steps.render.outputs.jobs_with_findings': '',
+         'steps.report_part.outputs.report_result': report,
+         # The protected capability floor (KDEC-033), held in every scenario here: its own breach
+         # is forced by tests/prove_capability_floor.py F6.
+         'steps.floor.outputs.floor_state': 'HELD',
+         'steps.floor.outputs.floor_missing': '',
          'inputs.advisory_mode': advisory,
-         'needs.discover.outputs.state': discovery,
-         'needs.discover.outputs.coverage_gaps': '',
-         'needs.discover.outputs.coverage_gap_count': '0',
+         'needs.plan.outputs.state': discovery,
+         'needs.plan.outputs.coverage_gaps': '',
+         'needs.plan.outputs.coverage_gap_count': '0',
          # The image-scan job's secrets step outcome, published as a job output. '' when the job
          # did not run (no image), exactly as GitHub renders an absent output.
          'needs.image-scan.outputs.secret_state': '',
@@ -146,7 +150,7 @@ def ctx(scanner='success', kit='success', report='success', advisory='false',
          # The known-exploited check (KDEC-022 item 3) over the report's CVEs: the CISA KEV catalog
          # was read and nothing found is on it. tests/prove_known_exploited.py varies it (BLOCKED,
          # EXCEPTED, UNAVAILABLE).
-         'needs.report.outputs.cve_findings': '',
+         'steps.render.outputs.cve_findings': '',
          'steps.kev.outputs.kev_state': 'AVAILABLE', 'steps.kev.outputs.kev_verdict': 'CLEAR',
          'steps.kev.outputs.kev_blocking': '', 'steps.kev.outputs.kev_excepted': '',
          'steps.kev.outputs.kev_catalog_version': '2026.10.22',
@@ -192,7 +196,7 @@ SCENARIOS = [
      'is absent asserts documentation that does not exist.'),
     # THE DISCOVER JOB DYING IS NOT THE SAME AS DISCOVERY REPORTING DISCOVERY_UNAVAILABLE. The
     # second is an output the job writes; the first writes no outputs at all, so `state` is '' and
-    # the DISCOVERY_UNAVAILABLE checks never fire. Scanners gated on `needs.discover.outputs.<x>`
+    # the DISCOVERY_UNAVAILABLE checks never fire. Scanners gated on `needs.plan.outputs.<x>`
     # then skip -> NOT_APPLICABLE, the `if: always()` ones run, and the gate went green over a
     # run in which applicability was never established (H3 / N15).
     ('discover_failed', ctx(scanner='skipped', discover_result='failure', discovery=''), False,

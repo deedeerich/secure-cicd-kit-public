@@ -41,7 +41,7 @@ USES = "$/.github/actions/discover"
 PARTS = {"d": ("survey", "d"), "platform": ("platform", "platform")}
 
 # THE JOB'S OUTPUTS CONTRACT, AS IT STOOD INLINE (2bf2e49, before the move). Every consumer reads
-# needs.discover.outputs.<name>; the move must not rename one, drop one, or re-source one. Pinned
+# needs.plan.outputs.<name>; the move must not rename one, drop one, or re-source one. Pinned
 # here as data rather than read from history, because a CI checkout is shallow.
 # `php` is the one deliberate addition since (lane L-PHP, 2026-10-21): PHP stopped being an
 # unsupported class and became an ecosystem discovery answers for, read by resolve and sast-semgrep.
@@ -61,7 +61,10 @@ BASE_OUTPUTS = dict(
     [(k, "${{ steps.platform.outputs.%s }}" % k) for k in
      ("ghas_available", "code_scanning", "secret_scanning", "push_protection",
       "dependabot_alerts", "dependabot_updates", "dependabot_config", "visibility",
-      "platform_source", "push_ruleset", "branch_gate", "local_baseline")])
+      "platform_source", "push_ruleset", "branch_gate", "local_baseline")] +
+    # `codeql_matrix` is the next (cost redesign step 1, KDEC-033): one CodeQL leg per discovered
+    # language, built in the job from the survey's own outputs (tests/prove_codeql_dynamic_matrix.py).
+    [("codeql_matrix", "${{ steps.cqm.outputs.codeql_matrix }}")])
 
 
 def load_job_and_composite():
@@ -69,9 +72,10 @@ def load_job_and_composite():
     both parts under the ids its outputs read."""
     import yaml
     doc = yaml.safe_load(io.open(WF, encoding="utf-8"))
-    job = (doc.get("jobs") or {}).get("discover")
+    # G1 (KDEC-033): discovery is the second part of the `plan` job.
+    job = (doc.get("jobs") or {}).get("plan")
     if not job:
-        raise SystemExit("FAIL: no job named discover in reusable-security.yml")
+        raise SystemExit("FAIL: no job named plan (discovery's job since G1) in reusable-security.yml")
     by_id = {s.get("id"): s for s in job.get("steps") or [] if s.get("id")}
     for sid, (part, _) in PARTS.items():
         s = by_id.get(sid) or {}
@@ -110,7 +114,11 @@ def wiring_checks():
     import yaml
     job, comp = load_job_and_composite()
     ok = True
-    outputs = {k: str(v).strip() for k, v in (job.get("outputs") or {}).items()}
+    # The discovery outputs: those `plan` reads from the discovery part's own steps. Its other
+    # outputs are the resolver's and the per-part results (tests/prove_plan_job.py).
+    disc_ids = set(PARTS) | {"cqm"}
+    outputs = {k: str(v).strip() for k, v in (job.get("outputs") or {}).items()
+               if re.match(r"\$\{\{ steps\.(%s)\.outputs\." % "|".join(sorted(disc_ids)), str(v).strip())}
     added = sorted(set(outputs) - set(BASE_OUTPUTS))
     dropped = sorted(set(BASE_OUTPUTS) - set(outputs))
     changed = sorted(k for k in set(outputs) & set(BASE_OUTPUTS) if outputs[k] != BASE_OUTPUTS[k])
@@ -120,6 +128,8 @@ def wiring_checks():
     bad = []
     for k, expr in BASE_OUTPUTS.items():
         sid = expr.split("steps.", 1)[1].split(".", 1)[0]
+        if sid not in PARTS:
+            continue    # computed in the job from the parts' outputs (codeql_matrix), not by the composite
         part, inner = PARTS[sid]
         want = "${{ steps.%s.outputs.%s }}" % (inner, k)
         if str((cout.get(k) or {}).get("value", "")).strip() != want:
@@ -147,9 +157,11 @@ def wiring_checks():
     ok &= check_bool("job passes every input, nothing extra", passed == declared,
                      "missing=%s extra=%s" % (sorted(declared - passed), sorted(passed - declared)))
     reg = yaml.safe_load(io.open(REG, encoding="utf-8")) or {}
-    row = (reg.get("jobs") or {}).get("discover") or {}
-    ok &= check_bool("registry names the composite", row.get("composite") == "discover",
-                     "row=%s" % row)
+    row = (reg.get("jobs") or {}).get("plan") or {}
+    comps = row.get("composite")
+    comps = [comps] if isinstance(comps, str) else list(comps or [])
+    ok &= check_bool("registry names the composite", "discover" in comps
+                     and "discover" in (row.get("parts") or []), "row=%s" % row)
     return ok
 
 

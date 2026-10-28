@@ -73,11 +73,21 @@ on:
         type: string
         default: ""
 
+# A SUPERSEDED PULL-REQUEST RUN IS CANCELLED; NOTHING ELSE IS (cost redesign step 2, KDEC-033). Only
+# pull_request runs share a group (one per PR), so a new push to the PR cancels the run it replaced. Every
+# other event is grouped by its own run id: a push to main -- the run that builds and deploys -- is never
+# cancelled and never queued. tests/prove_security_caller_triggers.py holds both expressions.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
 jobs:
   # ── Gate 1: security must pass before anything is built ──────────────
+  # THIS JOB REPLACES templates/security.yml (KDEC-033): same id, same triggers, same required check
+  # `security / Security gate`. Delete security.yml when this file is installed.
   security:
     if: inputs.promote_from_run_id == ''   # a promotion builds nothing; the source record carries the verdict
     uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-security.yml@0000000000000000000000000000000000000000   # pin a commit SHA

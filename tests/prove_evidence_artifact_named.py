@@ -33,7 +33,7 @@ def _expand(doc):
 
 
 def report_upload_name(doc):
-    for s in doc['jobs']['report'].get('steps') or []:
+    for s in doc['jobs']['security-gate'].get('steps') or []:
         if 'upload-artifact' in str(s.get('uses') or ''):
             name = str((s.get('with') or {}).get('name') or '')
             body, _ = pbf.substitute(name, {'github.run_attempt': ATTEMPT})

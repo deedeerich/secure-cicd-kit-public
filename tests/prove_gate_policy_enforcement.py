@@ -182,13 +182,13 @@ def scanners(findings_in='', failed=()):
             # and the report's fingerprint of each one -- here one secret, fp_a.
             d['needs.secret-scan.outputs.findings_state'] = 'FINDINGS'
             d['needs.secret-scan.outputs.secret_count'] = '1'
-            d['needs.report.outputs.secret_findings'] = fp_a
+            d['steps.render.outputs.secret_findings'] = fp_a
         else:
             d['needs.%s.outputs.findings_state' % j] = 'FINDINGS'
     for j in failed:
         d['needs.%s.result' % j] = 'failure'
-    d['needs.report.outputs.blocking_findings'] = str(3 * len(jobs))
-    d['needs.report.outputs.jobs_with_findings'] = ' '.join(jobs)
+    d['steps.render.outputs.blocking_findings'] = str(3 * len(jobs))
+    d['steps.render.outputs.jobs_with_findings'] = ' '.join(jobs)
     return d
 
 
@@ -301,10 +301,10 @@ def sep_case(bash, doc, steps, pol, seeded_job, count, collection='COMPLETE', in
             d['needs.%s.outputs.%s' % (j, k)] = v
     if seeded_job and count:
         # The report reads the job's SARIF: the finding is on record whatever the job concluded.
-        d['needs.report.outputs.jobs_with_findings'] = seeded_job
-        d['needs.report.outputs.blocking_findings'] = str(count)
+        d['steps.render.outputs.jobs_with_findings'] = seeded_job
+        d['steps.render.outputs.blocking_findings'] = str(count)
         if seeded_job == SECRET_JOB:
-            d['needs.report.outputs.secret_findings'] = ' '.join([fp_a, fp_b][:count])
+            d['steps.render.outputs.secret_findings'] = ' '.join([fp_a, fp_b][:count])
     if inputs:
         d.update(inputs)
     return results, run_job(bash, steps, pol, d), notes
@@ -366,9 +366,9 @@ def secret_seed(fps, count=None):
     d = pbf.ctx()
     d['needs.secret-scan.outputs.findings_state'] = 'FINDINGS'
     d['needs.secret-scan.outputs.secret_count'] = str(len(fps) if count is None else count)
-    d['needs.report.outputs.secret_findings'] = ' '.join(fps)
-    d['needs.report.outputs.jobs_with_findings'] = 'secret-scan'
-    d['needs.report.outputs.blocking_findings'] = str(len(fps))
+    d['steps.render.outputs.secret_findings'] = ' '.join(fps)
+    d['steps.render.outputs.jobs_with_findings'] = 'secret-scan'
+    d['steps.render.outputs.blocking_findings'] = str(len(fps))
     return d
 
 
@@ -598,23 +598,23 @@ def main():
             # Lane L-S: a scanner job never fails on findings, so one that FAILED with findings on
             # record (gosec with one module unanalysed) could not finish its scan -- untrusted.
             ('crawl_failed_beside_findings_dev', policy_outputs(work, None, environment='dev'),
-             dict(scanners(failed=('sast-go',)), **{'needs.report.outputs.jobs_with_findings': 'sast-go',
-                                                    'needs.report.outputs.blocking_findings': '2'}),
+             dict(scanners(failed=('sast-go',)), **{'steps.render.outputs.jobs_with_findings': 'sast-go',
+                                                    'steps.render.outputs.blocking_findings': '2'}),
              (False, 'BLOCKED'), 'EVIDENCE_UNTRUSTED', None, False),
             ('crawl_collection_failed_dev', policy_outputs(work, None, environment='dev'),
              dict(scanners(), **{'needs.malicious-deps.result': 'failure',
                                  'needs.malicious-deps.outputs.malicious_state': 'COLLECTION_FAILED'}),
              (False, 'BLOCKED'), 'BLOCKED', None, False),   # malware evidence absent is secret-class
             ('crawl_hollow_report_dev', policy_outputs(work, None, environment='dev'),
-             dict(scanners(), **{'needs.report.outputs.blocking_findings': ''}),
+             dict(scanners(), **{'steps.render.outputs.blocking_findings': ''}),
              (True, 'ALLOWED'), 'EVIDENCE_UNTRUSTED', None, False),
             ('crawl_bootstrap_dev', policy_outputs(work, None, environment='dev'),
-             dict(scanners(), **{'needs.kit-scripts.result': 'failure'}),
+             dict(scanners(), **{'needs.plan.outputs.kit_scripts_result': 'failure'}),
              (False, 'BLOCKED'), 'EVIDENCE_UNTRUSTED', None, False),
             ('crawl_coverage_partial_dev', policy_outputs(work, None, environment='dev'),
-             dict(scanners(), **{'needs.resolve.outputs.capped_jobs': 'sast-semgrep',
-                                 'needs.resolve.outputs.capability_gaps': 'php@.:sast-semgrep',
-                                 'needs.resolve.outputs.capability_gap_count': '1'}),
+             dict(scanners(), **{'needs.plan.outputs.capped_jobs': 'sast-semgrep',
+                                 'needs.plan.outputs.capability_gaps': 'php@.:sast-semgrep',
+                                 'needs.plan.outputs.capability_gap_count': '1'}),
              (True, 'ALLOWED'), 'PROCEED_WITH_ADVISORY', 'VERSION_GAP_UNVERIFIED', True),
             # PHP Semgrep could not fully parse (lane L-P85, PARSE_PARTIAL_PHP_SYNTAX): the scanner
             # READS the version; specific files did not parse. COVERAGE_PARTIAL, advisory -- and

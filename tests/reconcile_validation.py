@@ -113,7 +113,7 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # capability name, because naming it would invent a claim to satisfy a registry. The report
     # renders what the scanners established; it establishes nothing about the code itself. Its
     # proof is tests/prove_report_runs_as_shipped.py, and its failure is read by the gate as
-    # `needs.report.result`.
+    # `steps.report_part.outputs.report_result`.
     "action:scan-report": [],
     # STAGE 1 RESOLUTION, NOT AN ASSURANCE CLAIM. Same reasoning as scan-report: it reads the policy
     # register and emits what it found; it establishes nothing about the code. Its proofs are
@@ -124,6 +124,16 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # cve_findings, or the NVD path's SARIF). It scans nothing itself, so it names no capability;
     # it feeds the gate's verdict. Proof: tests/prove_known_exploited.py.
     "action:known-exploited": [],
+    # KDEC-033 (owner ruling 4, 2026-10-27): the protected capability floor, checked over the run's
+    # evidence in the security gate. It scans nothing, so it names no capability; it feeds the gate's
+    # verdict (BREACHED fails it). Proof: tests/prove_capability_floor.py.
+    "action:capability-floor": [],
+    # TEST-HARNESS TOOLING, NOT AN ASSURANCE CLAIM: the pinned scanner binaries and Python packages
+    # the kit's own self-test proofs run with, installed from one list by normalizer-drift and the
+    # tree-clean job (split 2026-10-28, public run 40687057324). It scans nothing of a consumer's
+    # and establishes nothing; tests/check_pinned_installs.py holds its pins, tests/prove_tree_clean_job.py
+    # holds the two jobs to it.
+    "action:selftest-tools": [],
     # KDEC-030 DRAFT (lane L-SEAM2, 2026-10-27): the cross-repository target lease. COORDINATION, NOT
     # AN ASSURANCE CLAIM: it serialises the landing-zone apply and the kit deploy on one target and
     # fences a stale holder; it establishes nothing about the code or the artefact. Opt-in in both
@@ -147,12 +157,12 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # scan-report: infrastructure gets no capability name (decomposition plan §6.5). It declares
     # what the scanners CAN read before they run; it establishes nothing about the code. Proven
     # as shipped by tests/test_resolve.py, which runs its steps from this composite; its failure
-    # is read by the gate as `needs.resolve.result` (tooling, never NOT_APPLICABLE).
+    # is read by the gate as `needs.plan.outputs.resolve_result` (tooling, never NOT_APPLICABLE).
     "action:resolve": [],
     # DISCOVERY, NOT AN ASSURANCE CLAIM, by the same rule: it decides which scanners start and
     # declares what nothing can read (COVERAGE_GAP); it establishes nothing about the code.
     # Proven as shipped by tests/test_discovery.py, which runs its steps from this composite; its
-    # failure is read by the gate as `needs.discover.result` (tooling, never NOT_APPLICABLE).
+    # failure is read by the gate as `needs.plan.outputs.discover_result` (tooling, never NOT_APPLICABLE).
     "action:discover": [],
     # SCANNER COMPOSITES (ledger L64; decomposition plan §6.5): a composite is an IMPLEMENTATION of
     # the job's capability, never a new one, so it carries the job's own name and adds no debt

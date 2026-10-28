@@ -9,7 +9,7 @@ inputs:
   secret-gate: {description: gate secret_gate, required: false, default: ''}
   discovery-state: {description: discovery state, required: false, default: ''}
   scanner-states: {description: gate scanner_states JSON, required: false, default: '{}'}
-  report-result: {description: needs.report.result, required: false, default: ''}
+  report-result: {description: steps.report_part.outputs.report_result, required: false, default: ''}
   blocking-findings: {description: the report's blocking_findings count, required: false, default: ''}
   evidence-artifact: {description: gate evidence_artifact, required: false, default: ''}
   secret-exceptions: {description: gate secret_exceptions_applied JSON (finding ticket approver expires entry renewals history), required: false, default: '[]'}

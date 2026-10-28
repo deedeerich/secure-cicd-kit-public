@@ -144,17 +144,17 @@ def static_checks(doc):
     """-> list of failures. The job must reach Node code on discovery's word, not the caller's."""
     bad = []
     job_if = str(doc['jobs'][JOB].get('if') or '')
-    if 'needs.discover.outputs.node' not in job_if:
+    if 'needs.plan.outputs.node' not in job_if:
         bad.append("job `if:` is %r -- a Node-only repository never reaches ESLint" % job_if)
     for name in (ESLINT, 'Locate the Node project', 'Setup Node'):
         s = step(doc, name)
         cond = str((s or {}).get('if') or '')
-        if 'inputs.language' in cond and 'needs.discover.outputs.node' not in cond:
+        if 'inputs.language' in cond and 'needs.plan.outputs.node' not in cond:
             bad.append('step %r keys on the caller-declared language, not on discovery: %r'
                        % (name, cond))
     s = step(doc, RUFF)
     cond = str((s or {}).get('if') or '')
-    if 'inputs.language' in cond and 'needs.discover.outputs.python' not in cond:
+    if 'inputs.language' in cond and 'needs.plan.outputs.python' not in cond:
         bad.append('step %r keys on the caller-declared language, not on discovery: %r'
                    % (RUFF, cond))
     return bad

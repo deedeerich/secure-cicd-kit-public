@@ -59,7 +59,7 @@ def main():
         if not cond:
             fails.append(msg)
 
-    report = (wf.get('jobs') or {}).get('report') or {}
+    report = (wf.get('jobs') or {}).get('security-gate') or {}
     steps = report.get('steps') or []
 
     # ── history ──────────────────────────────────────────────────────────────────────

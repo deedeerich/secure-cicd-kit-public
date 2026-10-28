@@ -19,6 +19,11 @@
 name: NVD CVE Scan
 
 on:
+  # STAYS ON pull_request (cost redesign step 2, KDEC-033). Its PR pass is Trivy-only and looks like a
+  # repeat of the security suite's dependency job. The two configurations differ: that job adds the
+  # licence scanner and reads the caller's `paths`, while this pass reads `.` under its own fail threshold
+  # and routing_result. The owner ruled this comes off pull_request only once the configurations match;
+  # tests/prove_security_caller_triggers.py compares them and fails if it is dropped before they do.
   pull_request:
   schedule:
     - cron: "0 5 * * *"   # daily, after NVD publishes

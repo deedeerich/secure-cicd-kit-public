@@ -11,8 +11,11 @@ WHY THIS EXISTS
     A registry makes the comparison arithmetic. For every registered job:
 
       1  the job exists
-      2  once a composite is named, the job uses it through `$/`
-      3  security-gate.needs contains it, and the gate step reads `needs.<job>.result`
+      2  once a composite is named, the job uses it through `$/` (a list: each of them)
+      3  security-gate.needs contains it, and the gate step reads `needs.<job>.result` -- or, for a
+         job registered with `parts:` (G1 `plan`, KDEC-033: kit-scripts + discover + resolve in one
+         job), `needs.<job>.outputs.<part>_result` for EVERY part, so merging jobs can never let
+         the gate stop reading one of them as itself
       4  report.needs contains it                                         (scanners)
       5  its capability is registered for reusable-security.yml           (scanners, gate)
 
@@ -85,7 +88,9 @@ def check(doc, reg, capabilities, composite_exists=composite_on_disk):
             if re.search(r'\$\{?%s\b' % re.escape(str(k)), run):
                 parts.append(str(v))
     gate_text = '\n'.join(parts)
-    report_needs = set(as_list((jobs.get(REPORT) or {}).get('needs')))
+    # G3 (KDEC-033): with no separate report job the report is the first part of the gate job, so
+    # "the report waits for every scanner" is the gate job's own needs.
+    report_needs = set(as_list((jobs.get(REPORT) or gate).get('needs')))
 
     for name in sorted(set(jobs) - set(rows)):
         problems.append('%s: a job with no registry row. Unregistered is unenforced.' % name)
@@ -100,8 +105,7 @@ def check(doc, reg, capabilities, composite_exists=composite_on_disk):
         if job is None:
             problems.append('%s: registered, but no such job exists' % name)
             continue
-        comp = row.get('composite')
-        if comp:
+        for comp in as_list(row.get('composite')):
             want = '$/.github/actions/%s' % comp
             used = [s.get('uses') for s in (job.get('steps') or []) if s.get('uses')]
             if want not in used:
@@ -121,9 +125,21 @@ def check(doc, reg, capabilities, composite_exists=composite_on_disk):
                                 % (name, cls, REPORT))
             continue
         if cls == 'gate':
-            pass
+            # A gate job that absorbed the report (G3) reads that part as itself, in the same job.
+            for part in as_list(row.get('parts')):
+                key = '%s_result' % part.replace('-', '_')
+                if not re.search(r'steps\.%s_part\.outputs\.%s' % (re.escape(part), key), gate_text):
+                    problems.append('%s: part %s is never read as steps.%s_part.outputs.%s'
+                                    % (name, part, part, key))
         elif name not in gate_needs:
             problems.append('%s: not in %s.needs -- the gate does not wait for it' % (name, GATE))
+        elif row.get('parts'):
+            for part in as_list(row.get('parts')):
+                key = '%s_result' % part.replace('-', '_')
+                if not re.search(r'needs\.%s\.outputs\.%s\b' % (re.escape(name), key), gate_text):
+                    problems.append('%s: part %s is never read by the gate as needs.%s.outputs.%s '
+                                    '-- a merged job must keep each part read as itself'
+                                    % (name, part, name, key))
         elif not re.search(r'needs\.%s\.result' % re.escape(name), gate_text):
             problems.append('%s: in %s.needs but the gate never reads needs.%s.result -- '
                             'waiting for a job is not enforcing on it' % (name, GATE, name))
@@ -187,6 +203,12 @@ def self_test():
     cases.append(('gate waits for a governance job', d, base_reg, caps))
     d = copy.deepcopy(base_doc); d['jobs']['gov']['needs'] = ['s1']
     cases.append(('governance job does not need the report', d, base_reg, caps))
+    # G1: a merged infrastructure job whose gate stops reading one of its parts.
+    d = copy.deepcopy(base_doc)
+    d['jobs'][GATE]['steps'][0]['run'] = ('x=${{ needs.s1.result }} ${{ needs.infra.outputs.a_result }} '
+                                          '${{ needs.report.result }}')
+    r = copy.deepcopy(base_reg); r['jobs']['infra']['parts'] = ['a', 'b']
+    cases.append(('a merged job with a part the gate never reads', d, r, caps))
     for case in cases:
         label, d, r, c = case[:4]
         exists = case[4] if len(case) > 4 else on_disk
@@ -213,7 +235,7 @@ def main():
         print('SELF-TEST FAILED: %s. A checker that misses its own defect class proves nothing.'
               % err)
         return 1
-    print('self-test ok: 9 seeded defects caught, the controls pass')
+    print('self-test ok: 10 seeded defects caught, the controls pass')
     doc = yaml.safe_load(io.open(WF, encoding='utf-8'))
     reg = yaml.safe_load(io.open(REG, encoding='utf-8'))
     caps = set(rv.CAPABILITY_REGISTRY.get('reusable-security.yml') or [])

@@ -44,7 +44,7 @@ WF = os.path.join(ROOT, '.github', 'workflows', 'reusable-security.yml')
 # Spelled here rather than imported from the generator's module constants. An all-caps
 # underscored Python identifier reads as controlled vocabulary to scripts/reconcile_taxonomy.py,
 # and these are a job name, a step name and a region marker -- nothing branches on them.
-BOOTSTRAP = 'kit-scripts'
+BOOTSTRAP = 'plan'   # G1 (KDEC-033): the kit-scripts part of the plan job
 FETCH_MARKER = 'FETCH_KIT_SCRIPTS'
 WRITE_STEP = 'Write the canonical scripts'
 PIN_STEP = 'Pin what was written, and assert it is what this file promises'

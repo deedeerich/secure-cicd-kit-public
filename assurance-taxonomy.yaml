@@ -4792,3 +4792,67 @@ namespaces:
         rule: >-
           SUCCESS IS CLAIMED ONLY FOR WHAT THE FILE NOW CARRIES. Not FITNESS_FAILED: the tools passed
           their self-test, and only the read-back after writing caught the gap.
+  # -------------------------------------------------------------------------
+  # The cost redesign's acceptance measurement (KDEC-033, owner 2026-10-27). Not a scan verdict and
+  # never read by the gate: these say whether a cost comparison may be printed and whether a
+  # scanner identity behaved the same before and after a topology change.
+  cost_measurement_state:
+    description: >-
+      What scripts/measure_cost.py can say about a before/after comparison of the security suite on
+      one fixture class: whether enough runs exist to print a saving, and, per scanner identity,
+      whether its state and SARIF result count were stable and equal across the two phases.
+    consumers: [scripts/measure_cost.py, docs/operations/COST_MEASUREMENT.md, the coordinator reading its report]
+    rule: >-
+      A SAVING IS NEVER PRINTED FROM TOO FEW RUNS, AND A SCANNER THAT CHANGED IS NEVER AVERAGED
+      AWAY. Billed figures are computed from measured job durations (per-job ceiling), not
+      invoice-reconciled; fewer than five runs in either phase is INSUFFICIENT_RUNS, and any
+      per-scanner difference fails the comparison however much cheaper the after phase is.
+    transitions:
+      - "INSUFFICIENT_RUNS -> a measured saving only when both phases reach five runs on the same fixture commit"
+      - "UNSTABLE_BEFORE / UNSTABLE_AFTER are not CHANGED: the fixture or the tool is noisy, and the comparison is not trusted either way"
+      - "never -> a pass: every value here except a measured saving with no per-scanner difference fails the acceptance test"
+    values:
+      INSUFFICIENT_RUNS:
+        definition: Fewer than five runs in the before or the after phase of a class; no saving is printed.
+        rule: Not a zero saving and not a failed saving. Unmeasured, and labelled as such.
+      NO_SARIF:
+        definition: A scanner identity's state row names no SARIF, so it has no result count to compare.
+        rule: Not a count of zero. Compared as itself (NO_SARIF before must be NO_SARIF after).
+      UNSTABLE_BEFORE:
+        definition: The before runs disagree with each other on this scanner's state or result count.
+        rule: Not CHANGED. The baseline is not a baseline; re-run or fix the fixture before comparing.
+      UNSTABLE_AFTER:
+        definition: The after runs disagree with each other on this scanner's state or result count.
+        rule: Not CHANGED, and not a pass. The new topology is nondeterministic for this identity.
+  # -------------------------------------------------------------------------
+  # The protected capability floor (owner rulings 4 and 8, 2026-10-27, KDEC-033). Not a scanner state:
+  # whether what the KIT requires is present, independently of what scanner-registry.yaml now lists.
+  capability_floor_state:
+    description: >-
+      Whether every scanner identity in the kit-owned capability-floor.json produced an evidence row
+      in this run (runtime, the security gate's floor step), and whether every capability removed
+      from the floor left a valid tombstone (static and against a pull request's base).
+    consumers: [scripts/capability_floor.py, .github/actions/capability-floor, security-gate verdict step,
+                tests/prove_capability_floor.py]
+    rule: >-
+      A ROW DELETED IS NOT A SCANNER NEVER EXPECTED. The floor is read from the kit, never from the
+      registry rows a contributor edits, and an unread or unreadable floor is BREACHED. GAP_DECIDED is
+      never a clean coverage claim, and an expired gap decision is BREACHED: expiry needs a renewed
+      decision or a proven replacement, and never restores the removed tool.
+    transitions:
+      - "HELD -> BREACHED when a floor identity has no evidence row, or a tombstone is invalid or expired"
+      - "HELD -> GAP_DECIDED only through a tombstone with an authorised, unexpired gap decision"
+      - "GAP_DECIDED -> HELD only through a proven replacement in the floor; -> BREACHED at expiry"
+    values:
+      HELD:
+        definition: Every floor identity is present, and every tombstone names a proven replacement.
+      GAP_DECIDED:
+        definition: >-
+          A required capability was removed under an authorised, time-limited gap decision and nothing
+          replaces it yet.
+        rule: Not HELD and not a pass of coverage. The gate records it unestablished; it does not block.
+      BREACHED:
+        definition: >-
+          A floor identity produced no evidence row, a floor entry vanished without a tombstone, a
+          tombstone lacks its decision, or a gap decision expired. Also: the floor could not be read.
+        rule: The gate fails. Not a finding, so advisory_mode does not soften it.

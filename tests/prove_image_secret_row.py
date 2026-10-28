@@ -102,7 +102,7 @@ def main():
         return 2
     if ROW not in names:
         bad.append('static: %r is not on the report roster (expect:) -- the row cannot be owed' % ROW)
-    step = h.steps_by_name('report').get('Build per-scanner state')
+    step = h.steps_by_name('security-gate').get('Build per-scanner state')
     if step is None:
         print('UNKNOWN: the report job has no "Build per-scanner state" step.')
         return 2
@@ -117,7 +117,7 @@ def main():
     try:
         def states_for(name, image, files):
             vals = {'needs.image-scan.result': 'success', 'inputs.image_ref': image,
-                    'needs.discover.outputs.state': 'COMPLETE'}
+                    'needs.plan.outputs.state': 'COMPLETE'}
             ws = sb.workspace(name, dict({'_sarif/.keep': ''}, **files))
             rc, log, _o, _u = sb.run(bash, step, vals, ws)
             if rc != 0:

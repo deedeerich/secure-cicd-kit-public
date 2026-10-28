@@ -27,6 +27,62 @@ permissions:
   contents: read
 
 jobs:
+  # ─── THE REQUIRED CHECK: NEVER GREEN BY SKIPPING, NEVER PENDING BY PATH FILTER (KDEC-033) ─────
+  # Owner ruling 2026-10-27 on the cost redesign's step 8. GitHub counts a SKIPPED job as a passing
+  # required check, and a workflow behind `paths:` never starts, so its check stays pending. So:
+  #   contract  always runs (no `if:`, no needs): lists what a pull request changes, plans which
+  #             heavy jobs may skip -- only where EVERY change is proven safe for that job -- and
+  #             holds the protected capability floor against the base.
+  #   required  `if: always()`, needs EVERY job: fails unless each succeeded or was skipped for a
+  #             reason it can name (the plan, or the job's own event condition). Branch protection
+  #             requires THIS check, "Self-test required", and no job that can skip.
+  # scripts/selftest_required.py; tests/prove_selftest_required.py (the adversarial test).
+  contract:
+    name: Self-test contract (always runs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      skips: ${{ steps.plan.outputs.skips }}
+      skip_platform_scanners: ${{ steps.plan.outputs.skip_platform_scanners }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # On pull_request the checkout is the merge commit, whose first parent is the base.
+          fetch-depth: 2
+      - name: List what this pull request changes
+        if: github.event_name == 'pull_request'
+        run: |
+          set -uo pipefail
+          # A diff that cannot be read leaves no list, and the plan then skips nothing.
+          if ! git diff --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed.txt"; then
+            rm -f "$RUNNER_TEMP/changed.txt"
+            echo "::warning title=Changed files unknown::the diff against the base could not be read; nothing will be skipped."
+          fi
+          cat "$RUNNER_TEMP/changed.txt" 2>/dev/null || true
+      - name: Plan which heavy jobs may skip (only where every change is proven safe for them)
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          skips="$(python3 scripts/selftest_required.py --plan --json --event "$EVENT" --changed-files "$RUNNER_TEMP/changed.txt")"
+          echo "plan: $skips"
+          echo "skips=$skips" >> "$GITHUB_OUTPUT"
+          echo "skip_platform_scanners=$(printf '%s' "$skips" | jq -r '."platform-scanners"')" >> "$GITHUB_OUTPUT"
+      - name: The protected capability floor holds, and shrinks only through a tombstone
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet PyYAML
+          python3 scripts/capability_floor.py --check-tree
+          # Against the base: a floor entry that disappeared needs a valid tombstone (ruling 8).
+          if [ "$EVENT" = "pull_request" ] && git show HEAD^1:capability-floor.json > "$RUNNER_TEMP/base-floor.json" 2>/dev/null; then
+            python3 scripts/capability_floor.py --base-floor "$RUNNER_TEMP/base-floor.json"
+          else
+            echo "no base floor to compare (not a pull request, or the base predates the floor)"
+          fi
+
   yaml-lint:
     name: YAML lint
     runs-on: ubuntu-latest
@@ -257,15 +313,22 @@ jobs:
     # 12m52s on a re-run of 39658855303, 14m09s on 39659025182, then cut off at 15m06s on
     # 39694056635 (cancelled, every step that had run had passed). Thirty is twice the measured
     # time; if it needs more, split the job rather than raise it again.
+    # SPLIT on 2026-10-28, not raised: public run 40687057324 exceeded thirty with the tree-clean
+    # sweep (every test in a throwaway clone) at 1036 s, 879 s the run before. The sweep is now the
+    # `tree-clean` job below, on the same pinned tools (the selftest-tools composite, one pin list
+    # for both; tests/prove_tree_clean_job.py). Without it this job measured ~15 min; thirty stays.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Full history: the clean-tree sweep below runs check_context_current.py, which resolves
-          # the commit .context says it was reconciled against. A depth-1 checkout holds only the
-          # PR merge commit, so the check refused on the private repo (Release 3 re-cut, run
-          # 39985896367, job 120524861777) while passing locally and on the source-only mirror.
+          # Full history: the context check (check_context_current.py, run by the pre-push battery
+          # and by the tree-clean sweep) resolves the commit .context says it was reconciled against.
+          # A depth-1 checkout holds only the PR merge commit, so the check refused on the private
+          # repo (Release 3 re-cut, run 39985896367, job 120524861777) while passing locally and on
+          # the source-only mirror.
           fetch-depth: 0
+      - name: Install the pinned tools the proofs below run with (one list, shared with tree-clean)
+        uses: ./.github/actions/selftest-tools
       - name: Inlined normalizer must match the canonical source
         run: |
           set -euo pipefail
@@ -515,17 +578,14 @@ jobs:
       - name: The sast-java job must find, count and enforce a seeded Java flaw
         run: |
           set -euo pipefail
-          python3 -m pip install --quiet semgrep==1.178.0
+          # Semgrep: the selftest-tools composite above, pinned to the sast-semgrep image's release.
           python3 tests/prove_sast_java_detects.py
 
       - name: Image scan must fail on CVEs (advisory off) and on a credential in every mode
         run: |
           set -euo pipefail
-          # Pinned: the install script from the release tag, and the same release. Never `main`
-          # and never `latest` (ledger L84) -- a probe that installs whatever is current proves
-          # something about a tool nobody chose.
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/v0.71.2/contrib/install.sh \
-            | sudo sh -s -- -b /usr/local/bin v0.71.2
+          # Trivy v0.71.2: the selftest-tools composite above (the release's own install script,
+          # from its tag; never `main`, never `latest`, ledger L84).
           python3 tests/prove_image_scan_enforces.py
           # L12: both image reports are redacted, kept, published, and degradation is stated.
           python3 tests/prove_image_scan_retains.py
@@ -542,13 +602,8 @@ jobs:
       - name: A known-malicious package must block in every mode, and no evidence must not read as clean
         run: |
           set -euo pipefail
-          # The same osv-scanner release the workflow pins, verified against a digest written in
-          # this file (copied from the release's osv-scanner_SHA256SUMS). Never `latest` (L84).
-          v=v2.6.0
-          curl -sSfL --retry 3 -o osv-scanner \
-            "https://github.com/google/osv-scanner/releases/download/${v}/osv-scanner_linux_amd64"
-          echo "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108  osv-scanner" | sha256sum -c -
-          sudo install -m 0755 osv-scanner /usr/local/bin/osv-scanner && rm -f osv-scanner
+          # osv-scanner v2.6.0, the release the workflow pins, verified against the digest written in
+          # the selftest-tools composite above (copied from the release's SHA256SUMS; never `latest`, L84).
           # Runs the job's install (statically), scan, count and enforce steps as shipped (L15).
           python3 tests/prove_malicious_deps_enforces.py
           # The OSV scan and the SBOM must be handed the caller's `paths`, as every other
@@ -558,22 +613,16 @@ jobs:
       - name: Bandit, NuGet, gosec and cppcheck must count, enforce, and never read no evidence as zero
         run: |
           set -euo pipefail
-          # Ledger L08. Each proof runs the job's own steps as shipped with the real tool.
-          # bandit: the release the workflow pins.
-          python3 -m pip install --quiet "bandit[sarif]==1.9.4"
+          # Ledger L08. Each proof runs the job's own steps as shipped with the real tool, every
+          # one installed by the selftest-tools composite above at the release the workflow pins.
+          # bandit 1.9.4:
           python3 tests/prove_bandit_enforces.py
           # NuGet: the runner's preinstalled .NET SDK, restoring from nuget.org.
           python3 tests/prove_nuget_audit.py
-          # gosec: the release the workflow's container pins, verified against its published
-          # checksums; the runner's preinstalled Go loads the modules.
-          v=2.24.6; t=gosec_${v}_linux_amd64.tar.gz
-          curl -sSfLO "https://github.com/securego/gosec/releases/download/v${v}/${t}"
-          curl -sSfL "https://github.com/securego/gosec/releases/download/v${v}/gosec_${v}_checksums.txt" \
-            | grep " ${t}\$" | sha256sum -c -
-          tar -xzf "$t" gosec && sudo install -m 0755 gosec /usr/local/bin/gosec && rm -f gosec "$t"
+          # gosec 2.24.6 (the workflow's container release, verified against its published
+          # checksums); the runner's preinstalled Go loads the modules.
           python3 tests/prove_gosec_modules.py
           # cppcheck: the distribution package the job itself installs.
-          sudo apt-get -o DPkg::Lock::Timeout=60 install -y --no-install-recommends cppcheck
           python3 tests/prove_cppcheck_collects.py
 
       - name: Pipeline linters run where their files are, detect the seeds, and are free where not (KDEC-025)
@@ -629,9 +678,9 @@ jobs:
           python3 tests/prove_codeql_build_outcome.py
           # Real tools: .NET static analysis finds a seeded C# flaw; every configured Semgrep
           # ruleset loads and tests/ + fixtures/ are scanned; flawfinder runs and cppcheck's
-          # output reaches the uploads. Semgrep is pinned to the release the sast-semgrep job's
-          # image is (lane L-SG): prove_semgrep_strict P4 and prove_semgrep_php S6 hold them equal.
-          python3 -m pip install --quiet semgrep==1.178.0
+          # output reaches the uploads. Semgrep (the selftest-tools composite above) is pinned to the
+          # release the sast-semgrep job's image is (lane L-SG): prove_semgrep_strict P4,
+          # prove_semgrep_php S6 and prove_tree_clean_job J3 hold them equal.
           python3 tests/prove_sast_dotnet_detects.py
           python3 tests/prove_semgrep_rulesets.py
           # An unparseable file is exit 3 under --strict, and COLLECTION_FAILED -- never a zero.
@@ -646,18 +695,14 @@ jobs:
           # L76: the probe matrix can fail, the shipped semgrep container is probed, and the matrix
           # step fails on an absent, unparseable or undetecting probe (a dated acceptance aside).
           python3 tests/prove_validate_scanners_matrix.py
-          sudo apt-get -o DPkg::Lock::Timeout=60 install -y --no-install-recommends cppcheck flawfinder
+          # cppcheck and flawfinder: the distribution packages, from the selftest-tools composite.
           python3 tests/prove_sast_cpp_runs.py
 
       - name: A denied licence must reach the gate, counted once, matched by licence token
         run: |
           set -euo pipefail
-          # Ledger L16. syft pinned and verified against its release checksums.
-          v=1.52.0; t=syft_${v}_linux_amd64.tar.gz
-          curl -sSfLO "https://github.com/anchore/syft/releases/download/v${v}/${t}"
-          curl -sSfL "https://github.com/anchore/syft/releases/download/v${v}/syft_${v}_checksums.txt" \
-            | grep " ${t}\$" | sha256sum -c -
-          tar -xzf "$t" syft && sudo install -m 0755 syft /usr/local/bin/syft && rm -f syft "$t"
+          # Ledger L16. syft 1.52.0, pinned and verified against its release checksums by the
+          # selftest-tools composite above.
           python3 scripts/sbom_licenses.py --self-test
           python3 tests/prove_sbom_licence_verdict.py
 
@@ -682,23 +727,15 @@ jobs:
       - name: A secret scan that read nothing must not report "no secrets"
         run: |
           set -euo pipefail
-          # The same gitleaks release the workflow pins, verified against the release checksums.
-          # Downloaded OUTSIDE the checkout: the archive left in the working tree was exported by
-          # prove_export_scope.py later in this job and failed it (hosted run 39618329392, E1).
-          v=8.21.2; t=gitleaks_${v}_linux_x64.tar.gz
-          dl="$RUNNER_TEMP/gitleaks-dl"; mkdir -p "$dl"
-          ( cd "$dl"
-            curl -sfLO "https://github.com/gitleaks/gitleaks/releases/download/v${v}/${t}"
-            curl -sfL "https://github.com/gitleaks/gitleaks/releases/download/v${v}/gitleaks_${v}_checksums.txt" \
-              | grep " ${t}\$" | sha256sum -c -
-            tar -xzf "$t" gitleaks && sudo mv gitleaks /usr/local/bin/ )
-          python3 -m pip install --quiet detect-secrets
+          # gitleaks 8.21.2 (the release the workflow pins, verified against the release checksums)
+          # and detect-secrets: the selftest-tools composite above, which downloads OUTSIDE the
+          # checkout -- the archive left in the working tree was exported by prove_export_scope.py
+          # later in this job and failed it (hosted run 39618329392, E1).
           python3 tests/prove_secret_denominator.py
 
       - name: Semgrep and Checkov must count findings by their effective SARIF level
         run: |
           set -euo pipefail
-          python3 -m pip install --quiet semgrep==1.178.0
           python3 tests/prove_sarif_effective_level.py
 
       - name: The build must record its base image digests, lockfile hashes and toolchain
@@ -784,8 +821,8 @@ jobs:
       - name: The NVD workflow's Trivy and Dockerfile steps must detect seeded flaws
         run: |
           set -euo pipefail
-          # nvd-trivy / nvd-dockerfile. Real Trivy (the pinned v0.71.2 installed for the image-scan
-          # probe above, in this same job) runs the steps' own configuration as shipped.
+          # nvd-trivy / nvd-dockerfile. Real Trivy (the pinned v0.71.2 the selftest-tools composite
+          # installed at the top of this job) runs the steps' own configuration as shipped.
           python3 tests/prove_nvd_trivy_detects.py
           python3 tests/prove_nvd_dockerfile_detects.py
 
@@ -799,11 +836,14 @@ jobs:
           set -euo pipefail
           python3 tests/check_caller_permissions.py
 
-      - name: Every test must leave the tracked tree exactly as it found it
+      - name: The tree-clean sweep runs in its own job, on this job's pinned tools
         run: |
           set -euo pipefail
-          # Runs every test in a throwaway clone and fails on any tracked file it changed.
-          python3 tests/prove_tests_leave_tree_clean.py
+          # The sweep (every test in a throwaway clone) ran here until public run 40687057324 took
+          # this job past thirty minutes. It is the `tree-clean` job now; this holds the split: one
+          # pin list (the selftest-tools composite) for both jobs, the sweep run once, full history,
+          # a bound with headroom, and the required check needing it.
+          python3 tests/prove_tree_clean_job.py
 
       - name: Credential material must be redacted before it becomes an artifact
         run: |
@@ -1869,12 +1909,76 @@ jobs:
           fi
           echo "provenance stamp carries the identity chain and claims nothing it cannot see"
 
+      - name: Cost redesign steps 1-3 keep detection, evidence and gate semantics (KDEC-033)
+        run: |
+          set -euo pipefail
+          # Step 1: one CodeQL leg per DISCOVERED language, for all 128 discovery combinations,
+          # exactly the legs the static table ran; a mutant that drops Kotlin is caught.
+          python3 tests/prove_codeql_dynamic_matrix.py
+          # Step 2: build-deploy.yml replaces security.yml without losing a trigger or the
+          # `security / Security gate` check; superseded PR runs cancel, pushes never do; NVD stays
+          # on pull_request while parity with deps-scan is unproven.
+          python3 tests/prove_security_caller_triggers.py
+          # Step 3, G1: kit-scripts + discover + resolve are one job, `plan`; the kit scripts are
+          # written, pinned, redacted and published BEFORE the checkout; each part keeps its own
+          # result and the gate reads it as itself.
+          python3 tests/prove_plan_job.py
+          # Step 3, G3: report and security-gate are one job, still named `Security gate`,
+          # contents: read; the report part runs first and is read as itself; the workspace is
+          # cleared before the verdict; every verdict step runs always().
+          python3 tests/prove_report_and_gate.py
+          # The protected capability floor (owner ruling 4): deleting a scanner from every
+          # contributor-editable place passes the registry check and is refused by the floor,
+          # statically, against the base, at runtime and by the gate.
+          python3 scripts/capability_floor.py --self-test
+          python3 tests/prove_capability_floor.py
+          # The required check (step 8 defect): never green by skipping, never pending by filter.
+          python3 scripts/selftest_required.py --self-test
+          python3 tests/prove_selftest_required.py
+          # The acceptance-test arithmetic (docs/operations/COST_MEASUREMENT.md): per-job ceiling,
+          # skipped jobs excluded, no saving below 5 runs per phase, every scanner compared.
+          python3 scripts/measure_cost.py --self-test
+
   # Lane L-SCAN-B (KDEC-026): Kotlin/Android, Swift/Objective-C, build-aware C/C++ and a real-shaped
   # .NET solution. Its own job, in parallel with normalizer-drift (already 14 of its 30 minutes):
   # the two container proofs build small images and install mobsfscan by digest (~4 min measured
   # locally). Bounded at 20.
+  tree-clean:
+    name: Tests leave the tree clean (every test, in a throwaway clone)
+    # SPLIT OUT OF normalizer-drift on 2026-10-28 (public run 40687057324: the sweep alone took
+    # 1036 s, 879 s the run before, and the job exceeded its 30-minute bound). Same pinned tools as
+    # that job, from the one composite, so a test whose tool is missing does not turn UNKNOWN here
+    # that was checked there; tests/prove_tree_clean_job.py holds the two jobs to the composite.
+    # Bounded at twice the measured sweep plus the installs (LM-001). A sweep that needs more has a
+    # test that hangs, not a budget problem: the sweep gives each test 600 s and names it.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the sweep runs check_context_current.py, which resolves the commit
+          # .context says it was reconciled against; a depth-1 checkout refused on the private repo
+          # (run 39985896367, job 120524861777).
+          fetch-depth: 0
+      - name: Install the pinned tools the sweep's tests run with (one list, shared with normalizer-drift)
+        uses: ./.github/actions/selftest-tools
+      - name: Every test must leave the tracked tree exactly as it found it
+        run: |
+          set -euo pipefail
+          # Runs every test in a throwaway clone and fails on any tracked file it changed, on any
+          # test that exited 1, and on any that timed out. Exit 2 (UNKNOWN: a tool or credential
+          # this host lacks) is reported, not failed -- the log names each one; the hosted baseline
+          # is check_actionlint (no binary here), check_yamllint (no module) and live_ticketing_run
+          # (no credential), and a longer list means a tool left the composite.
+          python3 tests/prove_tests_leave_tree_clean.py
+
   platform-scanners:
     name: Platform scanners (mobile, Kotlin, build-aware C/C++, .NET solution)
+    # Skipped ONLY when the contract job proved every change of this pull request is under docs/,
+    # which no module this job runs reads (tests/prove_selftest_required.py S4). The required
+    # check accounts for the skip; this job is never itself a required check.
+    needs: contract
+    if: needs.contract.outputs.skip_platform_scanners != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -2045,3 +2149,21 @@ jobs:
     with:
       require_sha_pinning: true
       soft_fail: false
+
+  # The ONE required check (see the contract job at the top). needs lists EVERY job:
+  # tests/prove_selftest_required.py S2 fails if one is added and not listed here.
+  required:
+    name: Self-test required
+    needs: [contract, yaml-lint, actionlint, contract-check, profile-schema, normalizer-drift, tree-clean, platform-scanners, validation-coverage, ticket-reconcile-refuses-pr, ticket-reference-not-assessed-off-pr, exception-due-lists-on-push, ticket-reference-outcome-asserted, ledger-proposal-refuses-pr, dogfood-policy]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Every job succeeded, or was skipped for a reason it can name
+        id: verdict
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          PLAN_SKIPS: ${{ needs.contract.outputs.skips }}
+          EVENT: ${{ github.event_name }}
+        run: python3 scripts/selftest_required.py --verdict --event "$EVENT"

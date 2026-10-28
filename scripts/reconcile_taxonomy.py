@@ -406,6 +406,12 @@ NOT_VOCABULARY = {
     # else's identifiers), the kit's own offline switch and image-registry step variable, and two constants.
     "TRIVY_CONFIG_CHECK", "OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY", "KIT_OSV_OFFLINE", "W_IMAGE_REGISTRY",
     "CHECKS_FILE", "CHECKS_SUB", "OSV_SUB", "OSV_ECOSYSTEMS", "OSV_UPSTREAM", "DIGEST_RE",
+    # The Trivy steps' own scan-root variable (deps-scan, reusable-nvd-cve), read BY NAME by
+    # tests/prove_security_caller_triggers.py to compare the two configurations (KDEC-033). A name.
+    "SCAN_REF",
+    # The self-test verdict's environment (KDEC-033): the runner's event name and the two JSON values
+    # the `required` job hands scripts/selftest_required.py. Names, not states.
+    "GITHUB_EVENT_NAME", "NEEDS_JSON", "PLAN_SKIPS",
 }
 
 TOKEN = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")

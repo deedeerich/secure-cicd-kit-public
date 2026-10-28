@@ -478,18 +478,204 @@ jobs:
   # them -- and a row of skipped scanners reads as NOT_APPLICABLE, which is the collapse this kit
   # exists to prevent. `security-gate` therefore reads this job's result explicitly and reports
   # UNDETERMINED, exactly as it does for `report`.
-  kit-scripts:
-    name: Materialise the kit's own scripts
+  # ─── PLAN (G1): THE KIT'S OWN SCRIPTS, DISCOVERY, AND RESOLVE, IN ONE JOB ──────────────────
+  # Cost redesign step 3 (owner ruling 1, 2026-10-27, KDEC-033). The three upstream jobs did ~20 s
+  # of work and billed 3 minutes; one job bills 1. None of them holds a scanner.
+  #
+  # ORDER IS AN INVARIANT, NOT A STYLE (tests/prove_plan_job.py P2). The kit-scripts part --
+  # write, pin, redact, publish -- runs BEFORE the checkout, so consumer content is never in the
+  # workspace while the scripts are written, digested and uploaded. Discovery and resolve follow.
+  #
+  # THE THREE PARTS KEEP THEIR OWN RESULTS. The gate read each job as itself; it now reads
+  # kit_scripts_result, discover_result and resolve_result, each reproducing what the separate
+  # job's result was (prove_plan_job.py P5). Discovery runs even when the bootstrap failed (they
+  # were independent jobs); the resolver runs only on a completed discovery and is
+  # continue-on-error, so a resolver failure fails the gate without stopping any scanner.
+  # A plan torn down publishes no outputs, and an absent result is not `success` to the gate.
+  #
+  # The notes below are the three jobs' own, kept where they were written.
+  # ─── DISCOVERY ────────────────────────────────────────────────────────────────
+  # Establish what is ACTUALLY in the caller's scope before anything else starts.
+  #
+  # Previously every language job booted on a DECLARED selector: `language: multi` started six SAST
+  # jobs whether or not that language existed, each paying checkout plus toolchain setup to discover
+  # nothing and exit. That is a correctness defect and a cost defect wearing one hat.
+  #
+  # SELECTOR INTERSECT DISCOVERY, and disagreement is REPORTED, never silent:
+  #   discovered + selected      -> RUN
+  #   discovered + not selected  -> EXCLUDED_BY_SELECTOR, printed. Narrowing scope must never
+  #                                 silently reduce VISIBILITY of what was not scanned.
+  #   selected + not discovered  -> NOT_APPLICABLE, backed by a search that found nothing
+  #
+  # FAIL-SAFE. This job is now control-plane input for every scanner, which makes it the highest
+  # leverage place in the kit for a lie. If discovery fails it must NEVER resolve to a tidy row of
+  # NOT_APPLICABLE. It sets state=DISCOVERY_UNAVAILABLE and turns EVERYTHING ON: over-scanning is a
+  # cost problem, under-scanning while reporting green is an assurance failure.
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RESOLVE — the position between discovery and the scanners
+  # ─────────────────────────────────────────────────────────────────────────────
+  #
+  # PIPELINE_ORDERING_AND_SCAN_VALIDITY.md §1.6: "R2, R3 and R6 have nowhere to attach, because
+  # there is no position between `discover` and the scanners and no position between the
+  # scanners and the gate. The sequence has to exist before the checks can be put in it."
+  # SINGLE_PIPELINE_TARGET.md §5.1 names this position `resolve` (stages 3-5: versions,
+  # capability, plan). It is one job because it is metadata work -- reading manifests and a
+  # table -- and splitting it would cost runner boots to save nothing.
+  #
+  # WHAT IT ESTABLISHES, AND IN WHAT ORDER
+  #   R2  the version each discovered class is WRITTEN FOR, per root, with the strength of the
+  #       evidence (a pin is a version; `>=3.9` is a floor, and a floor is not a target)
+  #   R3  for each (class, root) and each scanner that claims the class, whether that scanner's
+  #       DECLARED range covers the target: SCANNER_SUPPORTS, VERSION_UNSUPPORTED, or
+  #       VERSION_SUPPORT_UNDETERMINED. The table is DATA (scanner-registry.yaml), per scanner,
+  #       never kit-wide. A VERSION_UNSUPPORTED is a COVERAGE_GAP declared BEFORE the scan.
+  #   R4  an advisory execution plan: which jobs this run would start and at what depth, as
+  #       data a human can read before anything runs. Nothing enforces it yet.
+  #
+  # THE RULE THAT GOVERNS EVERY ANSWER HERE: there is no implicit default from unknown to known.
+  # A version that cannot be read is VERSION_SUPPORT_UNDETERMINED, which is a gap. The scanner
+  # STILL RUNS -- over-scanning is a cost problem, under-scanning reported green is not -- and
+  # its silence is not allowed to mean coverage.
+  #
+  # WHAT CONSUMES THIS: the gate and the report (KDEC-010). The gate waits for this job, reads
+  # the resolve part's result (needs.plan.outputs.resolve_result) as itself -- a failure or a skip is tooling, never NOT_APPLICABLE --
+  # and honours the capability selection: a job pointed at a VERSION_GAP is PARTIAL, never
+  # PASS; a default scanner substituted away is PARTIAL for that target while the selected one
+  # carries the claim. The report renders the same per scanner row. The scanner jobs still
+  # start on plan's discovery outputs alone: every scanner RUNS whatever the selection says
+  # (findings are findings); what the selection decides is what each one's silence may mean.
+  plan:
+    name: Plan (kit scripts, discovery, versions and capability)
     runs-on: ubuntu-latest
-    # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
-    # converts a dependency failure into uncontrolled cost).
-    timeout-minutes: 10
-    # LEAST PRIVILEGE, DECLARED RATHER THAN INHERITED. This job writes six files and uploads
-    # them. Without this block it would inherit the workflow-level `security-events: write`,
-    # which is a larger blast radius than its purpose justifies and is invisible when reading it.
+    # Bounded (LM-001). Three jobs of 10 minutes each became one; the bound is their sum.
+    timeout-minutes: 30
+    # LEAST PRIVILEGE, DECLARED: the union of the three (kit-scripts read contents; discovery and
+    # resolve also READ the code-scanning and Dependabot endpoints). Nothing here writes anywhere.
     permissions:
       contents: read
+      security-events: read
+    outputs:
+      python: ${{ steps.d.outputs.python }}
+      node: ${{ steps.d.outputs.node }}
+      go: ${{ steps.d.outputs.go }}
+      dotnet: ${{ steps.d.outputs.dotnet }}
+      java: ${{ steps.d.outputs.java }}
+      cpp: ${{ steps.d.outputs.cpp }}
+      php: ${{ steps.d.outputs.php }}
+      # KDEC-026 (lane L-SCAN-B): Kotlin, Swift and the mobile platforms are classes, not gaps.
+      kotlin: ${{ steps.d.outputs.kotlin }}
+      swift: ${{ steps.d.outputs.swift }}
+      mobile: ${{ steps.d.outputs.mobile }}
+      iac: ${{ steps.d.outputs.iac }}
+      # Artefact classes with a linter each, by presence (lane L-SCAN-A, KDEC-025): deps-scan runs
+      # actionlint + zizmor, shellcheck and PSScriptAnalyzer, iac-scan runs hadolint, only on true.
+      workflows: ${{ steps.d.outputs.workflows }}
+      shell: ${{ steps.d.outputs.shell }}
+      powershell: ${{ steps.d.outputs.powershell }}
+      dockerfile: ${{ steps.d.outputs.dockerfile }}
+      state: ${{ steps.d.outputs.state }}
+      # Coverage, not applicability. Empty = nothing unsupported was seen. A comma list = code this
+      # platform cannot scan is present. UNDETERMINED = the coverage probe itself could not run.
+      unsupported: ${{ steps.d.outputs.unsupported }}
+      # THE SAME FACT, NAMED RATHER THAN SPELLED IN FILE EXTENSIONS.
+      #
+      #   ARTIFACT_PRESENT + CAPABILITY_REQUIRED + SCANNER_UNAVAILABLE = COVERAGE_GAP
+      #
+      # A comma list of ARTIFACT CLASSES that are present in this repository and that no scanner
+      # in this kit can look at. It is NOT_APPLICABLE's opposite: NOT_APPLICABLE says the artifact
+      # is not here, CLEAN says a scanner ran and found nothing, COVERAGE_GAP says the artifact is
+      # here and nothing looked. Absence of evidence, published as such.
+      coverage_gaps: ${{ steps.d.outputs.coverage_gaps }}
+      # How many classes. A consumer gating on "did this kit fully cover us" reads this, not a
+      # string length. 0 means every discovered artifact class had a capable scanner.
+      coverage_gap_count: ${{ steps.d.outputs.coverage_gap_count }}
+      # Platform applicability. Established ONCE so sixteen jobs cannot hold sixteen beliefs
+      # about the same organisation setting. UNKNOWN is a real value, never coerced to false.
+      ghas_available: ${{ steps.platform.outputs.ghas_available }}
+      code_scanning: ${{ steps.platform.outputs.code_scanning }}
+      secret_scanning: ${{ steps.platform.outputs.secret_scanning }}
+      push_protection: ${{ steps.platform.outputs.push_protection }}
+      dependabot_alerts: ${{ steps.platform.outputs.dependabot_alerts }}
+      dependabot_updates: ${{ steps.platform.outputs.dependabot_updates }}
+      dependabot_config: ${{ steps.platform.outputs.dependabot_config }}
+      visibility: ${{ steps.platform.outputs.visibility }}
+      platform_source: ${{ steps.platform.outputs.platform_source }}
+      # Leak gates 2b, 4 and 1 (lane L-LEAK, KDEC-031): ON / OFF / UNKNOWN, never ON unread.
+      push_ruleset: ${{ steps.platform.outputs.push_ruleset }}
+      branch_gate: ${{ steps.platform.outputs.branch_gate }}
+      local_baseline: ${{ steps.platform.outputs.local_baseline }}
+      # One CodeQL leg per DISCOVERED language, as a JSON matrix (cost redesign step 1, W1/L35):
+      # a static six-leg matrix billed a minute for every absent language. [] = no leg, no job.
+      codeql_matrix: ${{ steps.cqm.outputs.codeql_matrix }}
+      # ── resolve ──
+      # COMPLETE / DISCOVERY_PARTIAL / DISCOVERY_UNAVAILABLE -- the same ladder discovery uses,
+      # for the same reason: a manifest that could not be read is not a manifest that was absent.
+      # Renamed from `state` in the merge (G1): discovery owns `state`.
+      resolve_state: ${{ steps.resolve.outputs.state }}
+      # R2. A JSON list, one record per (class, root, kind): the version the code is WRITTEN FOR
+      # and the strength of the evidence -- exact | floor | constraint | moving | none |
+      # unreadable. "A constraint is not a version": `>=3.9` is recorded as a floor with no
+      # target, never rounded to 3.9. Multiple roots are multiple records, never an average.
+      versions: ${{ steps.resolve.outputs.versions }}
+      # R3. A JSON list, one row per (class, root, scanner job, tool): SCANNER_SUPPORTS,
+      # VERSION_UNSUPPORTED or VERSION_SUPPORT_UNDETERMINED, with the declared range, the reason
+      # and how the range was established. The scanner runs in every case.
+      capability: ${{ steps.resolve.outputs.capability }}
+      # The COVERAGE_GAPs this position declares BEFORE the scan: `class@root:job/tool` for every
+      # VERSION_UNSUPPORTED answer, comma-separated, and their count. 0 is only ever printed when
+      # every declared range covered its target.
+      version_gaps: ${{ steps.resolve.outputs.version_gaps }}
+      version_gap_count: ${{ steps.resolve.outputs.version_gap_count }}
+      # Gaps of the other kind: could-not-establish. Each is a scanner whose result contributes
+      # PARTIAL, never PASS. Counted separately because "unsupported" and "unknown" have
+      # different owners and different remediations.
+      version_undetermined_count: ${{ steps.resolve.outputs.version_undetermined_count }}
+      # Class-and-count coverage (PO §5.3): per artefact class present in scope, files_in_scope,
+      # enumeration (COMPLETE, or PARTIAL with the unreadable and unreached counts), covered_by
+      # (tools whose version check passed at every root), not_covered_by with the reason, and
+      # coverage_basis (scope-inference; named-in-output is reachable by no scanner here).
+      # NEVER A PERCENTAGE. A percentage over a class denominator has units nobody can name.
+      coverage: ${{ steps.resolve.outputs.coverage }}
+      # R4, ADVISORY. The execution plan as data: depth from the trigger context, one row per
+      # registered scanner job with decision run | skip | forced and the registered state behind
+      # it, the capability states riding on each row, and the declared gaps. `advisory: true`,
+      # `enforced_by: "nothing"`. docs/architecture/EXECUTION_PLANNING.md is the design and is
+      # marked for owner review; §5 there is the exact change that would make scanners read this.
+      plan: ${{ steps.resolve.outputs.plan }}
+      # KDEC-010: THE CAPABILITY SELECTS THE SCANNER. Per (capability, root), from the ordered
+      # candidates in scanner-registry.yaml capability_selection: SERVED by the default,
+      # SUBSTITUTION (another carried scanner can read it -- labelled, never equivalence), or
+      # VERSION_GAP (none can -- PARTIAL, never PASS). The gate and the report consume the
+      # scalar lists; the scanners still run -- findings are findings, silence is not coverage.
+      selection: ${{ steps.resolve.outputs.selection }}
+      substitutions: ${{ steps.resolve.outputs.substitutions }}
+      capability_gaps: ${{ steps.resolve.outputs.capability_gaps }}
+      capability_gap_count: ${{ steps.resolve.outputs.capability_gap_count }}
+      capped_jobs: ${{ steps.resolve.outputs.capped_jobs }}
+      # KDEC-014: capped jobs whose gap every candidate's READ range establishes (enforced at uat/prod).
+      proven_gap_jobs: ${{ steps.resolve.outputs.proven_gap_jobs }}
+      not_selected_jobs: ${{ steps.resolve.outputs.not_selected_jobs }}
+      fitness_notes: ${{ steps.resolve.outputs.fitness_notes }}
+      # THE PLATFORM-PROBE VALUES, CONSUMED (PO §6). Dependabot alerts read as a scanner, in the
+      # same words as every other scanner (FINDINGS / PASS / UNAVAILABLE / COLLECTION_FAILED),
+      # with the basis recorded beside the state because an API answer has no SARIF behind it.
+      dependabot_state: ${{ steps.resolve.outputs.dependabot_state }}
+      dependabot_open_alerts: ${{ steps.resolve.outputs.dependabot_open_alerts }}
+      dependabot_basis: ${{ steps.resolve.outputs.dependabot_basis }}
+      dependabot_owner_role: ${{ steps.resolve.outputs.dependabot_owner_role }}
+      # ordinary | COVERAGE_GAP | UNKNOWN. A private repository without Code Security has no
+      # CodeQL and therefore no interprocedural dataflow; that is a declared gap, never
+      # Semgrep presented as parity. Semgrep finds the sink; CodeQL follows the flow.
+      dataflow_capability: ${{ steps.resolve.outputs.dataflow_capability }}
+      # Every platform-owned state, each against a named OWNER ROLE and a named action. A role,
+      # never a person: the kit stays portable and the summary stays honest about who can act.
+      platform_owners: ${{ steps.resolve.outputs.platform_owners }}
+      # ── the three parts, each read by the gate as the job it used to be ──
+      kit_scripts_result: ${{ steps.ks_part.outputs.kit_scripts_result }}
+      discover_result: ${{ steps.disc_part.outputs.discover_result }}
+      resolve_result: ${{ steps.res_part.outputs.resolve_result }}
     steps:
+      # ── PART 1: kit-scripts, BEFORE the checkout ──
       - name: Write the canonical scripts
         shell: bash
         run: |
@@ -1715,91 +1901,20 @@ jobs:
           # An ABSENT bundle is not an empty bundle. Without this, every consuming job would
           # fail separately on a missing file and the cause would be three logs away.
           if-no-files-found: error
-
-  # ─── Secrets ────────────────────────────────────────────────
-  # ─── DISCOVERY ────────────────────────────────────────────────────────────────
-  # Establish what is ACTUALLY in the caller's scope before anything else starts.
-  #
-  # Previously every language job booted on a DECLARED selector: `language: multi` started six SAST
-  # jobs whether or not that language existed, each paying checkout plus toolchain setup to discover
-  # nothing and exit. That is a correctness defect and a cost defect wearing one hat.
-  #
-  # SELECTOR INTERSECT DISCOVERY, and disagreement is REPORTED, never silent:
-  #   discovered + selected      -> RUN
-  #   discovered + not selected  -> EXCLUDED_BY_SELECTOR, printed. Narrowing scope must never
-  #                                 silently reduce VISIBILITY of what was not scanned.
-  #   selected + not discovered  -> NOT_APPLICABLE, backed by a search that found nothing
-  #
-  # FAIL-SAFE. This job is now control-plane input for every scanner, which makes it the highest
-  # leverage place in the kit for a lie. If discovery fails it must NEVER resolve to a tidy row of
-  # NOT_APPLICABLE. It sets state=DISCOVERY_UNAVAILABLE and turns EVERYTHING ON: over-scanning is a
-  # cost problem, under-scanning while reporting green is an assurance failure.
-  discover:
-    name: Discover what is actually here
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    # LEAST PRIVILEGE, DECLARED RATHER THAN INHERITED.
-    #
-    # Without this block the job inherits the workflow-level `security-events: write`, which it
-    # does not need: the platform probe only READS the code-scanning endpoint to establish
-    # whether the capability is available. A discovery job holding a write token to the Security
-    # tab is a larger blast radius than the job's purpose justifies, and nothing about inheriting
-    # it is visible when reading this job.
-    permissions:
-      contents: read
-      security-events: read
-    outputs:
-      python: ${{ steps.d.outputs.python }}
-      node: ${{ steps.d.outputs.node }}
-      go: ${{ steps.d.outputs.go }}
-      dotnet: ${{ steps.d.outputs.dotnet }}
-      java: ${{ steps.d.outputs.java }}
-      cpp: ${{ steps.d.outputs.cpp }}
-      php: ${{ steps.d.outputs.php }}
-      # KDEC-026 (lane L-SCAN-B): Kotlin, Swift and the mobile platforms are classes, not gaps.
-      kotlin: ${{ steps.d.outputs.kotlin }}
-      swift: ${{ steps.d.outputs.swift }}
-      mobile: ${{ steps.d.outputs.mobile }}
-      iac: ${{ steps.d.outputs.iac }}
-      # Artefact classes with a linter each, by presence (lane L-SCAN-A, KDEC-025): deps-scan runs
-      # actionlint + zizmor, shellcheck and PSScriptAnalyzer, iac-scan runs hadolint, only on true.
-      workflows: ${{ steps.d.outputs.workflows }}
-      shell: ${{ steps.d.outputs.shell }}
-      powershell: ${{ steps.d.outputs.powershell }}
-      dockerfile: ${{ steps.d.outputs.dockerfile }}
-      state: ${{ steps.d.outputs.state }}
-      # Coverage, not applicability. Empty = nothing unsupported was seen. A comma list = code this
-      # platform cannot scan is present. UNDETERMINED = the coverage probe itself could not run.
-      unsupported: ${{ steps.d.outputs.unsupported }}
-      # THE SAME FACT, NAMED RATHER THAN SPELLED IN FILE EXTENSIONS.
-      #
-      #   ARTIFACT_PRESENT + CAPABILITY_REQUIRED + SCANNER_UNAVAILABLE = COVERAGE_GAP
-      #
-      # A comma list of ARTIFACT CLASSES that are present in this repository and that no scanner
-      # in this kit can look at. It is NOT_APPLICABLE's opposite: NOT_APPLICABLE says the artifact
-      # is not here, CLEAN says a scanner ran and found nothing, COVERAGE_GAP says the artifact is
-      # here and nothing looked. Absence of evidence, published as such.
-      coverage_gaps: ${{ steps.d.outputs.coverage_gaps }}
-      # How many classes. A consumer gating on "did this kit fully cover us" reads this, not a
-      # string length. 0 means every discovered artifact class had a capable scanner.
-      coverage_gap_count: ${{ steps.d.outputs.coverage_gap_count }}
-      # Platform applicability. Established ONCE so sixteen jobs cannot hold sixteen beliefs
-      # about the same organisation setting. UNKNOWN is a real value, never coerced to false.
-      ghas_available: ${{ steps.platform.outputs.ghas_available }}
-      code_scanning: ${{ steps.platform.outputs.code_scanning }}
-      secret_scanning: ${{ steps.platform.outputs.secret_scanning }}
-      push_protection: ${{ steps.platform.outputs.push_protection }}
-      dependabot_alerts: ${{ steps.platform.outputs.dependabot_alerts }}
-      dependabot_updates: ${{ steps.platform.outputs.dependabot_updates }}
-      dependabot_config: ${{ steps.platform.outputs.dependabot_config }}
-      visibility: ${{ steps.platform.outputs.visibility }}
-      platform_source: ${{ steps.platform.outputs.platform_source }}
-      # Leak gates 2b, 4 and 1 (lane L-LEAK, KDEC-031): ON / OFF / UNKNOWN, never ON unread.
-      push_ruleset: ${{ steps.platform.outputs.push_ruleset }}
-      branch_gate: ${{ steps.platform.outputs.branch_gate }}
-      local_baseline: ${{ steps.platform.outputs.local_baseline }}
-    steps:
+      # THE KIT-SCRIPTS PART'S RESULT: the job status after its four steps, which is exactly what
+      # the separate kit-scripts job's result was. The gate reads it as itself (TOOLING_RESULT).
+      - name: Record the kit-scripts part's result
+        id: ks_part
+        if: always()
+        shell: bash
+        env:
+          KS_STATUS: ${{ job.status }}
+        run: echo "kit_scripts_result=${KS_STATUS:-failure}" >> "$GITHUB_OUTPUT"
+      # ── PART 2: discovery ──
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        id: co
+        # AFTER the kit-scripts part, never before: see the job header.
+        if: ${{ !cancelled() }}
       # THE STEP BODIES RUN FROM THE KIT, NOT FROM THIS FILE. Inline, the survey and the platform
       # probe were 37 KB and held the flagship over the 475 KB fail line (check_workflow_size.py).
       # `$/` delivers the whole kit at the caller's pinned commit; the composite is invoked once
@@ -1808,6 +1923,7 @@ jobs:
       # tests/test_discovery.py runs the survey from the composite, as shipped.
       - name: Survey what is in scope
         id: d
+        if: ${{ !cancelled() }}
         uses: $/.github/actions/discover
         with:
           part: survey
@@ -1819,117 +1935,60 @@ jobs:
       # false -- the composite says why at length.
       - name: Establish platform capability
         id: platform
+        if: ${{ !cancelled() }}
         uses: $/.github/actions/discover
         with:
           part: platform
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # RESOLVE — the position between discovery and the scanners
-  # ─────────────────────────────────────────────────────────────────────────────
-  #
-  # PIPELINE_ORDERING_AND_SCAN_VALIDITY.md §1.6: "R2, R3 and R6 have nowhere to attach, because
-  # there is no position between `discover` and the scanners and no position between the
-  # scanners and the gate. The sequence has to exist before the checks can be put in it."
-  # SINGLE_PIPELINE_TARGET.md §5.1 names this position `resolve` (stages 3-5: versions,
-  # capability, plan). It is one job because it is metadata work -- reading manifests and a
-  # table -- and splitting it would cost runner boots to save nothing.
-  #
-  # WHAT IT ESTABLISHES, AND IN WHAT ORDER
-  #   R2  the version each discovered class is WRITTEN FOR, per root, with the strength of the
-  #       evidence (a pin is a version; `>=3.9` is a floor, and a floor is not a target)
-  #   R3  for each (class, root) and each scanner that claims the class, whether that scanner's
-  #       DECLARED range covers the target: SCANNER_SUPPORTS, VERSION_UNSUPPORTED, or
-  #       VERSION_SUPPORT_UNDETERMINED. The table is DATA (scanner-registry.yaml), per scanner,
-  #       never kit-wide. A VERSION_UNSUPPORTED is a COVERAGE_GAP declared BEFORE the scan.
-  #   R4  an advisory execution plan: which jobs this run would start and at what depth, as
-  #       data a human can read before anything runs. Nothing enforces it yet.
-  #
-  # THE RULE THAT GOVERNS EVERY ANSWER HERE: there is no implicit default from unknown to known.
-  # A version that cannot be read is VERSION_SUPPORT_UNDETERMINED, which is a gap. The scanner
-  # STILL RUNS -- over-scanning is a cost problem, under-scanning reported green is not -- and
-  # its silence is not allowed to mean coverage.
-  #
-  # WHAT CONSUMES THIS: the gate and the report (KDEC-010). The gate waits for this job, reads
-  # `needs.resolve.result` as itself -- a failure or a skip is tooling, never NOT_APPLICABLE --
-  # and honours the capability selection: a job pointed at a VERSION_GAP is PARTIAL, never
-  # PASS; a default scanner substituted away is PARTIAL for that target while the selected one
-  # carries the claim. The report renders the same per scanner row. The scanner jobs still
-  # start on `needs.discover.outputs.*` alone: every scanner RUNS whatever the selection says
-  # (findings are findings); what the selection decides is what each one's silence may mean.
-  resolve:
-    name: Resolve versions, capability and plan
-    needs: [discover]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    # LEAST PRIVILEGE, DECLARED. Reads manifests from the checkout and, for the Dependabot step,
-    # the alerts endpoint. Writes nothing anywhere.
-    permissions:
-      contents: read
-      security-events: read
-    outputs:
-      # COMPLETE / DISCOVERY_PARTIAL / DISCOVERY_UNAVAILABLE -- the same ladder discovery uses,
-      # for the same reason: a manifest that could not be read is not a manifest that was absent.
-      state: ${{ steps.resolve.outputs.state }}
-      # R2. A JSON list, one record per (class, root, kind): the version the code is WRITTEN FOR
-      # and the strength of the evidence -- exact | floor | constraint | moving | none |
-      # unreadable. "A constraint is not a version": `>=3.9` is recorded as a floor with no
-      # target, never rounded to 3.9. Multiple roots are multiple records, never an average.
-      versions: ${{ steps.resolve.outputs.versions }}
-      # R3. A JSON list, one row per (class, root, scanner job, tool): SCANNER_SUPPORTS,
-      # VERSION_UNSUPPORTED or VERSION_SUPPORT_UNDETERMINED, with the declared range, the reason
-      # and how the range was established. The scanner runs in every case.
-      capability: ${{ steps.resolve.outputs.capability }}
-      # The COVERAGE_GAPs this position declares BEFORE the scan: `class@root:job/tool` for every
-      # VERSION_UNSUPPORTED answer, comma-separated, and their count. 0 is only ever printed when
-      # every declared range covered its target.
-      version_gaps: ${{ steps.resolve.outputs.version_gaps }}
-      version_gap_count: ${{ steps.resolve.outputs.version_gap_count }}
-      # Gaps of the other kind: could-not-establish. Each is a scanner whose result contributes
-      # PARTIAL, never PASS. Counted separately because "unsupported" and "unknown" have
-      # different owners and different remediations.
-      version_undetermined_count: ${{ steps.resolve.outputs.version_undetermined_count }}
-      # Class-and-count coverage (PO §5.3): per artefact class present in scope, files_in_scope,
-      # enumeration (COMPLETE, or PARTIAL with the unreadable and unreached counts), covered_by
-      # (tools whose version check passed at every root), not_covered_by with the reason, and
-      # coverage_basis (scope-inference; named-in-output is reachable by no scanner here).
-      # NEVER A PERCENTAGE. A percentage over a class denominator has units nobody can name.
-      coverage: ${{ steps.resolve.outputs.coverage }}
-      # R4, ADVISORY. The execution plan as data: depth from the trigger context, one row per
-      # registered scanner job with decision run | skip | forced and the registered state behind
-      # it, the capability states riding on each row, and the declared gaps. `advisory: true`,
-      # `enforced_by: "nothing"`. docs/architecture/EXECUTION_PLANNING.md is the design and is
-      # marked for owner review; §5 there is the exact change that would make scanners read this.
-      plan: ${{ steps.resolve.outputs.plan }}
-      # KDEC-010: THE CAPABILITY SELECTS THE SCANNER. Per (capability, root), from the ordered
-      # candidates in scanner-registry.yaml capability_selection: SERVED by the default,
-      # SUBSTITUTION (another carried scanner can read it -- labelled, never equivalence), or
-      # VERSION_GAP (none can -- PARTIAL, never PASS). The gate and the report consume the
-      # scalar lists; the scanners still run -- findings are findings, silence is not coverage.
-      selection: ${{ steps.resolve.outputs.selection }}
-      substitutions: ${{ steps.resolve.outputs.substitutions }}
-      capability_gaps: ${{ steps.resolve.outputs.capability_gaps }}
-      capability_gap_count: ${{ steps.resolve.outputs.capability_gap_count }}
-      capped_jobs: ${{ steps.resolve.outputs.capped_jobs }}
-      # KDEC-014: capped jobs whose gap every candidate's READ range establishes (enforced at uat/prod).
-      proven_gap_jobs: ${{ steps.resolve.outputs.proven_gap_jobs }}
-      not_selected_jobs: ${{ steps.resolve.outputs.not_selected_jobs }}
-      fitness_notes: ${{ steps.resolve.outputs.fitness_notes }}
-      # THE PLATFORM-PROBE VALUES, CONSUMED (PO §6). Dependabot alerts read as a scanner, in the
-      # same words as every other scanner (FINDINGS / PASS / UNAVAILABLE / COLLECTION_FAILED),
-      # with the basis recorded beside the state because an API answer has no SARIF behind it.
-      dependabot_state: ${{ steps.resolve.outputs.dependabot_state }}
-      dependabot_open_alerts: ${{ steps.resolve.outputs.dependabot_open_alerts }}
-      dependabot_basis: ${{ steps.resolve.outputs.dependabot_basis }}
-      dependabot_owner_role: ${{ steps.resolve.outputs.dependabot_owner_role }}
-      # ordinary | COVERAGE_GAP | UNKNOWN. A private repository without Code Security has no
-      # CodeQL and therefore no interprocedural dataflow; that is a declared gap, never
-      # Semgrep presented as parity. Semgrep finds the sink; CodeQL follows the flow.
-      dataflow_capability: ${{ steps.resolve.outputs.dataflow_capability }}
-      # Every platform-owned state, each against a named OWNER ROLE and a named action. A role,
-      # never a person: the kit stays portable and the summary stays honest about who can act.
-      platform_owners: ${{ steps.resolve.outputs.platform_owners }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # THE CODEQL LEGS, FROM DISCOVERY. Same ids and order as the static table this replaces,
+      # each leg `gate: 'true'` so every step condition in the codeql job reads as before.
+      # tests/prove_codeql_dynamic_matrix.py runs this for all 128 discovery combinations.
+      - name: Plan the CodeQL legs from what was discovered
+        id: cqm
+        if: ${{ !cancelled() && steps.d.outcome == 'success' }}
+        shell: bash
+        env:
+          D_PYTHON: ${{ steps.d.outputs.python }}
+          D_NODE: ${{ steps.d.outputs.node }}
+          D_GO: ${{ steps.d.outputs.go }}
+          D_DOTNET: ${{ steps.d.outputs.dotnet }}
+          D_JAVA: ${{ steps.d.outputs.java }}
+          D_KOTLIN: ${{ steps.d.outputs.kotlin }}
+          D_CPP: ${{ steps.d.outputs.cpp }}
+        run: |
+          set -euo pipefail
+          legs=""
+          leg() { legs="${legs:+$legs,}{\"lang\":\"$1\",\"gate\":\"true\"}"; }
+          [ "$D_PYTHON" = "true" ] && leg python
+          [ "$D_NODE" = "true" ] && leg javascript-typescript
+          [ "$D_GO" = "true" ] && leg go
+          [ "$D_DOTNET" = "true" ] && leg csharp
+          # Kotlin with no pom.xml or Gradle file starts this leg too (KDEC-026).
+          if [ "$D_JAVA" = "true" ] || [ "$D_KOTLIN" = "true" ]; then leg java-kotlin; fi
+          [ "$D_CPP" = "true" ] && leg c-cpp
+          echo "codeql_matrix=[$legs]" >> "$GITHUB_OUTPUT"
+          echo "CodeQL legs: [$legs]"
+      # THE DISCOVERY PART'S RESULT: success only when the checkout, the survey, the platform probe
+      # and the CodeQL plan all succeeded; cancelled when any was cancelled; otherwise failure --
+      # the separate discover job's result, read by the gate as itself (DISCOVER_RESULT).
+      - name: Record the discovery part's result
+        id: disc_part
+        if: always()
+        shell: bash
+        env:
+          O_CO: ${{ steps.co.outcome }}
+          O_D: ${{ steps.d.outcome }}
+          O_PL: ${{ steps.platform.outcome }}
+          O_CQ: ${{ steps.cqm.outcome }}
+        run: |
+          r=success
+          for o in "$O_CO" "$O_D" "$O_PL" "$O_CQ"; do
+            if [ "$o" != "success" ]; then r=failure; fi
+          done
+          for o in "$O_CO" "$O_D" "$O_PL" "$O_CQ"; do
+            if [ "$o" = "cancelled" ]; then r=cancelled; fi
+          done
+          echo "discover_result=$r" >> "$GITHUB_OUTPUT"
+      # ── PART 3: resolve ──
       # THE STEP BODIES RUN FROM THE KIT, NOT FROM THIS FILE. Inline, the resolver and the
       # platform consumers were 85 KB and took the flagship to 518 KB -- over the 500 KB ceiling
       # at which GitHub stops STARTING a workflow (tests/check_workflow_size.py). `$/` delivers
@@ -1939,6 +1998,11 @@ jobs:
       # it through env:, and the job's outputs above keep their names.
       - name: Resolve versions, capability, coverage and the plan
         id: resolve
+        # Only on a completed discovery (resolve `needs`-ed discover), and continue-on-error: a
+        # resolver failure fails the GATE through resolve_result, never `plan` -- as a separate
+        # job it never stopped a scanner from starting, and it must not start to now.
+        if: ${{ !cancelled() && steps.disc_part.outputs.discover_result == 'success' }}
+        continue-on-error: true
         uses: $/.github/actions/resolve
         with:
           paths: ${{ inputs.paths }}
@@ -1950,33 +2014,48 @@ jobs:
           image-ref: ${{ inputs.image_ref }}
           enable-sbom: ${{ inputs.enable_sbom }}
           enable-malicious-pkg-scan: ${{ inputs.enable_malicious_pkg_scan }}
-          discovered-python: ${{ needs.discover.outputs.python }}
-          discovered-node: ${{ needs.discover.outputs.node }}
-          discovered-go: ${{ needs.discover.outputs.go }}
-          discovered-dotnet: ${{ needs.discover.outputs.dotnet }}
-          discovered-java: ${{ needs.discover.outputs.java }}
-          discovered-cpp: ${{ needs.discover.outputs.cpp }}
-          discovered-php: ${{ needs.discover.outputs.php }}
-          discovered-kotlin: ${{ needs.discover.outputs.kotlin }}
-          discovered-swift: ${{ needs.discover.outputs.swift }}
-          discovered-mobile: ${{ needs.discover.outputs.mobile }}
-          discovered-iac: ${{ needs.discover.outputs.iac }}
-          discovery-state: ${{ needs.discover.outputs.state }}
-          coverage-gaps: ${{ needs.discover.outputs.coverage_gaps }}
-          unsupported: ${{ needs.discover.outputs.unsupported }}
+          discovered-python: ${{ steps.d.outputs.python }}
+          discovered-node: ${{ steps.d.outputs.node }}
+          discovered-go: ${{ steps.d.outputs.go }}
+          discovered-dotnet: ${{ steps.d.outputs.dotnet }}
+          discovered-java: ${{ steps.d.outputs.java }}
+          discovered-cpp: ${{ steps.d.outputs.cpp }}
+          discovered-php: ${{ steps.d.outputs.php }}
+          discovered-kotlin: ${{ steps.d.outputs.kotlin }}
+          discovered-swift: ${{ steps.d.outputs.swift }}
+          discovered-mobile: ${{ steps.d.outputs.mobile }}
+          discovered-iac: ${{ steps.d.outputs.iac }}
+          discovery-state: ${{ steps.d.outputs.state }}
+          coverage-gaps: ${{ steps.d.outputs.coverage_gaps }}
+          unsupported: ${{ steps.d.outputs.unsupported }}
           event-name: ${{ github.event_name }}
-          ghas-available: ${{ needs.discover.outputs.ghas_available }}
-          code-scanning: ${{ needs.discover.outputs.code_scanning }}
-          secret-scanning: ${{ needs.discover.outputs.secret_scanning }}
-          push-protection: ${{ needs.discover.outputs.push_protection }}
-          dependabot-alerts: ${{ needs.discover.outputs.dependabot_alerts }}
-          dependabot-updates: ${{ needs.discover.outputs.dependabot_updates }}
-          dependabot-config: ${{ needs.discover.outputs.dependabot_config }}
-          visibility: ${{ needs.discover.outputs.visibility }}
-          platform-source: ${{ needs.discover.outputs.platform_source }}
+          ghas-available: ${{ steps.platform.outputs.ghas_available }}
+          code-scanning: ${{ steps.platform.outputs.code_scanning }}
+          secret-scanning: ${{ steps.platform.outputs.secret_scanning }}
+          push-protection: ${{ steps.platform.outputs.push_protection }}
+          dependabot-alerts: ${{ steps.platform.outputs.dependabot_alerts }}
+          dependabot-updates: ${{ steps.platform.outputs.dependabot_updates }}
+          dependabot-config: ${{ steps.platform.outputs.dependabot_config }}
+          visibility: ${{ steps.platform.outputs.visibility }}
+          platform-source: ${{ steps.platform.outputs.platform_source }}
+      # THE RESOLVE PART'S RESULT: the resolver's own outcome (continue-on-error keeps it), skipped
+      # when discovery did not complete -- the separate resolve job's result (RESOLVE_RESULT).
+      - name: Record the resolve part's result
+        id: res_part
+        if: always()
+        shell: bash
+        env:
+          O_RS: ${{ steps.resolve.outcome }}
+        run: |
+          case "$O_RS" in
+            success|failure|skipped|cancelled) r="$O_RS" ;;
+            *) r=failure ;;
+          esac
+          echo "resolve_result=$r" >> "$GITHUB_OUTPUT"
 
+  # ─── Secrets ────────────────────────────────────────────────
   secret-scan:
-    needs: [discover, kit-scripts]
+    needs: [plan]
     # Ecosystem-agnostic: every repository can leak a secret and resolve a dependency.
     # Gated only by discovery being able to run at all.
     if: always()
@@ -2037,14 +2116,14 @@ jobs:
       # END STATUS_STEP
 
   code-quality:
-    needs: [discover, kit-scripts]
+    needs: [plan]
     # DISCOVERED, NOT DECLARED. Runs because roots for this ecosystem were actually
     # found in the caller's scope -- not because a selector named it. On failure
     # discovery turns everything on rather than producing a tidy row of NOT_APPLICABLE.
     # PYTHON OR NODE. This was python only, so a Node-only repository was never linted and a
     # `multi` caller was linted only when it also happened to hold Python (KNOWN_GAPS section 2).
     # Proven by tests/prove_code_quality_enforces.py.
-    if: needs.discover.outputs.python == 'true' || needs.discover.outputs.node == 'true'
+    if: needs.plan.outputs.python == 'true' || needs.plan.outputs.node == 'true'
     name: Code quality
     runs-on: ubuntu-latest
     outputs:
@@ -2090,7 +2169,7 @@ jobs:
         id: node
         # Keyed on what discovery FOUND, never on the caller's `language` declaration: a caller
         # who declares `python` over a tree that also holds Node code still gets it linted.
-        if: needs.discover.outputs.node == 'true'
+        if: needs.plan.outputs.node == 'true'
         env:
           # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (ledger L38).
           IN_PATHS: ${{ inputs.paths }}
@@ -2153,7 +2232,7 @@ jobs:
           echo "COVERAGE=$([ "$nolock" -eq 0 ] && echo FULL || echo NODE_SCA_PARTIAL) ($n root(s), $nolock without lockfile)"
 
       - name: Setup Node
-        if: needs.discover.outputs.node == 'true' && steps.node.outputs.found == 'true'
+        if: needs.plan.outputs.node == 'true' && steps.node.outputs.found == 'true'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ inputs.node_version }}
@@ -2164,7 +2243,7 @@ jobs:
 
       - name: ESLint
         id: eslint
-        if: needs.discover.outputs.node == 'true' && steps.node.outputs.found == 'true'
+        if: needs.plan.outputs.node == 'true' && steps.node.outputs.found == 'true'
         env:
           # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (ledger L38).
           IN_ENFORCE_LINT: ${{ inputs.enforce_lint }}
@@ -2232,14 +2311,14 @@ jobs:
           exit 0
 
       - name: Setup Python
-        if: needs.discover.outputs.python == 'true'
+        if: needs.plan.outputs.python == 'true'
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ inputs.python_version }}
 
       - name: Ruff + mypy
         id: ruff
-        if: needs.discover.outputs.python == 'true'
+        if: needs.plan.outputs.python == 'true'
         env:
           # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (ledger L38).
           IN_PATHS: ${{ inputs.paths }}
@@ -2312,7 +2391,7 @@ jobs:
       # END STATUS_STEP
 
   sast-semgrep:
-    needs: [discover, kit-scripts]
+    needs: [plan]
     # Ecosystem-agnostic: every repository can leak a secret and resolve a dependency.
     # Gated only by discovery being able to run at all.
     if: always()
@@ -2373,9 +2452,9 @@ jobs:
           IN_SEMGREP_CONFIG: ${{ inputs.semgrep_config }}
           IN_PATHS: ${{ inputs.paths }}
           # Discovery's answer for PHP, as DATA: true, false, or empty when it could not say.
-          IN_DISCOVERED_PHP: ${{ needs.discover.outputs.php }}
+          IN_DISCOVERED_PHP: ${{ needs.plan.outputs.php }}
           # And for Kotlin (KDEC-026), the same shape: true, false, or empty when it could not say.
-          IN_DISCOVERED_KOTLIN: ${{ needs.discover.outputs.kotlin }}
+          IN_DISCOVERED_KOTLIN: ${{ needs.plan.outputs.kotlin }}
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
         run: |
           set -uo pipefail
@@ -2683,11 +2762,11 @@ jobs:
       # END STATUS_STEP
 
   sast-bandit:
-    needs: [discover, kit-scripts]
+    needs: [plan]
     # DISCOVERED, NOT DECLARED. Runs because roots for this ecosystem were actually
     # found in the caller's scope -- not because a selector named it. On failure
     # discovery turns everything on rather than producing a tidy row of NOT_APPLICABLE.
-    if: needs.discover.outputs.python == 'true'
+    if: needs.plan.outputs.python == 'true'
     name: SAST (Bandit, python)
     runs-on: ubuntu-latest
     outputs:
@@ -2888,14 +2967,13 @@ jobs:
       # END STATUS_STEP
 
   codeql:
-    needs: [discover, kit-scripts]
-    # DISCOVERED, NOT DECLARED -- same rule as every other scanner here. Runs when roots for a
-    # CodeQL-supported ecosystem were actually found, not because a selector named one.
-    if: >-
-      needs.discover.outputs.python == 'true' || needs.discover.outputs.node == 'true' ||
-      needs.discover.outputs.go == 'true' || needs.discover.outputs.dotnet == 'true' ||
-      needs.discover.outputs.java == 'true' || needs.discover.outputs.cpp == 'true' ||
-      needs.discover.outputs.kotlin == 'true'
+    needs: [plan]
+    # DISCOVERED, NOT DECLARED -- same rule as every other scanner here. One leg per language
+    # discovery actually found (cost redesign step 1): the static six-leg matrix started a billed
+    # leg for every absent language, which then skipped every step (W1: 4 of 20 billed minutes on
+    # the small class). No language CodeQL reads -> no job, exactly as the old OR-of-flags `if:`.
+    # No status function here: a failed discovery still skips CodeQL (implicit success()).
+    if: needs.plan.outputs.codeql_matrix != '' && needs.plan.outputs.codeql_matrix != '[]'
     name: SAST (CodeQL)
     runs-on: ubuntu-latest
     # Bounded, LM-001. CodeQL is the slowest scanner here; 30 is generous for a single language
@@ -2908,21 +2986,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - lang: python
-            gate: ${{ needs.discover.outputs.python }}
-          - lang: javascript-typescript
-            gate: ${{ needs.discover.outputs.node }}
-          - lang: go
-            gate: ${{ needs.discover.outputs.go }}
-          - lang: csharp
-            gate: ${{ needs.discover.outputs.dotnet }}
-          # Kotlin with no pom.xml or Gradle file starts this leg too (KDEC-026): it was gated on
-          # the java probe alone, so Kotlin-only code never reached CodeQL.
-          - lang: java-kotlin
-            gate: ${{ (needs.discover.outputs.java == 'true' || needs.discover.outputs.kotlin == 'true') && 'true' || 'false' }}
-          - lang: c-cpp
-            gate: ${{ needs.discover.outputs.cpp }}
+        # [{lang, gate: 'true'}, ...] in the static table's order: python, javascript-typescript,
+        # go, csharp, java-kotlin (java OR kotlin, KDEC-026), c-cpp. tests/prove_codeql_dynamic_matrix.py.
+        include: ${{ fromJSON(needs.plan.outputs.codeql_matrix) }}
     steps:
       # BEGIN FETCH_KIT_SCRIPTS — generated by scripts/inline_normalizer.py. DO NOT EDIT HERE.
       - name: Fetch the kit's own scripts
@@ -3136,7 +3202,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   deps-scan:
-    needs: [discover, kit-scripts]
+    needs: [plan]
     # Ecosystem-agnostic: every repository can leak a secret and resolve a dependency.
     # Gated only by discovery being able to run at all.
     if: always()
@@ -3171,9 +3237,9 @@ jobs:
           # Pipeline lint rides in this always-on job (lane L-SCAN-A, KDEC-025): a job of its own
           # would bill a minimum minute on nearly every consumer, since nearly every one has a
           # workflow. Each linter runs only where discovery found its files.
-          workflows: ${{ needs.discover.outputs.workflows }}
-          shell: ${{ needs.discover.outputs.shell }}
-          powershell: ${{ needs.discover.outputs.powershell }}
+          workflows: ${{ needs.plan.outputs.workflows }}
+          shell: ${{ needs.plan.outputs.shell }}
+          powershell: ${{ needs.plan.outputs.powershell }}
           feed-mirror-url: ${{ vars.KIT_FEED_MIRROR_URL }}
           feed-mirror-max-age-hours: ${{ vars.KIT_FEED_MIRROR_MAX_AGE_HOURS }}
           feed-mirror-fallback: ${{ vars.KIT_FEED_MIRROR_FALLBACK }}
@@ -3200,11 +3266,11 @@ jobs:
       # END STATUS_STEP
 
   iac-scan:
-    needs: [discover, kit-scripts]
+    needs: [plan]
     # DISCOVERED, NOT DECLARED. Runs because roots for this ecosystem were actually
     # found in the caller's scope -- not because a selector named it. On failure
     # discovery turns everything on rather than producing a tidy row of NOT_APPLICABLE.
-    if: needs.discover.outputs.iac == 'true'
+    if: needs.plan.outputs.iac == 'true'
     name: IaC scan (Checkov + Trivy config)
     # Reads the organisation mirrors when named (KDEC-032): the private runner reaches them.
     runs-on: ${{ vars.KIT_FEED_MIRROR_RUNNER || 'ubuntu-latest' }}
@@ -3234,7 +3300,7 @@ jobs:
           fail_on_severity: ${{ inputs.fail_on_severity }}
           paths: ${{ inputs.paths }}
           # hadolint, only where discovery found a Dockerfile (lane L-SCAN-A, KDEC-025).
-          dockerfile: ${{ needs.discover.outputs.dockerfile }}
+          dockerfile: ${{ needs.plan.outputs.dockerfile }}
           feed-mirror-url: ${{ vars.KIT_FEED_MIRROR_URL }}
           feed-mirror-max-age-hours: ${{ vars.KIT_FEED_MIRROR_MAX_AGE_HOURS }}
           feed-mirror-fallback: ${{ vars.KIT_FEED_MIRROR_FALLBACK }}
@@ -3264,11 +3330,11 @@ jobs:
       # END STATUS_STEP
 
   sast-dotnet:
-    needs: [discover, kit-scripts]
+    needs: [plan]
     # DISCOVERED, NOT DECLARED. Runs because roots for this ecosystem were actually
     # found in the caller's scope -- not because a selector named it. On failure
     # discovery turns everything on rather than producing a tidy row of NOT_APPLICABLE.
-    if: needs.discover.outputs.dotnet == 'true'
+    if: needs.plan.outputs.dotnet == 'true'
     name: SAST + deps (.NET)
     runs-on: ubuntu-latest
     outputs:
@@ -3317,11 +3383,11 @@ jobs:
       # END STATUS_STEP
 
   sast-java:
-    needs: [discover, kit-scripts]
+    needs: [plan]
     # DISCOVERED, NOT DECLARED. Runs because roots for this ecosystem were actually
     # found in the caller's scope -- not because a selector named it. On failure
     # discovery turns everything on rather than producing a tidy row of NOT_APPLICABLE.
-    if: needs.discover.outputs.java == 'true'
+    if: needs.plan.outputs.java == 'true'
     name: SAST (Java)
     runs-on: ubuntu-latest
     outputs:
@@ -3374,8 +3440,8 @@ jobs:
     # manifests, network security configs and Info.plist, plus the kit's own rules for what it does
     # not read. Starts only when discovery found a mobile artifact, so it costs nothing elsewhere.
     # No macOS runner: CodeQL for Swift would need one at 10x the minute rate (KDEC-026).
-    needs: [discover, kit-scripts]
-    if: needs.discover.outputs.mobile == 'true'
+    needs: [plan]
+    if: needs.plan.outputs.mobile == 'true'
     name: SAST (mobile)
     runs-on: ubuntu-latest
     outputs:
@@ -3412,11 +3478,11 @@ jobs:
       # END STATUS_STEP
 
   sast-go:
-    needs: [discover, kit-scripts]
+    needs: [plan]
     # DISCOVERED, NOT DECLARED. Runs because roots for this ecosystem were actually
     # found in the caller's scope -- not because a selector named it. On failure
     # discovery turns everything on rather than producing a tidy row of NOT_APPLICABLE.
-    if: needs.discover.outputs.go == 'true'
+    if: needs.plan.outputs.go == 'true'
     name: SAST (Go)
     # Reads the organisation mirrors when named (KDEC-032): the private runner reaches them.
     runs-on: ${{ vars.KIT_FEED_MIRROR_RUNNER || 'ubuntu-latest' }}
@@ -3846,11 +3912,11 @@ jobs:
       # END STATUS_STEP
 
   sast-cpp:
-    needs: [discover, kit-scripts]
+    needs: [plan]
     # DISCOVERED, NOT DECLARED. Runs because roots for this ecosystem were actually
     # found in the caller's scope -- not because a selector named it. On failure
     # discovery turns everything on rather than producing a tidy row of NOT_APPLICABLE.
-    if: needs.discover.outputs.cpp == 'true'
+    if: needs.plan.outputs.cpp == 'true'
     name: SAST (C / C++)
     runs-on: ubuntu-latest
     outputs:
@@ -3907,7 +3973,7 @@ jobs:
 
   image-scan:
     # kit-scripts: the redactor that runs before these reports are uploaded lives in its bundle.
-    needs: [discover, kit-scripts]
+    needs: [plan]
     # Only when an image is supplied. Nothing to infer: either a caller names an artifact to
     # scan or there is no artifact, and "no image configured" is NOT_APPLICABLE rather than a
     # scan that found nothing.
@@ -4238,7 +4304,7 @@ jobs:
       # END STATUS_STEP
 
   malicious-deps:
-    needs: [discover, kit-scripts]
+    needs: [plan]
     name: Malicious / compromised packages (OSV)
     if: inputs.enable_malicious_pkg_scan
     # Reads the organisation mirrors when named (KDEC-032): the private runner reaches them.
@@ -4307,12 +4373,12 @@ jobs:
           max-age-hours: ${{ vars.KIT_FEED_MIRROR_MAX_AGE_HOURS }}
           fallback: ${{ vars.KIT_FEED_MIRROR_FALLBACK }}
           osv-ecosystems: >-
-            ${{ needs.discover.outputs.python == 'true' && 'PyPI' || '' }}
-            ${{ needs.discover.outputs.node == 'true' && 'npm' || '' }}
-            ${{ needs.discover.outputs.go == 'true' && 'Go' || '' }}
-            ${{ (needs.discover.outputs.java == 'true' || needs.discover.outputs.kotlin == 'true') && 'Maven' || '' }}
-            ${{ needs.discover.outputs.php == 'true' && 'Packagist' || '' }}
-            ${{ needs.discover.outputs.swift == 'true' && 'SwiftURL' || '' }}
+            ${{ needs.plan.outputs.python == 'true' && 'PyPI' || '' }}
+            ${{ needs.plan.outputs.node == 'true' && 'npm' || '' }}
+            ${{ needs.plan.outputs.go == 'true' && 'Go' || '' }}
+            ${{ (needs.plan.outputs.java == 'true' || needs.plan.outputs.kotlin == 'true') && 'Maven' || '' }}
+            ${{ needs.plan.outputs.php == 'true' && 'Packagist' || '' }}
+            ${{ needs.plan.outputs.swift == 'true' && 'SwiftURL' || '' }}
             NuGet crates.io RubyGems Pub Hex
       - name: Scan lockfiles
         id: osv_scan
@@ -4548,7 +4614,7 @@ jobs:
       # END STATUS_STEP
 
   sbom:
-    needs: [discover, kit-scripts]
+    needs: [plan]
     name: SBOM (CycloneDX)
     if: inputs.enable_sbom
     runs-on: ubuntu-latest
@@ -4724,6 +4790,23 @@ jobs:
   # `if: always()` is essential. A report that only runs when the scanners succeeded is a report
   # that disappears exactly when someone needs to know what happened.
 
+
+  # ─── REPORT-AND-GATE (G3): THE EVIDENCE, THEN THE VERDICT, IN ONE JOB ─────────────────────
+  # Cost redesign step 3 (owner ruling 1, 2026-10-27, KDEC-033). `report` and `security-gate` were
+  # both terminal and `always()`, did ~16 s of work and billed 2 minutes; one job bills 1. The display
+  # name stays `Security gate`: consumers require `security / Security gate`.
+  #
+  # TWO PARTS, EACH STILL ITSELF (tests/prove_report_and_gate.py). The report's steps run first and
+  # upload the evidence; their result is recorded as report_result, which the verdict reads exactly
+  # as it read needs.report.result. The verdict's steps all run `if: always()`, so a failed report
+  # still yields a verdict (a FAIL, as before). A gate in the same job as what it JUDGES is not a
+  # gate (JT 4.5): the scanners stay in their own jobs; the report judges nothing.
+  #
+  # PERMISSIONS, DECLARED (JT 9.2): contents: read. The report job held exactly that; the gate held
+  # the workflow default (security-events: write) by inheritance and used none of it -- its policy
+  # lookup reads the default branch with a contents-read token, the KEV catalog is public.
+  # Declaring the union of what is USED narrows the gate; nothing widens.
+
       # BEGIN STATUS_STEP — generated by scripts/inline_normalizer.py. DO NOT EDIT HERE.
       - name: Result summary
         if: always()
@@ -4744,12 +4827,105 @@ jobs:
           scan_status "SBOM" "$_e" "" "components"
       # END STATUS_STEP
 
-  report:
-    name: Security scan report
+  security-gate:
+    name: Security gate
+    # ── the report part's notes ──
+    # image-scan IS IN THIS LIST BECAUSE THE REPORT READS IT.
+    #
+    # `needs.image-scan.result` is consumed below to render the trivy-image row. An
+    # expression naming a job that is not in `needs` does not error in GitHub Actions --
+    # it evaluates to the empty string -- so the container-image row has been rendering
+    # from an empty result on every run since it was added, and the report could not
+    # distinguish "no image configured" from "the image scan failed". actionlint caught
+    # it; the workflow never would have. Two things are fixed by the edge, not one: the
+    # report also DOWNLOADS sarif-* artifacts, and without the dependency it could run
+    # before image-scan had uploaded its own.
+    # resolve IS IN THIS LIST BECAUSE THE REPORT READS IT (KDEC-010): the capability selection
+    # caps a scanner row's PASS at PARTIAL where the scanner cannot read the code at its version.
     # THE FINDINGS EVIDENCE THE GATE READS (C3). Counted by the reporter from SARIF, after
     # dispositions, over ESTABLISHED rows only. Absent outputs mean the evidence was never
     # assembled -- the gate reads that as unknown, never as zero.
+    # ── the gate's notes ──
+    # THE JOB THAT MATERIALISES THE SCRIPTS IS NOT EXEMPT EITHER. Every scanner `needs`
+    # kit-scripts, so if it fails they are SKIPPED -- and the loop in the gate step projects
+    # `skipped` into NOT_APPLICABLE. A row of NOT_APPLICABLE over code nobody scanned is the
+    # precise collapse this kit exists to refuse, so that job's result is read explicitly
+    # below rather than inferred from its dependants.
+    #
+    # THE NOTE SITS ABOVE THE KEY, NOT INSIDE THE LIST. A comment between two `- item` lines
+    # truncates this list for anything reading it line by line: placed inside, it made
+    # tests/capability_inventory.py report EVERY scanner as not referenced by the gate --
+    # a census downgraded by a comment.
+    needs:
+      - plan
+      - secret-scan
+      - code-quality
+      - sast-semgrep
+      - sast-bandit
+      - sast-dotnet
+      - sast-java
+      - sast-go
+      - sast-cpp
+      - sast-mobile
+      - deps-scan
+      - iac-scan
+      - malicious-deps
+      - sbom
+      - codeql
+      - image-scan
+    # report and security-gate are one job (G3); the report part is read as itself through
+    # steps.report_part, never as a scanner.
+    if: always()
+    # The gate's KEV check reads the organisation mirror (KDEC-032), so the job runs where the mirror is
+    # reachable when one is configured -- exactly as security-gate did before G3.
+    runs-on: ${{ vars.KIT_FEED_MIRROR_RUNNER || 'ubuntu-latest' }}
+    permissions:
+      contents: read
     outputs:
+      assurance_state: ${{ steps.gate.outputs.assurance_state }}
+      enforcement_state: ${{ steps.gate.outputs.enforcement_state }}
+      gate_decision: ${{ steps.gate.outputs.gate_decision }}
+      secret_gate: ${{ steps.gate.outputs.secret_gate }}
+      secret_exceptions_applied: ${{ steps.gate.outputs.secret_exceptions_applied }}
+      kev_state: ${{ steps.gate.outputs.kev_state }}
+      kev_verdict: ${{ steps.gate.outputs.kev_verdict }}
+      known_exploited: ${{ steps.gate.outputs.known_exploited }}
+      scanner_states: ${{ steps.gate.outputs.scanner_states }}
+      undetermined: ${{ steps.gate.outputs.undetermined }}
+      evidence_artifact: ${{ steps.gate.outputs.evidence_artifact }}
+      discovery_state: ${{ needs.plan.outputs.state }}
+      established: ${{ steps.gate.outputs.established }}
+      unestablished: ${{ steps.gate.outputs.unestablished }}
+      routing_result: ${{ steps.posture.outputs.routing_result }}
+      advisory_causes: ${{ steps.posture.outputs.advisory_causes }}
+      controls_required: ${{ steps.posture.outputs.controls_required }}
+      controls_executed: ${{ steps.posture.outputs.controls_executed }}
+      controls_unavailable: ${{ steps.posture.outputs.controls_unavailable }}
+      controls_reduced: ${{ steps.posture.outputs.controls_reduced }}
+      controls_skipped: ${{ steps.posture.outputs.controls_skipped }}
+      weakenings: ${{ steps.posture.outputs.weakenings }}
+      weakening_attribution: ${{ steps.posture.outputs.weakening_attribution }}
+      weakening_record: ${{ steps.posture.outputs.weakening_record }}
+      leak_gates: ${{ steps.leakgates.outputs.leak_gates }}
+      leak_gate_weakenings: ${{ steps.leakgates.outputs.leak_gate_weakenings }}
+      leak_gate_alarm: ${{ steps.leakgates.outputs.leak_gate_alarm }}
+      policy_resolution: ${{ steps.posture.outputs.policy_resolution }}
+      policy_source: ${{ steps.posture.outputs.policy_source }}
+      policy_chain: ${{ steps.posture.outputs.policy_chain }}
+      rung_declared: ${{ steps.posture.outputs.rung_declared }}
+      rung_effective: ${{ steps.posture.outputs.rung_effective }}
+      rung_divergence: ${{ steps.posture.outputs.rung_divergence }}
+      policy_mode: ${{ steps.posture.outputs.policy_mode }}
+      effective_minimum: ${{ steps.posture.outputs.effective_minimum }}
+      policy_divergences: ${{ steps.posture.outputs.policy_divergences }}
+      environment_tier: ${{ steps.posture.outputs.environment_tier }}
+      team_pattern: ${{ steps.posture.outputs.team_pattern }}
+      unvalidated_human_workflow_paths: ${{ steps.posture.outputs.unvalidated_human_workflow_paths }}
+      deploy_approval: ${{ steps.posture.outputs.deploy_approval }}
+      max_exception_renewals: ${{ steps.policy.outputs.policy_max_exception_renewals }}
+      run_record: ${{ steps.record.outputs.run_record }}
+      assurance_result: ${{ steps.record.outputs.assurance_result }}
+      # ── the report part (C3; L44/L45/L52) ──
       blocking_findings: ${{ steps.render.outputs.blocking_findings }}
       jobs_with_findings: ${{ steps.render.outputs.jobs_with_findings }}
       # The secret scan's findings by fingerprint, for the gate's secret exceptions (lane L-S).
@@ -4763,26 +4939,13 @@ jobs:
       # when the ledger could not be read or an identity could not be computed.
       identity_routing: ${{ steps.render.outputs.identity_routing }}
       baseline_state: ${{ steps.render.outputs.baseline_state }}
-    # image-scan IS IN THIS LIST BECAUSE THE REPORT READS IT.
-    #
-    # `needs.image-scan.result` is consumed below to render the trivy-image row. An
-    # expression naming a job that is not in `needs` does not error in GitHub Actions --
-    # it evaluates to the empty string -- so the container-image row has been rendering
-    # from an empty result on every run since it was added, and the report could not
-    # distinguish "no image configured" from "the image scan failed". actionlint caught
-    # it; the workflow never would have. Two things are fixed by the edge, not one: the
-    # report also DOWNLOADS sarif-* artifacts, and without the dependency it could run
-    # before image-scan had uploaded its own.
-    # resolve IS IN THIS LIST BECAUSE THE REPORT READS IT (KDEC-010): the capability selection
-    # caps a scanner row's PASS at PARTIAL where the scanner cannot read the code at its version.
-    needs: [discover, kit-scripts, resolve, secret-scan, code-quality, sast-semgrep, sast-bandit,
-            codeql, deps-scan, iac-scan, sast-dotnet, sast-java, sast-go, sast-cpp,
-            sast-mobile, malicious-deps, sbom, image-scan]
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
+    # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
+    # converts a dependency failure into uncontrolled cost).
+    # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
+    # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
+    # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
+    # Two jobs of 10 minutes each became one; the bound is their sum.
+    timeout-minutes: 20
     steps:
       # BEGIN FETCH_KIT_SCRIPTS — generated by scripts/inline_normalizer.py. DO NOT EDIT HERE.
       - name: Fetch the kit's own scripts
@@ -4804,6 +4967,7 @@ jobs:
           echo "77747346d57de23c8a301758499db36f89f41e3850a2495497d2983a6cb3916a  kit-scripts.sha256" | sha256sum -c -
           sha256sum -c kit-scripts.sha256
       # END FETCH_KIT_SCRIPTS
+      # ── PART 1: the report ──
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # THE LEDGER NEEDS A MERGE BASE (L45). baseline_ledger.py grandfathers from the merge
@@ -4856,25 +5020,25 @@ jobs:
           R_SBOM: ${{ needs.sbom.result }}
           R_IMAGE: ${{ needs.image-scan.result }}
           IMAGE_REF: ${{ inputs.image_ref }}
-          D_PYTHON: ${{ needs.discover.outputs.python }}
-          D_NODE: ${{ needs.discover.outputs.node }}
-          D_GO: ${{ needs.discover.outputs.go }}
-          D_DOTNET: ${{ needs.discover.outputs.dotnet }}
-          D_JAVA: ${{ needs.discover.outputs.java }}
-          D_CPP: ${{ needs.discover.outputs.cpp }}
-          D_MOBILE: ${{ needs.discover.outputs.mobile }}
-          D_IAC: ${{ needs.discover.outputs.iac }}
+          D_PYTHON: ${{ needs.plan.outputs.python }}
+          D_NODE: ${{ needs.plan.outputs.node }}
+          D_GO: ${{ needs.plan.outputs.go }}
+          D_DOTNET: ${{ needs.plan.outputs.dotnet }}
+          D_JAVA: ${{ needs.plan.outputs.java }}
+          D_CPP: ${{ needs.plan.outputs.cpp }}
+          D_MOBILE: ${{ needs.plan.outputs.mobile }}
+          D_IAC: ${{ needs.plan.outputs.iac }}
           # Pipeline lint (lane L-SCAN-A, KDEC-025): applicability by artefact, and the files each
           # linter could not read (VERSION_GAP) -- a row over unread files is PARTIAL, never PASS.
-          D_WORKFLOWS: ${{ needs.discover.outputs.workflows }}
-          D_SHELL: ${{ needs.discover.outputs.shell }}
-          D_POWERSHELL: ${{ needs.discover.outputs.powershell }}
-          D_DOCKERFILE: ${{ needs.discover.outputs.dockerfile }}
+          D_WORKFLOWS: ${{ needs.plan.outputs.workflows }}
+          D_SHELL: ${{ needs.plan.outputs.shell }}
+          D_POWERSHELL: ${{ needs.plan.outputs.powershell }}
+          D_DOCKERFILE: ${{ needs.plan.outputs.dockerfile }}
           R_LINT_GAPS: ${{ needs.deps-scan.outputs.lint_version_gaps }}
           R_HADOLINT_GAPS: ${{ needs.iac-scan.outputs.lint_version_gaps }}
-          D_STATE: ${{ needs.discover.outputs.state }}
-          P_CODESCAN: ${{ needs.discover.outputs.code_scanning }}
-          P_SOURCE: ${{ needs.discover.outputs.platform_source }}
+          D_STATE: ${{ needs.plan.outputs.state }}
+          P_CODESCAN: ${{ needs.plan.outputs.code_scanning }}
+          P_SOURCE: ${{ needs.plan.outputs.platform_source }}
         run: |
           set -uo pipefail
           mkdir -p _states
@@ -5192,9 +5356,9 @@ jobs:
           expect: gitleaks,detect-secrets,code-quality,eslint,semgrep,bandit,java-sast,gosec,dotnet-vuln,semgrep-csharp,cppcheck,flawfinder,mobsfscan,mobile-config,trivy,trivy-iac,checkov,actionlint,zizmor,shellcheck,psscriptanalyzer,hadolint,malicious-deps,sbom,trivy-image,trivy-image-secret,codeql-python,codeql-javascript-typescript,codeql-go,codeql-csharp,codeql-java-kotlin,codeql-c-cpp
           # KDEC-010: the capability selection. A scanner row whose job cannot read the code at
           # its version renders PARTIAL, never PASS; a substitution is labelled as one.
-          capped-jobs: ${{ needs.resolve.outputs.capped_jobs }}
-          not-selected-jobs: ${{ needs.resolve.outputs.not_selected_jobs }}
-          fitness-notes: ${{ needs.resolve.outputs.fitness_notes }}
+          capped-jobs: ${{ needs.plan.outputs.capped_jobs }}
+          not-selected-jobs: ${{ needs.plan.outputs.not_selected_jobs }}
+          fitness-notes: ${{ needs.plan.outputs.fitness_notes }}
 
       # BEGIN REDACT_STEP — generated by scripts/inline_normalizer.py. DO NOT EDIT HERE.
       - name: Redact credential material before upload
@@ -5227,102 +5391,43 @@ jobs:
           path: _states
           retention-days: 30
           if-no-files-found: warn
-
-  security-gate:
-    name: Security gate
-    # THE JOB THAT MATERIALISES THE SCRIPTS IS NOT EXEMPT EITHER. Every scanner `needs`
-    # kit-scripts, so if it fails they are SKIPPED -- and the loop in the gate step projects
-    # `skipped` into NOT_APPLICABLE. A row of NOT_APPLICABLE over code nobody scanned is the
-    # precise collapse this kit exists to refuse, so that job's result is read explicitly
-    # below rather than inferred from its dependants.
-    #
-    # THE NOTE SITS ABOVE THE KEY, NOT INSIDE THE LIST. A comment between two `- item` lines
-    # truncates this list for anything reading it line by line: placed inside, it made
-    # tests/capability_inventory.py report EVERY scanner as not referenced by the gate --
-    # a census downgraded by a comment.
-    needs:
-      - discover
-      - resolve
-      - kit-scripts
-      - secret-scan
-      - code-quality
-      - sast-semgrep
-      - sast-bandit
-      - sast-dotnet
-      - sast-java
-      - sast-go
-      - sast-cpp
-      - sast-mobile
-      - deps-scan
-      - iac-scan
-      - malicious-deps
-      - sbom
-      - codeql
-      - image-scan
-      # THE REPORT IS NOT EXEMPT, AND THE EXEMPTION WAS NEVER DECIDED -- IT WAS AN OMISSION.
-      #
-      # `report` assembles the evidence artifact this gate NAMES in its own
-      # `evidence_artifact` output. A gate that publishes the name of an artifact whose
-      # assembling job it never waited for is asserting something it did not check. It is
-      # also the one job whose failure is invisible from a scanner row, because it produces
-      # no SARIF of its own. It is checked explicitly below rather than folded into the
-      # scanner loop: it is not a scanner and must not acquire a scanner_state.
-      - report
-    if: always()
-    runs-on: ${{ vars.KIT_FEED_MIRROR_RUNNER || 'ubuntu-latest' }}
-    outputs:
-      assurance_state: ${{ steps.gate.outputs.assurance_state }}
-      enforcement_state: ${{ steps.gate.outputs.enforcement_state }}
-      gate_decision: ${{ steps.gate.outputs.gate_decision }}
-      secret_gate: ${{ steps.gate.outputs.secret_gate }}
-      secret_exceptions_applied: ${{ steps.gate.outputs.secret_exceptions_applied }}
-      kev_state: ${{ steps.gate.outputs.kev_state }}
-      kev_verdict: ${{ steps.gate.outputs.kev_verdict }}
-      known_exploited: ${{ steps.gate.outputs.known_exploited }}
-      scanner_states: ${{ steps.gate.outputs.scanner_states }}
-      undetermined: ${{ steps.gate.outputs.undetermined }}
-      evidence_artifact: ${{ steps.gate.outputs.evidence_artifact }}
-      discovery_state: ${{ needs.discover.outputs.state }}
-      established: ${{ steps.gate.outputs.established }}
-      unestablished: ${{ steps.gate.outputs.unestablished }}
-      routing_result: ${{ steps.posture.outputs.routing_result }}
-      advisory_causes: ${{ steps.posture.outputs.advisory_causes }}
-      controls_required: ${{ steps.posture.outputs.controls_required }}
-      controls_executed: ${{ steps.posture.outputs.controls_executed }}
-      controls_unavailable: ${{ steps.posture.outputs.controls_unavailable }}
-      controls_reduced: ${{ steps.posture.outputs.controls_reduced }}
-      controls_skipped: ${{ steps.posture.outputs.controls_skipped }}
-      weakenings: ${{ steps.posture.outputs.weakenings }}
-      weakening_attribution: ${{ steps.posture.outputs.weakening_attribution }}
-      weakening_record: ${{ steps.posture.outputs.weakening_record }}
-      leak_gates: ${{ steps.leakgates.outputs.leak_gates }}
-      leak_gate_weakenings: ${{ steps.leakgates.outputs.leak_gate_weakenings }}
-      leak_gate_alarm: ${{ steps.leakgates.outputs.leak_gate_alarm }}
-      policy_resolution: ${{ steps.posture.outputs.policy_resolution }}
-      policy_source: ${{ steps.posture.outputs.policy_source }}
-      policy_chain: ${{ steps.posture.outputs.policy_chain }}
-      rung_declared: ${{ steps.posture.outputs.rung_declared }}
-      rung_effective: ${{ steps.posture.outputs.rung_effective }}
-      rung_divergence: ${{ steps.posture.outputs.rung_divergence }}
-      policy_mode: ${{ steps.posture.outputs.policy_mode }}
-      effective_minimum: ${{ steps.posture.outputs.effective_minimum }}
-      policy_divergences: ${{ steps.posture.outputs.policy_divergences }}
-      environment_tier: ${{ steps.posture.outputs.environment_tier }}
-      team_pattern: ${{ steps.posture.outputs.team_pattern }}
-      unvalidated_human_workflow_paths: ${{ steps.posture.outputs.unvalidated_human_workflow_paths }}
-      deploy_approval: ${{ steps.posture.outputs.deploy_approval }}
-      max_exception_renewals: ${{ steps.policy.outputs.policy_max_exception_renewals }}
-      run_record: ${{ steps.record.outputs.run_record }}
-      assurance_result: ${{ steps.record.outputs.assurance_result }}
-    # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
-    # converts a dependency failure into uncontrolled cost).
-    # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
-    # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
-    # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
-    timeout-minutes: 10
-    steps:
+      # THE REPORT PART'S RESULT: the job status after the report's steps, which is exactly what the
+      # separate report job's result was. The verdict reads it as itself (REPORT_RESULT below).
+      - name: Record the report part's result
+        id: report_part
+        if: always()
+        shell: bash
+        env:
+          RP_STATUS: ${{ job.status }}
+        run: echo "report_result=${RP_STATUS:-failure}" >> "$GITHUB_OUTPUT"
+      # THE PROTECTED CAPABILITY FLOOR (owner ruling 4, 2026-10-27, KDEC-033). Every identity in the
+      # kit's capability-floor.json -- read from the kit through `$/`, never from scanner-registry.yaml
+      # and never from the checkout -- must have a state file in this run's evidence. A pull request
+      # that deleted a scanner's row, job and report line everywhere a contributor can still fails
+      # here: BREACHED, read by the verdict below as itself. tests/prove_capability_floor.py.
+      - name: Capability floor (protected, independent of the registry)
+        id: floor
+        if: always()
+        uses: $/.github/actions/capability-floor
+        with:
+          states-dir: _states
+      # THE VERDICT RUNS ON THE EMPTY WORKSPACE IT ALWAYS HAD. As its own job the gate never checked
+      # out the code; the report part did (fetch-depth 0) and its evidence is already uploaded above.
+      # Nothing below reads the workspace, and clearing it keeps it that way by construction: no
+      # consumer file can sit where a verdict step looks. tests/prove_report_and_gate.py.
+      - name: Clear the workspace before the verdict
+        id: clear_ws
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          echo "workspace cleared: $(find "$GITHUB_WORKSPACE" -mindepth 1 | wc -l) entries remain"
+      # ── PART 2: the verdict ──
       - name: Resolve the enforcement policy from the register and the protected default branch
         id: policy
+        # Runs whatever the report part did: as the first step of its own job it always ran.
+        if: always()
         # STAGE 1 RUNS BEFORE ANY RESULT IS READ. The rung, the per-control minimums and the tier
         # come from the policy register (the kit's central copy and the repository's own file on
         # its protected default branch, never this run's tree); policy_mode is DERIVED and never
@@ -5345,7 +5450,7 @@ jobs:
         if: always()
         uses: $/.github/actions/known-exploited
         with:
-          cve-findings: ${{ needs.report.outputs.cve_findings }}
+          cve-findings: ${{ steps.render.outputs.cve_findings }}
           exceptions: ${{ steps.policy.outputs.policy_known_exploited_exceptions }}
           policy-state: ${{ steps.policy.outputs.policy_state }}
           mirror-url: ${{ vars.KIT_FEED_MIRROR_URL }}
@@ -5371,19 +5476,22 @@ jobs:
           G_NEEDS_CODEQL_RESULT: ${{ needs.codeql.result }}
           G_NEEDS_CODE_QUALITY_RESULT: ${{ needs.code-quality.result }}
           G_NEEDS_DEPS_SCAN_RESULT: ${{ needs.deps-scan.result }}
-          G_NEEDS_DISCOVER_OUTPUTS_COVERAGE_GAPS: ${{ needs.discover.outputs.coverage_gaps }}
-          G_NEEDS_DISCOVER_OUTPUTS_COVERAGE_GAP_COUNT: ${{ needs.discover.outputs.coverage_gap_count }}
-          G_NEEDS_DISCOVER_OUTPUTS_STATE: ${{ needs.discover.outputs.state }}
-          G_NEEDS_DISCOVER_RESULT: ${{ needs.discover.result }}
+          G_NEEDS_DISCOVER_OUTPUTS_COVERAGE_GAPS: ${{ needs.plan.outputs.coverage_gaps }}
+          G_NEEDS_DISCOVER_OUTPUTS_COVERAGE_GAP_COUNT: ${{ needs.plan.outputs.coverage_gap_count }}
+          G_NEEDS_DISCOVER_OUTPUTS_STATE: ${{ needs.plan.outputs.state }}
+          G_NEEDS_DISCOVER_RESULT: ${{ needs.plan.outputs.discover_result }}
           G_NEEDS_IAC_SCAN_RESULT: ${{ needs.iac-scan.result }}
           G_NEEDS_IMAGE_SCAN_OUTPUTS_SECRET_STATE: ${{ needs.image-scan.outputs.secret_state }}
           G_NEEDS_IMAGE_SCAN_RESULT: ${{ needs.image-scan.result }}
-          G_NEEDS_KIT_SCRIPTS_RESULT: ${{ needs.kit-scripts.result }}
+          G_NEEDS_KIT_SCRIPTS_RESULT: ${{ needs.plan.outputs.kit_scripts_result }}
           G_NEEDS_MALICIOUS_DEPS_OUTPUTS_MALICIOUS_STATE: ${{ needs.malicious-deps.outputs.malicious_state }}
           G_NEEDS_MALICIOUS_DEPS_RESULT: ${{ needs.malicious-deps.result }}
-          G_NEEDS_REPORT_OUTPUTS_BLOCKING_FINDINGS: ${{ needs.report.outputs.blocking_findings }}
-          G_NEEDS_REPORT_OUTPUTS_JOBS_WITH_FINDINGS: ${{ needs.report.outputs.jobs_with_findings }}
-          G_NEEDS_REPORT_RESULT: ${{ needs.report.result }}
+          G_NEEDS_REPORT_OUTPUTS_BLOCKING_FINDINGS: ${{ steps.render.outputs.blocking_findings }}
+          G_NEEDS_REPORT_OUTPUTS_JOBS_WITH_FINDINGS: ${{ steps.render.outputs.jobs_with_findings }}
+          G_NEEDS_REPORT_RESULT: ${{ steps.report_part.outputs.report_result }}
+          # The protected capability floor (KDEC-033): HELD | GAP_DECIDED | BREACHED; '' = not read.
+          G_FLOOR_STATE: ${{ steps.floor.outputs.floor_state }}
+          G_FLOOR_MISSING: ${{ steps.floor.outputs.floor_missing }}
           G_NEEDS_SAST_BANDIT_RESULT: ${{ needs.sast-bandit.result }}
           G_NEEDS_SAST_CPP_RESULT: ${{ needs.sast-cpp.result }}
           G_NEEDS_SAST_CPP_OUTPUTS_SCAN_STATE: ${{ needs.sast-cpp.outputs.scan_state }}
@@ -5399,17 +5507,17 @@ jobs:
           G_NEEDS_SBOM_OUTPUTS_LICENCE_STATE: ${{ needs.sbom.outputs.licence_state }}
           G_NEEDS_SBOM_RESULT: ${{ needs.sbom.result }}
           G_NEEDS_SECRET_SCAN_RESULT: ${{ needs.secret-scan.result }}
-          G_NEEDS_RESOLVE_OUTPUTS_VERSION_GAPS: ${{ needs.resolve.outputs.version_gaps }}
-          G_NEEDS_RESOLVE_OUTPUTS_VERSION_GAP_COUNT: ${{ needs.resolve.outputs.version_gap_count }}
+          G_NEEDS_RESOLVE_OUTPUTS_VERSION_GAPS: ${{ needs.plan.outputs.version_gaps }}
+          G_NEEDS_RESOLVE_OUTPUTS_VERSION_GAP_COUNT: ${{ needs.plan.outputs.version_gap_count }}
           # KDEC-010: the capability selection, consumed here (see the loop below).
-          G_NEEDS_RESOLVE_OUTPUTS_CAPPED_JOBS: ${{ needs.resolve.outputs.capped_jobs }}
-          G_NEEDS_RESOLVE_OUTPUTS_PROVEN_GAP_JOBS: ${{ needs.resolve.outputs.proven_gap_jobs }}
-          G_NEEDS_RESOLVE_OUTPUTS_NOT_SELECTED_JOBS: ${{ needs.resolve.outputs.not_selected_jobs }}
-          G_NEEDS_RESOLVE_OUTPUTS_SUBSTITUTIONS: ${{ needs.resolve.outputs.substitutions }}
-          G_NEEDS_RESOLVE_OUTPUTS_CAPABILITY_GAPS: ${{ needs.resolve.outputs.capability_gaps }}
-          G_NEEDS_RESOLVE_OUTPUTS_CAPABILITY_GAP_COUNT: ${{ needs.resolve.outputs.capability_gap_count }}
-          G_NEEDS_RESOLVE_OUTPUTS_FITNESS_NOTES: ${{ needs.resolve.outputs.fitness_notes }}
-          G_NEEDS_RESOLVE_RESULT: ${{ needs.resolve.result }}
+          G_NEEDS_RESOLVE_OUTPUTS_CAPPED_JOBS: ${{ needs.plan.outputs.capped_jobs }}
+          G_NEEDS_RESOLVE_OUTPUTS_PROVEN_GAP_JOBS: ${{ needs.plan.outputs.proven_gap_jobs }}
+          G_NEEDS_RESOLVE_OUTPUTS_NOT_SELECTED_JOBS: ${{ needs.plan.outputs.not_selected_jobs }}
+          G_NEEDS_RESOLVE_OUTPUTS_SUBSTITUTIONS: ${{ needs.plan.outputs.substitutions }}
+          G_NEEDS_RESOLVE_OUTPUTS_CAPABILITY_GAPS: ${{ needs.plan.outputs.capability_gaps }}
+          G_NEEDS_RESOLVE_OUTPUTS_CAPABILITY_GAP_COUNT: ${{ needs.plan.outputs.capability_gap_count }}
+          G_NEEDS_RESOLVE_OUTPUTS_FITNESS_NOTES: ${{ needs.plan.outputs.fitness_notes }}
+          G_NEEDS_RESOLVE_RESULT: ${{ needs.plan.outputs.resolve_result }}
           # THE FINDINGS EACH SCANNER JOB HANDS THIS GATE (lane L-S, O-24): FINDINGS when the job's
           # own threshold fired and no caller input softened it. The jobs no longer fail on it --
           # this gate is the single enforcement point -- so it is read here, not from a conclusion.
@@ -5429,7 +5537,7 @@ jobs:
           # and refused. A secret blocks at every tier unless each one is excepted by fingerprint.
           G_FS_SECRET_SCAN: ${{ needs.secret-scan.outputs.findings_state }}
           G_SECRET_COUNT: ${{ needs.secret-scan.outputs.secret_count }}
-          G_REPORT_SECRET_FINDINGS: ${{ needs.report.outputs.secret_findings }}
+          G_REPORT_SECRET_FINDINGS: ${{ steps.render.outputs.secret_findings }}
           P_SECRET_EXCEPTIONS: ${{ steps.policy.outputs.policy_secret_exceptions }}
           P_SECRET_EXCEPTION_REFUSALS: ${{ steps.policy.outputs.policy_secret_exception_refusals }}
           # KNOWN EXPLOITED IN THE WILD (KDEC-022 item 3): the kev step's verdict over the report's
@@ -5904,6 +6012,34 @@ jobs:
               echo "downstream were SKIPPED, which is NOT evidence that they were inapplicable."
               echo "advisory_mode does NOT cover this: it softens enforcement on FINDINGS, and a"
               echo "bootstrap failure produced no findings to be lenient about."
+              fail=1
+              undetermined=1
+              tooling_fail=1
+              ;;
+          esac
+          # THE PROTECTED CAPABILITY FLOOR, CHECKED AS ITSELF AND NOT AS A SCANNER (owner ruling 4,
+          # 2026-10-27, KDEC-033). The loop above enumerates the scanners this workflow carries; the
+          # floor is what the KIT requires whatever the workflow and the registry now say. A scanner
+          # deleted from both reads as never expected above -- and as BREACHED here. Not a finding,
+          # so advisory_mode does not cover it. GAP_DECIDED: a tombstoned capability under an
+          # authorised, time-limited gap decision -- never a clean coverage claim (ruling 8).
+          FLOOR_STATE="${G_FLOOR_STATE}"
+          echo "| capability floor | ${FLOOR_STATE:-NOT READ} ${G_FLOOR_MISSING:+(missing: ${G_FLOOR_MISSING})} |" >> "$GITHUB_STEP_SUMMARY"
+          printf '  %-16s %s\n' "capability-floor" "${FLOOR_STATE:-NOT READ}"
+          case "$FLOOR_STATE" in
+            HELD) ;;
+            GAP_DECIDED)
+              echo "::warning title=Capability floor: gap decided::A required capability was removed under"
+              echo "an authorised, time-limited gap decision. Nothing covers it; this run makes no clean"
+              echo "coverage claim for it."
+              undetermined=1
+              unestablished="${unestablished}${unestablished:+ }capability-floor(GAP_DECIDED)"
+              ;;
+            *)
+              echo "::error title=Capability floor BREACHED::The kit's protected capability floor was"
+              echo "'${FLOOR_STATE:-not read}'${G_FLOOR_MISSING:+, missing: ${G_FLOOR_MISSING}}. A scanner the kit"
+              echo "requires produced no evidence row in this run -- removed, renamed or never wired."
+              echo "An expected scanner gone is not a finding: advisory_mode does NOT cover this."
               fail=1
               undetermined=1
               tooling_fail=1
@@ -6767,11 +6903,11 @@ jobs:
         id: leakgates
         if: always()
         env:
-          L_SECRET_SCANNING: ${{ needs.discover.outputs.secret_scanning }}
-          L_PUSH_PROTECTION: ${{ needs.discover.outputs.push_protection }}
-          L_PUSH_RULESET: ${{ needs.discover.outputs.push_ruleset }}
-          L_BRANCH_GATE: ${{ needs.discover.outputs.branch_gate }}
-          L_LOCAL_BASELINE: ${{ needs.discover.outputs.local_baseline }}
+          L_SECRET_SCANNING: ${{ needs.plan.outputs.secret_scanning }}
+          L_PUSH_PROTECTION: ${{ needs.plan.outputs.push_protection }}
+          L_PUSH_RULESET: ${{ needs.plan.outputs.push_ruleset }}
+          L_BRANCH_GATE: ${{ needs.plan.outputs.branch_gate }}
+          L_LOCAL_BASELINE: ${{ needs.plan.outputs.local_baseline }}
         run: |
           set -u
           tri() { case "$1" in ENABLED|ON) echo ON ;; NOT_CONFIGURED|UNAVAILABLE|OFF) echo OFF ;; *) echo UNKNOWN ;; esac; }
@@ -6823,10 +6959,10 @@ jobs:
           assurance-state: ${{ steps.gate.outputs.assurance_state }}
           enforcement-state: ${{ steps.gate.outputs.enforcement_state }}
           secret-gate: ${{ steps.gate.outputs.secret_gate }}
-          discovery-state: ${{ needs.discover.outputs.state }}
+          discovery-state: ${{ needs.plan.outputs.state }}
           scanner-states: ${{ steps.gate.outputs.scanner_states }}
-          report-result: ${{ needs.report.result }}
-          blocking-findings: ${{ needs.report.outputs.blocking_findings }}
+          report-result: ${{ steps.report_part.outputs.report_result }}
+          blocking-findings: ${{ steps.render.outputs.blocking_findings }}
           evidence-artifact: ${{ steps.gate.outputs.evidence_artifact }}
           # Every applied secret exception: finding, ticket, approver, expiry, entry (lane L-S), and
           # its history (KDEC-018 item 4); and every register softening in force, with its history.
