@@ -1,6 +1,6 @@
 # Export manifest
 
-Produced by `scripts/export_for_adoption.py` on **2026-10-27**.
+Produced by `scripts/export_for_adoption.py` on **2026-10-28**.
 
 ## This is a fresh tree, not a clone
 

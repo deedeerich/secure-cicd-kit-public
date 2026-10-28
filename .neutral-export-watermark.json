@@ -1,5 +1,5 @@
 {
-  "exported_at_utc": "2026-10-27T20:28:59Z",
+  "exported_at_utc": "2026-10-28T12:20:36Z",
   "files": {
     ".custody.json": "56adfbefa20942fd8d03f2927ebe2c8b3d967152252c5b43303566e97928b168",
     ".env.example": "2803cf35729edfa1785d56e21070c95d7c656da07b422fa8be98b8b1320d34d9",
@@ -395,7 +395,7 @@
     "tests/prove_gate_run_record.py": "320da57e6ebc237c06239a63ecf7a83b6d4d5a70320cd829d06b7fab38e12ffd",
     "tests/prove_ghe_host.py": "f756bcf399b5c173bc3d77f4b411fbe00d4a70c3fc273285b59641cc0cffb23a",
     "tests/prove_github_token_stays_on_its_host.py": "81aec425e483cd7075e142ad271600ac82742af6726eee8c1c44df55da77e24d",
-    "tests/prove_gosec_modules.py": "7eee39c984eea865ba8b3a3ce15380642482470d8c1ca6ebc79bb1b1ad7d1a87",
+    "tests/prove_gosec_modules.py": "9af7c96d2eb6fff7597267cc8f81ffda4e80afdce2d4e765a51cbd3aeae1f15a",
     "tests/prove_harness_teardown.py": "ba4c8890af0289dc797cd6e33a41d85fae32c24da095b1958a6d425a2788dd65",
     "tests/prove_hollow_scan.py": "5219053f4092ee79b4413206e15231f0520e94edfe04da7fa2fc3b642b65ebd9",
     "tests/prove_iac_corpus.py": "d7753567b792944dc11c9c5dcdb4809e44973e3783919af597f0929e74610a3e",
@@ -495,7 +495,7 @@
   "note": "Written by scripts/export_for_adoption.py. It records what this copy RECEIVED, so the next export can tell a source change from a change made here. Deleting it does not break anything; it only forces the next export to be told its baseline with --baseline.",
   "profile": "neutral",
   "source": "the kit's source repository (commit recorded; branch names are not)",
-  "source_commit": "fecc3a59fc6da1ae1bc645f640ca73076244638c",
+  "source_commit": "4ca8cf6dee835a65f6abf6fa45dc581d3b09bcd7",
   "source_dirty": false,
   "unresolved_conflicts": {}
 }
