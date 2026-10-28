@@ -25,12 +25,20 @@ WHAT MUST HOLD
         constant naming a path in that job's safe set. Docstrings are prose, not reads. POSITIVE
         CONTROL: the same analysis over normalizer-drift finds docs reads, so it is not blind --
         and normalizer-drift is therefore not skippable.
+    S3b each REFUSES_BY_SKIPPING job (a hosted negative control whose called workflow answers a pull
+        request by skipping every job it holds) is event-gated, is a `uses:` call of a local
+        reusable workflow, and has no `needs:` -- so on its own event a skip can come only from the
+        called workflow's own guards, which is the refusal, never from an upstream failure.
     S5  the plan and verdict steps, run AS SHIPPED: a docs-only PR plans the skip; then the verdict
         PASSES on that skip, FAILS when the same job is skipped without the plan, FAILS when
-        normalizer-drift is skipped ("skipped = green", refused), FAILS on a failed plan.
+        normalizer-drift is skipped ("skipped = green", refused), FAILS on a failed plan. The
+        all-green pull request carries what GitHub REPORTS for a refusal control on a pull request:
+        a call whose every job skipped is `skipped`, not `success` (public run 40781935566, where
+        the verdict refused two such controls on a run with no other red); the same control
+        FAILING is red.
     M*  mutations, each caught: a paths-ignore on pull_request; `if: false` on normalizer-drift;
         `required` without always(); a job dropped from `required`'s needs; a docs glob added to
-        normalizer-drift's safe set.
+        normalizer-drift's safe set; `needs:` added to a refusal control.
 
 EXIT  0 all hold   1 a violation   2 could not be checked
 """
@@ -54,6 +62,11 @@ import yaml  # noqa: E402
 import selftest_required as sr  # noqa: E402
 
 WF = os.path.join(ROOT, '.github', 'workflows', 'self-test.yml')
+# The hosted negative controls GitHub reported `skipped` on a pull request (public run 40781935566):
+# each calls a reusable whose every job skips there. Observed, not derived from the table under test.
+HOSTED_PR_SKIPPED = ('ticket-reconcile-refuses-pr', 'ledger-proposal-refuses-pr')
+# The verdict's refusal-control table (a local name: an identifier, not vocabulary).
+REFUSES_BY_SKIPPING = getattr(sr, 'REFUSES_BY_SKIPPING', None) or {}
 TEMPLATES = [os.path.join(ROOT, 'templates', n) for n in ('security.yml', 'build-deploy.yml')]
 
 
@@ -133,6 +146,18 @@ def check_structure(doc):
     for jid in sr.EVENTGATED:
         if jid not in jobs:
             bad.append('S3 EVENTGATED names %s, which is not a self-test job' % jid)
+    for jid in REFUSES_BY_SKIPPING or ['<the refusal-control table is missing>']:
+        job = jobs.get(jid)
+        if job is None:
+            bad.append('S3b REFUSES_BY_SKIPPING names %s, which is not a self-test job' % jid)
+            continue
+        if jid not in sr.EVENTGATED:
+            bad.append('S3b %s is a refusal control but not event-gated' % jid)
+        if not str(job.get('uses', '')).startswith('./.github/workflows/'):
+            bad.append('S3b %s is a refusal control but does not call a local reusable workflow' % jid)
+        if job.get('needs'):
+            bad.append('S3b %s is a refusal control with needs: %r -- an upstream failure would skip it '
+                       'and read as the refusal' % (jid, job.get('needs')))
     return bad
 
 
@@ -281,13 +306,16 @@ def check_steps(bash, doc):
                 res = 'success'
                 if j in sr.EVENTGATED and sr.runs_on(sr.EVENTGATED[j], 'pull_request') is False:
                     res = 'skipped'
+                if j in HOSTED_PR_SKIPPED:
+                    res = 'skipped'     # what GitHub reports for the refusal (run 40781935566)
                 d[j] = {'result': over.get(j.replace('-', '_'), res), 'outputs': {}}
             return d
         cases = (('planned skip', needs(platform_scanners='skipped'), skips, 0),
                  ('unplanned skip', needs(platform_scanners='skipped'), '{"platform-scanners":false}', 1),
                  ('skipped = green, refused', needs(normalizer_drift='skipped'), skips, 1),
                  ('failed plan', needs(contract='failure'), skips, 1),
-                 ('all green', needs(), skips, 0))
+                 ('all green', needs(), skips, 0),
+                 ('a refusal control failing', needs(ticket_reconcile_refuses_pr='failure'), skips, 1))
         for label, nd, sk, want in cases:
             ctx = {'toJSON(needs)': json.dumps(nd), 'needs.contract.outputs.skips': sk or '',
                    'github.event_name': 'pull_request'}
@@ -321,6 +349,11 @@ def mutations(doc):
     m['jobs'][sr.VERDICTJOB]['needs'] = [n for n in m['jobs'][sr.VERDICTJOB]['needs'] if n != 'normalizer-drift']
     if not caught(m):
         blind.append('normalizer-drift dropped from the verdict\'s needs')
+    for jid in sorted(REFUSES_BY_SKIPPING)[:1]:
+        m = copy.deepcopy(doc)
+        m['jobs'][jid]['needs'] = [sr.PLANJOB]
+        if not caught(m):
+            blind.append('needs: added to refusal control %s' % jid)
     saved = dict(sr.SKIPPABLE)
     try:
         sr.SKIPPABLE['normalizer-drift'] = ['docs/**']
@@ -353,7 +386,8 @@ def main():
         return 1
     print('PASS: self-test starts on every pull request; one always-running verdict needs every job; '
           'a skip is green only when planned and proven safe or excluded by the job\'s own event; '
-          'normalizer-drift (reads docs) is never skipped; 5 mutations caught.')
+          'a refusal control is green skipped only on its own event and red failing; '
+          'normalizer-drift (reads docs) is never skipped; 6 mutations caught.')
     return 0
 
 

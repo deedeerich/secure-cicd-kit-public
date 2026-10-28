@@ -53,6 +53,17 @@ EVENTGATED = {
     'ledger-proposal-refuses-pr': "github.event_name == 'pull_request'",
 }
 
+# job -> why. HOSTED NEGATIVE CONTROLS that answer their own event by SKIPPING: each calls a local
+# reusable workflow whose every job is guarded off on a pull request, and GitHub reports a call whose
+# every job skipped as `skipped`, not `success` (public run 40781935566, where the verdict refused both
+# on a run with nothing else red). On the event their gate runs on, that skip IS the refusal; if the
+# guard ever let a job run there, the job fails and the verdict is red. Each is event-gated, a `uses:`
+# call and has no `needs:` (tests/prove_selftest_required.py S3b), so nothing upstream can skip it.
+REFUSES_BY_SKIPPING = {
+    'ticket-reconcile-refuses-pr': 'the reconcile guard never arms on a pull request',
+    'ledger-proposal-refuses-pr': 'the ledger proposal never runs from a pull request',
+}
+
 PLANJOB, VERDICTJOB = 'contract', 'required'
 
 
@@ -109,6 +120,8 @@ def verdict(needs, event, skips):
         if r == 'skipped':
             if job in EVENTGATED and runs_on(EVENTGATED[job], event) is False:
                 continue
+            if job in REFUSES_BY_SKIPPING and job in EVENTGATED and runs_on(EVENTGATED[job], event) is True:
+                continue        # the called workflow refused this event by skipping: the control held
             if skips.get(job) is True and job in SKIPPABLE:
                 continue
             bad.append('%s was SKIPPED with no proven reason (not excluded by its own event '
@@ -140,6 +153,12 @@ def self_test():
     ok = {'contract': {'result': 'success'}, 'normalizer-drift': {'result': 'success'},
           'platform-scanners': {'result': 'success'}, 'ticket-reconcile-refuses-pr': {'result': 'skipped'}}
     pr = dict(ok, **{'ticket-reconcile-refuses-pr': {'result': 'success'}})
+    expect('a refusal control skipped on its own event passes (run 40781935566)', not verdict(ok, 'pull_request', {}))
+    expect('a refusal control failing on its own event fails',
+           verdict(dict(ok, **{'ticket-reconcile-refuses-pr': {'result': 'failure'}}), 'pull_request', {}))
+    gated = dict(pr, **{'exception-due-lists-on-push': {'result': 'skipped'}})
+    expect('an event-gated job that is not a refusal control, skipped on its own event, fails',
+           verdict(gated, 'push', {}))
     expect('all green + event-excluded skip passes', not verdict(ok, 'push', {}))
     m = dict(pr, **{'platform-scanners': {'result': 'skipped'}})
     expect('an unplanned skip fails', verdict(m, 'pull_request', {'platform-scanners': False}))
@@ -147,15 +166,13 @@ def self_test():
     m = dict(pr, **{'normalizer-drift': {'result': 'skipped'}})
     expect('a non-skippable job skipped fails even if the plan says so',
            verdict(m, 'pull_request', {'normalizer-drift': True}))
-    expect('an event-gated job skipped on its own event fails',
-           verdict(ok, 'pull_request', {}))
     expect('a failure fails', verdict(dict(ok, **{'normalizer-drift': {'result': 'failure'}}), 'push', {}))
     expect('a cancellation fails', verdict(dict(ok, **{'normalizer-drift': {'result': 'cancelled'}}), 'push', {}))
     expect('a failed plan fails', verdict(dict(ok, contract={'result': 'failure'}), 'push', {}))
     if fails:
         print('SELF-TEST FAILED: ' + '; '.join(fails))
         return 1
-    print('self-test ok: 15 cases (plan fail-safe, skipped-is-never-green, event gates, failures)')
+    print('self-test ok: 17 cases (plan fail-safe, skipped-is-never-green, event gates, refusal controls, failures)')
     return 0
 
 

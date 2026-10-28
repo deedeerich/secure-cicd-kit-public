@@ -1,5 +1,5 @@
 {
-  "exported_at_utc": "2026-10-28T22:41:02Z",
+  "exported_at_utc": "2026-10-28T23:25:04Z",
   "files": {
     ".custody.json": "56adfbefa20942fd8d03f2927ebe2c8b3d967152252c5b43303566e97928b168",
     ".env.example": "2803cf35729edfa1785d56e21070c95d7c656da07b422fa8be98b8b1320d34d9",
@@ -205,7 +205,7 @@
     "scripts/sbom_licenses.py": "792a6a2f3d1fac5a462281e0ca1ef09349ce6a346dbd2cf4be7c66784f1fa316",
     "scripts/scan_report.py": "70731e884c1bf29723cfce03b7b8979bbfc07356be59822ab9a5474d35449dae",
     "scripts/scan_status.sh": "a2c2a42001b68170fb94ba9cf736994257824000d4cc55a9654ca94d361a48a2",
-    "scripts/selftest_required.py": "fe7a867ff875e540d479171ca560040350da72500e36836f02794bd282522cd6",
+    "scripts/selftest_required.py": "bfe48bae8d8160f087cf74e22c0ff9893e26b6344d0440b13689deadd3b62e97",
     "scripts/target_lease.py": "dbcc85ffb856f996cdbe71387cf6e6e0aa6e4fb24904594905d3e2266d764064",
     "scripts/ticket_model.py": "c9a65369a92203e0ca64f127ea18c04b1d39efadc52b0d136b28fc9506e79fd1",
     "scripts/ticket_reference.py": "0782bdf4bc8f29f1bb86cc046bf42cd70b635beb450d2c2249ebd3f567d72b36",
@@ -482,7 +482,7 @@
     "tests/prove_secret_denominator.py": "48be1d82dad343fc17628ea5dbdacd499059cfb9f15229950e890332df8744f5",
     "tests/prove_secrets_always_block.py": "47d20a66de9088cc8332aa615b1632d589900a46122928478771bc1ce5c35f29",
     "tests/prove_security_caller_triggers.py": "0afdbeaf046a089257785d3c603d2fdf0e25d1261657c456c78df37ec00a6dfc",
-    "tests/prove_selftest_required.py": "5031ccd749e9b86617b7aa33fc5bc7e4d3bfd6f52b27b39df63779b9844dc3d6",
+    "tests/prove_selftest_required.py": "7c3e9562f380af0ea7f6f46e74af8cce3b1f0d9ebf61ed82b369eec5ec688881",
     "tests/prove_semgrep_kotlin.py": "9c631a9c8471eced45e566cb3bf9eff5ddc7820ffbfc9b293844a1449969acf6",
     "tests/prove_semgrep_php.py": "5ff2d6b3615747eb3a6ca782d7ee5088b9fc3613b948f0eb11884b066b5c03f7",
     "tests/prove_semgrep_rulesets.py": "4bd22cc9cd40aac239dd6549eb722ca975cbf9f6b0badc4247c0674a4b08a3e0",
@@ -519,7 +519,7 @@
   "note": "Written by scripts/export_for_adoption.py. It records what this copy RECEIVED, so the next export can tell a source change from a change made here. Deleting it does not break anything; it only forces the next export to be told its baseline with --baseline.",
   "profile": "neutral",
   "source": "the kit's source repository (commit recorded; branch names are not)",
-  "source_commit": "675f7f3607663384d7e2ed68e2a75ae72f35ffca",
+  "source_commit": "fd3cfb78b2dd9cfda010139f2677e08ab170184a",
   "source_dirty": false,
   "unresolved_conflicts": {}
 }
