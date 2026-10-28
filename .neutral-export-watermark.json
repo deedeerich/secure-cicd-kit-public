@@ -1,5 +1,5 @@
 {
-  "exported_at_utc": "2026-10-28T17:29:25Z",
+  "exported_at_utc": "2026-10-28T22:41:02Z",
   "files": {
     ".custody.json": "56adfbefa20942fd8d03f2927ebe2c8b3d967152252c5b43303566e97928b168",
     ".env.example": "2803cf35729edfa1785d56e21070c95d7c656da07b422fa8be98b8b1320d34d9",
@@ -50,7 +50,7 @@
     ".github/workflows/reusable-security.yml": "3b69fd90dd0d97ef0a5d037e0509607b0a194e745bec022ccc488d806a740ee4",
     ".github/workflows/reusable-ticket-reconcile.yml": "7c5ee35c023eee143c8a9838695367e53b682f0568275180a2a77eacc5ed33e5",
     ".github/workflows/reusable-ticket-reference.yml": "f7718b1b61e8bd5157f255432a146828ad9197d908c1712e9ce10542871434e1",
-    ".github/workflows/self-test.yml": "3a763ee4f0f93fe8fb0cda470c52d2b28d50c915f8870b401d34379d218b5280",
+    ".github/workflows/self-test.yml": "f07a553abd09de028fffac3edf01c88de768e8b48e6c3fd0a477aae39f4f72ea",
     ".github/workflows/validate-scanners.yml": "d0514eeb8b3ae07a4b9c218337674591f5129765f0693b2049113db05b399dd9",
     ".github/workflows/verify-azure-oidc.yml": "84df68b246e33163e8861cc0f05f5dfacca00363c9d1a8b9e77f809992d192d5",
     ".github/workflows/workflow-policy-check.yml": "fc9424e5ba1ab9a8530cae449b9ddbd1a4082ced927908b4346277cd2752efa5",
@@ -502,7 +502,7 @@
     "tests/prove_ticket_reconcile_workflow.py": "c192e06b52cbb517ce2bcbed167730dc29858c2756d126e0c6c5e41b0c69bc0f",
     "tests/prove_ticket_reference_gate.py": "298db03e0d794ae4d9cc0ee4aa402dff60fd513b34e0d9052364abaeb495d2f3",
     "tests/prove_trace_reads_env.py": "ea911df1f0591338dc59223c66af84a999f524af954d916f17fb15217ba7bd4d",
-    "tests/prove_tree_clean_job.py": "399da0a524d3333d41290fdd39b857a26e13849b2e151759a94a0bbc40d12e6a",
+    "tests/prove_tree_clean_job.py": "c8dee8d76294664b0989ff4c2f780fcd00e2ba46dd683cfdcd01a4dfe0b0f2cf",
     "tests/prove_trivy_threshold.py": "77675e40f0e5a6e9ae9f66fd3a740f72aa7adea4fff3327533baac339e6671e9",
     "tests/prove_validate_scanners.py": "9a0eb1f48addb5847d1ef3d32662bd47f204f8ff62a837e642f4ead147369b04",
     "tests/prove_validate_scanners_matrix.py": "249f1b84d5e18be5a20e7623d6165abef8df09db5746e3ed45486512a8db0b1b",
@@ -519,7 +519,7 @@
   "note": "Written by scripts/export_for_adoption.py. It records what this copy RECEIVED, so the next export can tell a source change from a change made here. Deleting it does not break anything; it only forces the next export to be told its baseline with --baseline.",
   "profile": "neutral",
   "source": "the kit's source repository (commit recorded; branch names are not)",
-  "source_commit": "5bd6899b8c8e2797fb2b9c2e4d4e2000206503c0",
+  "source_commit": "675f7f3607663384d7e2ed68e2a75ae72f35ffca",
   "source_dirty": false,
   "unresolved_conflicts": {}
 }

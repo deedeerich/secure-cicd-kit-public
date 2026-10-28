@@ -1793,6 +1793,39 @@ jobs:
           # and record that switch as a ratchet so it cannot silently slide back.
           python3 scripts/lint_suppressions.py
 
+      # BEFORE THE TOOLCHAIN PROBES, not after: the probes switch the active python to one without the
+      # pinned tools, so a proof appended after them dies on `import yaml` (public run 40778089130).
+      # tests/prove_tree_clean_job.py J8 holds every proof above the setup-python probe.
+      - name: Cost redesign steps 1-3 keep detection, evidence and gate semantics (KDEC-033)
+        run: |
+          set -euo pipefail
+          # Step 1: one CodeQL leg per DISCOVERED language, for all 128 discovery combinations,
+          # exactly the legs the static table ran; a mutant that drops Kotlin is caught.
+          python3 tests/prove_codeql_dynamic_matrix.py
+          # Step 2: build-deploy.yml replaces security.yml without losing a trigger or the
+          # `security / Security gate` check; superseded PR runs cancel, pushes never do; NVD stays
+          # on pull_request while parity with deps-scan is unproven.
+          python3 tests/prove_security_caller_triggers.py
+          # Step 3, G1: kit-scripts + discover + resolve are one job, `plan`; the kit scripts are
+          # written, pinned, redacted and published BEFORE the checkout; each part keeps its own
+          # result and the gate reads it as itself.
+          python3 tests/prove_plan_job.py
+          # Step 3, G3: report and security-gate are one job, still named `Security gate`,
+          # contents: read; the report part runs first and is read as itself; the workspace is
+          # cleared before the verdict; every verdict step runs always().
+          python3 tests/prove_report_and_gate.py
+          # The protected capability floor (owner ruling 4): deleting a scanner from every
+          # contributor-editable place passes the registry check and is refused by the floor,
+          # statically, against the base, at runtime and by the gate.
+          python3 scripts/capability_floor.py --self-test
+          python3 tests/prove_capability_floor.py
+          # The required check (step 8 defect): never green by skipping, never pending by filter.
+          python3 scripts/selftest_required.py --self-test
+          python3 tests/prove_selftest_required.py
+          # The acceptance-test arithmetic (docs/operations/COST_MEASUREMENT.md): per-job ceiling,
+          # skipped jobs excluded, no saving below 5 runs per phase, every scanner compared.
+          python3 scripts/measure_cost.py --self-test
+
       # ── TOOLCHAIN COMPOSITE PROBES ───────────────────────────────────────────────────────
       # `setup-node` and `setup-python` have been in this tree since it was written and had
       # NEVER EXECUTED. Their deferrals expired 2026-09-15. CREATED is not CALLED, and a
@@ -1908,36 +1941,6 @@ jobs:
             exit 1
           fi
           echo "provenance stamp carries the identity chain and claims nothing it cannot see"
-
-      - name: Cost redesign steps 1-3 keep detection, evidence and gate semantics (KDEC-033)
-        run: |
-          set -euo pipefail
-          # Step 1: one CodeQL leg per DISCOVERED language, for all 128 discovery combinations,
-          # exactly the legs the static table ran; a mutant that drops Kotlin is caught.
-          python3 tests/prove_codeql_dynamic_matrix.py
-          # Step 2: build-deploy.yml replaces security.yml without losing a trigger or the
-          # `security / Security gate` check; superseded PR runs cancel, pushes never do; NVD stays
-          # on pull_request while parity with deps-scan is unproven.
-          python3 tests/prove_security_caller_triggers.py
-          # Step 3, G1: kit-scripts + discover + resolve are one job, `plan`; the kit scripts are
-          # written, pinned, redacted and published BEFORE the checkout; each part keeps its own
-          # result and the gate reads it as itself.
-          python3 tests/prove_plan_job.py
-          # Step 3, G3: report and security-gate are one job, still named `Security gate`,
-          # contents: read; the report part runs first and is read as itself; the workspace is
-          # cleared before the verdict; every verdict step runs always().
-          python3 tests/prove_report_and_gate.py
-          # The protected capability floor (owner ruling 4): deleting a scanner from every
-          # contributor-editable place passes the registry check and is refused by the floor,
-          # statically, against the base, at runtime and by the gate.
-          python3 scripts/capability_floor.py --self-test
-          python3 tests/prove_capability_floor.py
-          # The required check (step 8 defect): never green by skipping, never pending by filter.
-          python3 scripts/selftest_required.py --self-test
-          python3 tests/prove_selftest_required.py
-          # The acceptance-test arithmetic (docs/operations/COST_MEASUREMENT.md): per-job ceiling,
-          # skipped jobs excluded, no saving below 5 runs per phase, every scanner compared.
-          python3 scripts/measure_cost.py --self-test
 
   # Lane L-SCAN-B (KDEC-026): Kotlin/Android, Swift/Objective-C, build-aware C/C++ and a real-shaped
   # .NET solution. Its own job, in parallel with normalizer-drift (already 14 of its 30 minutes):

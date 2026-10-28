@@ -29,9 +29,13 @@ WHAT MUST HOLD (static, over .github/workflows/self-test.yml and the composite)
         which resolves the reconciled commit; a depth-1 checkout refused on the private repo
     J7  tree-clean carries no `if:` and `required` needs it (tests/prove_selftest_required.py S2
         holds the whole list; this names the one job this split added)
+    J8  no step of normalizer-drift after the setup-python toolchain probe runs a proof: the probe
+        switches the active python to one without the pinned tools (public run 40778089130: the
+        KDEC-033 step, appended after the probes, died on `import yaml`)
     M*  mutations, each caught: the composite step dropped from tree-clean; an inline semgrep pin in
         normalizer-drift; the sweep put back into normalizer-drift; fetch-depth dropped; tree-clean
-        dropped from required's needs; tree-clean's timeout removed
+        dropped from required's needs; tree-clean's timeout removed; a proof appended after the
+        setup-python probe
 
 EXIT  0 all hold   1 a violation   2 could not be checked
 """
@@ -83,9 +87,20 @@ def _uses_index(job):
     return None
 
 
+PROOF_RX = re.compile(r'python3?\s+(?:tests|scripts)/')
+
+
 def _first_proof_index(job):
     for i, s in enumerate(job.get('steps') or []):
-        if isinstance(s, dict) and s.get('run') and re.search(r'python3?\s+(?:tests|scripts)/', _code(s['run'])):
+        if isinstance(s, dict) and s.get('run') and PROOF_RX.search(_code(s['run'])):
+            return i
+    return None
+
+
+def _setup_python_probe_index(job):
+    """-> index of the toolchain probe that calls ./.github/actions/setup-python, or None."""
+    for i, s in enumerate(job.get('steps') or []):
+        if isinstance(s, dict) and str(s.get('uses', '')).rstrip('/') == './.github/actions/setup-python':
             return i
     return None
 
@@ -153,6 +168,14 @@ def check(doc, sem_version):
     needs = [needs] if isinstance(needs, str) else list(needs)
     if CLEAN not in needs:
         bad.append('J7 %s is not among %s\'s needs: its failure would not reach the required check' % (CLEAN, REQUIRED))
+    # J8
+    pi = _setup_python_probe_index(drift)
+    if pi is not None:
+        for i, s in enumerate(drift.get('steps') or []):
+            if i > pi and isinstance(s, dict) and s.get('run') and PROOF_RX.search(_code(s['run'])):
+                bad.append('J8 %s step %r runs a proof after the setup-python toolchain probe (step %d): '
+                           'the probe switches the active python to one without the pinned tools'
+                           % (DRIFT, s.get('name'), pi))
     return bad
 
 
@@ -187,6 +210,10 @@ def mutations(doc, sem_version):
     m['jobs'][CLEAN].pop('timeout-minutes', None)
     if not caught(m):
         blind.append('timeout removed from %s' % CLEAN)
+    m = copy.deepcopy(doc)
+    m['jobs'][DRIFT]['steps'].append({'name': 'x', 'run': 'python3 tests/prove_tree_clean_job.py\n'})
+    if _setup_python_probe_index(m['jobs'][DRIFT]) is not None and not caught(m):
+        blind.append('proof appended after the setup-python probe in %s' % DRIFT)
     return blind
 
 
@@ -216,7 +243,7 @@ def main():
         return 1
     print('PASS: the tree-clean sweep runs once, in its own bounded job with full history; both jobs '
           'install the one pinned tool list through %s (semgrep %s, in check_pinned_installs scope); '
-          'required needs it; 6 mutations caught.' % (COMPOSITE, sem_version))
+          'required needs it; no proof runs after the setup-python probe; 7 mutations caught.' % (COMPOSITE, sem_version))
     return 0
 
 
