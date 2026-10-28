@@ -32,9 +32,9 @@ on:
       # the PHP-only proof (lane L-PHP) is its own dispatch of this file, selected here, and the
       # full fixture -- the graded one -- stays the default.
       scope:
-        description: "full = the graded multi-language fixture; php = the PHP subtree alone"
+        description: "full = the graded multi-language fixture; php = the PHP subtree alone; iac = the Terraform-heavy cost fixture"
         type: choice
-        options: [full, php]
+        options: [full, php, iac]
         default: full
 
 permissions:
@@ -52,7 +52,7 @@ jobs:
   # committed and already in the checkout the scan reads.
   seed:
     name: Generate the never-committed secret seeds
-    if: inputs.scope != 'php'
+    if: inputs.scope == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -86,7 +86,7 @@ jobs:
   seeded:
     name: Seeded findings MUST block the caller
     needs: seed
-    if: inputs.scope != 'php'
+    if: inputs.scope == 'full'
     uses: ./.github/workflows/reusable-security.yml
     permissions:
       contents: read
@@ -171,3 +171,23 @@ jobs:
           path: ${{ runner.temp }}/verdict
           retention-days: 7
           if-no-files-found: error
+
+  # ── TERRAFORM-HEAVY: THE IaC COST CLASS (cost redesign acceptance test, KDEC-033) ────────────
+  #
+  # Six Terraform modules, no application code, no manifests, no secrets. Measured for cost and for
+  # the per-scanner invariants (docs/operations/COST_MEASUREMENT.md), not for a block: at crawl, the
+  # kit default, IaC findings route PROCEED_WITH_ADVISORY, so this leg ends GREEN with its findings
+  # in the security report. scripts/measure_cost.py reads them from that artifact.
+  seeded-iac:
+    name: Terraform-heavy fixture (cost class)
+    if: inputs.scope == 'iac'
+    uses: ./.github/workflows/reusable-security.yml
+    permissions:
+      contents: read
+      security-events: write
+      actions: read   # the CodeQL job reads workflow metadata on private repositories
+    with:
+      language: auto
+      paths: tests/consumer-fixture/iac-heavy
+      soft_fail_sast: false
+    secrets: inherit

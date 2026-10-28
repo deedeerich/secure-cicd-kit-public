@@ -1,0 +1,29 @@
+[
+  {
+    "path": "modules/storage/main.tf",
+    "expected_signal": "iac:tf-storage-public",
+    "tool": "checkov"
+  },
+  {
+    "path": "modules/network/main.tf",
+    "expected_signal": "iac:tf-nsg-open",
+    "tool": "checkov"
+  },
+  {
+    "path": "modules/compute/main.tf",
+    "expected_signal": "iac:tf-vm-password-auth"
+  },
+  {
+    "path": "modules/database/main.tf",
+    "expected_signal": "iac:tf-sql-public"
+  },
+  {
+    "path": "modules/kubernetes/main.tf",
+    "expected_signal": "iac:tf-aks-rbac-off",
+    "tool": "trivy-iac"
+  },
+  {
+    "path": "modules/keyvault/main.tf",
+    "expected_signal": "iac:tf-keyvault-purge-off"
+  }
+]
