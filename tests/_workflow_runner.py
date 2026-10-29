@@ -409,9 +409,14 @@ def run_world(path, inputs, state, cancel_after=None, environment_answer=PROTECT
         # zone that is READY and not blocked, a requester, and one independent reviewer's approval of
         # this run's environment that quotes the digest. A proof about those gates passes its own
         # values through env_extra / api_files; tests/prove_release_gates.py proves the refusals.
+        # GITHUB_SHA IS PART OF THE WORLD, NOT INHERITED. A hosted runner sets it for every step; a
+        # developer host does not. Inherited, the approval gate read the released commit's author from a
+        # record this world never wrote, refused at uat/prod as unreadable, and prove_deploy_direct_to_
+        # production passed locally and failed on the runner (self-test 40821569397, 2026-10-29). The
+        # world names one commit and writes its record below; a proof may still pass its own.
         landing = {'KIT_ZONE_READINESS': 'READY', 'KIT_RELEASE_BLOCK': 'none', 'GITHUB_RUN_ID': '4242',
                    'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_TRIGGERING_ACTOR': 'release-requester',
-                   'GITHUB_ACTOR': 'release-requester'}
+                   'GITHUB_ACTOR': 'release-requester', 'GITHUB_SHA': '5' * 40}
         env_extra = dict(landing, **(env_extra or {}))
         approvals = os.path.join(work, 'api', 'repos', 'o', 'r', 'actions', 'runs', env_extra['GITHUB_RUN_ID'],
                                  'approvals')

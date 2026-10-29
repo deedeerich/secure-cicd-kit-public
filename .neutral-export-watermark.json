@@ -1,5 +1,5 @@
 {
-  "exported_at_utc": "2026-10-29T05:06:38Z",
+  "exported_at_utc": "2026-10-29T06:06:21Z",
   "files": {
     ".custody.json": "56adfbefa20942fd8d03f2927ebe2c8b3d967152252c5b43303566e97928b168",
     ".env.example": "2803cf35729edfa1785d56e21070c95d7c656da07b422fa8be98b8b1320d34d9",
@@ -239,7 +239,7 @@
     "tests/_semgrep_pin.py": "0a9644dbbdfe3561b0b897dd2c1e4a655b33a3203342dd758f2939a7ff73ea59",
     "tests/_step_harness.py": "019d9e7dec1d466061012f5779659f1a570744047a891a96f08649dcf908942c",
     "tests/_trivy_step.py": "af4061a7ce150ae234fb0c0f83531063a6a8a013bedcb505a69ac961f46b1d1d",
-    "tests/_workflow_runner.py": "5a1add1a87e94ce704dbe4f8024431d5ac4ac62baa8bddca345440cae0d61666",
+    "tests/_workflow_runner.py": "ecb8be649aa022643bc932c69f2940c7514075320e890c95f7b57513684a7d6a",
     "tests/build_pipeline_overlays.py": "10144028d40cc9ae160685e70595d46d53acd20d68951bde3185025919060f36",
     "tests/capability_inventory.py": "5817ec8133e8b8f95e6b334608c9f255aaee914ab3e0bb523a7d4521ccb1384b",
     "tests/check_action_manifest_flow_scalars.py": "aa22cb0bc05e3578b7c38d6a88173f2f980216c4187063bc4975f431002c8df7",
@@ -532,7 +532,7 @@
   "note": "Written by scripts/export_for_adoption.py. It records what this copy RECEIVED, so the next export can tell a source change from a change made here. Deleting it does not break anything; it only forces the next export to be told its baseline with --baseline.",
   "profile": "neutral",
   "source": "the kit's source repository (commit recorded; branch names are not)",
-  "source_commit": "55d85dbdff23384a0328c17662827f99e755aa1b",
+  "source_commit": "99b73e1662003cff6950d71f556c58bfc1c4e93b",
   "source_dirty": false,
   "unresolved_conflicts": {}
 }
