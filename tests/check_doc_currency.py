@@ -131,7 +131,6 @@ known_stale = {
     # is wrong or only reads wrong (a quotation or a struck-through history the matcher cannot tell
     # from a claim -- reword it so it states the current fact).
     'README.md': 'fail_on_cvss "defaults to 11 (never blocks)"; it ships 9.0 since O-12',
-    'docs/explainer/09-STATUS-BUILT-VS-DESIGNED.md': 'fail_on_cvss "defaults to 11"; ships 9.0 (O-12)',
     'docs/assurance/RELEASE_1_EVIDENCE_MANIFEST.md': 'row 32: "fail_on_cvss 11 never blocks"; ships 9.0',
     'docs/architecture/NVD_ABSTRACTION_ACCOUNTING.md': '"default changed to 11 (never fail)" is now '
                                                        'history; the default is 9.0',
@@ -141,8 +140,6 @@ known_stale = {
     'docs/architecture/PROVENANCE_AND_ATTESTATION.md': 'the attestation row reads reusable-build-docker '
                                                        'as not run; image-build/push are observed live',
     'docs/architecture/THREAT_MODEL.md': '"nothing is ENFORCED"; stage 15 is ENFORCED (live refusals)',
-    'docs/roadmap/FUTURE_WORK.md': '"~~Never run~~ has run" -- struck-through history the matcher reads '
-                                   'as a claim; state the current fact',
     '.context/products/secure-cicd-kit/continuation.md': 'quotes the claim this gate refuses ("advisory '
                                                          'mode covers secrets") -- reword the quotation',
     '.context/products/secure-cicd-kit/risks.md': 'R-04 "deploy workflows ... have never run"; both '

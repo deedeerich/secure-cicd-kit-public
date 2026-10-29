@@ -1,0 +1,180 @@
+name: "Kit: Feed mirror refresh"
+
+# =============================================================================
+# RELEASE 4 -- ORGANISATION-HOSTED FEED MIRRORS (KDEC-032 PROPOSED, docs/adoption/FEED_MIRRORS.md)
+#
+# Owner, 2026-10-27: "release 4 could have the mirrors yes? I could have it in the security platform
+# azure subscription". One scheduled run refreshes every feed the scans read, so hundreds of
+# repositories stop pulling them from third-party hosts one cold cache at a time:
+#
+#   nvd    the Dependency-Check NVD datafeed, copied from the Dependency-Check project's own mirror
+#          (the default every scan already reads) with each year checked against its .meta sha256
+#   kev    the CISA Known Exploited Vulnerabilities catalog, parsed by the check that will read it
+#   trivy  the Trivy vulnerability database and Java index, downloaded by Trivy itself and packed
+#   images (optional) the scanner images, copied BY DIGEST into the mirror registry and proven to
+#          resolve at the same digest there
+#
+# INTO: a storage account's static website ($web), public network access OFF, reached through a
+# private endpoint -- so this job, and every scan job that reads it, runs on a private-network runner
+# (`runner`). Writes are Entra only: OIDC federation, Storage Blob Data Contributor on the $web
+# container, AcrPush on the mirror registry. No key, no SAS, no connection string, anywhere.
+#
+# Each feed: a new immutable generation, then its manifest LAST (source, upstream version and
+# timestamp, sha256 + size per file, refreshed_at), then read back through the consumer path. A refused
+# upstream publishes nothing and fails by name; the consumers then see the previous generation age
+# into MIRROR_STALE (48 h) and refuse it -- never a silent "clean".
+#
+# NOTHING HERE HAS RUN AGAINST A REAL ACCOUNT. tests/prove_feed_mirror.py proves the logic on file://
+# fixtures and the wiring statically; the live first run is owed (FEED_MIRRORS.md, "Verify").
+# =============================================================================
+
+on:
+  workflow_call:
+    inputs:
+      storage_account:
+        description: "The mirror storage account's NAME (infra/feed-mirrors output storage_account_name)."
+        type: string
+        required: true
+      mirror_url:
+        description: >-
+          The account's static website URL, exactly as the scans read it (the consumers' vars.KIT_FEED_MIRROR_URL;
+          infra/feed-mirrors output mirror_url). Each publication is read back through it.
+        type: string
+        required: true
+      runner:
+        description: >-
+          The runner label for these jobs: a private-network runner that resolves and reaches the private
+          endpoints (the same one the scans use, vars.KIT_FEED_MIRROR_RUNNER). A standard hosted runner
+          cannot reach them, and the run then fails at the upload.
+        type: string
+        required: true
+      github_environment:
+        description: >-
+          The environment whose federated credential the refresh identity trusts
+          (repo:<org>/<repo>:environment:<this>). It supplies AZURE_CLIENT_ID, AZURE_TENANT_ID and
+          AZURE_SUBSCRIPTION_ID as variables (identifiers, not secrets; a secret of the same name wins).
+        type: string
+        required: false
+        default: "feed-mirror"
+      cloud:
+        description: "commercial | gov"
+        type: string
+        required: false
+        default: "commercial"
+      feeds:
+        description: "JSON list of the feeds to refresh."
+        type: string
+        required: false
+        default: '["nvd","kev","trivy","trivy-checks","osv"]'
+      nvd_upstream_url:
+        description: >-
+          The Dependency-Check datafeed copied for nvd. Default: the Dependency-Check project's own mirror --
+          the source every scan reads today (reusable-nvd-cve.yml nvd_datafeed_url), so the mirror changes
+          WHERE it is read, not WHAT. Why not the NVD API: FEED_MIRRORS.md, "Why this source".
+        type: string
+        required: false
+        default: "https://dependency-check.github.io/DependencyCheck_Builder/nvd_cache/"
+      kev_upstream_url:
+        description: "The KEV catalog copied for kev. Default: CISA's own feed."
+        type: string
+        required: false
+        default: "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+      keep_generations:
+        description: "Generations kept besides the current one; older ones are deleted."
+        type: string
+        required: false
+        default: "3"
+      registry:
+        description: >-
+          The mirror registry's login server (infra/feed-mirrors output registry_login_server). Empty skips the
+          image mirror. Consumers set vars.KIT_SCANNER_IMAGE_REGISTRY to the same value.
+        type: string
+        required: false
+        default: ""
+      images:
+        description: >-
+          Space-separated source images to mirror, each PINNED BY DIGEST (name[:tag]@sha256:<64 hex>); a
+          tag alone is refused. Default: the Semgrep, gosec and gitleaks images the security workflow runs.
+        type: string
+        required: false
+        default: "semgrep/semgrep@sha256:32e459968daabe7ab86968184a29109b9564aa00392401156f9788452b42786b securego/gosec:2.24.6@sha256:2cf71ea78210c496c65e3a987576a9c8317b68e20f2960520b3f6f8f9f539be5 zricethezav/gitleaks:v8.21.2@sha256:0e99e8821643ea5b235718642b93bb32486af9c8162c8b8731f7cbdc951a7f46"
+    outputs:
+      refresh_states:
+        description: "The image job's state; each feed's MIRROR_PUBLISHED or refusal is in its job summary and log."
+        value: ${{ jobs.images.outputs.state }}
+    secrets:
+      AZURE_CLIENT_ID:
+        description: "Optional; the environment VARIABLE of the same name is used when absent. An identifier, not a secret."
+        required: false
+      AZURE_TENANT_ID:
+        description: "Optional; as AZURE_CLIENT_ID."
+        required: false
+      AZURE_SUBSCRIPTION_ID:
+        description: "Optional; as AZURE_CLIENT_ID."
+        required: false
+
+permissions:
+  contents: read
+  id-token: write   # OIDC federation to the refresh identity; nothing else is written to GitHub
+
+jobs:
+  refresh:
+    name: Refresh ${{ matrix.feed }}
+    runs-on: ${{ inputs.runner }}
+    environment: ${{ inputs.github_environment }}
+    # Bounded (LM-001). The NVD datafeed copy is ~90 s from the project mirror; the Trivy Java index is the
+    # largest download (hundreds of MB). 30 minutes leaves room without letting a stall bill for hours.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false   # one feed's refusal must not stop the others refreshing
+      matrix:
+        feed: ${{ fromJSON(inputs.feeds) }}
+    steps:
+      - name: Azure login (OIDC, the refresh identity)
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
+          environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
+      # The whole refresh -- fetch, verify, generation + manifest, upload (manifest LAST), read-back,
+      # prune -- runs from the kit through `$/`: scripts/feed_mirror.py fetch-nvd | fetch-kev |
+      # pack-trivy, then manifest, then `az storage blob upload-batch --auth-mode login` for the
+      # generation and `az storage blob upload` for manifest.json, then feed_mirror.py consume
+      # --verify-all against mirror_url, then feed_mirror.py prune-plan.
+      - name: Refresh, verify, publish and read back
+        id: refresh
+        uses: $/.github/actions/feed-mirror-refresh
+        with:
+          feed: ${{ matrix.feed }}
+          storage-account: ${{ inputs.storage_account }}
+          mirror-url: ${{ inputs.mirror_url }}
+          nvd-upstream-url: ${{ inputs.nvd_upstream_url }}
+          kev-upstream-url: ${{ inputs.kev_upstream_url }}
+          keep-generations: ${{ inputs.keep_generations }}
+
+  images:
+    name: Mirror scanner images by digest
+    if: inputs.registry != ''
+    runs-on: ${{ inputs.runner }}
+    environment: ${{ inputs.github_environment }}
+    timeout-minutes: 20
+    outputs:
+      state: ${{ steps.copy.outputs.refresh_state }}
+    steps:
+      - name: Azure login (OIDC, the refresh identity)
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
+          environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
+      - name: Copy each image by digest; prove it resolves at the same digest
+        id: copy
+        uses: $/.github/actions/feed-mirror-refresh
+        with:
+          feed: images
+          storage-account: ${{ inputs.storage_account }}
+          mirror-url: ${{ inputs.mirror_url }}
+          registry: ${{ inputs.registry }}
+          images: ${{ inputs.images }}

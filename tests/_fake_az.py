@@ -112,9 +112,13 @@ def ca_view(s):
             'properties': {'latestRevisionName': a['latestRevisionName'],
                            'configuration': {'activeRevisionsMode': a['revisionMode'],
                                              'ingress': {'fqdn': a['fqdn'],
-                                                         'traffic': a['traffic']}},
+                                                         'traffic': a['traffic'],
+                                                         'allowInsecure': a.get('allowInsecure', False)}},
                            'template': {'containers': [{'image': a['revisions'][a['latestRevisionName']]['image'],
-                                                        'env': [{'name': k, 'value': v} for k, v in
+                                                        # A dict value is an env entry's own fields (a
+                                                        # secretRef, OF-5 K-6); a string is its value.
+                                                        'env': [dict({'name': k}, **(v if isinstance(v, dict) else {'value': v}))
+                                                                for k, v in
                                                                 a['revisions'][a['latestRevisionName']]['env'].items()]}]}
                            if a['latestRevisionName'] else {}}}
 
@@ -220,7 +224,8 @@ def wa(s, args):
     sl = w['slots'][slot]
     if sub == 'show':
         return emit({'name': w['name'], 'id': sl['id'], 'defaultHostName': sl['host'],
-                     'tags': sl.get('tags', {}), 'state': 'Running'})
+                     'tags': sl.get('tags', {}), 'state': 'Running',
+                     'httpsOnly': sl.get('httpsOnly', True)})
     if sub == 'restart':
         # The platform's container log (what Kudu serves at /api/logs/docker): a restart creates a
         # container from the configured image and, unless injected otherwise, the site starts.
@@ -240,7 +245,11 @@ def wa(s, args):
         return emit({})
     if sub == 'config':
         if args[2] == 'show':
-            return emit({'linuxFxVersion': sl['linuxFxVersion']})
+            # KDEC-029's security-settings posture reads these; secure unless a scenario says not.
+            return emit({'linuxFxVersion': sl['linuxFxVersion'],
+                         'minTlsVersion': sl.get('minTlsVersion', '1.2'),
+                         'ftpsState': sl.get('ftpsState', 'Disabled'),
+                         'remoteDebuggingEnabled': sl.get('remoteDebuggingEnabled', False)})
         if args[2] == 'set':
             sl['linuxFxVersion'] = opt(args, '--linux-fx-version', default='')
             s['mutated'] = True
@@ -249,6 +258,14 @@ def wa(s, args):
             sl['linuxFxVersion'] = 'DOCKER|' + opt(args, '--container-image-name', '-i')
             s['mutated'] = True
             return emit([])
+        if args[2] == 'appsettings' and args[3] == 'list':
+            # OF-5 K-6: the seam step reads every setting with its slot-sticky flag (w['sticky']).
+            return emit([{'name': k, 'value': v, 'slotSetting': k in (w.get('sticky') or [])}
+                         for k, v in sorted((sl.get('appsettings') or {}).items())])
+        if args[2] == 'connection-string' and args[3] == 'list':
+            return emit([{'name': k, 'value': {'type': 'Custom', 'value': v},
+                          'slotSetting': k in (w.get('sticky_connection_strings') or [])}
+                         for k, v in sorted((sl.get('connectionstrings') or {}).items())])
         if args[2] == 'appsettings' and args[3] == 'set':
             for kv in multi(args, '--settings'):
                 k, v = kv.split('=', 1)
@@ -266,10 +283,124 @@ def wa(s, args):
     fail('unmodelled webapp command: %s' % ' '.join(args), 2)
 
 
+# --------------------------------------------------------------------------- static web apps
+# OF-5 K-8 (reusable-deploy-staticwebapp.yml). state['staticwebapp'] = {name, id, host, tags, sku,
+# repositoryUrl, apiKey, environments: {buildId: {status, marker, nonkit}}}. `default` is
+# production. A deploy is the `swa` CLI stand-in in tests/prove_deploy_staticwebapp.py, which writes
+# the deployed site's kit-release.json marker into the environment; curl serves it back.
+def swa_host(w, name):
+    return w['host'] if name == 'default' else '%s-%s.preview.swa.example' % (w['name'], name)
+
+
+def swa(s, args):
+    w = s['staticwebapp']
+    sub = args[1] if len(args) > 1 else ''
+    if sub == 'show':
+        return emit({'name': w['name'], 'id': w['id'], 'defaultHostname': w['host'],
+                     'tags': w.get('tags', {}), 'sku': {'name': w.get('sku', 'Standard')},
+                     'repositoryUrl': w.get('repositoryUrl'), 'stagingEnvironmentPolicy': 'Enabled'})
+    if sub == 'secrets' and args[2] == 'list':
+        return emit({'properties': {'apiKey': w['apiKey']}})
+    if sub == 'environment' and args[2] == 'list':
+        return emit([{'buildId': n, 'hostname': swa_host(w, n), 'status': e.get('status', 'Ready')}
+                     for n, e in sorted(w['environments'].items())])
+    if sub == 'appsettings' and args[2] == 'list':
+        # The production environment's application settings, as az shows them: a name -> value map under
+        # `properties` (a Key Vault reference is a value `@Microsoft.KeyVault(...)`). The seam reads them.
+        return emit({'name': 'appsettings', 'properties': dict(w.get('appsettings') or {})})
+    if sub == 'environment' and args[2] == 'delete':
+        w['environments'].pop(opt(args, '--environment-name'), None)
+        s['mutated'] = True
+        return emit({})
+    fail('unmodelled staticwebapp command: %s' % ' '.join(args), 2)
+
+
+def swa_curl(s, args, url):
+    """-> True when the URL is a static site's: its marker (body + code without -o) or health."""
+    w = s.get('staticwebapp')
+    if not w or not url:
+        return False
+    rest = url.split('://', 1)[1]
+    host, path = (rest.split('/', 1) + [''])[:2]
+    for n, e in w['environments'].items():
+        if host != swa_host(w, n):
+            continue
+        marker = e.get('marker')
+        body = '-o' not in args
+        if path.startswith('kit-release.json'):
+            code = '200' if marker else '404'
+            w = (opt(args, '-w') or '%{http_code}').replace('%{http_code}', code)
+            sys.stdout.write(((json.dumps(marker) if marker else 'Not Found') + w) if body else code)
+            return True
+        digest = (marker or {}).get('tree_digest')
+        # unhealthy_host_digest {host: digest}: that release fails on that host only (the production
+        # failure a preview did not show), so a restored prior release answers again.
+        bad = host in (s.get('unhealthy_hosts') or []) or digest in (s.get('unhealthy_digests') or []) or \
+            (digest and (s.get('unhealthy_host_digest') or {}).get(host) == digest)
+        code = '200' if (marker or e.get('nonkit')) and not bad else '503'
+        sys.stdout.write(('page' + (opt(args, '-w') or '%{http_code}').replace('%{http_code}', code)) if body else code)
+        return True
+    return False
+
+
+ARM_HOST = 'https://management.azure.com'
+
+
+def _arm_key(store, path):
+    low = path.lower()
+    for k in store:
+        if k.lower() == low:
+            return k
+    return None
+
+
+def arm(s, args):
+    """ARM through `az rest` (KDEC-023): GET / PUT / DELETE of a resource id, over state['arm'] =
+    {resource id: body}. A GET of a path that is not a resource but whose parent is (a child
+    collection: `.../securityRules`) lists the direct children as {"value": [...]}, as ARM does. A
+    missing resource answers the way `az rest` does: exit 1, "(ResourceNotFound) ... Not Found"."""
+    method = (opt(args, '--method', '-m') or 'get').lower()
+    url = opt(args, '--url', '--uri', '-u') or ''
+    path = url.split('?', 1)[0]
+    if path.startswith(ARM_HOST):
+        path = path[len(ARM_HOST):]
+    path = path.rstrip('/')
+    store = s.setdefault('arm', {})
+    k = _arm_key(store, path)
+    if method == 'get':
+        if k is not None:
+            return emit(store[k])
+        low = path.lower() + '/'
+        kids = [v for kk, v in store.items()
+                if kk.lower().startswith(low) and '/' not in kk[len(low):]]
+        if kids or _arm_key(store, path.rsplit('/', 1)[0]) is not None:
+            return emit({'value': sorted(kids, key=lambda v: str(v.get('id', '')).lower())})
+        fail('(ResourceNotFound) The Resource \'%s\' was not found. Not Found' % path)
+    if method == 'put':
+        body = opt(args, '--body', '-b') or '{}'
+        if body.startswith('@'):
+            body = io.open(body[1:], encoding='utf-8').read()
+        doc = json.loads(body)
+        store[k if k is not None else path] = doc
+        s['mutated'] = True
+        return emit(doc)
+    if method == 'delete':
+        if k is None:
+            fail('(ResourceNotFound) The Resource \'%s\' was not found. Not Found' % path)
+        low = k.lower() + '/'
+        for kk in [kk for kk in store if kk == k or kk.lower().startswith(low)]:
+            del store[kk]
+        s['mutated'] = True
+        return emit({})
+    fail('unmodelled rest method %s' % method, 2)
+
+
 def rest(s, args):
     """`az rest --method get --url https://<scm host>/api/logs/docker` (a JSON listing) and the log
     file it names (raw text) -- the App Service container log, read with an Entra token."""
     url = opt(args, '--url', '-u') or ''
+    if url.startswith('/subscriptions/') or url.startswith(ARM_HOST):
+        return arm(s, args)
     host = url.split('://', 1)[-1].split('/', 1)[0]
     for sl in (s.get('webapp') or {}).get('slots', {}).values():
         h = sl['host']
@@ -319,7 +450,20 @@ def resource(s, args):
     fail('unmodelled resource command', 2)
 
 
+def afd(s, args):
+    """`az afd endpoint purge` (KDEC-030 D-4, OF-5 K-7): recorded in state['purges'], nothing else."""
+    if args[1:3] == ['endpoint', 'purge']:
+        s.setdefault('purges', []).append({'resource_group': opt(args, '--resource-group', '-g'),
+                                           'profile': opt(args, '--profile-name'),
+                                           'endpoint': opt(args, '--endpoint-name'),
+                                           'paths': multi(args, '--content-paths')})
+        return emit({})
+    fail('unmodelled afd command: %s' % ' '.join(args), 2)
+
+
 def find_by_id(s, rid):
+    if 'staticwebapp' in s and s['staticwebapp']['id'] == rid:
+        return s['staticwebapp']
     if 'containerapp' in s and s['containerapp']['id'] == rid:
         return s['containerapp']
     for sl in (s.get('webapp') or {}).get('slots', {}).values():
@@ -355,6 +499,8 @@ def serving_image(s, host):
 
 def curl(s, args):
     url = [a for a in args if a.startswith('http')]
+    if swa_curl(s, args, url[0] if url else ''):
+        return
     host = url[0].split('://', 1)[1].split('/', 1)[0] if url else ''
     for sl in (s.get('webapp') or {}).get('slots', {}).values():
         if host == sl['host'] and sl.get('pending_start') is not None:
@@ -363,6 +509,10 @@ def curl(s, args):
                 '%s.1000000Z Creating container with image: %s from registry: x'
                 % (now, sl.pop('pending_start')))
             sl['docker_log'].append('%s.2000000Z Site started.' % now)
+    if host in (s.get('healthy_hosts') or []):
+        # A host the scenario declares answering (an ARM-modelled app with no image model).
+        sys.stdout.write('200')
+        return
     imgs = serving_image(s, host)
     if host in (s.get('unhealthy_hosts') or []):
         # The consumer-facing name fails while the revision's own name answers: serving fails
@@ -434,6 +584,10 @@ def main():
             rest(s, args)
         elif args[0] == 'resource':
             resource(s, args)
+        elif args[0] == 'afd':
+            afd(s, args)
+        elif args[0] == 'staticwebapp':
+            swa(s, args)
         else:
             fail('unmodelled az command: %s' % ' '.join(args), 2)
     except SystemExit:

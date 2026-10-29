@@ -217,6 +217,17 @@ EXEMPT_FIELDS = ('reason', 'owner', 'weakening_inputs_unrecorded', 'closes', 'ex
 # exemption: they are checked for totality (W1/W2) and laundering (W7) like any other, and a new input
 # that is not listed here fails W1 until it is classified or the workflow gains a posture step.
 INERT_ONLY: dict[str, dict] = {
+    # KDEC-029 decision 8, 2026-10-26. The daily deployed scan's inputs NAME what serves (which
+    # environments, which adapter, which slots, which cloud); none can soften, skip or relax a check:
+    # every named environment is reconciled, re-scanned and checked in full, and an environment that
+    # cannot be read is a finding (KIT-SERVING-UNREADABLE), never a clean row.
+    'reusable-deployed-scan.yml': {
+        'environments': 'the environments whose serving state is read -- the caller inventory, as '
+                        'resource_group names a target; each named one is scanned in full',
+        'adapter': 'which platform API reads what serves; a wrong one cannot read and is reported',
+        'slots': 'App Service slots read beside production; production is always read',
+        'cloud': 'which Azure cloud the reader logs in to',
+    },
     # KDEC-013, 2026-10-16. Every input either names the reference shape or NARROWS what is
     # accepted; none can soften, skip or relax the gate. An empty host or key makes the gate FAIL as
     # unconfigured (tests/prove_ticket_reference_gate.py G5), and a range can only reject more.
@@ -229,6 +240,53 @@ INERT_ONLY: dict[str, dict] = {
                       'references, and half a range fails the gate as misconfigured',
         'max_digits': 'an optional upper bound on the issue number; it can only reject more '
                       'references, and half a range fails the gate as misconfigured',
+    },
+    # FUTURE_WORK section 6, 2026-10-22. Every policy input can only send MORE pull requests to a
+    # human or to closure: protected lists and exclusions are ADDED to the kit's baseline, the update
+    # types and the lockfile threshold are refused above the baseline ceiling (patch,minor; 400), and
+    # an empty required_checks sends everything to a human. tests/prove_dependabot_triage.py D4.
+    'reusable-dependabot-triage.yml': {
+        'critical_packages': 'adds protected packages to the built-in list; it cannot remove one, '
+                             'so it only sends more updates to a human',
+        'critical_ecosystems': 'adds protected ecosystems to the built-in list; it cannot remove '
+                               'one, so it only sends more updates to a human',
+        'auto_merge_update_types': 'may name patch, minor or neither; anything above the patch,minor '
+                                   'ceiling is refused as a misconfigured policy and every update '
+                                   'goes to a human',
+        'lockfile_line_threshold': 'may be lowered from the 400 ceiling; a higher value is refused '
+                                   'as a misconfigured policy and every update goes to a human',
+        'excluded_paths': 'adds paths whose updates are closed; it cannot remove the built-in one, '
+                          'and a closed update is never merged',
+        'required_checks': 'names checks that must be required on the base branch before anything '
+                           'merges; empty sends every update to a human',
+        'min_compatibility_score': 'an optional floor; set, a lower or missing score goes to a human',
+        'review_team': 'names who is asked to review; it decides nothing',
+        'review_label': 'names the label a human-review update receives; it decides nothing',
+        'urgent_label': 'names the label an urgent update receives; it decides nothing',
+    },
+    # KDEC-032 PROPOSED (Release 4, lane L-MIRROR, 2026-10-27). The refresh scans nothing and gates
+    # nothing: it publishes feeds, and every way it can fall short -- a feed left out of `feeds`, a
+    # wrong source, a run that stops -- reaches the scans as a mirror that ages past the 48 h policy and
+    # is refused by name (MIRROR_STALE), or that fails its manifest (MIRROR_INTEGRITY_FAILED). The
+    # consumers' policy is a ceiling no input here can raise (scripts/feed_mirror.py).
+    'reusable-feed-mirror-refresh.yml': {
+        'storage_account': 'names where the feeds are written; a wrong one fails the upload by name',
+        'mirror_url': 'names where the publication is read back; a wrong one fails the read-back '
+                      '(MIRROR_PUBLISH_UNVERIFIED)',
+        'runner': 'names the runner; one that cannot reach the private endpoint fails the upload',
+        'github_environment': 'names the environment whose federated credential is trusted; a wrong one '
+                              'fails the login',
+        'cloud': 'which Azure cloud the login targets',
+        'feeds': 'which feeds are refreshed; a feed left out ages into MIRROR_STALE at every consumer '
+                 'and is refused there, never read as current',
+        'nvd_upstream_url': 'the datafeed copied; every year is checked against its own .meta sha256 '
+                            'and its age, so a wrong source is refused, never published',
+        'kev_upstream_url': 'the catalog copied; it must parse as the check parses it',
+        'keep_generations': 'how many old generations are kept; the current one is never deleted',
+        'registry': 'names the image mirror registry; empty mirrors no images and the scans pull '
+                    'from the public registry exactly as before',
+        'images': 'which images are copied; each must be pinned by digest (a tag is refused) and '
+                  'resolve at that digest after the copy',
     },
     'reusable-propose-ledger.yml': {
         'environment': 'names the baseline-ledger environment the proposal is for; it selects which '

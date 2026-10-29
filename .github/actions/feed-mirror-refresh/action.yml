@@ -1,0 +1,229 @@
+name: feed-mirror-refresh
+description: >-
+  Release 4 (KDEC-032 PROPOSED): refresh ONE feed of the organisation mirror -- nvd (the Dependency-Check
+  project's datafeed, every year checked against its .meta sha256), kev (the CISA catalog, parsed by the
+  check that will read it) or trivy (Trivy's own database and Java-database download, packed) -- into a new
+  immutable generation of the storage account's $web container, then the manifest LAST, then read the
+  publication back through the consumer path (--verify-all) and prune old generations. Entra only
+  (--auth-mode login after the caller's OIDC login): no key, no SAS. A refused upstream publishes nothing
+  and fails the run by name; the previous generation then ages into MIRROR_STALE at the consumers.
+  scripts/feed_mirror.py; tests/prove_feed_mirror.py; docs/adoption/FEED_MIRRORS.md.
+inputs:
+  feed:
+    description: nvd, kev or trivy.
+    required: true
+  storage-account:
+    description: The mirror storage account's name (Storage Blob Data Contributor on its $web container).
+    required: true
+  mirror-url:
+    description: The account's static website URL, as the consumers read it (read back after upload).
+    required: true
+  nvd-upstream-url:
+    description: The Dependency-Check datafeed copied for feed nvd.
+    required: false
+    default: 'https://dependency-check.github.io/DependencyCheck_Builder/nvd_cache/'
+  kev-upstream-url:
+    description: The KEV catalog copied for feed kev.
+    required: false
+    default: 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json'
+  keep-generations:
+    description: Generations kept besides the current one (older ones are deleted).
+    required: false
+    default: '3'
+  osv-upstream-url:
+    description: The OSV bucket copied for feed osv (one all.zip per ecosystem).
+    required: false
+    default: 'https://osv-vulnerabilities.storage.googleapis.com/'
+  osv-ecosystems:
+    description: The OSV ecosystems copied for feed osv. Empty takes scripts/feed_mirror.py's list.
+    required: false
+    default: ''
+  registry:
+    description: feed images only -- the mirror registry's login server (AcrPush for the refresh identity).
+    required: false
+    default: ''
+  images:
+    description: feed images only -- space-separated source images, each PINNED BY DIGEST; a tag is refused.
+    required: false
+    default: ''
+outputs:
+  refresh_state: {description: "MIRROR_PUBLISHED, or the refusal (MIRROR_UPSTREAM_STALE ...)", value: "${{ steps.images.outputs.refresh_state || steps.verify.outputs.refresh_state || steps.fetch.outputs.refresh_state }}"}
+  generation: {description: the generation published, value: "${{ steps.fetch.outputs.generation }}"}
+runs:
+  using: composite
+  steps:
+    - name: Install Trivy (pinned release binary) for its own database download
+      if: inputs.feed == 'trivy' || inputs.feed == 'trivy-checks'
+      shell: bash
+      run: |
+        set -euo pipefail
+        v=0.71.2
+        if [ "$(trivy --version 2>/dev/null | sed -n 's/^Version: //p' | head -n 1)" != "$v" ]; then
+          t="trivy_${v}_Linux-64bit.tar.gz"
+          d="$(mktemp -d)"
+          curl -sSfL --retry 3 --connect-timeout 20 -o "$d/$t" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${v}/$t"
+          echo "0510e71e2fd39bf863856d499c8dc19feb4e7336546394c502a8f5cc7ab27460  $d/$t" | sha256sum -c -
+          tar -xzf "$d/$t" -C "$d" trivy
+          sudo install -m 0755 "$d/trivy" /usr/local/bin/trivy
+          rm -rf "$d"
+        fi
+        trivy --version | head -n 1
+
+    - name: Fetch and verify the upstream, build the generation and its manifest
+      id: fetch
+      if: inputs.feed != 'images'
+      shell: bash
+      env:
+        # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
+        F_FEED: ${{ inputs.feed }}
+        F_NVD_UPSTREAM: ${{ inputs.nvd-upstream-url }}
+        F_KEV_UPSTREAM: ${{ inputs.kev-upstream-url }}
+        F_OSV_UPSTREAM: ${{ inputs.osv-upstream-url }}
+        F_OSV_ECOSYSTEMS: ${{ inputs.osv-ecosystems }}
+      run: |
+        set -euo pipefail
+        fm="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)/scripts/feed_mirror.py"
+        gen="$(date -u +%Y%m%dT%H%M%SZ)-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
+        work="${RUNNER_TEMP:-/tmp}/feed-refresh-${F_FEED}"
+        rm -rf "$work"; mkdir -p "$work/gen"
+        echo "generation=$gen" >> "$GITHUB_OUTPUT"
+        case "$F_FEED" in
+          nvd)   info="$(python3 "$fm" fetch-nvd --upstream "$F_NVD_UPSTREAM" --out "$work/gen")" || rc=$? ;;
+          kev)   info="$(python3 "$fm" fetch-kev --upstream "$F_KEV_UPSTREAM" --out "$work/gen")" || rc=$? ;;
+          trivy) trivy image --download-db-only --cache-dir "$work/trivy-cache" --quiet || true
+                 trivy image --download-java-db-only --cache-dir "$work/trivy-cache" --quiet || true
+                 info="$(python3 "$fm" pack-trivy --cache-dir "$work/trivy-cache" --out "$work/gen")" || rc=$? ;;
+          # Trivy's own checks-bundle download: a config scan of an empty module fetches it into the cache.
+          trivy-checks) mkdir -p "$work/cfg"; printf '%s\n' '# empty' > "$work/cfg/main.tf"
+                 trivy config --cache-dir "$work/trivy-cache" --quiet "$work/cfg" > /dev/null || true
+                 info="$(python3 "$fm" pack-trivy-checks --cache-dir "$work/trivy-cache" --out "$work/gen")" || rc=$? ;;
+          osv)   eco=(); [ -n "${F_OSV_ECOSYSTEMS:-}" ] && eco=(--ecosystems "$F_OSV_ECOSYSTEMS")
+                 info="$(python3 "$fm" fetch-osv --upstream "$F_OSV_UPSTREAM" "${eco[@]}" --out "$work/gen")" || rc=$? ;;
+          *)     echo "::error title=Unknown feed::$F_FEED is not nvd, kev, trivy, trivy-checks or osv."; exit 2 ;;
+        esac
+        if [ "${rc:-0}" -ne 0 ]; then
+          # NOTHING UNVERIFIED IS PUBLISHED. The previous generation stays, and ages into MIRROR_STALE.
+          printf '%s\n' "$info"
+          st="$(printf '%s' "$info" | tail -n 1 | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state",""))' 2>/dev/null || true)"
+          # Only a registered refusal is written; anything else the script printed is not a state.
+          case "$st" in
+            MIRROR_UPSTREAM_STALE) echo "refresh_state=MIRROR_UPSTREAM_STALE" >> "$GITHUB_OUTPUT" ;;
+            MIRROR_UPSTREAM_INTEGRITY_FAILED) echo "refresh_state=MIRROR_UPSTREAM_INTEGRITY_FAILED" >> "$GITHUB_OUTPUT" ;;
+            *) st=MIRROR_UPSTREAM_UNREACHABLE; echo "refresh_state=MIRROR_UPSTREAM_UNREACHABLE" >> "$GITHUB_OUTPUT" ;;
+          esac
+          echo "::error title=$st::feed $F_FEED was not refreshed; nothing was published."
+          exit 1
+        fi
+        printf '%s\n' "$info" > "$work/info.json"
+        field() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2],""))' "$work/info.json" "$1"; }
+        python3 "$fm" manifest --feed "$F_FEED" --dir "$work/gen" --source-url "$(field source_url)" \
+          --upstream-version "$(field upstream_version)" --upstream-timestamp "$(field upstream_timestamp)" \
+          --generation "$gen" --refreshed-by "${GITHUB_SERVER_URL:-}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}" \
+          --out "$work/manifest.json"
+
+    - name: Upload the generation, then the manifest LAST (Entra only)
+      if: inputs.feed != 'images'
+      shell: bash
+      env:
+        F_FEED: ${{ inputs.feed }}
+        F_ACCOUNT: ${{ inputs.storage-account }}
+        F_GEN: ${{ steps.fetch.outputs.generation }}
+      run: |
+        set -euo pipefail
+        work="${RUNNER_TEMP:-/tmp}/feed-refresh-${F_FEED}"
+        # Immutable: a generation is written once (--overwrite false) and never edited.
+        az storage blob upload-batch --auth-mode login --account-name "$F_ACCOUNT" --destination '$web' \
+          --destination-path "$F_FEED/g/$F_GEN" --source "$work/gen" --overwrite false --only-show-errors
+        # THE SWITCH IS ONE BLOB WRITE, after every file it names is in place. no-cache: a consumer
+        # must never be served yesterday's manifest by an intermediary.
+        az storage blob upload --auth-mode login --account-name "$F_ACCOUNT" --container-name '$web' \
+          --name "$F_FEED/manifest.json" --file "$work/manifest.json" --overwrite true \
+          --content-type application/json --content-cache-control no-cache --only-show-errors
+
+    - name: Read the publication back through the consumer path
+      id: verify
+      if: inputs.feed != 'images'
+      shell: bash
+      env:
+        F_FEED: ${{ inputs.feed }}
+        F_URL: ${{ inputs.mirror-url }}
+      run: |
+        set -uo pipefail
+        fm="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)/scripts/feed_mirror.py"
+        v="${RUNNER_TEMP:-/tmp}/feed-verify-${F_FEED}"
+        rm -rf "$v"; mkdir -p "$v"
+        # A PUBLICATION IS NOT DONE UNTIL IT READS BACK: the consumer's own check, over every file.
+        python3 "$fm" consume --feed "$F_FEED" --mirror-url "$F_URL" --verify-all --out-dir "$v/dl" \
+          --trivy-cache-dir "$v/trivy-cache" --github-output "$v/out" --summary "$GITHUB_STEP_SUMMARY" \
+          --evidence "$v/evidence.json" || true
+        st="$(sed -n 's/^mirror_state=//p' "$v/out" 2>/dev/null | tail -n 1)"
+        if [ "$st" != MIRROR_CURRENT ]; then
+          echo "refresh_state=MIRROR_PUBLISH_UNVERIFIED" >> "$GITHUB_OUTPUT"
+          echo "::error title=MIRROR_PUBLISH_UNVERIFIED::feed $F_FEED was uploaded but reads back ${st:-nothing} at $F_URL."
+          exit 1
+        fi
+        echo "refresh_state=MIRROR_PUBLISHED" >> "$GITHUB_OUTPUT"
+        echo "MIRROR_PUBLISHED: feed $F_FEED read back MIRROR_CURRENT, every file matching its manifest."
+
+    - name: Prune old generations (never the current one)
+      if: inputs.feed != 'images'
+      shell: bash
+      env:
+        F_FEED: ${{ inputs.feed }}
+        F_ACCOUNT: ${{ inputs.storage-account }}
+        F_GEN: ${{ steps.fetch.outputs.generation }}
+        F_KEEP: ${{ inputs.keep-generations }}
+      run: |
+        set -euo pipefail
+        fm="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)/scripts/feed_mirror.py"
+        az storage blob list --auth-mode login --account-name "$F_ACCOUNT" --container-name '$web' \
+            --prefix "$F_FEED/g/" --query '[].name' -o tsv --only-show-errors \
+          | awk -F/ '{print $3}' | sort -u \
+          | python3 "$fm" prune-plan --keep "$F_KEEP" --current "$F_GEN" > "${RUNNER_TEMP:-/tmp}/prune-$F_FEED.txt"
+        while read -r g; do
+          [ -n "$g" ] || continue
+          echo "deleting generation $F_FEED/g/$g"
+          az storage blob delete-batch --auth-mode login --account-name "$F_ACCOUNT" --source '$web' \
+            --pattern "$F_FEED/g/$g/*" --only-show-errors
+        done < "${RUNNER_TEMP:-/tmp}/prune-$F_FEED.txt"
+
+    # THE SCANNER IMAGES, BY DIGEST (feed images). A data-plane token only: `az acr login --name` reads the
+    # registry through ARM, which would need a control-plane role; the documented exchange needs only AcrPush
+    # -- an Entra token for the registry audience, exchanged at <registry>/oauth2/exchange.
+    - name: Copy each image by digest; prove it resolves at the same digest
+      id: images
+      if: inputs.feed == 'images'
+      shell: bash
+      env:
+        W_REGISTRY: ${{ inputs.registry }}
+        W_IMAGES: ${{ inputs.images }}
+      run: |
+        set -euo pipefail
+        fm="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)/scripts/feed_mirror.py"
+        aad="$(az account get-access-token --resource https://containerregistry.azure.net --query accessToken -o tsv)"
+        tenant="$(az account show --query tenantId -o tsv)"
+        refresh="$(curl -sSf --retry 3 -X POST "https://$W_REGISTRY/oauth2/exchange" \
+            --data-urlencode grant_type=access_token --data-urlencode "service=$W_REGISTRY" \
+            --data-urlencode "tenant=$tenant" --data-urlencode "access_token=$aad" \
+          | python3 -c 'import json,sys; print(json.load(sys.stdin)["refresh_token"])')"
+        echo "::add-mask::$refresh"
+        printf '%s' "$refresh" | docker login "$W_REGISTRY" -u 00000000-0000-0000-0000-000000000000 --password-stdin
+        bad=0
+        for src in $W_IMAGES; do
+          # A tag is refused here (image-target): a mirror of a moving pointer is not a mirror.
+          if ! target="$(python3 "$fm" image-target --registry "$W_REGISTRY" --source "$src")"; then bad=1; continue; fi
+          dest="${target% *}"; digest="${target#* }"
+          # Copies the manifest (and every platform of an index) unchanged, by digest, server side.
+          docker buildx imagetools create --tag "$dest:mirror-${digest#sha256:}" "$src"
+          # PROOF, NOT ASSUMPTION: the consumer pulls <registry>/<repo>@<digest>; it must resolve.
+          if docker buildx imagetools inspect "$dest@$digest" > /dev/null; then
+            echo "mirrored $src -> $dest@$digest"
+          else
+            echo "::error title=MIRROR_PUBLISH_UNVERIFIED::$dest@$digest does not resolve after the copy."
+            bad=1
+          fi
+        done
+        docker logout "$W_REGISTRY" || true
+        if [ "$bad" -ne 0 ]; then echo "refresh_state=MIRROR_PUBLISH_UNVERIFIED" >> "$GITHUB_OUTPUT"; exit 1; fi
+        echo "refresh_state=MIRROR_PUBLISHED" >> "$GITHUB_OUTPUT"

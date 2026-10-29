@@ -29,13 +29,13 @@ THE THREE TIERS, AND WHICH ONE ACTS
     Nothing correlates across subject classes. A SOURCE finding and a RESOURCE finding about "the
     same problem" are two obligations with two owners.
 
-DIFFERENCE FROM scripts/reconcile_tickets.build_clusters, STATED RATHER THAN HIDDEN
+ONE CLUSTERER AND ONE KEY FOR THE KIT (L48; KDEC-024)
 
-    The ticketing clusterer unions alias intersections transitively, so A{x,y}, B{y,z}, C{z}
-    becomes one cluster although A and C share nothing; it then anchors that cluster on an identity
-    rather than an identifier. Here that shape is a PROPOSAL, not an anchor. On every fixture with
-    no such chain the two agree, and tests/prove_anchored_correlation.py asserts that they do. The
-    two should become one implementation; that belongs to whoever owns the ticketing scripts.
+    scripts/reconcile_tickets.build_clusters clusters through `correlate` and stamps tickets with
+    `cluster_key` below -- the ONE key function. It used to compute its own key (and, before that,
+    its own transitive clustering); the report's key and the ticket stamp then disagreed for the
+    same finding. The formula kept is the one already stamped on live tickets, byte for byte, so
+    no existing ticket is orphaned by the unification (tests/prove_ticket_lifecycle.py, D4).
 
     Tier names are lower-case, as reconcile_tickets spells them and as ETFB section 9.4 writes them
     in prose: minting upper-case state words for a distinction the design already names would be
@@ -69,8 +69,19 @@ def _aliases(o):
     return frozenset(_s(str(v)).upper() for v in vals if _s(str(v)))
 
 
-def _key(subject, anchor):
-    return hashlib.sha256(('CORRELATION/%s/%s' % (subject, anchor)).encode('utf-8')).hexdigest()[:32]
+def cluster_key(subject, locus, anchor):
+    """THE cluster key -- the report's and the ticket stamp's, one function (L48).
+
+    Derived from the cluster's SUBJECT, LOCUS and ANCHOR, never from its membership: a key that
+    hashed the members would change when a scanner joined, the next run would find nothing under
+    it, and a second ticket would be opened for an obligation that already had one. The anchor is
+    compared case-insensitively (alias sets are read upper-case here and were stamped lower-case),
+    and the byte format is the one already on live tickets: 'CLUSTER/<subject>/<locus>/<anchor>'.
+    """
+    h = hashlib.sha256()
+    h.update(('CLUSTER/%s/%s/%s' % (subject or '', locus or '', str(anchor or '').lower()))
+             .encode('utf-8'))
+    return h.hexdigest()[:32]
 
 
 def correlate(observations):
@@ -145,7 +156,7 @@ def correlate(observations):
                 tier = ANCHORED if len(idx) > 1 else SINGLETON
                 clusters.append({
                     'tier': tier, 'identity_established': True, 'subject': subject,
-                    'anchor': anchor, 'cluster_key': _key(subject, '%s@%s' % (anchor, locus)),
+                    'anchor': anchor, 'cluster_key': cluster_key(subject, locus, anchor),
                     'members': idx, 'member_identities': sorted(_s(observations[i]['identity'])
                                                                 for i in idx),
                     'scanners': sorted(set(_s(observations[i].get('scanner')) for i in idx)),

@@ -220,7 +220,8 @@ jobs:
     # expose that environment's secrets — including its AZURE_SUBSCRIPTION_ID, which is how
     # dev physically cannot reach the prod subscription. Empty = build-only, no Azure auth.
     environment: ${{ inputs.github_environment }}
-    runs-on: ubuntu-latest
+    # Reads the feed mirrors when named (KDEC-032): the private runner reaches them.
+    runs-on: ${{ vars.KIT_FEED_MIRROR_RUNNER || 'ubuntu-latest' }}
     outputs:
       image_digest: ${{ steps.push.outputs.digest }}
       image_config_digest: ${{ steps.built.outputs.config_digest }}
@@ -281,7 +282,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # CONDITIONAL, because the contract says build-only needs no Azure auth and the
       # implementation did not. Both logins ran unconditionally, so the documented
@@ -289,7 +290,7 @@ jobs:
       # credentials for. Static inspection was enough to see it; nothing had looked.
       - name: Azure login (OIDC)
         if: inputs.push
-        uses: azure/login@v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -303,7 +304,7 @@ jobs:
           ACR_LOGIN_SERVER: ${{ inputs.acr_login_server }}
         run: az acr login --name "$(echo "$ACR_LOGIN_SERVER" | cut -d. -f1)"
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # ── ONE BUILD, AND ONLY ONE ──────────────────────────────────────────────────────────
       # This step used to have a twin: a second `docker/build-push-action` with `push: true`
@@ -325,7 +326,7 @@ jobs:
       # holding and refuse to return a digest the registry does not confirm.
       - name: Build (once — this is the only image that will exist)
         id: build
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ inputs.context }}
           file: ${{ inputs.dockerfile }}
@@ -349,23 +350,60 @@ jobs:
             echo "::error title=Image identity disagreement::build-push-action reported $ACTION_ID; the daemon reports $CONFIG_DIGEST for the same tag. The tag moved. Refusing to scan."
             exit 1
           fi
-          echo "config_digest=$CONFIG_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "config_digest=${CONFIG_DIGEST//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
           echo "Scanning and pushing config digest: $CONFIG_DIGEST"
 
       # TRIVY_IMAGE_SRC pins the gate to the DOCKER DAEMON. Without it Trivy's source order is
       # docker, containerd, podman, remote — and after `az acr login` a same-tagged image in the
       # registry is reachable. A gate that might have scanned a registry image instead of the one
       # just built is not a gate, it is a coincidence.
+      # TRIVY IS INSTALLED, NOT SET UP BY AN ACTION (KDEC-027): aquasecurity/trivy-action's
+      # setup-trivy checks out `aquasecurity/trivy` against github.server_url, which on a GHE.com
+      # tenant does not have it -- the build-only consumer path failed there. Release binary from
+      # github.com, pinned by version and sha256 (ledger L84); the database cached per day.
+      - name: Install Trivy (pinned release binary)
+        id: trivy_install
+        shell: bash
+        run: |
+          set -euo pipefail
+          v=0.71.2
+          if [ "$(trivy --version 2>/dev/null | sed -n 's/^Version: //p' | head -n 1)" != "$v" ]; then
+            t="trivy_${v}_Linux-64bit.tar.gz"
+            d="$(mktemp -d)"
+            curl -sSfL --retry 3 --connect-timeout 20 -o "$d/$t" \
+              "https://github.com/aquasecurity/trivy/releases/download/v${v}/$t"
+            echo "0510e71e2fd39bf863856d499c8dc19feb4e7336546394c502a8f5cc7ab27460  $d/$t" | sha256sum -c -
+            tar -xzf "$d/$t" -C "$d" trivy
+            sudo install -m 0755 "$d/trivy" /usr/local/bin/trivy
+            rm -rf "$d"
+          fi
+          trivy --version | head -n 1
+          echo "TRIVY_CACHE_DIR=$RUNNER_TEMP/trivy-cache" >> "$GITHUB_ENV"
+          echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+      - name: Trivy database cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/trivy-cache
+          key: trivy-db-${{ runner.os }}-${{ steps.trivy_install.outputs.day }}
+          restore-keys: trivy-db-${{ runner.os }}-
+      - name: Trivy database from the organisation mirror (KDEC-032)
+        uses: $/.github/actions/feed-mirror
+        with:
+          feed: trivy
+          mirror-url: ${{ vars.KIT_FEED_MIRROR_URL }}
+          max-age-hours: ${{ vars.KIT_FEED_MIRROR_MAX_AGE_HOURS }}
+          fallback: ${{ vars.KIT_FEED_MIRROR_FALLBACK }}
       - name: Trivy image scan (gate before push)
         id: trivy
-        uses: aquasecurity/trivy-action@v0.36.0
+        shell: bash
         env:
           TRIVY_IMAGE_SRC: docker
-        with:
-          image-ref: ${{ env.IMAGE }}
-          severity: ${{ inputs.trivy_severity }}
-          exit-code: "1"
-          ignore-unfixed: "true"
+          # Each TRIVY_* is the option trivy-action@v0.36.0 passed for the `with:` key it replaces.
+          IMAGE_REF: ${{ env.IMAGE }}
+          TRIVY_SEVERITY: ${{ inputs.trivy_severity }}
+          TRIVY_EXIT_CODE: "1"
+          TRIVY_IGNORE_UNFIXED: "true"
+        run: trivy image --quiet "$IMAGE_REF"
 
       # `docker:` prefix for the same reason: it forces the local daemon and removes Syft's
       # source guessing. An SBOM of the wrong source is worse than no SBOM — it is confident.
@@ -648,7 +686,7 @@ jobs:
 
       - name: Upload SBOM
         if: always() && steps.provenance.outputs.name != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.provenance.outputs.name }}
           path: sbom.spdx.json
@@ -660,7 +698,7 @@ jobs:
         # run does not finish"). Uploaded on every pushing path, including a refusal before the
         # push, so it does not die with the runner.
         if: always() && inputs.push
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: build-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/build-evidence
@@ -947,7 +985,7 @@ jobs:
 
       - name: Attest build provenance (SLSA, signed by this workflow's identity)
         id: sign
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ steps.subject.outputs.name }}
           subject-digest: ${{ steps.subject.outputs.digest }}

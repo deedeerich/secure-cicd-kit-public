@@ -1,12 +1,16 @@
 # Export manifest
 
-Produced by `scripts/export_for_adoption.py` on **2026-10-21**.
+Produced by `scripts/export_for_adoption.py` on **2026-10-29**.
 
 ## This is a fresh tree, not a clone
 
 **Git history was deliberately not exported.** Scrubbing a file does not scrub the commit that
 introduced it, so a clone would carry every removed name and number along with it. This copy
 starts from zero: `git init`, one commit, no inherited past.
+
+That is for a NEW standalone repository only. **Never run `git init` inside an existing clone.**
+To bring this copy into a repository that already exists, copy it in on a branch and commit it
+there like any other change, reviewing what it would overwrite first.
 
 ## What the gate checked
 

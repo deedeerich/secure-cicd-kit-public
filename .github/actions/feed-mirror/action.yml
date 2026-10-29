@@ -1,0 +1,58 @@
+name: feed-mirror
+description: >-
+  Release 4 (KDEC-032 PROPOSED): read one of the kit's external feeds -- nvd (the Dependency-Check
+  datafeed), kev (the CISA KEV catalog), trivy (the Trivy vulnerability and Java databases), trivy-checks
+  (Trivy's misconfiguration checks bundle) or osv (the OSV offline databases) -- from the
+  organisation's private mirror, checked against the manifest the scheduled refresh wrote. CURRENT: the
+  feed is used (trivy: unpacked into TRIVY_CACHE_DIR with the update off; nvd: mirror_url is the datafeed).
+  STALE, UNREACHABLE or INTEGRITY_FAILED: refused BY NAME, never clean (trivy: the cache is emptied and the
+  update stays off, so Trivy refuses instead of scanning stale data or reaching upstream). The public feed
+  is read only on an explicit fallback `upstream`, recorded. Empty mirror-url: NOT_CONFIGURED, the public
+  feed exactly as before. scripts/feed_mirror.py; tests/prove_feed_mirror.py; docs/adoption/FEED_MIRRORS.md.
+inputs:
+  feed:
+    description: nvd, kev or trivy.
+    required: true
+  mirror-url:
+    description: The mirror's base URL (the caller's vars.KIT_FEED_MIRROR_URL). Empty is NOT_CONFIGURED.
+    required: false
+    default: ''
+  max-age-hours:
+    description: Refuse a mirror refreshed longer ago than this. The policy ceiling (48) applies to anything larger.
+    required: false
+    default: '48'
+  fallback:
+    description: "`upstream` reads the public feed when the mirror is refused, and records it. Anything else refuses."
+    required: false
+    default: 'none'
+  osv-ecosystems:
+    description: >-
+      feed osv only: the OSV ecosystems this scan needs (space-separated). One the mirror lacks is refused
+      by name. Empty takes every ecosystem the mirror holds.
+    required: false
+    default: ''
+outputs:
+  mirror_state: {description: "NOT_CONFIGURED MIRROR_CURRENT MIRROR_STALE MIRROR_UNREACHABLE MIRROR_INTEGRITY_FAILED or MIRROR_FALLBACK_UPSTREAM", value: "${{ steps.m.outputs.mirror_state }}"}
+  mirror_cause: {description: why a fallback was taken, value: "${{ steps.m.outputs.mirror_cause }}"}
+  mirror_usable: {description: false when the mirror was refused and no fallback was configured, value: "${{ steps.m.outputs.mirror_usable }}"}
+  mirror_url: {description: "the current generation's URL (nvd: the datafeed); empty unless MIRROR_CURRENT", value: "${{ steps.m.outputs.mirror_url }}"}
+  mirror_generation: {description: the generation read, value: "${{ steps.m.outputs.mirror_generation }}"}
+  mirror_refreshed_at: {description: when the refresh published it, value: "${{ steps.m.outputs.mirror_refreshed_at }}"}
+  mirror_upstream_timestamp: {description: the upstream's own timestamp, value: "${{ steps.m.outputs.mirror_upstream_timestamp }}"}
+  mirror_why: {description: why the state is what it is, value: "${{ steps.m.outputs.mirror_why }}"}
+runs:
+  using: composite
+  steps:
+    - name: Read the feed from the organisation mirror (or record why not)
+      id: m
+      shell: bash
+      env:
+        # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
+        M_FEED: ${{ inputs.feed }}
+        M_URL: ${{ inputs.mirror-url }}
+        M_MAX_AGE: ${{ inputs.max-age-hours }}
+        M_FALLBACK: ${{ inputs.fallback }}
+        M_OSV_ECOSYSTEMS: ${{ inputs.osv-ecosystems }}
+      run: |
+        set -uo pipefail
+        bash "$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)/scripts/feed_mirror_step.sh"

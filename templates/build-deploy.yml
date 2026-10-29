@@ -4,7 +4,18 @@
 # nobody chose (templates/security.yml pins the same way).
 #
 # Shape: security gates -> build (scan before push, SBOM) -> deploy BY DIGEST, gated by a
-# GitHub Environment. Note the trigger set: push builds, but push does NOT deploy.
+# GitHub Environment.
+#
+# BUILD ONCE, PROMOTE THE SAME DIGEST (KDEC-029, owner 2026-10-26). A merge to main passes the full
+# gate, builds ONCE, signs, and deploys that digest to dev AND test IN PARALLEL (deploy-dev,
+# deploy-test: two independent jobs, two independent promotion records). uat and prod are never
+# built for: a dispatch with promote_from_run_id PROMOTES the digest a predecessor verified (the
+# `promote` job; no build runs). The predecessor is product policy: vars.KIT_PROMOTION_PREDECESSOR
+# (test or uat; default test; uat's own predecessor is always test). "Tested" = health, the e2e test
+# period (vars.KIT_E2E_TEST_COMMAND), DAST where configured (vars.KIT_DAST_COMMAND, never at prod) and the
+# security-settings posture. A hotfix is the same path with a shorter period; break-glass is a
+# dispatch with release_path break-glass and an attributed exception, followed by the deployed scan
+# that tickets the testing it still owes. templates/deployed-scan.yml scans what serves, daily.
 #
 # WHAT THE LANDING ZONE VENDS (docs/architecture/LZ_KIT_HANDOFF_CONTRACT.md). Per application and
 # environment: AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, AZURE_CLIENT_ID (variables, not secrets: the
@@ -33,13 +44,52 @@ on:
         description: "GitHub Environment to deploy into (one per deployment environment, vended by the landing zone)"
         type: string
         default: "dev"
+      promote_from_run_id:
+        description: "PROMOTE (no build): the run whose deploy into promote_from_environment verified the digest"
+        type: string
+        default: ""
+      promote_from_environment:
+        description: "PROMOTE: the predecessor environment whose record is promoted"
+        type: string
+        default: "test"
+      release_path:
+        description: "normal | hotfix | rollback | break-glass"
+        type: string
+        default: "normal"
+      exception_reason:
+        description: "break-glass / rollback: why (the weakening record)"
+        type: string
+        default: ""
+      exception_authority:
+        description: "break-glass / rollback: who accepted it (a role or a named approver)"
+        type: string
+        default: ""
+      exception_ref:
+        description: "break-glass / rollback: the ticket or exception id"
+        type: string
+        default: ""
+      exception_expires:
+        description: "break-glass / rollback: YYYY-MM-DD, at most 7 days out for break-glass"
+        type: string
+        default: ""
+
+# A SUPERSEDED PULL-REQUEST RUN IS CANCELLED; NOTHING ELSE IS (cost redesign step 2, KDEC-033). Only
+# pull_request runs share a group (one per PR), so a new push to the PR cancels the run it replaced. Every
+# other event is grouped by its own run id: a push to main -- the run that builds and deploys -- is never
+# cancelled and never queued. tests/prove_security_caller_triggers.py holds both expressions.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
   # ── Gate 1: security must pass before anything is built ──────────────
+  # THIS JOB REPLACES templates/security.yml (KDEC-033): same id, same triggers, same required check
+  # `security / Security gate`. Delete security.yml when this file is installed.
   security:
+    if: inputs.promote_from_run_id == ''   # a promotion builds nothing; the source record carries the verdict
     uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-security.yml@0000000000000000000000000000000000000000   # pin a commit SHA
     permissions:
       contents: read
@@ -55,6 +105,7 @@ jobs:
 
   # ── Gate 2: the repo's own pipelines must satisfy supply-chain policy ─
   policy:
+    if: inputs.promote_from_run_id == ''
     uses: YOUR_ORG/secure-cicd-kit/.github/workflows/workflow-policy-check.yml@0000000000000000000000000000000000000000   # pin a commit SHA
     permissions:
       contents: read
@@ -76,9 +127,15 @@ jobs:
   #     push: false                 # build + scan + SBOM only
   # Keep `push: true` on main only. Do NOT restrict this with a Branch-form federated credential —
   # use the Environment's deployment branch policy (see docs/adoption/SETUP.md §1.2).
+  #
+  # `needs: security` IS THE VERDICT, NOT A SCANNER'S MOOD. The security gate is the single
+  # enforcement point: scanner jobs report findings and fail only when they could not scan, so the
+  # security workflow fails exactly when its routing_result is BLOCKED or EVIDENCE_UNTRUSTED (a
+  # secret, a broken scan). At crawl, ordinary findings build here as PROCEED_WITH_ADVISORY; the
+  # verdict job below still refuses a deploy on DECISION_REQUIRED (which passes the gate) or worse.
   build:
     needs: [security, policy]
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && inputs.promote_from_run_id == ''
     uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-build-docker.yml@0000000000000000000000000000000000000000   # pin a commit SHA
     permissions:
       contents: read
@@ -116,7 +173,7 @@ jobs:
   # renders the verdict absent, and this job then refuses every deploy: no verdict is not a PROCEED.
   verdict:
     needs: [security, build]
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && inputs.promote_from_run_id == ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -153,6 +210,8 @@ jobs:
           VERIFY_ROUTING: ${{ steps.attestation.outputs.routing_result }}
           ARTIFACT_IDENTITY: ${{ needs.build.outputs.artifact_identity }}
           DEPLOY_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy }}
+          # KDEC-029: a merge to main deploys dev and test, so a refusal there is a requested deploy too.
+          MERGE_DEPLOYS: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         run: |
           set -euo pipefail
           rank() {
@@ -192,7 +251,7 @@ jobs:
             echo "| **combined, with V1** | **\`$route\`** |"
             echo "| deploy allowed | $allowed |"
           } >> "$GITHUB_STEP_SUMMARY"
-          if [ "$allowed" != true ] && [ "$DEPLOY_REQUESTED" = true ]; then
+          if [ "$allowed" != true ] && { [ "$DEPLOY_REQUESTED" = true ] || [ "${MERGE_DEPLOYS:-}" = true ]; }; then
             echo "::error title=Deploy refused::routing_result=$route, artifact_identity=${ARTIFACT_IDENTITY:-absent}. A deploy needs REGISTRY_IDENTITY_PROVEN and PROCEED or PROCEED_WITH_ADVISORY."
             exit 1
           fi
@@ -222,12 +281,15 @@ jobs:
   # binds it to its environment's KIT_ENVIRONMENT_TIER and refuses a mismatch.
   deploy:
     needs: [security, build, verdict]
-    if: github.event_name == 'workflow_dispatch' && inputs.deploy && needs.verdict.outputs.deploy_allowed == 'true'
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.deploy && inputs.promote_from_run_id == '' &&
+      needs.verdict.outputs.deploy_allowed == 'true'
     uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-deploy-containerapp.yml@0000000000000000000000000000000000000000   # pin a commit SHA
     permissions:
       contents: read
       id-token: write
       attestations: read   # the deploy runs V1 itself, before login (P-02)
+      actions: read        # the deploy reads its target's rollback marker, before login (KDEC-023)
     with:
       github_environment: ${{ inputs.environment }}       # approvals live on the Environment
       # V1 inside the deploy: the build workflow that must have signed this digest. On a private
@@ -243,6 +305,13 @@ jobs:
       # and this job's GitHub environment requires reviewers. A gap on an UNVERIFIED range is
       # recorded and proceeds until a seeded corpus proves the range.
       advisory_causes: ${{ needs.security.outputs.advisory_causes }}
+      # What the policy register demands of this environment's reviewers (named groups, self-review
+      # prevented). The deploy reads the environment's protection rules back and, at uat/prod,
+      # refuses before login when they fall short; empty still demands one reviewer there.
+      deploy_approval: ${{ needs.security.outputs.deploy_approval }}
+      # KDEC-018: the authority's renewal cap. A version-gap exception carries its prior grants in
+      # weakening_renews ([{ticket, approver, from, expires}]); renewed more often, it is refused.
+      max_exception_renewals: ${{ needs.security.outputs.max_exception_renewals }}
       resource_group: ${{ vars.KIT_RESOURCE_GROUP }}
       containerapp_name: ${{ vars.KIT_APP_NAME }}
       acr_login_server: ${{ vars.KIT_ACR_LOGIN_SERVER }}
@@ -252,7 +321,216 @@ jobs:
       cloud: ${{ vars.KIT_CLOUD || 'commercial' }}
       health_path: /health
       rollback_on_failure: true
+      # KDEC-029: what makes this deploy "tested", and the identity the build proved.
+      artifact_identity: ${{ needs.build.outputs.artifact_identity }}
+      e2e_test_command: ${{ vars.KIT_E2E_TEST_COMMAND }}
+      dast_command: ${{ vars.KIT_DAST_COMMAND }}
+      release_path: ${{ inputs.release_path || 'normal' }}
     secrets:
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
+
+  # ── dev and test, IN PARALLEL, from the ONE build of a merge to main (KDEC-029) ──
+  # Two independent jobs: each needs only the build and the verdict, never the other, and each
+  # writes its own promotion record (kit-promotion-record-<environment>). Promotion later checks
+  # the specific predecessor's record for this exact digest; a dev success never satisfies it.
+  deploy-dev:
+    needs: [security, build, verdict]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.verdict.outputs.deploy_allowed == 'true'
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-deploy-containerapp.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+      actions: read
+    with:
+      github_environment: dev
+      attestation_signer_workflow: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-build-docker.yml
+      attestations_available: ${{ vars.ATTESTATIONS_AVAILABLE == 'true' }}
+      environment_tier: ${{ vars.KIT_ENVIRONMENT_TIER }}  # empty here: filled from the dev environment
+      routing_result: ${{ needs.verdict.outputs.deploy_routing_result }}
+      controls_unavailable: ${{ needs.security.outputs.controls_unavailable }}
+      advisory_causes: ${{ needs.security.outputs.advisory_causes }}
+      deploy_approval: ${{ needs.security.outputs.deploy_approval }}
+      max_exception_renewals: ${{ needs.security.outputs.max_exception_renewals }}
+      resource_group: ${{ vars.KIT_RESOURCE_GROUP }}
+      containerapp_name: ${{ vars.KIT_APP_NAME }}
+      acr_login_server: ${{ vars.KIT_ACR_LOGIN_SERVER }}
+      image_repository: ${{ vars.KIT_IMAGE_REPOSITORY }}
+      image_digest: ${{ needs.build.outputs.image_digest }}
+      version_metadata: ${{ needs.verdict.outputs.version_metadata }}
+      cloud: ${{ vars.KIT_CLOUD || 'commercial' }}
+      health_path: /health
+      rollback_on_failure: true
+      artifact_identity: ${{ needs.build.outputs.artifact_identity }}
+      e2e_test_command: ${{ vars.KIT_E2E_TEST_COMMAND }}
+      dast_command: ${{ vars.KIT_DAST_COMMAND }}
+    secrets:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
+
+  deploy-test:
+    needs: [security, build, verdict]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.verdict.outputs.deploy_allowed == 'true'
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-deploy-containerapp.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+      actions: read
+    with:
+      github_environment: test
+      attestation_signer_workflow: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-build-docker.yml
+      attestations_available: ${{ vars.ATTESTATIONS_AVAILABLE == 'true' }}
+      environment_tier: ${{ vars.KIT_ENVIRONMENT_TIER }}  # empty here: filled from the test environment
+      routing_result: ${{ needs.verdict.outputs.deploy_routing_result }}
+      controls_unavailable: ${{ needs.security.outputs.controls_unavailable }}
+      advisory_causes: ${{ needs.security.outputs.advisory_causes }}
+      deploy_approval: ${{ needs.security.outputs.deploy_approval }}
+      max_exception_renewals: ${{ needs.security.outputs.max_exception_renewals }}
+      resource_group: ${{ vars.KIT_RESOURCE_GROUP }}
+      containerapp_name: ${{ vars.KIT_APP_NAME }}
+      acr_login_server: ${{ vars.KIT_ACR_LOGIN_SERVER }}
+      image_repository: ${{ vars.KIT_IMAGE_REPOSITORY }}
+      image_digest: ${{ needs.build.outputs.image_digest }}
+      version_metadata: ${{ needs.verdict.outputs.version_metadata }}
+      cloud: ${{ vars.KIT_CLOUD || 'commercial' }}
+      health_path: /health
+      rollback_on_failure: true
+      artifact_identity: ${{ needs.build.outputs.artifact_identity }}
+      e2e_test_command: ${{ vars.KIT_E2E_TEST_COMMAND }}
+      dast_command: ${{ vars.KIT_DAST_COMMAND }}
+    secrets:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
+
+  # ── PROMOTE digest X from run Y / environment Y into uat or prod. No build. ──
+  # The source job only READS the predecessor's record (actions: read, no identity) to hand the
+  # deploy the digest, the verdict and the stamp the record carries. The deploy reusable's own
+  # promotion gate then re-reads that record and refuses, naming the reason, unless it holds.
+  promotion-source:
+    if: github.event_name == 'workflow_dispatch' && inputs.promote_from_run_id != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      image_digest: ${{ steps.read.outputs.image_digest }}
+      routing_result: ${{ steps.read.outputs.routing_result }}
+      version_metadata: ${{ steps.read.outputs.version_metadata }}
+      artifact_identity: ${{ steps.read.outputs.artifact_identity }}
+      controls_unavailable: ${{ steps.read.outputs.controls_unavailable }}
+      advisory_causes: ${{ steps.read.outputs.advisory_causes }}
+    steps:
+      - name: Read the predecessor's promotion record
+        id: read
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ inputs.promote_from_run_id }}
+          SRC: ${{ inputs.promote_from_environment }}
+        run: |
+          set -euo pipefail
+          # KDEC-027: gh's token goes to this run's host only (gh run download defaults to github.com).
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
+          name="kit-promotion-record-$(printf '%s' "$SRC" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-40)"
+          gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n "$name" -D rec
+          r=rec/promotion-record.json
+          {
+            echo "image_digest=$(jq -r '.artifact.digest // ""' "$r")"
+            echo "routing_result=$(jq -r '.provenance.gate_routing_result // ""' "$r")"
+            echo "version_metadata=$(jq -c -r '.artifact.version_metadata // ""' "$r")"
+            echo "artifact_identity=$(jq -r '.artifact.artifact_identity // ""' "$r")"
+            echo "controls_unavailable=$(jq -r '(.provenance.controls_unavailable // []) | join(",")' "$r")"
+            echo "advisory_causes=$(jq -r '(.provenance.advisory_causes // []) | join(",")' "$r")"
+          } >> "$GITHUB_OUTPUT"
+          # OF-5 K-1: at uat and prod the deploy refuses an approval whose comment does not quote the
+          # digest being released. Show the approver what to quote (a sha256 value only, never other text).
+          d="$(jq -r '.artifact.digest // ""' "$r")"
+          if printf '%s' "$d" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            { echo "### For the approver"; echo ""
+              echo "Approve with this digest in the comment (or at least its first 12 hex characters): \`$d\`"; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  promote:
+    needs: [promotion-source]
+    if: github.event_name == 'workflow_dispatch' && inputs.promote_from_run_id != ''
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-deploy-containerapp.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+      actions: read
+    with:
+      github_environment: ${{ inputs.environment }}      # uat or prod; approvals live on the Environment
+      promote_from_run_id: ${{ inputs.promote_from_run_id }}
+      promote_from_environment: ${{ inputs.promote_from_environment }}
+      # Product policy: prod's predecessor is test or uat (default test); uat's is always test.
+      promotion_predecessor: ${{ inputs.environment == 'uat' && 'test' || vars.KIT_PROMOTION_PREDECESSOR || 'test' }}
+      release_path: ${{ inputs.release_path || 'normal' }}
+      weakening_reason: ${{ inputs.exception_reason }}
+      weakening_authority: ${{ inputs.exception_authority }}
+      weakening_exception_ref: ${{ inputs.exception_ref }}
+      weakening_expires: ${{ inputs.exception_expires }}
+      attestation_signer_workflow: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-build-docker.yml
+      attestations_available: ${{ vars.ATTESTATIONS_AVAILABLE == 'true' }}
+      environment_tier: ${{ vars.KIT_ENVIRONMENT_TIER }}
+      routing_result: ${{ needs.promotion-source.outputs.routing_result }}
+      controls_unavailable: ${{ needs.promotion-source.outputs.controls_unavailable }}
+      advisory_causes: ${{ needs.promotion-source.outputs.advisory_causes }}
+      artifact_identity: ${{ needs.promotion-source.outputs.artifact_identity }}
+      resource_group: ${{ vars.KIT_RESOURCE_GROUP }}
+      containerapp_name: ${{ vars.KIT_APP_NAME }}
+      acr_login_server: ${{ vars.KIT_ACR_LOGIN_SERVER }}
+      image_repository: ${{ vars.KIT_IMAGE_REPOSITORY }}
+      image_digest: ${{ needs.promotion-source.outputs.image_digest }}   # the SAME digest, never rebuilt
+      version_metadata: ${{ needs.promotion-source.outputs.version_metadata }}
+      cloud: ${{ vars.KIT_CLOUD || 'commercial' }}
+      health_path: /health
+      rollback_on_failure: true
+      # uat (a possible prod predecessor) runs the active checks; prod runs passive checks only and
+      # refuses DAST before login.
+      e2e_test_command: ${{ inputs.environment != 'prod' && vars.KIT_E2E_TEST_COMMAND || '' }}
+      dast_command: ${{ inputs.environment != 'prod' && vars.KIT_DAST_COMMAND || '' }}
+    secrets:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
+
+  # ── BREAK-GLASS: the testing it owes is scanned for and ticketed at once, then daily ──
+  break-glass-scan:
+    needs: [promote]
+    if: always() && github.event_name == 'workflow_dispatch' && inputs.release_path == 'break-glass' && needs.promote.result == 'success'
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-deployed-scan.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    with:
+      environments: ${{ format('["{0}"]', inputs.environment) }}
+    secrets:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
+
+  break-glass-tickets:
+    needs: [break-glass-scan]
+    if: always() && needs.break-glass-scan.result == 'success'
+    permissions:
+      contents: read
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-ticket-reconcile.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    with:
+      backend: jira
+      environment: ticketing
+      default_branch: main
+      mode: reconcile
+      findings_artifact: ${{ needs.break-glass-scan.outputs.findings_artifact }}
+      apply: true
+      kit_repository: YOUR_ORG/secure-cicd-kit
+      kit_ref: "0000000000000000000000000000000000000000"   # the same commit as the pin above
+    secrets:
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}

@@ -31,9 +31,20 @@ sys.path.insert(0, HERE)
 EXPR = re.compile(r'\$\{\{\s*(.*?)\s*\}\}')
 
 
+def _expand(doc):
+    """The workflow with every `$/` composite step expanded into its job, as the runner sees it.
+
+    Scanner job bodies live in `.github/actions/<scanner>/` (ledger L64); this reads the steps a
+    job actually runs. One rule, tests/_composite_expand.py, for every reader.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.expanded_doc(doc)
+
+
 def load(path):
     import yaml
-    return yaml.safe_load(io.open(os.path.join(ROOT, path), encoding='utf-8'))
+    return _expand(yaml.safe_load(io.open(os.path.join(ROOT, path), encoding='utf-8')))
 
 
 def step(path, job, key):

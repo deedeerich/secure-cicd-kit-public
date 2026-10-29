@@ -1,0 +1,191 @@
+name: "Kit: Deployed scan (what is actually serving)"
+
+# KDEC-029 decision 8 (owner, 2026-10-26): "Daily continuous scan of what is actually deployed."
+# Reviewer refinement, same day: reconcile FIRST -- read the serving revisions, their traffic
+# weights and their image digests -- then check two drifts SEPARATELY:
+#   artifact drift   the serving digest is not the last promoted digest
+#   security drift   the promoted/serving digest is no longer acceptable under today's CVE and KEV
+#                    data (re-scanned from its build SBOM; never a rebuild, never a nominal tag)
+# plus the security-settings posture and any break-glass deploy still owed its testing. New findings
+# change promotion eligibility (the gate re-scans at promotion time) and open or update tickets
+# through the existing reconcile path (the caller passes `findings_artifact` to
+# reusable-ticket-reconcile.yml). NOTHING HERE ROLLS BACK A HEALTHY PRODUCTION SYSTEM.
+#
+# COST. One small job per environment -- the federated credential is environment-scoped, so an
+# environment's read needs its own job -- and one report job for all of them. Trivy's database is
+# cached by day. The identity each environment job uses only READS (az ... show / list).
+#
+# DATA, NEVER CODE: every caller value reaches a script through `env:` or composite inputs.
+# STATUS: proven locally (tests/prove_promotion.py S, the scan against the stub cloud and a recorded
+# API); a hosted daily run on the owner's personal tenant is owed.
+
+on:
+  workflow_call:
+    inputs:
+      environments:
+        description: "JSON array of GitHub environments to scan, each vending its KIT_* names and reader identity. Default: prod."
+        type: string
+        default: '["prod"]'
+      adapter:
+        description: "containerapp | appservice | staticwebapp (OF-5 K-8: what a static site serves is its live marker)"
+        type: string
+        default: containerapp
+      slots:
+        description: "App Service only: comma-separated named slots read beside production."
+        type: string
+        default: ""
+      cloud:
+        description: "commercial | gov"
+        type: string
+        default: commercial
+    secrets:
+      AZURE_TENANT_ID:
+        description: "Entra tenant ID for OIDC federated login (read-only reconcile of what serves). Org-identifying -- keep it in secrets."
+        required: false
+      AZURE_SUBSCRIPTION_ID:
+        description: "Azure subscription ID of the deployed target, for OIDC federated login."
+        required: false
+      AZURE_CLIENT_ID:
+        description: "Client ID of the federated identity used for read-only OIDC login. No client secret is used."
+        required: false
+    outputs:
+      findings_artifact:
+        description: "The artifact holding findings.json and findings-coverage.json for reusable-ticket-reconcile.yml."
+        value: ${{ jobs.report.outputs.findings_artifact }}
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Reconcile and re-scan what serves
+    # Reads the feed mirrors when named (KDEC-032): the private runner reaches them.
+    runs-on: ${{ vars.KIT_FEED_MIRROR_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJSON(inputs.environments) }}
+    environment: ${{ matrix.environment }}
+    permissions:
+      contents: read
+      id-token: write   # the environment's federated reader identity; this job only reads
+      actions: read     # the promotion records and the build SBOMs (artifacts)
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
+          environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
+
+      - name: The day the Trivy database is pinned to
+        id: day
+        run: |
+          echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+          echo "TRIVY_CACHE_DIR=$RUNNER_TEMP/trivy-cache" >> "$GITHUB_ENV"
+
+      - name: Trivy database cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/trivy-cache
+          key: trivy-db-${{ runner.os }}-${{ steps.day.outputs.day }}
+          restore-keys: trivy-db-${{ runner.os }}-
+
+      - name: Install the pinned Trivy
+        run: |
+          set -euo pipefail
+          if trivy --version 2>/dev/null | grep -q 'Version: 0.71.2'; then exit 0; fi
+          # Pinned (ledger L84): the same release and digest as reusable-nvd-cve.yml.
+          t=trivy_0.71.2_Linux-64bit.tar.gz
+          curl -sSfLO "https://github.com/aquasecurity/trivy/releases/download/v0.71.2/$t"
+          echo "0510e71e2fd39bf863856d499c8dc19feb4e7336546394c502a8f5cc7ab27460  $t" | sha256sum -c -
+          tar -xzf "$t" trivy && sudo mv trivy /usr/local/bin/ && rm -f "$t"
+
+      - name: Trivy database from the organisation mirror (KDEC-032)
+        uses: $/.github/actions/feed-mirror
+        with:
+          feed: trivy
+          mirror-url: ${{ vars.KIT_FEED_MIRROR_URL }}
+          max-age-hours: ${{ vars.KIT_FEED_MIRROR_MAX_AGE_HOURS }}
+          fallback: ${{ vars.KIT_FEED_MIRROR_FALLBACK }}
+
+      - name: Reconcile what serves; artifact drift; security drift; posture
+        id: scan
+        uses: $/.github/actions/deployed-scan
+        with:
+          phase: scan
+          adapter: ${{ inputs.adapter }}
+          environment: ${{ matrix.environment }}
+          resource-group: ${{ vars.KIT_RESOURCE_GROUP }}
+          app-name: ${{ vars.KIT_APP_NAME }}
+          slots: ${{ inputs.slots }}
+
+      - name: Known exploited re-check of what serves (KDEC-022)
+        id: kev
+        uses: $/.github/actions/known-exploited
+        with:
+          sarif: ${{ steps.scan.outputs.rescan_sarifs }}
+          sarif-job: deployed-image-rescan
+          mirror-url: ${{ vars.KIT_FEED_MIRROR_URL }}
+          mirror-max-age-hours: ${{ vars.KIT_FEED_MIRROR_MAX_AGE_HOURS }}
+          mirror-fallback: ${{ vars.KIT_FEED_MIRROR_FALLBACK }}
+
+      - name: Join the KEV verdict to the findings
+        uses: $/.github/actions/deployed-scan
+        with:
+          phase: finish
+          adapter: ${{ inputs.adapter }}
+          environment: ${{ matrix.environment }}
+          resource-group: ${{ vars.KIT_RESOURCE_GROUP }}
+          app-name: ${{ vars.KIT_APP_NAME }}
+          kev-state: ${{ steps.kev.outputs.kev_state }}
+          kev-blocking: ${{ steps.kev.outputs.kev_blocking }}
+
+      - name: Keep this environment's scan
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: deployed-scan-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/promotion/deployed
+          if-no-files-found: warn
+          retention-days: 30
+
+  report:
+    name: One report for every environment
+    needs: scan
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      findings_artifact: ${{ steps.name.outputs.name }}
+    steps:
+      - name: Collect every environment's scan
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: deployed-scan-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/deployed
+
+      - name: The core report over the merged rows
+        uses: $/.github/actions/deployed-scan
+        with:
+          phase: report
+          state-dir: ${{ runner.temp }}/deployed
+
+      - name: Name the findings artifact
+        id: name
+        run: echo "name=deployed-findings-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Keep the findings for the reconcile path
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.name.outputs.name }}
+          path: |
+            ${{ runner.temp }}/deployed/findings.json
+            ${{ runner.temp }}/deployed/findings-coverage.json
+          if-no-files-found: error
+          retention-days: 30

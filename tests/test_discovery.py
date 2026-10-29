@@ -41,16 +41,30 @@ USES = "$/.github/actions/discover"
 PARTS = {"d": ("survey", "d"), "platform": ("platform", "platform")}
 
 # THE JOB'S OUTPUTS CONTRACT, AS IT STOOD INLINE (2bf2e49, before the move). Every consumer reads
-# needs.discover.outputs.<name>; the move must not rename one, drop one, or re-source one. Pinned
+# needs.plan.outputs.<name>; the move must not rename one, drop one, or re-source one. Pinned
 # here as data rather than read from history, because a CI checkout is shallow.
+# `php` is the one deliberate addition since (lane L-PHP, 2026-10-21): PHP stopped being an
+# unsupported class and became an ecosystem discovery answers for, read by resolve and sast-semgrep.
+# workflows, shell, powershell and dockerfile are the next deliberate additions (lane L-SCAN-A,
+# KDEC-025): GitHub Actions workflows, shell and PowerShell scripts stopped being COVERAGE_GAPs and
+# became artefact classes discovery answers for, read by deps-scan (actionlint + zizmor, shellcheck,
+# PSScriptAnalyzer) and iac-scan (hadolint), so each linter runs only where its files are.
+# `kotlin`, `swift` and `mobile` are the next (lane L-SCAN-B, KDEC-026): Kotlin and Swift stopped
+# being coverage gaps, and Objective-C / Android / iOS configuration became a class sast-mobile reads.
+# `push_ruleset`, `branch_gate` and `local_baseline` are the next (lane L-LEAK, KDEC-031): the leak
+# gates the security-gate job records ON / OFF / UNKNOWN (tests/prove_leak_gate_posture.py).
 BASE_OUTPUTS = dict(
     [(k, "${{ steps.d.outputs.%s }}" % k) for k in
-     ("python", "node", "go", "dotnet", "java", "cpp", "iac", "state", "unsupported",
-      "coverage_gaps", "coverage_gap_count")] +
+     ("python", "node", "go", "dotnet", "java", "cpp", "php", "kotlin", "swift", "mobile", "iac",
+      "state", "unsupported",
+      "coverage_gaps", "coverage_gap_count", "workflows", "shell", "powershell", "dockerfile")] +
     [(k, "${{ steps.platform.outputs.%s }}" % k) for k in
      ("ghas_available", "code_scanning", "secret_scanning", "push_protection",
       "dependabot_alerts", "dependabot_updates", "dependabot_config", "visibility",
-      "platform_source")])
+      "platform_source", "push_ruleset", "branch_gate", "local_baseline")] +
+    # `codeql_matrix` is the next (cost redesign step 1, KDEC-033): one CodeQL leg per discovered
+    # language, built in the job from the survey's own outputs (tests/prove_codeql_dynamic_matrix.py).
+    [("codeql_matrix", "${{ steps.cqm.outputs.codeql_matrix }}")])
 
 
 def load_job_and_composite():
@@ -58,9 +72,10 @@ def load_job_and_composite():
     both parts under the ids its outputs read."""
     import yaml
     doc = yaml.safe_load(io.open(WF, encoding="utf-8"))
-    job = (doc.get("jobs") or {}).get("discover")
+    # G1 (KDEC-033): discovery is the second part of the `plan` job.
+    job = (doc.get("jobs") or {}).get("plan")
     if not job:
-        raise SystemExit("FAIL: no job named discover in reusable-security.yml")
+        raise SystemExit("FAIL: no job named plan (discovery's job since G1) in reusable-security.yml")
     by_id = {s.get("id"): s for s in job.get("steps") or [] if s.get("id")}
     for sid, (part, _) in PARTS.items():
         s = by_id.get(sid) or {}
@@ -99,7 +114,11 @@ def wiring_checks():
     import yaml
     job, comp = load_job_and_composite()
     ok = True
-    outputs = {k: str(v).strip() for k, v in (job.get("outputs") or {}).items()}
+    # The discovery outputs: those `plan` reads from the discovery part's own steps. Its other
+    # outputs are the resolver's and the per-part results (tests/prove_plan_job.py).
+    disc_ids = set(PARTS) | {"cqm"}
+    outputs = {k: str(v).strip() for k, v in (job.get("outputs") or {}).items()
+               if re.match(r"\$\{\{ steps\.(%s)\.outputs\." % "|".join(sorted(disc_ids)), str(v).strip())}
     added = sorted(set(outputs) - set(BASE_OUTPUTS))
     dropped = sorted(set(BASE_OUTPUTS) - set(outputs))
     changed = sorted(k for k in set(outputs) & set(BASE_OUTPUTS) if outputs[k] != BASE_OUTPUTS[k])
@@ -109,6 +128,8 @@ def wiring_checks():
     bad = []
     for k, expr in BASE_OUTPUTS.items():
         sid = expr.split("steps.", 1)[1].split(".", 1)[0]
+        if sid not in PARTS:
+            continue    # computed in the job from the parts' outputs (codeql_matrix), not by the composite
         part, inner = PARTS[sid]
         want = "${{ steps.%s.outputs.%s }}" % (inner, k)
         if str((cout.get(k) or {}).get("value", "")).strip() != want:
@@ -136,9 +157,11 @@ def wiring_checks():
     ok &= check_bool("job passes every input, nothing extra", passed == declared,
                      "missing=%s extra=%s" % (sorted(declared - passed), sorted(passed - declared)))
     reg = yaml.safe_load(io.open(REG, encoding="utf-8")) or {}
-    row = (reg.get("jobs") or {}).get("discover") or {}
-    ok &= check_bool("registry names the composite", row.get("composite") == "discover",
-                     "row=%s" % row)
+    row = (reg.get("jobs") or {}).get("plan") or {}
+    comps = row.get("composite")
+    comps = [comps] if isinstance(comps, str) else list(comps or [])
+    ok &= check_bool("registry names the composite", "discover" in comps
+                     and "discover" in (row.get("parts") or []), "row=%s" % row)
     return ok
 
 
@@ -175,10 +198,13 @@ def _bash():
 
 
 def make_tree(spec, base):
-    for rel in spec:
+    # A list writes "x\n" into each path; a dict gives each path its own content (lane L-SCAN-A:
+    # whether a requirements file pins its versions is a question about what is IN it).
+    items = spec.items() if isinstance(spec, dict) else ((rel, "x\n") for rel in spec)
+    for rel, text in items:
         p = os.path.join(base, rel)
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        io.open(p, "w", encoding="utf-8").write("x\n")
+        io.open(p, "w", encoding="utf-8").write(text)
 
 
 def big_tree(n, ext="py", prefix="bulk"):
@@ -351,12 +377,16 @@ def main():
     ok &= check("discovery failure -> everything ON",
                 run_case(shell, ["app/main.py"], break_find=True),
                 {"state": "DISCOVERY_UNAVAILABLE", "python": "true", "go": "true",
-                 "java": "true", "dotnet": "true", "cpp": "true", "iac": "true"})
+                 "java": "true", "dotnet": "true", "cpp": "true", "php": "true", "iac": "true",
+                 "kotlin": "true", "swift": "true", "mobile": "true",
+                 "workflows": "true", "shell": "true", "powershell": "true", "dockerfile": "true"})
 
     ok &= check("all probes fail (no abort) -> unavailable",
                 run_case(shell, ["app/main.py"], break_all_soft=True),
                 {"state": "DISCOVERY_UNAVAILABLE", "python": "true", "go": "true",
-                 "java": "true", "dotnet": "true", "cpp": "true", "iac": "true"})
+                 "java": "true", "dotnet": "true", "cpp": "true", "php": "true", "iac": "true",
+                 "kotlin": "true", "swift": "true", "mobile": "true",
+                 "workflows": "true", "shell": "true", "powershell": "true", "dockerfile": "true"})
 
     # PARTIAL IS NOT TOTAL. One probe failing must not discard six good answers.
     ok &= check("one probe fails -> others survive",
@@ -378,9 +408,10 @@ def main():
 
     # COVERAGE IS NOT APPLICABILITY. Discovery asking seven closed questions and hearing "no"
     # seven times is not the same as understanding the repository.
+    # PHP is not among them any more (lane L-PHP): it is an ecosystem, answered like the others.
     ok &= check("unsupported languages are declared",
                 run_case(shell, ["src/main.rs", "app/h.rb", "web/i.php"]),
-                {"state": "COMPLETE", "unsupported": "php,rb,rs",
+                {"state": "COMPLETE", "unsupported": "rb,rs", "php": "true",
                  "python": "false", "go": "false"})
 
     ok &= check("supported + unsupported coexist",
@@ -406,44 +437,138 @@ def main():
     # and no Go, and published a tidy survey over a repository of shell scripts, PowerShell and
     # workflow YAML that nothing in this kit can read. Silence is the defect. A gap must be
     # NAMED, COUNTED, WARNED and put in the summary.
+    # SHELL AND POWERSHELL ARE SCANNED SINCE LANE L-SCAN-A (KDEC-025): shellcheck reads .sh/.bash
+    # and PSScriptAnalyzer reads .ps1/.psm1/.psd1, each inside deps-scan and only where discovery
+    # found the files. They were COVERAGE_GAP rows; now they are RUN rows, and NO gap is declared.
     shell_ps = run_case(shell, ["ops/deploy.sh", "ops/build.ps1"])
-    ok &= check("shell + powershell -> counted gaps",
+    ok &= check("shell + powershell -> RUN, no gap",
                 shell_ps,
-                # Order follows the sorted EXTENSION (ps1 before sh), not the display name.
-                {"coverage_gaps": "PowerShell,Shell", "coverage_gap_count": "2",
+                {"shell": "true", "powershell": "true", "coverage_gaps": "",
+                 "coverage_gap_count": "0", "unsupported": "",
                  "python": "false", "go": "false", "state": "COMPLETE"})
-    ok &= check_text("shell + powershell -> summary rows", shell_ps, "__summary__",
-                     must=["| Shell | COVERAGE_GAP |", "| PowerShell | COVERAGE_GAP |",
-                           "**COVERAGE_GAP x2**"],
-                     must_not=["| Shell | NOT_APPLICABLE |", "| PowerShell | NOT_APPLICABLE |"])
-    ok &= check_text("shell + powershell -> ::warning each", shell_ps, "__log__",
-                     must=["::warning title=COVERAGE_GAP: Shell::",
-                           "::warning title=COVERAGE_GAP: PowerShell::"])
+    ok &= check_text("shell + powershell -> RUN rows", shell_ps, "__summary__",
+                     must=["| shell | RUN |", "| powershell | RUN |"],
+                     must_not=["| Shell | COVERAGE_GAP |", "| PowerShell | COVERAGE_GAP |"])
+    ok &= check_text("shell + powershell -> no gap warning", shell_ps, "__log__",
+                     must=[], must_not=["COVERAGE_GAP: Shell", "COVERAGE_GAP: PowerShell"])
+    ok &= check("a .bash script is shell; a module is powershell",
+                run_case(shell, ["ops/a.bash", "mod/m.psm1"]),
+                {"shell": "true", "powershell": "true", "coverage_gaps": ""})
+    # A SKIPPED LINTER IS FREE, AND IT IS SKIPPED ONLY BECAUSE NOTHING WAS FOUND.
+    none = run_case(shell, ["app/main.py"])
+    ok &= check("no workflow, script or Dockerfile -> each NOT_APPLICABLE", none,
+                {"workflows": "false", "shell": "false", "powershell": "false",
+                 "dockerfile": "false"})
+    ok &= check_text("their NOT_APPLICABLE rows are written", none, "__summary__",
+                     must=["| workflows | NOT_APPLICABLE |", "| shell | NOT_APPLICABLE |",
+                           "| powershell | NOT_APPLICABLE |", "| dockerfile | NOT_APPLICABLE |"])
+    ok &= check("a probe that could not look runs the linter (UNDETERMINED)",
+                run_case(shell, ["app/main.py"], break_probes=["*.bash"]),
+                {"shell": "true", "python": "true", "state": "DISCOVERY_PARTIAL"})
 
-    # THE PIPELINE'S OWN DEFINITION FILES. No probe asked about them at all, so a repo whose only
-    # unscanned artifact was .github/workflows/*.yml produced a completely silent survey. This kit
-    # ships no actionlint; incidental CKV_GHA_* coverage from Checkov is not a declared capability.
+    # THE PIPELINE'S OWN DEFINITION FILES are scanned since lane L-SCAN-A (KDEC-025): actionlint
+    # and zizmor, pinned, inside deps-scan. Not a gap any more -- a RUN row.
     gha = run_case(shell, [".github/workflows/ci.yml", ".github/workflows/release.yaml"])
-    ok &= check("workflow YAML is a declared gap", gha,
-                {"coverage_gaps": "GitHubActionsWorkflow", "coverage_gap_count": "1",
+    ok &= check("workflow YAML -> RUN, no gap", gha,
+                {"workflows": "true", "coverage_gaps": "", "coverage_gap_count": "0",
                  "unsupported": "", "state": "COMPLETE"})
-    ok &= check_text("workflow gap names the missing scanner", gha, "__summary__",
-                     must=["| GitHubActionsWorkflow | COVERAGE_GAP |", "actionlint"])
+    ok &= check_text("workflow row names its scanners", gha, "__summary__",
+                     must=["| workflows | RUN |", "actionlint", "zizmor"],
+                     must_not=["| GitHubActionsWorkflow | COVERAGE_GAP |"])
+    ok &= check("workflow YAML outside .github/workflows is not a workflow",
+                run_case(shell, ["config/ci.yml"]), {"workflows": "false"})
 
-    # Swift, Kotlin, Ruby, PHP, Rust are in this estate and nothing here scans them.
+    # HADOLINT RUNS WHERE A DOCKERFILE IS, NOT WHEREVER IaC IS (lane L-SCAN-A).
+    ok &= check("Dockerfile -> dockerfile + iac",
+                run_case(shell, ["build/Dockerfile.api"]), {"dockerfile": "true", "iac": "true"})
+    ok &= check("terraform alone -> iac, no dockerfile",
+                run_case(shell, ["infra/main.tf"]), {"dockerfile": "false", "iac": "true"})
+
+    # AN UNPINNED REQUIREMENT IS A CONSTRAINT, NOT A VERSION (lane L-SCAN-A, KDEC-025). Measured
+    # 2026-10-23: `django>=2.0,<2.1` in requirements.txt drew no result from Trivy 0.71.2 or
+    # OSV-Scanner 2.7.0, while pip-audit 2.9.0 resolved it to 2.0.13 and reported 18 advisories.
+    # Pinned lines are read by both carried scanners, so only the unpinned file is named.
+    unpinned = run_case(shell, {"app/requirements.txt": "# app\ndjango>=2.0,<2.1\nrequests==2.31.0\n",
+                                "lib/requirements.txt": "-r ../app/requirements.txt\nflask==3.0.0  # pinned\n"
+                                                        "--hash=sha256:abc\n",
+                                "app/main.py": "x\n"})
+    ok &= check("unpinned requirements -> named gap", unpinned,
+                {"python": "true", "coverage_gaps": "PythonDependenciesUnpinned",
+                 "coverage_gap_count": "1"})
+    ok &= check_text("unpinned gap names the remedy", unpinned, "__summary__",
+                     must=["| PythonDependenciesUnpinned | COVERAGE_GAP |", "1 file(s)", "=="])
+    ok &= check("pinned requirements -> no gap",
+                run_case(shell, {"requirements.txt": "django==3.2.0\nrequests===2.19.0\n",
+                                 "app/main.py": "x\n"}),
+                {"python": "true", "coverage_gaps": "", "coverage_gap_count": "0"})
+
+    # Ruby and Rust are in this estate and nothing here scans them. PHP is in it too, and since
+    # lane L-PHP it is SCANNED: a RUN row, never a COVERAGE_GAP row. Swift and Kotlin followed with
+    # lane L-SCAN-B (KDEC-026): sast-mobile and sast-semgrep's p/kotlin floor read them.
     est = run_case(shell, ["ios/App.swift", "android/Main.kt", "app/h.rb",
                            "web/i.php", "native/core.rs"])
-    ok &= check("swift/kotlin/ruby/php/rust all named", est,
-                {"coverage_gap_count": "5"})
+    ok &= check("ruby/rust named; php, swift, kotlin run", est,
+                {"coverage_gap_count": "2", "coverage_gaps": "Ruby,Rust",
+                 "php": "true", "kotlin": "true", "swift": "true", "mobile": "true"})
     ok &= check_text("each class named, not spelled as an extension", est, "__summary__",
-                     must=["| Swift | COVERAGE_GAP |", "| Kotlin | COVERAGE_GAP |",
-                           "| Ruby | COVERAGE_GAP |", "| PHP | COVERAGE_GAP |",
-                           "| Rust | COVERAGE_GAP |"])
+                     must=["| Ruby | COVERAGE_GAP |", "| Rust | COVERAGE_GAP |",
+                           "| php | RUN |", "| kotlin | RUN |", "| swift | RUN |"],
+                     must_not=["| PHP | COVERAGE_GAP |", "| Swift | COVERAGE_GAP |",
+                               "| Kotlin | COVERAGE_GAP |"])
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # PHP, AN ECOSYSTEM (lane L-PHP, 2026-10-21). The same rules as every other probe:
+    # could-not-look is not found-nothing, the depth bound is not absence, the selector narrows
+    # what is known and never resolves an unknown, and vendor/ is not the repository's code.
+    # ─────────────────────────────────────────────────────────────────────────
+    ok &= check("php: source + composer manifest + lock -> RUN",
+                run_case(shell, ["web/index.php", "web/composer.json", "web/composer.lock"]),
+                {"php": "true", "unsupported": "", "coverage_gaps": "",
+                 "coverage_gap_count": "0", "state": "COMPLETE", "python": "false"})
+    ok &= check("php: source alone -> RUN",
+                run_case(shell, ["src/a.php"]), {"php": "true", "unsupported": ""})
+    ok &= check("php: a lock file alone -> RUN",
+                run_case(shell, ["composer.lock"]), {"php": "true", "coverage_gaps": ""})
+    ok &= check("php absent -> NOT_APPLICABLE",
+                run_case(shell, ["app/main.py"]), {"php": "false"})
+    ok &= check("php under vendor/ is not the repository's",
+                run_case(shell, ["app/main.py", "vendor/acme/lib/x.php",
+                                 "vendor/acme/lib/composer.json"]),
+                {"php": "false", "unsupported": "", "coverage_gaps": ""})
+    # TRIVY READS composer.lock, NEVER composer.json (measured, trivy 0.71.2: a composer.json alone
+    # produced no result at all). A manifest without its lock is a PHP dependency set no carried
+    # scanner can resolve: a NAMED, COUNTED coverage gap, never a quiet PASS of the dependency scan.
+    unlocked = run_case(shell, ["web/index.php", "web/composer.json",
+                                "lib/composer.json", "lib/composer.lock"])
+    ok &= check("composer.json without its lock -> named gap", unlocked,
+                {"php": "true", "coverage_gaps": "PHPDependenciesUnlocked",
+                 "coverage_gap_count": "1", "state": "COMPLETE"})
+    ok &= check_text("unlocked composer gap names the lock", unlocked, "__summary__",
+                     must=["| PHPDependenciesUnlocked | COVERAGE_GAP |", "composer.lock",
+                           "1 file(s)"])
+    ok &= check_text("unlocked composer gap warns", unlocked, "__log__",
+                     must=["::warning title=COVERAGE_GAP: PHPDependenciesUnlocked::"])
+    ok &= check("php probe failed -> UNDETERMINED -> RUN",
+                run_case(shell, ["app/main.py"], break_probes=["composer.json"]),
+                {"php": "true", "python": "true", "state": "DISCOVERY_PARTIAL"})
+    ok &= check("php selected by name",
+                run_case(shell, ["web/a.php", "app/main.py"], language="php"),
+                {"php": "true", "python": "false"})
+    excl = run_case(shell, ["web/a.php", "app/main.py"], language="python")
+    ok &= check("php present, selector excludes it", excl, {"php": "false", "python": "true"})
+    ok &= check_text("php exclusion is said out loud", excl, "__summary__",
+                     must=["| php | EXCLUDED_BY_SELECTOR |"])
+    deep = run_case(shell, ["app/main.py", "a/b/c/d/e/f/g/h/i/j/k.php"])
+    ok &= check("php only beyond depth 8 -> UNDETERMINED -> RUN", deep,
+                {"php": "true", "python": "true"})
+    ok &= check_text("php beyond depth is not NOT_APPLICABLE", deep, "__summary__",
+                     must=["| php | UNDETERMINED -> RUN |"],
+                     must_not=["| php | NOT_APPLICABLE |"])
 
     # A GAP IS NOT AN APPLICABILITY ANSWER. Supported code still runs; the gap sits beside it.
     ok &= check("gap coexists with a real scanner",
-                run_case(shell, ["app/main.py", "ops/deploy.sh"]),
-                {"python": "true", "coverage_gaps": "Shell", "coverage_gap_count": "1"})
+                run_case(shell, ["app/main.py", "native/core.rs"]),
+                {"python": "true", "coverage_gaps": "Rust", "coverage_gap_count": "1"})
 
     # ZERO IS ONLY PRINTED WHEN SOMEONE LOOKED. A fully covered repo declares no gap, and that
     # claim has to be distinguishable from the silence this test exists to forbid.

@@ -34,18 +34,18 @@ inputs:
   # ── KDEC-010: the capability selection, as the resolve job publishes it ──────────────────
   capped-jobs:
     description: >-
-      needs.resolve.outputs.capped_jobs -- space-separated scanner jobs pointed at a VERSION_GAP
+      needs.plan.outputs.capped_jobs -- space-separated scanner jobs pointed at a VERSION_GAP
       no carried scanner can read. Their PASS row renders PARTIAL, never PASS.
     required: false
     default: ''
   not-selected-jobs:
     description: >-
-      needs.resolve.outputs.not_selected_jobs -- jobs not selected for a target another scanner
+      needs.plan.outputs.not_selected_jobs -- jobs not selected for a target another scanner
       serves. Their PASS row renders PARTIAL, labelled as a substitution, never equivalence.
     required: false
     default: ''
   fitness-notes:
-    description: needs.resolve.outputs.fitness_notes -- the resolver's note per capped or not-selected job.
+    description: needs.plan.outputs.fitness_notes -- the resolver's note per capped or not-selected job.
     required: false
     default: ''
 
@@ -58,6 +58,16 @@ outputs:
   jobs_with_findings:
     description: Space-separated jobs that established at least one blocking finding.
     value: ${{ steps.r.outputs.jobs_with_findings }}
+  secret_findings:
+    description: >-
+      Space-separated fingerprints (`fp`) of the secret scan's blocking findings, one per finding --
+      what a policy-register secret exception names (owner ruling 2026-10-22). A hash, never text.
+    value: ${{ steps.r.outputs.secret_findings }}
+  cve_findings:
+    description: >-
+      Space-separated job:fingerprint:CVE for every CVE a finding of an established, non-secret row
+      names -- every severity, before dispositions -- for the gate's known-exploited check (KDEC-022).
+    value: ${{ steps.r.outputs.cve_findings }}
   findings:
     description: >-
       Path of the machine-readable findings file (L52): one identify() record per finding, with

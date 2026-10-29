@@ -1,0 +1,75 @@
+# KIT-AUTHORED RULES FOR WHAT THE PINNED MOBILE SCANNER DOES NOT READ (lane L-SCAN-B, KDEC-026).
+#
+# mobsfscan 1.0.1 (the sast-mobile job's scanner, pinned by version and digest) reads the
+# AndroidManifest (debuggable, allowBackup, usesCleartextTraffic, minSdk), network_security_config
+# (cleartext, user trust anchors), Info.plist ATS (arbitrary loads, insecure HTTP exceptions, weak
+# TLS exceptions), and Kotlin, Swift and Objective-C source. MEASURED 2026-10-23 on the planted
+# fixture (tests/_platform_fixtures.py), it reports NONE of the following, so the kit carries them:
+#
+#   exported components with no permission    the manifest's exported attack surface
+#   hard-coded signing passwords in Gradle      a keystore password in the build script
+#   minSdk set in Gradle                        where modern projects set it (not the manifest)
+#   debuggable release build types in Gradle
+#
+# Regex rules on purpose: Semgrep has no Groovy parser, and these are attribute and assignment
+# shapes, not data flow. Each rule is proven to FIRE on the planted tree and to stay SILENT on its
+# clean counterpart by tests/prove_sast_mobile_detects.py. Ids are what PLATFORM_SIGNALS.json grades.
+rules:
+  - id: android-exported-without-permission
+    languages: [regex]
+    severity: WARNING
+    message: >-
+      An Android component is exported (android:exported="true") with no android:permission, so
+      any app on the device can start or bind it. Require a permission, or set exported="false".
+      The launcher activity is not reported.
+    paths:
+      include: ["*AndroidManifest.xml"]
+    patterns:
+      - pattern-regex: '<(activity|activity-alias|service|receiver|provider)\b[^>]*android:exported\s*=\s*"true"[^>]*>'
+      - pattern-not-regex: '<(activity|activity-alias|service|receiver|provider)\b[^>]*android:(read|write)?[pP]ermission\s*=[^>]*>'
+      - pattern-not-regex: '(?s)<(activity|activity-alias)\b[^>]*android:exported\s*=\s*"true"[^>]*>\s*<intent-filter>(?:(?!</intent-filter>).)*android\.intent\.category\.LAUNCHER'
+    metadata:
+      category: security
+      cwe: "CWE-926: Improper Export of Android Application Components"
+      source: kit-authored (KDEC-026)
+
+  - id: android-gradle-hardcoded-signing-password
+    languages: [regex]
+    severity: ERROR
+    message: >-
+      A signing password is written into the Gradle build script. Anyone who can read the
+      repository can sign as this app. Read it from the environment or a secret store instead.
+    paths:
+      include: ["*.gradle", "*.gradle.kts"]
+    pattern-regex: '\b(storePassword|keyPassword)\b\s*=?\s*["''][^"''$]+["'']'
+    metadata:
+      category: security
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      source: kit-authored (KDEC-026)
+
+  - id: android-gradle-min-sdk-too-low
+    languages: [regex]
+    severity: WARNING
+    message: >-
+      minSdk is below 26 (Android 8.0). Devices that old lack platform security fixes the app
+      then has to assume are absent. The same threshold mobsfscan applies to the manifest.
+    paths:
+      include: ["*.gradle", "*.gradle.kts"]
+    pattern-regex: '\bminSdk(Version)?\b\s*(=|\s)\s*(1?[0-9]|2[0-5])\b'
+    metadata:
+      category: security
+      source: kit-authored (KDEC-026)
+
+  - id: android-gradle-debuggable-release
+    languages: [regex]
+    severity: ERROR
+    message: >-
+      A release build type is debuggable. A debuggable release can be attached to and inspected
+      on any device.
+    paths:
+      include: ["*.gradle", "*.gradle.kts"]
+    pattern-regex: '(?s)\brelease\s*\{(?:(?!\n\s{0,8}\}).)*?\b(isDebuggable|debuggable)\b\s*=?\s*true'
+    metadata:
+      category: security
+      cwe: "CWE-489: Active Debug Code"
+      source: kit-authored (KDEC-026)

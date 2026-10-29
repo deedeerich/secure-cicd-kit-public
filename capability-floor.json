@@ -1,0 +1,23 @@
+{
+  "_what": "THE PROTECTED CAPABILITY FLOOR (owner ruling 4, 2026-10-27, KDEC-033). What the security gate must expect whatever scanner-registry.yaml says. Kit-owned: CODEOWNERS requires the pipeline maintainers AND the security approvers. A PR that deletes a scanner's registry row, job and report line still fails: statically and against the PR base (scripts/capability_floor.py --check-tree / --base-floor) and in the security gate itself, over the run's evidence (the capability-floor composite). tests/prove_capability_floor.py is the adversarial test of exactly that deletion.",
+  "_shrink": "The floor only shrinks through a tombstone (owner ruling 8): capability, the historical scanner identities, decision, approved_by, decided_on, reason, uncovered_gap, and either a replacement capability that is itself in the floor or a gap_decision {approved_by, reference, expires}. An expired gap decision is BREACHED and never restores the removed tool. A tombstone is never deleted: the history it names is permanent.",
+  "version": 1,
+  "floor": [
+    {"capability": "secret-scan",    "identities": ["gitleaks", "detect-secrets"]},
+    {"capability": "code-quality",   "identities": ["code-quality", "eslint"]},
+    {"capability": "sast-semgrep",   "identities": ["semgrep"]},
+    {"capability": "sast-bandit",    "identities": ["bandit"]},
+    {"capability": "codeql",         "identities": ["codeql-python", "codeql-javascript-typescript", "codeql-go", "codeql-csharp", "codeql-java-kotlin", "codeql-c-cpp"]},
+    {"capability": "deps-scan",      "identities": ["trivy", "actionlint", "zizmor", "shellcheck", "psscriptanalyzer"]},
+    {"capability": "iac-scan",       "identities": ["trivy-iac", "checkov", "hadolint"]},
+    {"capability": "sast-dotnet",    "identities": ["dotnet-vuln", "semgrep-csharp"]},
+    {"capability": "sast-java",      "identities": ["java-sast"]},
+    {"capability": "sast-go",        "identities": ["gosec"]},
+    {"capability": "sast-cpp",       "identities": ["cppcheck", "flawfinder"]},
+    {"capability": "sast-mobile",    "identities": ["mobsfscan", "mobile-config"]},
+    {"capability": "image-scan",     "identities": ["trivy-image", "trivy-image-secret"]},
+    {"capability": "malicious-deps", "identities": ["malicious-deps"]},
+    {"capability": "sbom",           "identities": ["sbom"]}
+  ],
+  "tombstones": []
+}

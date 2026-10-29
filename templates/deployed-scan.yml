@@ -1,0 +1,57 @@
+# Starter: drop this into a calling repo at .github/workflows/deployed-scan.yml
+# Replace YOUR_ORG, and every 0000000000000000000000000000000000000000 with the 40-hex commit SHA of
+# the kit you chose.
+#
+# KDEC-029 decision 8 (owner, 2026-10-26): a daily scan of what is ACTUALLY serving in each
+# environment, prod above all. It reconciles first (the serving revisions or slots, their traffic
+# weights and image digests), then reports two drifts separately -- ARTIFACT drift (what serves is
+# not the last promoted digest) and SECURITY drift (that digest, re-scanned from its build SBOM under
+# today's CVE and KEV data, is no longer acceptable) -- plus the security-settings posture and any
+# break-glass deploy still owed its testing. Findings open or update tickets through the reconcile
+# path. NOTHING HERE ROLLS BACK a healthy production system, and nothing is rebuilt to be scanned.
+#
+# Each environment named below must vend its KIT_RESOURCE_GROUP, KIT_APP_NAME and a federated
+# identity that can READ the target (the landing zone's reader role); the deploy identity works.
+name: Deployed scan
+
+on:
+  schedule:
+    - cron: "41 4 * * *"   # daily, 04:41 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    permissions:
+      contents: read
+      id-token: write   # each environment's reader identity, in that environment's own job
+      actions: read     # the promotion records and build SBOMs
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-deployed-scan.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    with:
+      environments: '["prod", "test"]'
+      adapter: containerapp
+    secrets:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
+
+  tickets:
+    needs: scan
+    if: always() && needs.scan.result == 'success'
+    permissions:
+      contents: read
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-ticket-reconcile.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    with:
+      backend: jira
+      environment: ticketing
+      default_branch: main
+      mode: reconcile
+      findings_artifact: ${{ needs.scan.outputs.findings_artifact }}
+      apply: true
+      kit_repository: YOUR_ORG/secure-cicd-kit
+      kit_ref: "0000000000000000000000000000000000000000"   # the same commit as the pin above
+    secrets:
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}

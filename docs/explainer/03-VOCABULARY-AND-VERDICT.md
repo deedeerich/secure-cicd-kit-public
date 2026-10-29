@@ -25,20 +25,26 @@ invent synonyms (`risk-accepted` is not `ACCEPTED_RISK`, and a near-miss reads a
 | `assurance_state` | `PASS` · `FINDINGS` · `PARTIAL` · `UNDETERMINED` | what was established. `UNDETERMINED` = discovery failed, so what should have run is unknown |
 | `enforcement_state` | `BLOCKED` · `ADVISORY` · `ALLOWED` | what the gate did |
 | `gate_decision` | `FAIL` · `ADVISORY` · `PASS` | legacy summary of the above |
-| `secret_gate` | `FAIL` · `PASS` | whether a secret was found anywhere (source, history, image) |
+| `secret_gate` | `FAIL` · `EXCEPTED` · `PASS` | whether a secret was found anywhere (source, history, image); `EXCEPTED` = found, and every one covered by a ticketed register exception — never clean |
 | `undetermined` | `true` · `false` | "did not block" must not be read as "safe" while true |
 | `scanner_states` | JSON object | per-scanner state |
 | `established` / `unestablished` | names with states | what was and was not established, never merged |
 | `discovery_state` | `COMPLETE` · `DISCOVERY_PARTIAL` · `DISCOVERY_UNAVAILABLE` | whether applicability could be established at all |
 | `evidence_artifact` | `security-report-<attempt>` | the artifact the report actually uploaded; it holds the per-scanner state files, the redacted SARIF they name, and `findings.json` |
 | **`routing_result`** | five values below | **the verdict. Deploy reads this.** |
-| `advisory_causes` | comma list of `VERSION_GAP` · `VERSION_GAP_UNVERIFIED` · `COVERAGE_PARTIAL` · `WEAKENING_ATTRIBUTED` · `FINDINGS_NOT_BLOCKED` | set only when `routing_result` is `PROCEED_WITH_ADVISORY`: WHY it is advisory. Pass it to the deploy beside `routing_result` (KDEC-014) |
+| `advisory_causes` | comma list of `VERSION_GAP` · `VERSION_GAP_UNVERIFIED` · `COVERAGE_PARTIAL` · `WEAKENING_ATTRIBUTED` · `FINDINGS_NOT_BLOCKED` · `SECRET_EXCEPTION_ATTRIBUTED` | set only when `routing_result` is `PROCEED_WITH_ADVISORY`: WHY it is advisory. Pass it to the deploy beside `routing_result` (KDEC-014) |
 | `controls_required`, `controls_executed`, `controls_unavailable`, `controls_reduced`, `controls_skipped` | comma lists | the control posture |
 | `weakenings` | JSON array | every input that governs a control, with class, baseline, value, state |
 | `weakening_attribution` | `WEAKENING_AT_BASELINE` · `WEAKENING_ATTRIBUTED` · `WEAKENING_UNATTRIBUTED` · `WEAKENING_EXCEPTION_EXPIRED` | whether a person stands behind a weakening |
 | `weakening_record` | JSON object | reason, authority, exception reference, expiry |
+| `policy_resolution`, `policy_source`, `policy_chain` | `POLICY_RESOLVED` or a refusal by name · `KIT_DEFAULT` / `REGISTER` · entry ids | the policy the verdict was reached under (lane L-A; `docs/adoption/POLICY_REGISTER.md`) |
+| `rung_declared`, `rung_effective`, `policy_mode` | `crawl` · `walk` · `run`; `adoption` · `strict` (derived) | the rung the gate obeyed; no input can set either |
+| `effective_minimum`, `policy_divergences` | JSON | each control's weakest permitted route, and where it differs from the rung's floor |
+| `environment_tier`, `team_pattern`, `unvalidated_human_workflow_paths` | tier · pattern · comma list | where the run was evaluated and which human controls the team cannot demonstrate |
+| `assurance_result`, `run_record` | compact JSON · `valid` / `invalid` | the run record, valid against `schemas/assurance-result.schema.json` (L36); empty when it did not validate |
+| `deploy_approval` | JSON per tier | what a uat/prod deploy verifies on its GitHub environment — pass it to the deploy |
 
-## The verdict: `routing_result` (VERIFIED: `tests/prove_gate_routing.py`, 21 scenarios at `078ef90`)
+## The verdict: `routing_result` (VERIFIED: `tests/prove_gate_routing.py`, 26 scenarios at `19b5e1d`)
 
 Five values, with a fixed precedence — the most severe applicable value wins:
 
@@ -48,10 +54,10 @@ BLOCKED  >  EVIDENCE_UNTRUSTED  >  DECISION_REQUIRED  >  PROCEED_WITH_ADVISORY  
 
 | value | when | deploy |
 |---|---|---|
-| `BLOCKED` | an **observed refusal**: a secret anywhere, or established findings the gate enforced | refuse |
+| `BLOCKED` | an **observed refusal**: a secret anywhere that no ticketed exception covers, a known-malicious package, established findings the gate enforced, or a refused policy defect | refuse |
 | `EVIDENCE_UNTRUSTED` | evidence is missing: assurance `PARTIAL` (other than a version gap) or `UNDETERMINED`, the gate emitted nothing, or a block caused by a toolchain/report/discovery failure rather than findings | refuse |
 | `DECISION_REQUIRED` | a control is weakened and nobody is recorded as deciding it (`WEAKENING_UNATTRIBUTED`), or the recorded decision has expired | refuse |
-| `PROCEED_WITH_ADVISORY` | a weakening is in force and attributed, findings were recorded under advisory/softened enforcement, or a scanner was capped `PARTIAL` because no carried scanner can read the target's version (KDEC-010). `advisory_causes` says which | proceed (at uat/prod, subject to KDEC-014), and surface the advisory |
+| `PROCEED_WITH_ADVISORY` | a weakening is in force and attributed, findings were recorded under advisory/softened enforcement or below the rung's block (crawl), every secret found is excepted, or a scanner was capped `PARTIAL` because no carried scanner can read the target's version (KDEC-010). `advisory_causes` says which | proceed (at uat/prod, subject to KDEC-014), and surface the advisory |
 | `PROCEED` | clean run, every control at baseline | proceed |
 
 **Why BLOCKED is reserved for observed refusals.** A block because evidence is missing and a block
@@ -62,6 +68,59 @@ stop deployment; the value tells the person which problem they have.
 auto`, so a caller who changes nothing gets `PROCEED` on a clean run. Softening either one makes it a
 weakening: attribute it (`weakening_reason` + `weakening_authority`, ideally `weakening_expires`) for
 `PROCEED_WITH_ADVISORY`, or it routes `DECISION_REQUIRED`.
+
+**The policy decides which findings block (lane L-A, owner requirement 2026-10-22; VERIFIED locally:
+`tests/prove_gate_policy_enforcement.py`, 64 scenarios at `19b5e1d`).** Before it reads any result the gate
+resolves the policy register (part 05). With nothing registered the run is at the kit default,
+**crawl: a secret, a known-malicious package (routed with the secret class), a dependency or image
+CVE on the CISA KEV catalog (`FINDING_KNOWN_EXPLOITED`, KDEC-022) and a scan the kit
+could not run or trust block** (KDEC-017, KDEC-020) — any other finding routes `PROCEED_WITH_ADVISORY` with cause
+`FINDINGS_NOT_BLOCKED`, never `PROCEED`. **Owner ruling O-24:** at crawl the gate still blocks when
+the kit could not run or trust its own scan (a crash, `COLLECTION_FAILED`, a hollow or unreadable
+scan, a bootstrap failure) — `EVIDENCE_UNTRUSTED` at every tier — while a coverage gap stays
+advisory (`VERSION_GAP` / `COVERAGE_PARTIAL`). At `walk` findings route `DECISION_REQUIRED`; at `run`, or
+where a registered control is `BLOCKED`, they route `BLOCKED`. The policy can only raise the route.
+A refused policy is folded in by the same precedence: a defect (conflict, unattributed decision,
+supplied `policy_mode`, a narrower scope below the authority's floor — `POLICY_BELOW_AUTHORITY_FLOOR`,
+KDEC-018) `BLOCKED`, an unreadable register `EVIDENCE_UNTRUSTED`, an expired decision or a softening
+renewed past its cap (`EXCEPTION_RENEWAL_LIMIT`) `DECISION_REQUIRED`. A secret exception renewed past
+the cap is refused by the same name and the secret blocks (part 05). **An org the central `orgs` map
+does not name runs at the enterprise floor** (KDEC-020): the one enterprise's, or with several the
+strictest at each tier; its own entries may only tighten (`POLICY_BELOW_AUTHORITY_FLOOR` below it).
+It is never silent: the notice `ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR` (namespace `policy_notice`)
+appears as a `::warning` annotation and as a row in the gate's policy summary. `policy_notices` is
+an output of the resolve-policy action only, not of the security workflow, and the notice is not
+in the run record. With **no enterprise entry**, an org the register does not know runs at the
+**strictest registered org** instead, tier by tier, with the notice
+`ORG_UNMAPPED_RAN_AT_STRICTEST_ORG` (KDEC-022). An exception's renewals are counted from git: a
+declared history shorter than git shows is `EXCEPTION_HISTORY_TAMPERED` (`BLOCKED`); one git cannot
+show is `EXCEPTION_HISTORY_UNVERIFIED` (refused; a softening reverts, `DECISION_REQUIRED`). A KEV
+catalog nobody could read is `kev_state UNAVAILABLE`: `PROCEED_WITH_ADVISORY`, cause
+`KEV_UNAVAILABLE`, never `PROCEED`; an excepted KEV finding has cause
+`KNOWN_EXPLOITED_EXCEPTION_ATTRIBUTED`.
+`ORG_NOT_UNDER_ENTERPRISE` (KDEC-019 item 1, built backwards) is retired and no longer emitted. The gate job then exits on the verdict: `BLOCKED` and `EVIDENCE_UNTRUSTED`
+fail it at every tier; the rest pass the gate and the deploy refuses `DECISION_REQUIRED`. With no policy step at all the gate is strict, never crawl.
+
+**The gate is the single enforcement point (lane L-S, owner ruling O-24; VERIFIED locally:
+`tests/prove_gate_policy_enforcement.py`, `sep_*` scenarios, which run each scanner job's shipped
+enforce steps and then the gate).** "Deploy reads the verdict, not the job result" now holds for the
+whole run: a scanner job never fails because it found something. It hands its findings to the gate
+as `findings_state=FINDINGS` and fails only when it could not scan or could not trust its own result.
+So the security workflow concludes as its verdict, and a caller's `needs:` chain behaves:
+
+| situation | scanner job | gate job | `routing_result` |
+|---|---|---|---|
+| crawl, ordinary finding | success | success | `PROCEED_WITH_ADVISORY` (`FINDINGS_NOT_BLOCKED`) |
+| `run` (or a control registered `BLOCKED`), same finding | success | **failure** | `BLOCKED` |
+| a secret, any rung | success (handed over) | **failure** | `BLOCKED` |
+| a secret excepted by the register (one finding, ticket, approver, expiry) | success | success | `PROCEED_WITH_ADVISORY` (`SECRET_EXCEPTION_ATTRIBUTED`); `secret_gate` `EXCEPTED`, never `PASS` |
+| crash / `COLLECTION_FAILED` / hollow scan, any rung | **failure** | **failure** | `EVIDENCE_UNTRUSTED` |
+| a non-secret job failed beside findings on record | **failure** | **failure** | `EVIDENCE_UNTRUSTED` (it could not finish) |
+
+`advisory_mode` and `soft_fail_sast` still soften what a job hands over and are recorded as
+weakenings (part 05); they are no longer what keeps a scanner job green, and neither one softens a
+scan that did not happen (Checkov's `COLLECTION_FAILED` under `advisory_mode` used to pass — VERIFIED
+at `7515088`, fixed by lane L-S).
 
 ## The deploy-side contract (SINGLE_PIPELINE_TARGET §5.2; BUILT in both deploy reusables — part 07)
 
@@ -81,6 +140,10 @@ an EMPTY ruling   is never "not engaged": it means the verdict step never ran or
                   the deploy's own posture routes EVIDENCE_UNTRUSTED (a BLOCKED it already reached
                   stands) and its summary reads "not reported"
 deploy records    controls_unavailable, the causes and the ruling in its outcome report
+at uat and prod   before the verdict and login, the deploy reads its GitHub environment's protection
+                  rules back and refuses unless required reviewers exist, self-review is prevented,
+                  and (when the policy names approver groups) every reviewer is one of them;
+                  unreadable is refused too (environment_protection; lane L-A, owner 2026-10-22)
 ```
 
 `VERSION_GAP_NOT_ENGAGED` is written when no version-gap rule applied: the verdict was `PROCEED`, a

@@ -1,0 +1,481 @@
+name: Exceptions coming due (reusable)
+
+# KDEC-018 item 4 (owner, 2026-10-22): "have a timing mechanism to resurface the tickets when those
+# come due. And when they resurface it needs to be clear they were exempted previously and shown.
+# Because endless exemptions/exceptions are not a thing." Jira only (KDEC-017 item 5).
+#
+# WHAT IT DOES. Call it on a schedule (templates/exception-due.yml: weekly). The `list` job reads the
+# central register (the kit at the pinned commit), the repository's own register and its workflows
+# (the deploy's version-gap exceptions), with NO credential, and lists every exception due within
+# `days` or expired -- secret exceptions, register decisions, weakening records -- each with its full
+# history, renewal count and cap (scripts/exception_due.py). The list is the job summary and an
+# artifact. An unreadable register FAILS the job: it is never "nothing due".
+#
+# The `resurface` job, armed only on a schedule or a dispatch on the protected default branch and
+# only when something is due, requests the protected environment that holds the Jira credential and
+# raises each due exception on its ticket: reopened if closed, then commented; an unticketed one
+# gets ONE issue, found by its stamp next time. Every comment says it was excepted before (history,
+# count, approvers, expiry) or that it is a first exception, and that it is now due. With no Jira
+# credential it reports NOT_CONFIGURED and the list job's summary and artifact stand.
+#
+# DATA, NEVER CODE: every caller value reaches the script through `env:` (tests/lint_injection.py).
+# STATUS: proven locally (tests/prove_exception_due.py, a recording fake Jira; the list step run as
+# shipped). A hosted run, and a run against a real Jira, are owed.
+
+on:
+  workflow_call:
+    inputs:
+      kit_repository:
+        description: "owner/repo of this kit, checked out for its scripts and its central register."
+        type: string
+        required: true
+      kit_ref:
+        description: "Full commit SHA of the kit to check out. A tag or branch can move."
+        type: string
+        required: true
+      default_branch:
+        description: "The protected default branch name. Tickets are written only from a run on it."
+        type: string
+        required: true
+      environment:
+        description: "The protected deployment environment holding JIRA_EMAIL and JIRA_TOKEN (variables JIRA_HOST, JIRA_PROJECT, ...). Empty requests none."
+        type: string
+        default: ""
+      test_environment:
+        description: "KDEC-028: the SANDBOX environment (e.g. ticketing-test) a workflow_dispatch on any branch but the default one uses, automatically: sandbox JIRA_PROJECT, label kit-test, [TEST] prefix, refused TICKETING_TEST_TARGETS_REAL_PROJECT if it is a real project. The REF chooses, never a variable. Empty: such runs are not armed."
+        type: string
+        default: ""
+      central_register_path:
+        description: "The central register, relative to the kit checkout. Absent there means no central register."
+        type: string
+        default: "policy/policy-registration.json"
+      repository_register_path:
+        description: "The repository's own register, relative to the checkout of the default branch."
+        type: string
+        default: ".security/policy-registration.json"
+      workflows_dir:
+        description: "Where the caller's workflows live: every job setting a literal weakening_expires is listed."
+        type: string
+        default: ".github/workflows"
+      days:
+        description: "List every exception expiring within this many days, and every expired one."
+        type: number
+        default: 14
+      apply:
+        description: "Write to Jira. false prints the plan and writes nothing."
+        type: boolean
+        default: false
+      timeout_minutes:
+        description: "Bound on each job."
+        type: number
+        default: 10
+      weakening_reason:
+        description: "Why a control on this invocation is weaker than baseline (for example a plan-only run)."
+        type: string
+        default: ""
+      weakening_authority:
+        description: "The role that accepted the weakening."
+        type: string
+        default: ""
+      weakening_exception_ref:
+        description: "Where the weakening decision is recorded."
+        type: string
+        default: ""
+      weakening_expires:
+        description: "ISO date after which the weakening is no longer attributed. Silence never renews it."
+        type: string
+        default: ""
+    secrets:
+      JIRA_EMAIL:
+        description: "Jira: the account email (basic auth is email:token). From the protected environment. Not needed with vars.JIRA_AUTH_MODE=bearer (KDEC-028)."
+        required: false
+      JIRA_TOKEN:
+        description: "Jira: API token. From the protected environment."
+        required: false
+    outputs:
+      state:
+        description: "NOTHING_DUE, EXCEPTIONS_DUE or REGISTRATION_UNAVAILABLE."
+        value: ${{ jobs.list.outputs.state }}
+      due_count:
+        description: "How many exceptions are due or expired."
+        value: ${{ jobs.list.outputs.due_count }}
+      resurface_state:
+        description: "RESURFACED, PLANNED, NOT_CONFIGURED, RESURFACE_FAILED -- empty when not armed or nothing is due."
+        value: ${{ jobs.resurface.outputs.resurface_state }}
+      routing_result:
+        description: "The listing claim as a registered routing_result."
+        value: ${{ jobs.list.outputs.routing_result }}
+
+permissions:
+  contents: read
+
+jobs:
+  list:
+    name: List the exceptions coming due (no credential)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    outputs:
+      state: ${{ steps.list.outputs.state }}
+      due_count: ${{ steps.list.outputs.due_count }}
+      routing_result: ${{ steps.posture.outputs.routing_result }}
+    steps:
+      - name: Check out the repository (its register and workflows)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out the kit at a pinned commit (its scripts and central register)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.kit_repository }}
+          ref: ${{ inputs.kit_ref }}
+          path: .kit
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: PyYAML (to read the caller's workflows)
+        run: python -m pip install --quiet pyyaml==6.0.2
+
+      - name: List every exception due or expired, with its history
+        id: list
+        env:
+          KIT_DIR: ${{ github.workspace }}/.kit
+          CENTRAL_REGISTER_PATH: ${{ inputs.central_register_path }}
+          REPOSITORY_REGISTER_PATH: ${{ inputs.repository_register_path }}
+          WORKFLOWS_DIR: ${{ inputs.workflows_dir }}
+          DAYS: ${{ inputs.days }}
+        run: |
+          set -uo pipefail
+          today="${TODAY_OVERRIDE:-$(date -u +%F)}"
+          out="${RUNNER_TEMP}/exception-due.json"
+          summ="${RUNNER_TEMP}/exception-due.md"
+          kv="${RUNNER_TEMP}/exception-due.out"
+          : > "$kv"
+          args=(--today "$today" --days "$DAYS" --out "$out" --summary "$summ" --github-output "$kv")
+          if [ -n "$CENTRAL_REGISTER_PATH" ]; then args+=(--central "$KIT_DIR/$CENTRAL_REGISTER_PATH"); fi
+          if [ -n "$REPOSITORY_REGISTER_PATH" ]; then args+=(--repository-register "$REPOSITORY_REGISTER_PATH"); fi
+          if [ -n "$WORKFLOWS_DIR" ]; then args+=(--workflows-dir "$WORKFLOWS_DIR"); fi
+          # Captured, not allowed to abort: the exit code is the listing's state.
+          rc=0
+          python3 "$KIT_DIR/scripts/exception_due.py" "${args[@]}" > /dev/null || rc=$?
+          state="$(sed -n 's/^state=//p' "$kv" | tail -1)"
+          due_count="$(sed -n 's/^due_count=//p' "$kv" | tail -1)"
+          overdue_count="$(sed -n 's/^overdue_count=//p' "$kv" | tail -1)"
+          over_cap_count="$(sed -n 's/^over_cap_count=//p' "$kv" | tail -1)"
+          # An absent state is the listing never answering: named as unreadable, never as nothing due.
+          case "$state" in
+            '') state=REGISTRATION_UNAVAILABLE ;;
+          esac
+          {
+            echo "rc=$rc"
+            echo "state=${state//[$'\r\n']/ }"
+            echo "due_count=${due_count//[$'\r\n']/ }"
+            echo "overdue_count=${overdue_count//[$'\r\n']/ }"
+            echo "over_cap_count=${over_cap_count//[$'\r\n']/ }"
+          } >> "$GITHUB_OUTPUT"
+          if [ -s "$summ" ]; then cat "$summ" >> "$GITHUB_STEP_SUMMARY"; fi
+          case "$rc" in
+            0|1) exit 0 ;;
+            3)
+              echo "::error title=Exception register unreadable::a register or workflow could not be read. This is not 'nothing due': the exceptions in it were never listed."
+              exit 1 ;;
+            *)
+              echo "::error title=Exception check did not run::scripts/exception_due.py exited $rc; nothing was established."
+              exit 1 ;;
+          esac
+
+      - name: Keep the due list
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: exception-due-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/exception-due.json
+            ${{ runner.temp }}/exception-due.md
+          if-no-files-found: warn
+          retention-days: 90
+
+      # Vocabulary: assurance-taxonomy.yaml :: control_weakening, routing_result. The enumeration is
+      # TOTAL over this workflow's inputs (tests/check_weakening_record.py).
+      - name: Control posture -- what the exception check listed, what it could not, and who decided
+        id: posture
+        if: always()
+        env:
+          W_CENTRAL_REGISTER_PATH: ${{ inputs.central_register_path }}
+          W_REPOSITORY_REGISTER_PATH: ${{ inputs.repository_register_path }}
+          W_WORKFLOWS_DIR: ${{ inputs.workflows_dir }}
+          W_DAYS: ${{ inputs.days }}
+          W_APPLY: ${{ inputs.apply }}
+          W_WEAKENING_REASON: ${{ inputs.weakening_reason }}
+          W_WEAKENING_AUTHORITY: ${{ inputs.weakening_authority }}
+          W_WEAKENING_EXCEPTION_REF: ${{ inputs.weakening_exception_ref }}
+          W_WEAKENING_EXPIRES: ${{ inputs.weakening_expires }}
+          RC: ${{ steps.list.outputs.rc }}
+          OVERDUE: ${{ steps.list.outputs.overdue_count }}
+          OVER_CAP: ${{ steps.list.outputs.over_cap_count }}
+          DUE: ${{ steps.list.outputs.due_count }}
+        run: |
+          set -u
+          req=""; exe=""; skp=""; red=""; wk=""; inforce=0; badclass=0
+          at_baseline() {
+            case "$2" in
+              NONEMPTY) [ -n "$1" ] ;;
+              atleast:*) [ "$1" -ge "${2#atleast:}" ] 2>/dev/null ;;
+              *)        [ "$1" = "$2" ] ;;
+            esac
+          }
+          # posture <input> <control_weakening class> <baseline> <control> "<value>"
+          posture() {
+            n="$1"; cls="$2"; base="$3"; ctl="$4"; val="${5-}"; st=WEAKENING_AT_BASELINE
+            case "$cls" in
+              NOT_A_CONTROL_SURFACE|EXCEPTION_ATTRIBUTION)
+                return 0 ;;
+              TARGET_NOT_SUPPLIED)
+                req="$req,$ctl"
+                if at_baseline "$val" "$base"; then exe="$exe,$ctl"; else skp="$skp,$ctl"; fi ;;
+              CONTROL_DISABLED)
+                req="$req,$ctl"
+                if at_baseline "$val" "$base"; then
+                  exe="$exe,$ctl"
+                else
+                  st=WEAKENING_IN_FORCE; skp="$skp,$ctl"; inforce=$((inforce+1))
+                fi ;;
+              SCOPE_NARROWED)
+                req="$req,$ctl"; exe="$exe,$ctl"
+                at_baseline "$val" "$base" || { st=CONTROL_RECONFIGURED; red="$red,$ctl"; inforce=$((inforce+1)); } ;;
+              *)
+                echo "::error title=Unregistered control_weakening class::$cls on input $n"
+                badclass=1; return 0 ;;
+            esac
+            wk="$wk,{\"input\":\"$n\",\"class\":\"$cls\",\"control\":\"$ctl\",\"baseline\":\"$base\",\"value\":\"$val\",\"state\":\"$st\"}"
+          }
+
+          posture kit_repository           NOT_A_CONTROL_SURFACE - -
+          posture kit_ref                  NOT_A_CONTROL_SURFACE - -
+          posture default_branch           NOT_A_CONTROL_SURFACE - -
+          posture environment              NOT_A_CONTROL_SURFACE - -
+          posture test_environment         NOT_A_CONTROL_SURFACE - -
+          posture central_register_path    TARGET_NOT_SUPPLIED NONEMPTY exception-listing "$W_CENTRAL_REGISTER_PATH"
+          posture repository_register_path TARGET_NOT_SUPPLIED NONEMPTY exception-listing "$W_REPOSITORY_REGISTER_PATH"
+          posture workflows_dir            TARGET_NOT_SUPPLIED NONEMPTY exception-listing "$W_WORKFLOWS_DIR"
+          posture days                     SCOPE_NARROWED      atleast:14 exception-listing "$W_DAYS"
+          posture apply                    CONTROL_DISABLED    true     exception-resurfacing "$W_APPLY"
+          posture timeout_minutes          NOT_A_CONTROL_SURFACE - -
+          posture weakening_reason         EXCEPTION_ATTRIBUTION - -
+          posture weakening_authority      EXCEPTION_ATTRIBUTION - -
+          posture weakening_exception_ref  EXCEPTION_ATTRIBUTION - -
+          posture weakening_expires        EXCEPTION_ATTRIBUTION - -
+
+          # UNAVAILABLE IS NOT CLEAN: no exit code, or a register that could not be read, means the
+          # listing never reached a verdict it could stand behind.
+          unav=""
+          case "${RC:-}" in
+            0|1)
+              # Every count must have been reported; a missing one is evidence missing, never zero.
+              case "${DUE:-}" in
+                '') unav="exception-listing" ;;
+                *[!0-9]*) unav="exception-listing" ;;
+              esac
+              case "${OVERDUE:-}" in
+                '') unav="exception-listing" ;;
+                *[!0-9]*) unav="exception-listing" ;;
+              esac
+              case "${OVER_CAP:-}" in
+                '') unav="exception-listing" ;;
+                *[!0-9]*) unav="exception-listing" ;;
+              esac ;;
+            '') unav="exception-listing" ;;   # no exit code recorded: stated, not left to *)
+            *) unav="exception-listing" ;;
+          esac
+
+          dedupe() {
+            printf '%s' "${1#,}" | tr ',' '\n' | sed '/^$/d' | sort -u | tr '\n' ',' | sed 's/,$//'
+          }
+          REQ="$(dedupe "$req")"; EXE="$(dedupe "$exe")"
+          SKP="$(dedupe "$skp")"; RED="$(dedupe "$red")"; UNAV="$(dedupe "$unav")"
+
+          auth=WEAKENING_AT_BASELINE
+          if [ "$inforce" -gt 0 ]; then
+            if [ -n "$W_WEAKENING_REASON" ] && [ -n "$W_WEAKENING_AUTHORITY" ]; then
+              auth=WEAKENING_ATTRIBUTED
+              if [ -n "$W_WEAKENING_EXPIRES" ]; then
+                if ! printf '%s' "$W_WEAKENING_EXPIRES" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' ||
+                   [ "$(date -u -d "$W_WEAKENING_EXPIRES" +%Y-%m-%d 2>/dev/null)" != "$W_WEAKENING_EXPIRES" ]; then
+                  auth=WEAKENING_EXCEPTION_EXPIRED
+                elif [ "$(date -u +%Y-%m-%d)" ">" "$W_WEAKENING_EXPIRES" ]; then
+                  auth=WEAKENING_EXCEPTION_EXPIRED
+                fi
+              fi
+            else
+              auth=WEAKENING_UNATTRIBUTED
+            fi
+          fi
+
+          # The LISTING claim: an exception over its renewal cap is in force in a register and will
+          # be refused (BLOCKED until the register is fixed); an expired one owes a decision; one
+          # coming due is advisory.
+          route=PROCEED
+          if [ -n "$UNAV" ] || [ "$badclass" = "1" ]; then
+            route=EVIDENCE_UNTRUSTED
+          elif [ "$OVER_CAP" != "0" ]; then
+            route=BLOCKED
+          elif [ "$OVERDUE" != "0" ] || [ "$auth" = "WEAKENING_UNATTRIBUTED" ] || [ "$auth" = "WEAKENING_EXCEPTION_EXPIRED" ]; then
+            route=DECISION_REQUIRED
+          elif [ "$DUE" != "0" ] || [ "$inforce" -gt 0 ]; then
+            route=PROCEED_WITH_ADVISORY
+          fi
+
+          emit() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
+          emit routing_result "$route"
+          emit controls_required "$REQ"
+          emit controls_executed "$EXE"
+          emit controls_unavailable "$UNAV"
+          emit controls_reduced "$RED"
+          emit controls_skipped "$SKP"
+          emit weakenings "[${wk#,}]"
+          emit weakening_attribution "$auth"
+          emit weakening_record "{\"reason\":\"$W_WEAKENING_REASON\",\"authority\":\"$W_WEAKENING_AUTHORITY\",\"exception_ref\":\"$W_WEAKENING_EXCEPTION_REF\",\"expires\":\"$W_WEAKENING_EXPIRES\"}"
+          {
+            echo "### Control posture -- exceptions coming due"
+            echo ""
+            echo "| row | value |"
+            echo "|---|---|"
+            echo "| routing_result | **$route** |"
+            echo "| due / expired / over the cap | ${DUE:-not reported} / ${OVERDUE:-not reported} / ${OVER_CAP:-not reported} |"
+            echo "| controls skipped | ${SKP:-none} |"
+            echo "| controls unavailable | ${UNAV:-none} |"
+            echo "| weakening attribution | $auth |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  resurface:
+    name: Raise each due exception on its Jira ticket
+    needs: list
+    # Armed only on a schedule or a dispatch on the protected default branch, and only when something
+    # is due. Never by a pull request: the credential stays out of reach of code under review.
+    # KDEC-028: a dispatch on any OTHER branch is a TEST run, armed only when a sandbox
+    # environment is named, and it runs in that environment -- the ref chooses, nothing is swapped.
+    if: >-
+      needs.list.outputs.due_count != '0' && needs.list.outputs.due_count != '' &&
+      ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      github.ref == format('refs/heads/{0}', inputs.default_branch) ||
+      github.event_name == 'workflow_dispatch' && inputs.test_environment != '' &&
+      github.ref != format('refs/heads/{0}', inputs.default_branch))
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref != format('refs/heads/{0}', inputs.default_branch) && inputs.test_environment || inputs.environment }}
+    permissions:
+      contents: read
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    outputs:
+      resurface_state: ${{ steps.resurface.outputs.resurface_state }}
+    steps:
+      - name: Check out the repository (its register and workflows)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out the kit at a pinned commit (its scripts and central register)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.kit_repository }}
+          ref: ${{ inputs.kit_ref }}
+          path: .kit
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: PyYAML (to read the caller's workflows)
+        run: python -m pip install --quiet pyyaml==6.0.2
+
+      - name: Resurface on Jira (comment, reopen, or create once)
+        id: resurface
+        env:
+          KIT_DIR: ${{ github.workspace }}/.kit
+          CENTRAL_REGISTER_PATH: ${{ inputs.central_register_path }}
+          REPOSITORY_REGISTER_PATH: ${{ inputs.repository_register_path }}
+          WORKFLOWS_DIR: ${{ inputs.workflows_dir }}
+          DAYS: ${{ inputs.days }}
+          APPLY: ${{ inputs.apply }}
+          # Jira only (KDEC-017 item 5). Settings from the environment's variables, credentials from
+          # its secrets; never printed.
+          TICKET_BACKEND: jira
+          JIRA_HOST: ${{ vars.JIRA_HOST }}
+          JIRA_PROJECT: ${{ vars.JIRA_PROJECT }}
+          JIRA_STAMP_FIELD: ${{ vars.JIRA_STAMP_FIELD }}
+          JIRA_EPIC_ID: ${{ vars.JIRA_EPIC_ID }}
+          JIRA_CALIBRATION_ISSUE: ${{ vars.JIRA_CALIBRATION_ISSUE }}
+          JIRA_TYPE_CLUSTER: ${{ vars.JIRA_TYPE_CLUSTER }}
+          JIRA_TYPE_INSTANCE: ${{ vars.JIRA_TYPE_INSTANCE }}
+          JIRA_TRANSITION_REOPEN: ${{ vars.JIRA_TRANSITION_REOPEN }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+          # KDEC-028: bearer auth for a service account, the cloud id, and test ticketing derived
+          # from the ref (the default branch is real; any other is a sandbox TEST run).
+          JIRA_AUTH_MODE: ${{ vars.JIRA_AUTH_MODE }}
+          JIRA_CLOUD_ID: ${{ vars.JIRA_CLOUD_ID }}
+          JIRA_REAL_PROJECTS: ${{ vars.JIRA_REAL_PROJECTS }}
+          TICKETING_MODE: ${{ github.ref == format('refs/heads/{0}', inputs.default_branch) && 'real' || 'test' }}
+          TICKET_STAMP_LABEL: ${{ vars.TICKET_STAMP_LABEL }}
+          TICKET_CREATE_CEILING: ${{ vars.TICKET_CREATE_CEILING }}
+          TICKET_RETRY_CEILING: ${{ vars.TICKET_RETRY_CEILING }}
+        run: |
+          set -uo pipefail
+          today="$(date -u +%F)"
+          out="${RUNNER_TEMP}/exception-resurface.json"
+          summ="${RUNNER_TEMP}/exception-resurface.md"
+          kv="${RUNNER_TEMP}/exception-resurface.out"
+          : > "$kv"
+          # --cross-check (KDEC-022 item 2, C): every ticketed exception's Jira ticket must exist, name
+          # the register's approver and show each renewal; a disagreement is EXCEPTION_TICKET_MISMATCH,
+          # in the summary and (applied) on the ticket. Reported only: the gate never reads Jira.
+          args=(--today "$today" --days "$DAYS" --out "$out" --summary "$summ" --github-output "$kv" --resurface
+                --cross-check)
+          if [ "$APPLY" = "true" ]; then args+=(--apply); fi
+          if [ -n "$CENTRAL_REGISTER_PATH" ]; then args+=(--central "$KIT_DIR/$CENTRAL_REGISTER_PATH"); fi
+          if [ -n "$REPOSITORY_REGISTER_PATH" ]; then args+=(--repository-register "$REPOSITORY_REGISTER_PATH"); fi
+          if [ -n "$WORKFLOWS_DIR" ]; then args+=(--workflows-dir "$WORKFLOWS_DIR"); fi
+          # KDEC-024 (LINK): the finding ticket for a secret exception, named on its comment.
+          if [ -f .security/ticket-ledger.json ]; then args+=(--ticket-ledger .security/ticket-ledger.json); fi
+          rc=0
+          python3 "$KIT_DIR/scripts/exception_due.py" "${args[@]}" > /dev/null || rc=$?
+          if [ -s "$summ" ]; then cat "$summ" >> "$GITHUB_STEP_SUMMARY"; fi
+          state="$(sed -n 's/^resurface_state=//p' "$kv" | tail -1)"
+          # No state reported is a resurfacing that never answered: a failure, never a success.
+          case "$state" in
+            '') state=RESURFACE_FAILED ;;
+          esac
+          echo "resurface_state=${state//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
+          mismatches="$(sed -n 's/^ticket_mismatch_count=//p' "$kv" | tail -1)"
+          mismatches="${mismatches//[!0-9]/}"
+          if [ -n "$mismatches" ] && [ "$mismatches" != "0" ]; then
+            echo "::warning title=EXCEPTION_TICKET_MISMATCH x${mismatches}::the register and the exceptions' Jira tickets disagree (listed in the summary). The gate does not read Jira; fix whichever record is wrong."
+          fi
+          case "$state" in
+            NOT_CONFIGURED)
+              echo "::warning title=Exceptions not resurfaced (NOT_CONFIGURED)::no Jira credential in this environment. The due list is in the list job's summary and artifact." ;;
+            PLANNED)
+              echo "::notice title=Plan only::apply is false; nothing was written to Jira." ;;
+          esac
+          case "$rc" in
+            0|1) exit 0 ;;
+            *)
+              echo "::error title=Exceptions not resurfaced::scripts/exception_due.py exited $rc ($state); see the summary."
+              exit 1 ;;
+          esac
+
+      - name: Keep the resurfacing record
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: exception-resurface-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/exception-resurface.json
+            ${{ runner.temp }}/exception-resurface.md
+          if-no-files-found: warn
+          retention-days: 90

@@ -46,6 +46,14 @@ WHAT IT PROVES
         tarball an earlier CI step downloaded) is neither scanned nor shipped.
     E6  THE EXCLUDED PATH IS EXCLUDED. A path list defined for exclusion was never read, so the
         file it named shipped in every full export and every incremental.
+    E10 THE ZIP HOLDS WHAT WAS EXPORTED, AND NOTHING A CHECK LEFT BEHIND (2026-10-26). The work
+        package for 4060290 carried 32 compiled .pyc files under __pycache__: the copy's own checks
+        were run inside the exported tree, and the tree was then zipped by hand. The copy step
+        excluded __pycache__; nothing guarded the step after it. `--zip` now packs a tree and
+        REFUSES, writing no zip, when the tree holds __pycache__, *.pyc/*.pyo, .pytest_cache,
+        .git, .context, .claude, export profiles, the deny list or an overlay the copy's profile
+        did not include. A clean export zips (the positive control), `--out ... --zip` packs the
+        copy it has just written, and an existing zip is never overwritten.
 
 USAGE  python3 tests/prove_export_scope.py
 EXIT   0 scope holds, 1 it does not, 2 the export could not be run
@@ -243,6 +251,83 @@ def prove_untracked_not_kit(fails):
         shutil.rmtree(work, ignore_errors=True)
 
 
+def _zip_names(path):
+    import zipfile
+    with zipfile.ZipFile(path) as zf:
+        return zf.namelist()
+
+
+# Leftovers a check run inside an exported tree can create, plus what must never ship at all.
+ZIP_LEFTOVERS = (('scripts/__pycache__/helper.cpython-311.pyc', 'scripts/__pycache__'),
+                 ('scripts/stray.pyc', 'scripts/stray.pyc'),
+                 ('scripts/stray.pyo', 'scripts/stray.pyo'),
+                 ('.pytest_cache/v/cache/nodeids', '.pytest_cache'),
+                 ('.git/HEAD', '.git'),
+                 ('.context/CONTINUATION.md', '.context'),
+                 ('.claude/settings.json', '.claude'),
+                 ('scripts/export-profiles/x.txt', 'scripts/export-profiles'),
+                 ('scripts/export-deny.txt', 'scripts/export-deny.txt'),
+                 ('overlays/someone-else/notes.md', 'overlays/someone-else'))
+
+
+def prove_zip_refuses_leftovers(fails):
+    """E10: --zip packs only a clean exported tree, and refuses anything a check left behind."""
+    work = tempfile.mkdtemp(prefix='export-zip-')
+    try:
+        src = make_source(work, DENY_TEXT)
+        _write(os.path.join(src, 'scripts', 'helper.py'), 'X = 1\n')
+        _git(['add', '-A'], src)
+        _git(['commit', '-qm', 'helper'], src)
+        out = os.path.join(work, 'copy')
+        zp = os.path.join(work, 'copy.zip')
+        p = run_export(src, '--out', out, '--profile', RECIPIENT, '--zip', zp)
+        if p.returncode != 0 or not os.path.isfile(zp):
+            fails.append('E10 --out with --zip did not produce a zip (exit %d): %s'
+                         % (p.returncode, (p.stdout + p.stderr)[-400:]))
+            return
+        names = _zip_names(zp)
+        if not all(n.startswith('copy/') for n in names):
+            fails.append('E10 zip entries are not under one top folder named for the copy: %s'
+                         % names[:3])
+        for must in ('README.md', 'scripts/helper.py', WATERMARK,
+                     'overlays/' + RECIPIENT + '/notes.md'):
+            if 'copy/' + must not in names:
+                fails.append('E10 control: the zip is missing %s' % must)
+        for rel, root_of in ZIP_LEFTOVERS:
+            path = os.path.join(out, rel.replace('/', os.sep))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'wb') as f:
+                f.write(b'\x00leftover\n')
+            bad = os.path.join(work, 'bad.zip')
+            q = run_export(src, '--zip-tree', out, '--zip', bad)
+            said = q.stdout + q.stderr
+            if q.returncode == 0:
+                fails.append('E10 --zip-tree packed a tree holding %s' % rel)
+            if os.path.exists(bad):
+                fails.append('E10 --zip-tree wrote a zip although the tree holds %s' % rel)
+                os.remove(bad)
+            if root_of not in said.replace('\\', '/'):
+                fails.append('E10 the refusal for %s did not name %s: %s'
+                             % (rel, root_of, said.strip()[-200:]))
+            target = os.path.join(out, root_of.replace('/', os.sep))
+            if os.path.isdir(target):
+                shutil.rmtree(target)
+            elif os.path.exists(target):
+                os.remove(target)
+        again = os.path.join(work, 'again.zip')
+        r = run_export(src, '--zip-tree', out, '--zip', again)
+        if r.returncode != 0 or not os.path.isfile(again):
+            fails.append('E10 control: a clean exported tree did not zip: %s'
+                         % (r.stdout + r.stderr)[-300:])
+        elif sorted(_zip_names(again)) != sorted(names):
+            fails.append('E10 control: re-zipping the clean tree changed the entry list')
+        if os.path.isfile(again) and run_export(src, '--zip-tree', out, '--zip',
+                                                again).returncode == 0:
+            fails.append('E10 --zip overwrote an existing zip')
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 MUST_SHIP = ('.github/workflows/reusable-security.yml',
              '.github/workflows/reusable-ticket-reconcile.yml',
              'scripts/export_for_adoption.py',
@@ -296,7 +381,10 @@ def main():
         # The deny list never ships (E2), so in a copy the controls that guard the SOURCE have
         # nothing to read. Each must say so by name -- not fail the copy's self-test (third
         # failure of the first public Release 2 PR), and not pretend to have checked anything.
-        for tool in ('check_export_safety.py', 'prove_deny_samples.py', 'prove_export_scope.py'):
+        # check_context_current.py joined 2026-10-22: the export ships no .context (E2), and once
+        # the sweep refused any exit 1 the copy's self-test went red on it (public run 39840692734).
+        for tool in ('check_export_safety.py', 'prove_deny_samples.py', 'prove_export_scope.py',
+                     'check_context_current.py'):
             q = subprocess.run([sys.executable, os.path.join(out, 'tests', tool)], cwd=out,
                                capture_output=True, text=True, encoding='utf-8', errors='replace',
                                env=env)
@@ -309,6 +397,7 @@ def main():
             prove_profile_bound(fails)
             prove_excluded_path(fails)
             prove_untracked_not_kit(fails)
+            prove_zip_refuses_leftovers(fails)
         except RuntimeError as e:
             print('UNKNOWN: the synthetic source could not be built: %s' % e)
             return 2

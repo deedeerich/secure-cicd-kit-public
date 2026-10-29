@@ -95,8 +95,10 @@ MARKERS = {
     # manifest row nothing can check is a claim, not a control.
     'CodeQL taint tracking (security-extended)': [r'security-extended', r'security-and-quality'],
     'XSS ruleset (semgrep p/xss)': [r'p/xss'],
-    'Trivy (filesystem: vuln + secret + licence)': [r'scanners:\s*vuln,secret,license'],
-    'Trivy (container image)': [r'scan-type:\s*image'],
+    # trivy-action's `with:` keys, or (KDEC-027, trivy-action gone) the TRIVY_* env and the CLI.
+    'Trivy (filesystem: vuln + secret + licence)': [r'scanners:\s*vuln,secret,license',
+                                                     r'TRIVY_SCANNERS:\s*vuln,secret,license'],
+    'Trivy (container image)': [r'scan-type:\s*image', r'\brun:\s*trivy\s+image\b'],
     'SBOM licence inventory': [r'sbom_licenses\.py'],
 }
 
@@ -143,7 +145,10 @@ def workflow_text():
     estate keeps finding in other forms.
     """
     blobs = {}
-    for base, tag in ((WF, 'core'), (OVERLAY_ROOT, 'overlay')):
+    # The core's composites are core too: a scanner job's body lives in .github/actions/<scanner>/
+    # since ledger L64, so detect-secrets, for one, is invoked nowhere else.
+    actions = os.path.join(ROOT, '.github', 'actions')
+    for base, tag in ((WF, 'core'), (actions, 'core'), (OVERLAY_ROOT, 'overlay')):
         if not os.path.isdir(base):
             continue
         for dp, _dn, fns in os.walk(base):

@@ -490,18 +490,18 @@ def gap9_rollback_capability_before_the_point_of_no_return(fails):
     """rollback_capability is established before the first mutation; production tiers block
     on UNAVAILABLE, lower tiers proceed with the risk recorded."""
     cases = [
-        ('containerapp single, prod', W.D.CONTAINERAPP, ca_inputs(environment_tier='prod'),
+        ('containerapp single, prod', W.D.CONTAINERAPP, W.break_glass(ca_inputs(environment_tier='prod')),
          W.containerapp_state(mode='Single'), 'UNAVAILABLE', False),
         ('containerapp single, dev', W.D.CONTAINERAPP, ca_inputs(environment_tier='dev'),
          W.containerapp_state(mode='Single'), 'UNAVAILABLE', True),
-        ('containerapp multi, prod', W.D.CONTAINERAPP, ca_inputs(environment_tier='prod'),
+        ('containerapp multi, prod', W.D.CONTAINERAPP, W.break_glass(ca_inputs(environment_tier='prod')),
          W.containerapp_state(), 'AVAILABLE', True),
-        ('containerapp empty, uat', W.D.CONTAINERAPP, ca_inputs(environment_tier='uat'),
+        ('containerapp empty, uat', W.D.CONTAINERAPP, W.break_glass(ca_inputs(environment_tier='uat')),
          W.containerapp_state(empty=True), 'NO_PRIOR_STATE', True),
         ('appservice no rollback, prod', W.D.APPSERVICE,
-         as_inputs(environment_tier='prod', rollback_on_failure=False),
+         W.break_glass(as_inputs(environment_tier='prod', rollback_on_failure=False)),
          W.appservice_state(), 'UNAVAILABLE', False),
-        ('appservice slot, prod', W.D.APPSERVICE, as_inputs(environment_tier='prod'),
+        ('appservice slot, prod', W.D.APPSERVICE, W.break_glass(as_inputs(environment_tier='prod')),
          W.appservice_state(), 'AVAILABLE', True),
     ]
     for label, wf, inp, st, want, proceeds in cases:

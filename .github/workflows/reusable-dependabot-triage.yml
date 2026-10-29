@@ -1,0 +1,892 @@
+# Dependabot triage: merge on its own only what cannot change behaviour; ask a human for the rest.
+#
+# THE OWNER'S REQUIREMENT (2026-10-22), AND THE DESIGN IT RECOVERS (docs/roadmap/FUTURE_WORK.md §6).
+# A Dependabot pull request should need a human only when it "materially changes something that could
+# change functionality or is critically important to runtime". FUTURE_WORK §6 sets the bar: the
+# policy is not "robots skip review", it is that low-consequence, machine-verifiable updates may take
+# an automated assurance path. AUTO-MERGE ONLY WHEN EVERY ONE OF THESE HOLDS (rule ids in brackets):
+#
+#   semver patch or minor, inside the caller's allowed set    [major_update, update_type_unknown,
+#                                                               update_type_not_allowed]
+#   no dependency in a protected class (auth, crypto, network, web framework, DB driver and schema,
+#   payment, the triage chain itself; infra and runtime ecosystems: docker, compose, helm,
+#   terraform, devcontainers)                                  [critical_package, critical_ecosystem,
+#                                                               triage_chain, security_critical]
+#   a github-actions bump stays inside one major and lands on a full commit SHA
+#                                                              [actions_major_unknown, actions_pin_not_sha]
+#   nothing outside dependency metadata changed                [non_dependency_file, non_dependency_change]
+#   no breaking-change or maintainer-change signal             [breaking_change_signal, maintainer_changed]
+#   the lockfile moved only the packages the PR names, and not by more than the threshold
+#                                                              [lockfile_churn, lockfile_unparsed,
+#                                                               lockfile_unrelated_moves]
+#   the base branch requires status checks, and the caller's scan gate is one of them -- so every
+#   test, the kit's security gate (no new critical/high, no malicious package) and every other
+#   required check still decide the merge                     [required_checks_unknown, no_required_checks,
+#                                                               scan_gate_unnamed, scan_gate_not_required]
+#   a compatibility floor, when the caller sets one, is met    [compatibility_unknown, compatibility_low]
+#
+# and everything under an excluded path (default tests/consumer-fixture/**, whose packages are
+# DELIBERATELY vulnerable -- owner decision 2026-10-22) is CLOSED with an explanation [excluded_path].
+# Anything else gets the review label, a review request and a plain-words comment saying why. A
+# security update for a protected package is never auto-merged and also gets the urgent label.
+#
+# THE MERGE NEVER BYPASSES ANYTHING. Auto-merge is `gh pr merge --auto --squash`: GitHub merges when
+# branch protection and the required checks allow it, and not before. A squash is one commit, so a
+# merged update reverts with one `git revert`.
+#
+# THE TRIGGER IS pull_request_target, AND THAT IS THE SAFE ONE HERE. Why, with sources, is in
+# docs/adoption/DEPENDABOT_TRIAGE.md section 2. In short: under `pull_request` a Dependabot run gets
+# a read-only token (workflow-syntax "Permissions for workflow runs triggered by Dependabot"), and
+# the workflow file comes from the PR itself -- so a github-actions update would run its OWN proposed
+# action SHAs and kit pin while deciding whether to merge itself. Under pull_request_target the
+# workflow file and the kit pin come from the default branch (GitHub changelog 2025-11-07), and
+# GitHub's warning is against building or running PR code there. THIS WORKFLOW CHECKS OUT NOTHING:
+# it reads the PR through the API, as data, and runs only the kit's own reviewed steps. A
+# `pull_request` call is refused loudly [wrong_trigger].
+#
+# DATA, NEVER CODE. Every PR-derived value (dependency names, versions, the body, file patches)
+# reaches a script through env: or a file. No run: block contains an expression.
+#
+# PROOF: tests/prove_dependabot_triage.py runs these steps as shipped against fixtures and a gh shim.
+# A hosted run on a real repository is owed: docs/adoption/DEPENDABOT_TRIAGE.md section 6.
+name: "Kit: Dependabot triage (reusable)"
+
+on:
+  workflow_call:
+    inputs:
+      critical_packages:
+        description: >-
+          Extra protected packages, comma or newline separated, glob patterns allowed (for example
+          `@acme/*`, `org.example:billing-*`). Added to the kit's built-in protected list, never
+          replacing it: a listed package always goes to a human. Put your own kit repository here.
+        type: string
+        default: ""
+      critical_ecosystems:
+        description: >-
+          Extra protected Dependabot ecosystems (for example `maven,nuget`). Added to the built-in
+          docker, docker-compose, helm, terraform and devcontainers. A listed ecosystem always goes
+          to a human.
+        type: string
+        default: ""
+      auto_merge_update_types:
+        description: >-
+          Which semver levels may merge on their own: `patch,minor` (the ceiling), `patch`, or empty
+          for none. A major is never accepted here; asking for one sends every PR to a human as a
+          misconfigured policy.
+        type: string
+        default: "patch,minor"
+      lockfile_line_threshold:
+        description: >-
+          The most lockfile lines (added plus deleted) a production update may change and still
+          merge on its own. 400 is also the ceiling: a lower number sends more to a human, a higher
+          one is refused as a misconfigured policy.
+        type: string
+        default: "400"
+      excluded_paths:
+        description: >-
+          Glob patterns, comma or newline separated. A Dependabot PR touching any of them is CLOSED
+          with an explanation (for example deliberately vulnerable test fixtures). Added to the
+          default, never replacing it.
+        type: string
+        default: "tests/consumer-fixture/**"
+      required_checks:
+        description: >-
+          The status checks that must be REQUIRED on the base branch before anything auto-merges,
+          comma separated -- at least the job that fails on the kit's security verdict. Empty sends
+          every PR to a human, because nothing then shows the scans decide the merge.
+        type: string
+        default: ""
+      min_compatibility_score:
+        description: >-
+          Optional floor (1-100) on Dependabot's compatibility score. Set, a lower or unavailable
+          score goes to a human (the score needs METADATA_TOKEN). Empty applies no floor.
+        type: string
+        default: ""
+      review_team:
+        description: >-
+          Optional `org/team` asked to review a PR that needs a human. CODEOWNERS is the reliable
+          route; a failed request is reported in the summary, never hidden.
+        type: string
+        default: ""
+      review_label:
+        description: "The label a PR that needs a human receives. Letters, digits, . _ - only."
+        type: string
+        default: "needs-human-review"
+      urgent_label:
+        description: "The extra label on a security update for a protected package. Letters, digits, . _ - only."
+        type: string
+        default: "urgent-security-review"
+    secrets:
+      METADATA_TOKEN:
+        description: >-
+          Optional token with Dependabot alerts read, used only by fetch-metadata's alert and
+          compatibility lookups. Without it the security linkage is recorded as NOT established,
+          never as "no advisory".
+        required: false
+    outputs:
+      action:
+        description: "auto_merge, human_review, close, or none. A state, never a boolean."
+        value: ${{ jobs.classify.outputs.action }}
+      rule:
+        description: "The first rule that decided the action (all_conditions_met for an auto merge)."
+        value: ${{ jobs.classify.outputs.rule }}
+
+permissions: {}
+
+jobs:
+  classify:
+    name: Classify the Dependabot update
+    # The PR AUTHOR, not github.actor: a re-run or a human push changes the actor. fetch-metadata
+    # then refuses any PR whose commits are not all Dependabot's, and that refusal goes to a human.
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      action: ${{ steps.decide.outputs.action }}
+      rule: ${{ steps.decide.outputs.rule }}
+      labels: ${{ steps.decide.outputs.labels }}
+      urgent: ${{ steps.decide.outputs.urgent }}
+      comment: ${{ steps.decide.outputs.comment }}
+    steps:
+      - name: Dependabot metadata
+        id: metadata
+        # A refusal (an unverified commit, an unreadable PR) must reach a human, not end the run.
+        continue-on-error: true
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ secrets.METADATA_TOKEN || github.token }}
+          alert-lookup: ${{ secrets.METADATA_TOKEN != '' }}
+          compat-lookup: ${{ secrets.METADATA_TOKEN != '' }}
+
+      - name: Read the PR files and the base branch protection
+        id: evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -uo pipefail   # not -e: every read records its own outcome, and a failed read is evidence
+          # KDEC-027: gh's token goes to this run's host only (gh api / -R default to github.com).
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
+          dir="$RUNNER_TEMP/dependabot-triage"
+          mkdir -p "$dir"
+          # Each read leaves a .rc file. A missing or non-zero rc is UNKNOWN to the decision step,
+          # which sends the PR to a human: an unreadable fact is never read as a clean one.
+          rc=0
+          gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/files?per_page=100" --jq '.[]' \
+            > "$dir/files.jsonl" 2> "$dir/files.err" || rc=$?
+          echo "$rc" > "$dir/files.rc"
+          rc=0
+          gh api "repos/${REPO}/branches/${BASE_REF}" > "$dir/branch.json" 2> "$dir/branch.err" || rc=$?
+          echo "$rc" > "$dir/branch.rc"
+          rc=0
+          gh api "repos/${REPO}/rules/branches/${BASE_REF}" > "$dir/rules.json" 2> "$dir/rules.err" || rc=$?
+          echo "$rc" > "$dir/rules.rc"
+          echo "files_rc=$(tr -d '\r\n' < "$dir/files.rc")" >> "$GITHUB_OUTPUT"
+
+      - name: Decide
+        id: decide
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          REPO: ${{ github.repository }}
+          CALLER_WORKFLOW: ${{ github.workflow_ref }}
+          META_OUTCOME: ${{ steps.metadata.outcome }}
+          UPDATED_DEPS: ${{ steps.metadata.outputs.updated-dependencies-json }}
+          LOOKUP: ${{ secrets.METADATA_TOKEN != '' }}
+          IN_CRITICAL_PACKAGES: ${{ inputs.critical_packages }}
+          IN_CRITICAL_ECOSYSTEMS: ${{ inputs.critical_ecosystems }}
+          IN_UPDATE_TYPES: ${{ inputs.auto_merge_update_types }}
+          IN_LOCKFILE_THRESHOLD: ${{ inputs.lockfile_line_threshold }}
+          IN_EXCLUDED_PATHS: ${{ inputs.excluded_paths }}
+          IN_REQUIRED_CHECKS: ${{ inputs.required_checks }}
+          IN_MIN_COMPAT: ${{ inputs.min_compatibility_score }}
+          IN_REVIEW_LABEL: ${{ inputs.review_label }}
+          IN_URGENT_LABEL: ${{ inputs.urgent_label }}
+        run: |
+          set -uo pipefail
+          dir="$RUNNER_TEMP/dependabot-triage"
+          mkdir -p "$dir"
+          rc=0
+          python3 - "$dir" <<'TRIAGE_PY' || rc=$?
+          import fnmatch, json, os, re, sys, datetime
+
+          out_dir = sys.argv[1]
+          E = os.environ.get
+
+          # ---- the kit's protected classes (FUTURE_WORK §6 "escalate to a human"). Callers ADD to
+          # these; nothing a caller passes removes one. Lowercase globs over the dependency name.
+          BASELINE_PACKAGES = [
+              # authentication, identity, tokens
+              '*jwt*', '*jsonwebtoken*', '*jwks*', '*jose*', '*oauth*', '*openid*', '*oidc*', '*saml*', 'passport', 'passport-*',
+              'next-auth', '@auth/*', 'keycloak*', 'msal*', '@azure/msal-*', '@azure/identity',
+              'azure-identity', 'azure.identity', 'microsoft.identity.*', 'microsoft.identitymodel.*',
+              'system.identitymodel.*', 'microsoft.aspnetcore.authentication*',
+              'org.springframework.security*', 'authlib', 'django-allauth', 'flask-login', 'devise',
+              'omniauth*', 'golang.org/x/oauth2', 'github.com/coreos/go-oidc*',
+              # cryptography and TLS
+              '*crypto*', '*openssl*', '*bcrypt*', '*argon2*', '*scrypt*', 'node-forge', 'tweetnacl*',
+              '*sodium*', 'org.bouncycastle*', '*bouncycastle*', 'golang.org/x/crypto', 'rustls*',
+              'ring', 'certifi', 'pyopenssl',
+              # network and HTTP clients/servers
+              'axios', 'node-fetch', 'undici', 'got', 'request', 'superagent', 'requests', 'urllib3',
+              'httpx', 'aiohttp', 'httplib2', 'grpc*', '@grpc/*', 'grpcio*', 'io.grpc*', 'netty*',
+              'io.netty*', 'com.squareup.okhttp*', 'org.apache.httpcomponents*', 'golang.org/x/net',
+              'google.golang.org/grpc', 'hyper', 'reqwest', 'tokio', 'ws', 'socket.io*',
+              'microsoft.extensions.http*', 'system.net.http*', 'faraday*', 'guzzlehttp/*',
+              # web frameworks and the runtime they define
+              'express', 'fastify', 'koa', 'hapi', '@hapi/*', '@nestjs/*', 'next', 'nuxt', 'react',
+              'react-dom', 'vue', '@angular/*', 'django', 'flask', 'fastapi', 'starlette', 'uvicorn',
+              'gunicorn', 'werkzeug', 'rails', 'railties', 'rack', 'sinatra', 'laravel/framework',
+              'symfony/*', 'org.springframework*', 'microsoft.aspnetcore*', 'github.com/gin-gonic/gin',
+              'github.com/labstack/echo*', 'github.com/gofiber/fiber*', 'actix-web', 'axum',
+              'typescript', '@types/node',
+              # databases, drivers, ORMs and schema migration
+              'pg', 'pg-*', 'mysql', 'mysql2', 'mariadb', 'mongodb', 'mongoose', 'sequelize', 'prisma',
+              '@prisma/*', 'typeorm', 'knex', 'drizzle-orm', 'redis', 'ioredis', 'psycopg*',
+              'sqlalchemy', 'alembic', 'pymongo', 'pymysql', 'mysqlclient', 'asyncpg', 'django-*db*',
+              'microsoft.data.sqlclient', 'system.data.sqlclient', 'microsoft.entityframeworkcore*',
+              'npgsql*', 'dapper', 'org.postgresql*', 'com.mysql*', 'mysql:mysql-connector*',
+              'org.flywaydb*', 'org.liquibase*', 'org.hibernate*', 'github.com/lib/pq',
+              'github.com/jackc/pgx*', 'gorm.io/*', 'go.mongodb.org/*', 'github.com/go-sql-driver/*',
+              'doctrine/*', 'activerecord', 'sqlx', 'diesel',
+              # payment
+              '*stripe*', 'braintree*', '*paypal*', '*adyen*', '*square*',
+          ]
+          # The triage chain itself: merging an update to it changes the gate that decides merges.
+          TRIAGE_CHAIN = ['dependabot/fetch-metadata']
+          BASELINE_ECOSYSTEMS = ['docker', 'docker_compose', 'helm', 'terraform', 'devcontainers']
+          BASELINE_EXCLUDED = ['tests/consumer-fixture/**']
+          THRESHOLD_CEILING = 400
+          ALLOWED_TYPES = ('patch', 'minor')
+          LOCKFILES = {'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml',
+                       'poetry.lock', 'pipfile.lock', 'uv.lock', 'pdm.lock', 'gemfile.lock',
+                       'composer.lock', 'go.sum', 'cargo.lock', 'packages.lock.json',
+                       'gradle.lockfile', 'pubspec.lock', 'mix.lock', '.terraform.lock.hcl'}
+          MANIFESTS = {'package.json', 'pipfile', 'pyproject.toml', 'setup.py', 'setup.cfg',
+                       'go.mod', 'cargo.toml', 'gemfile', 'composer.json', 'pom.xml',
+                       'build.gradle', 'build.gradle.kts', 'libs.versions.toml',
+                       'directory.packages.props', 'directory.build.props', 'packages.config',
+                       'global.json', 'pubspec.yaml', 'mix.exs', 'action.yml', 'action.yaml'}
+          MANIFEST_RES = [re.compile(p) for p in (r'^requirements.*\.(txt|in)$', r'.*\.csproj$',
+                                                  r'.*\.fsproj$', r'.*\.vbproj$', r'.*\.gemspec$')]
+          ECO_ALIASES = {'npm': 'npm_and_yarn', 'yarn': 'npm_and_yarn', 'gomod': 'go_modules',
+                         'github-actions': 'github_actions', 'docker-compose': 'docker_compose',
+                         'bundler': 'bundler', 'pip': 'pip', 'uv': 'uv'}
+          # "no breaking changes" and "non-breaking" are not signals; "BREAKING", "breaking change",
+          # "backwards incompatible" and a conventional-commit `feat!:` are.
+          BREAKING = [re.compile(r'(?<!no )(?<!non-)(?<![\w-])breaking[ -]changes?|'
+                                 r'backwards?[- ]incompatible|not backwards?[- ]compatible|'
+                                 r'incompatible changes?', re.I),
+                      re.compile(r'\bBREAKING\b'),
+                      re.compile(r'\b(?:feat|fix|refactor|perf|build|chore)(?:\([^)\s]*\))?!:')]
+          SHA40 = re.compile(r'^[0-9a-f]{40}$')
+          LABEL_OK = re.compile(r'^[A-Za-z0-9._-]{1,50}$')
+
+          def split(v):
+              return [x.strip() for x in re.split(r'[,\n]', v or '') if x.strip()]
+
+          def eco(v):
+              v = (v or '').strip().lower()
+              return ECO_ALIASES.get(v, v.replace('-', '_'))
+
+          def norm(n):
+              return re.sub(r'[-_.]+', '-', (n or '').strip().lower())
+
+          def read(name):
+              p = os.path.join(out_dir, name)
+              return open(p, encoding='utf-8').read() if os.path.exists(p) else None
+
+          def rc_ok(name):
+              return (read(name + '.rc') or '').strip() == '0'
+
+          def major(v):
+              if SHA40.match((v or '').strip().lower()):
+                  return None   # a bare commit SHA carries no version, even when it is all digits
+              m = re.match(r'^v?(\d+)(?:\.\d+)*(?:[-+].*)?$', (v or '').strip())
+              return int(m.group(1)) if m else None
+
+          rec = {'schema': 'kit.dependabot-triage/1', 'repository': E('REPO', ''),
+                 'pull_request': E('PR_NUMBER', ''), 'url': E('PR_URL', ''),
+                 'head_sha': E('HEAD_SHA', ''), 'base_ref': E('BASE_REF', ''),
+                 'event': E('EVENT_NAME', ''), 'author': E('PR_AUTHOR', ''),
+                 'evaluated_at': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                 'dependencies': [], 'pr_rules': [], 'reasons': []}
+          pr_rules = []      # (rule, plain-words reason) that apply to the whole PR
+
+          def hit(rule, why):
+              pr_rules.append((rule, why))
+
+          # ---- the trigger and the author
+          if E('EVENT_NAME') != 'pull_request_target':
+              rec.update(action='none', rule='wrong_trigger')
+              rec['reasons'] = ['this workflow must be called from a pull_request_target workflow; '
+                                'event %r would run the PR\'s own copy of the caller and gets a '
+                                'read-only token for Dependabot' % E('EVENT_NAME')]
+          elif E('PR_AUTHOR') != 'dependabot[bot]':
+              rec.update(action='none', rule='not_dependabot')
+              rec['reasons'] = ['the PR author is %r, not dependabot[bot]; nothing was done' % E('PR_AUTHOR')]
+
+          # ---- the policy, which may only narrow the kit's baseline
+          types = [x.lower() for x in split(E('IN_UPDATE_TYPES'))]
+          if E('IN_UPDATE_TYPES', '').strip() and not set(types) <= set(ALLOWED_TYPES):
+              hit('policy_misconfigured', 'auto_merge_update_types may only name patch and minor; '
+                  'got %r' % E('IN_UPDATE_TYPES'))
+          try:
+              threshold = int((E('IN_LOCKFILE_THRESHOLD') or '').strip())
+              if threshold < 0 or threshold > THRESHOLD_CEILING:
+                  raise ValueError
+          except ValueError:
+              threshold = 0
+              hit('policy_misconfigured', 'lockfile_line_threshold must be a whole number from 0 to '
+                  '%d; got %r' % (THRESHOLD_CEILING, E('IN_LOCKFILE_THRESHOLD')))
+          min_compat = None
+          if (E('IN_MIN_COMPAT') or '').strip():
+              try:
+                  min_compat = int(E('IN_MIN_COMPAT').strip())
+                  if not 1 <= min_compat <= 100:
+                      raise ValueError
+              except ValueError:
+                  min_compat = None
+                  hit('policy_misconfigured', 'min_compatibility_score must be 1-100; got %r'
+                      % E('IN_MIN_COMPAT'))
+          review_label = (E('IN_REVIEW_LABEL') or '').strip()
+          urgent_label = (E('IN_URGENT_LABEL') or '').strip()
+          for nm, val in (('review_label', review_label), ('urgent_label', urgent_label)):
+              if not LABEL_OK.match(val):
+                  hit('policy_misconfigured', '%s must be letters, digits, . _ - ; got %r' % (nm, val))
+          if not LABEL_OK.match(review_label):
+              review_label = 'needs-human-review'
+          if not LABEL_OK.match(urgent_label):
+              urgent_label = 'urgent-security-review'
+          crit_pkgs = [p.lower() for p in BASELINE_PACKAGES + split(E('IN_CRITICAL_PACKAGES'))]
+          crit_ecos = set(BASELINE_ECOSYSTEMS + [eco(x) for x in split(E('IN_CRITICAL_ECOSYSTEMS'))])
+          excluded = BASELINE_EXCLUDED + split(E('IN_EXCLUDED_PATHS'))
+          req_named = split(E('IN_REQUIRED_CHECKS'))
+          rec['policy'] = {'auto_merge_update_types': types, 'lockfile_line_threshold': threshold,
+                           'critical_packages_added': split(E('IN_CRITICAL_PACKAGES')),
+                           'critical_ecosystems': sorted(crit_ecos), 'excluded_paths': excluded,
+                           'required_checks': req_named, 'min_compatibility_score': min_compat,
+                           'review_label': review_label, 'urgent_label': urgent_label}
+
+          # ---- the PR's files
+          files = None
+          if rc_ok('files'):
+              try:
+                  files = [json.loads(x) for x in (read('files.jsonl') or '').splitlines() if x.strip()]
+              except ValueError:
+                  files = None
+          if files is None:
+              hit('files_unknown', 'the list of files this PR changes could not be read, so nothing '
+                  'about its scope is established')
+          files = files or []
+          rec['files'] = [{'path': x.get('filename'), 'changes': x.get('changes')} for x in files]
+          for x in files:
+              p = x.get('filename') or ''
+              for g in excluded:
+                  if fnmatch.fnmatchcase(p, g) or p.startswith(g.rstrip('*').rstrip('/') + '/'):
+                      hit('excluded_path', '`%s` is under the excluded path `%s`, which is kept '
+                          'deliberately as it is (for example a deliberately vulnerable test '
+                          'fixture); its packages are maintained by hand' % (p, g))
+                      break
+
+          # ---- the metadata (verified Dependabot commits only, by fetch-metadata's default)
+          deps = None
+          if E('META_OUTCOME') == 'success':
+              try:
+                  deps = json.loads(E('UPDATED_DEPS') or '')
+                  if not isinstance(deps, list) or not deps:
+                      deps = None
+              except ValueError:
+                  deps = None
+          if deps is None:
+              hit('metadata_unverified', 'dependabot/fetch-metadata did not produce verified '
+                  'metadata (outcome %s). Usually a commit on the branch is not Dependabot\'s, or '
+                  'the PR could not be read' % (E('META_OUTCOME') or 'missing'))
+          deps = deps or []
+          names = set(norm(d.get('dependencyName')) for d in deps)
+          lookup = E('LOOKUP') == 'true'
+
+          # ---- whole-PR scope: dependency metadata only, and the caller workflow untouched
+          caller = (E('CALLER_WORKFLOW') or '').split('@')[0]
+          caller_path = '/'.join(caller.split('/')[2:]) if caller.count('/') >= 2 else ''
+          moved = {}
+          lock_lines = 0
+          lock_unparsed = []
+          for x in files:
+              p = x.get('filename') or ''
+              base = p.rsplit('/', 1)[-1].lower()
+              patch = x.get('patch')
+              if caller_path and p == caller_path:
+                  hit('triage_chain', 'this PR edits `%s`, the workflow that runs this triage; '
+                      'merging it changes the gate that decides merges' % p)
+              is_wf = p.startswith('.github/workflows/') and base.endswith(('.yml', '.yaml'))
+              if is_wf or base in ('action.yml', 'action.yaml'):
+                  if patch is None:
+                      hit('non_dependency_change', '`%s` changed and GitHub returned no diff for it, '
+                          'so it cannot be shown that only `uses:` pins moved' % p)
+                      continue
+                  for line in patch.splitlines():
+                      if line[:1] not in '+-' or line[:3] in ('+++', '---'):
+                          continue
+                      body = line[1:].strip()
+                      if not body or body.startswith('#'):
+                          continue
+                      m = re.match(r'^(?:-\s+)?uses:\s*([^\s#]+)', body)
+                      if not m:
+                          hit('non_dependency_change', '`%s` changes a line that is not an action pin: '
+                              '`%s`' % (p, body[:80]))
+                          break
+                      ref = m.group(1).rsplit('@', 1)[-1] if '@' in m.group(1) else ''
+                      if line[0] == '+' and not m.group(1).startswith(('./', 'docker://')) \
+                              and not SHA40.match(ref):
+                          hit('actions_pin_not_sha', '`%s` would pin `%s` to `%s`, a movable '
+                              'reference rather than a full commit SHA' % (p, m.group(1).split('@')[0], ref))
+                  continue
+              if base in LOCKFILES:
+                  lock_lines += int(x.get('changes') or 0)
+                  if patch is None:
+                      lock_unparsed.append(p)
+                      continue
+                  header = None
+                  found = False
+                  for line in patch.splitlines():
+                      if line[:3] in ('+++', '---', '@@ '):
+                          if line.startswith('@@'):
+                              header = None
+                          continue
+                      t = line[1:] if line[:1] in '+- ' else line
+                      sign = line[:1]
+                      h = (re.match(r'^\s*"node_modules/(.+)":\s*\{', t) or
+                           re.match(r'^"?((?:@[^@/\s"]+/)?[^@\s",]+)@', t) or
+                           re.match(r'^\s*name\s*=\s*"([^"]+)"', t) or
+                           re.match(r'^\s*"name":\s*"([^"]+)"', t))
+                      if h:
+                          header = h.group(1).split('/node_modules/')[-1]
+                      if sign not in '+-':
+                          continue
+                      g = re.match(r'^(\S+) v?\d\S* (?:h1:|/go\.mod)', t)          # go.sum
+                      r = re.match(r'^\s{4}(\S+) \(\d', t)                           # Gemfile.lock
+                      if g or r:
+                          moved[norm((g or r).group(1))] = (g or r).group(1)
+                          found = True
+                          continue
+                      if re.match(r'^\s*"?version"?\s*[:=]?\s*"', t) or re.match(r'^\s+version "', t):
+                          if header is None:
+                              lock_unparsed.append(p)
+                              break
+                          moved[norm(header)] = header
+                          found = True
+                  if not found and p not in lock_unparsed and int(x.get('changes') or 0):
+                      lock_unparsed.append(p)
+                  continue
+              if base in MANIFESTS or any(rx.match(base) for rx in MANIFEST_RES):
+                  continue
+              if base.startswith('dockerfile') or base.endswith(('.tf', '.hcl')) or \
+                      base in ('docker-compose.yml', 'docker-compose.yaml', 'compose.yml',
+                               'compose.yaml', 'chart.yaml', 'devcontainer.json'):
+                  continue   # infra/runtime metadata: its ecosystem is protected and goes to a human
+              hit('non_dependency_file', '`%s` is not dependency metadata; an update that changes '
+                  'anything else is not a dependency update' % p)
+          rec['lockfile'] = {'lines_changed': lock_lines, 'packages_moved': sorted(moved.values()),
+                             'unparsed': lock_unparsed}
+
+          body = E('PR_BODY') or ''
+          for rx in BREAKING:
+              m = rx.search(body)
+              if m:
+                  hit('breaking_change_signal', 'the release notes in this PR say "%s"' % m.group(0))
+                  break
+
+          # ---- per dependency
+          any_prod = False
+          for d in deps:
+              n = d.get('dependencyName') or ''
+              e = eco(d.get('packageEcosystem'))
+              ut = (d.get('updateType') or '').replace('version-update:semver-', '')
+              dt = d.get('dependencyType') or ''
+              ghsa = d.get('ghsaId') or ''
+              rules = []
+              if dt != 'direct:development':
+                  any_prod = True
+              crit = [p for p in crit_pkgs if fnmatch.fnmatchcase(n.lower(), p)]
+              if crit and ghsa:
+                  rules.append(('security_critical', '`%s` is a protected package and this update '
+                                'fixes the advisory %s: it needs a human, urgently' % (n, ghsa)))
+              elif crit:
+                  rules.append(('critical_package', '`%s` is in a protected class (matched `%s`): '
+                                'auth, crypto, network, web framework, database or payment code '
+                                'changes how the service runs' % (n, crit[0])))
+              if n.lower() in TRIAGE_CHAIN:
+                  rules.append(('triage_chain', '`%s` is part of this triage; merging an update to it '
+                                'changes the gate that decides merges' % n))
+              if e in crit_ecos:
+                  rules.append(('critical_ecosystem', '`%s` is a %s update: infrastructure and '
+                                'runtime images change what the service runs on' % (n, e)))
+              if ut == 'major':
+                  rules.append(('major_update', '`%s` %s -> %s is a major version: by semver it may '
+                                'break callers' % (n, d.get('prevVersion'), d.get('newVersion'))))
+              elif ut not in ALLOWED_TYPES:
+                  rules.append(('update_type_unknown', 'the update type of `%s` is %r, so it cannot '
+                                'be shown to be a patch or minor' % (n, d.get('updateType'))))
+              elif ut not in types:
+                  rules.append(('update_type_not_allowed', '`%s` is a %s update and this repository '
+                                'auto-merges only %s' % (n, ut, ','.join(types) or 'nothing')))
+              if e == 'github_actions':
+                  a, b = major(d.get('prevVersion')), major(d.get('newVersion'))
+                  if a is None or b is None:
+                      rules.append(('actions_major_unknown', 'the versions of `%s` (%s -> %s) are '
+                                    'not readable, so staying inside one major cannot be shown'
+                                    % (n, d.get('prevVersion'), d.get('newVersion'))))
+                  elif a != b and ut != 'major':
+                      rules.append(('major_update', '`%s` moves from major %d to %d' % (n, a, b)))
+              if d.get('maintainerChanges'):
+                  rules.append(('maintainer_changed', 'the maintainers of `%s` changed in this '
+                                'release: a supply-chain signal a human should look at' % n))
+              score = d.get('compatScore') or 0
+              if min_compat is not None:
+                  if not score:
+                      rules.append(('compatibility_unknown', 'no compatibility score is available '
+                                    'for `%s` and this repository requires at least %d' % (n, min_compat)))
+                  elif score < min_compat:
+                      rules.append(('compatibility_low', 'the compatibility score of `%s` is %s, '
+                                    'below %d' % (n, score, min_compat)))
+              rec['dependencies'].append({
+                  'name': n, 'ecosystem': e, 'directory': d.get('directory'),
+                  'dependency_type': dt, 'update_type': ut or None,
+                  'from': d.get('prevVersion'), 'to': d.get('newVersion'),
+                  'security': {'ghsa_id': ghsa or None, 'alert_state': d.get('alertState') or None,
+                               'cvss': d.get('cvss'),
+                               # established: an advisory is linked; none_found: the lookup ran
+                               # and linked none; not_established: no lookup ran -- never "none"
+                               'linkage': 'established' if ghsa else ('none_found' if lookup else 'not_established')},
+                  'compatibility_score': score or None,
+                  'rules': [r for r, _ in rules], 'reasons': [w for _, w in rules],
+                  'verdict': 'human_review' if rules else 'auto_merge'})
+
+          # ---- the lockfile: production churn, and nothing moved that the PR does not name
+          if any_prod and lock_lines > threshold:
+              hit('lockfile_churn', 'the lockfiles change %d lines for a production dependency, above '
+                  'the %d this repository auto-merges' % (lock_lines, threshold))
+          if lock_unparsed:
+              hit('lockfile_unparsed', 'the lockfile diff of %s could not be read package by package, '
+                  'so it cannot be shown that only the named packages moved' % ', '.join(sorted(set(lock_unparsed))))
+          unrelated = sorted(v for k, v in moved.items() if k not in names)
+          if unrelated:
+              hit('lockfile_unrelated_moves', 'the lockfile also moves %s, which this PR does not name'
+                  % ', '.join(unrelated[:10]) + (' (+%d more)' % (len(unrelated) - 10) if len(unrelated) > 10 else ''))
+
+          # ---- the merge stays under the required checks, and the scan gate is one of them
+          contexts = set()
+          known = False
+          if rc_ok('branch'):
+              try:
+                  pr_ = (json.loads(read('branch.json') or '{}').get('protection') or {})
+                  rsc = pr_.get('required_status_checks') or {}
+                  if pr_.get('enabled') and rsc.get('enforcement_level', 'off') != 'off':
+                      contexts |= set(rsc.get('contexts') or [])
+                      contexts |= set(c.get('context') for c in (rsc.get('checks') or []) if c.get('context'))
+                  known = True
+              except ValueError:
+                  pass
+          if rc_ok('rules'):
+              try:
+                  for r in json.loads(read('rules.json') or '[]') or []:
+                      if r.get('type') == 'required_status_checks':
+                          for c in ((r.get('parameters') or {}).get('required_status_checks') or []):
+                              if c.get('context'):
+                                  contexts.add(c['context'])
+                  known = True
+              except ValueError:
+                  pass
+          rec['required_checks'] = {'established': known, 'contexts': sorted(contexts)}
+          if not known or (not contexts and not (rc_ok('branch') and rc_ok('rules'))):
+              hit('required_checks_unknown', 'the protection of `%s` could not be read, so it cannot '
+                  'be shown that the required checks would decide this merge' % E('BASE_REF'))
+          elif not contexts:
+              hit('no_required_checks', '`%s` requires no status checks, so an auto-merge would merge '
+                  'untested code' % E('BASE_REF'))
+          elif not req_named:
+              hit('scan_gate_unnamed', 'the caller named no required_checks, so nothing shows the '
+                  'tests and the security scan decide this merge')
+          else:
+              missing = [c for c in req_named if c not in contexts]
+              if missing:
+                  hit('scan_gate_not_required', '%s %s not required on `%s`; the merge would not wait '
+                      'for %s' % (', '.join(missing), 'is' if len(missing) == 1 else 'are',
+                                  E('BASE_REF'), 'it' if len(missing) == 1 else 'them'))
+
+          # ---- the decision: close beats human beats auto; the first rule names it
+          ORDER = ['policy_misconfigured', 'excluded_path', 'metadata_unverified', 'files_unknown',
+                   'security_critical', 'critical_package', 'critical_ecosystem', 'triage_chain',
+                   'major_update', 'update_type_unknown', 'update_type_not_allowed',
+                   'actions_major_unknown', 'actions_pin_not_sha', 'non_dependency_file',
+                   'non_dependency_change', 'breaking_change_signal', 'maintainer_changed',
+                   'lockfile_churn', 'lockfile_unparsed', 'lockfile_unrelated_moves',
+                   'compatibility_unknown', 'compatibility_low', 'required_checks_unknown',
+                   'no_required_checks', 'scan_gate_unnamed', 'scan_gate_not_required']
+          all_hits = list(pr_rules)
+          for d in rec['dependencies']:
+              all_hits += list(zip(d['rules'], d['reasons']))
+          rec['pr_rules'] = [r for r, _ in pr_rules]
+          urgent = any(r == 'security_critical' for r, _ in all_hits)
+          if 'action' not in rec:
+              ranked = sorted(set(r for r, _ in all_hits), key=ORDER.index)
+              if 'excluded_path' in ranked:
+                  rec.update(action='close', rule='excluded_path')
+              elif ranked:
+                  rec.update(action='human_review', rule=ranked[0])
+              else:
+                  rec.update(action='auto_merge', rule='all_conditions_met')
+              rec['reasons'] = [w for _, w in all_hits]
+              rec['rules_matched'] = ranked
+          rec['urgent'] = urgent
+          labels = []
+          if rec['action'] == 'human_review':
+              labels = [review_label] + ([urgent_label] if urgent else [])
+          rec['labels'] = labels
+          rec['provenance'] = {'state': 'not_established',
+                               'why': 'no registry signature or provenance check runs here yet '
+                                      '(FUTURE_WORK §6); a github-actions pin is checked to be a '
+                                      'full commit SHA'}
+
+          # ---- the record, the comment, the summary
+          json.dump(rec, open(os.path.join(out_dir, 'decision.json'), 'w', encoding='utf-8'), indent=2)
+          with open(os.path.join(out_dir, 'decision.env'), 'w', encoding='utf-8') as h:
+              h.write('action=%s\nrule=%s\nlabels=%s\nurgent=%s\n' % (
+                  rec['action'], rec['rule'], ','.join(labels), 'true' if urgent else 'false'))
+          what = {'auto_merge': 'will merge on its own once every required check passes',
+                  'human_review': 'needs a human review before it merges',
+                  'close': 'is being closed', 'none': 'was not acted on'}[rec['action']]
+          lines = ['<!-- kit-dependabot-triage -->',
+                   '**Dependabot triage:** this update %s (rule `%s`).' % (what, rec['rule']), '']
+          if rec['action'] in ('human_review', 'close'):
+              lines.append('Why, in plain words:')
+              lines += ['- %s' % w for w in rec['reasons']] or ['- (no reason recorded)']
+              lines.append('')
+          if rec['action'] == 'human_review':
+              lines.append('Merge it yourself once you are satisfied. Nothing here merges it.')
+          if rec['action'] == 'close':
+              lines.append('Dependabot will not reopen this version. If the path should take updates, '
+                           'remove it from `excluded_paths` in the caller workflow.')
+          if urgent:
+              lines.append('**This is a security update for a protected package: review it first.**')
+          lines.append('')
+          lines.append('Full record: the `dependabot-triage-%s` artifact of this run.' % E('PR_NUMBER', ''))
+          comment = '\n'.join(lines) + '\n'
+          open(os.path.join(out_dir, 'comment.md'), 'w', encoding='utf-8').write(comment)
+
+          def output(**kv):
+              # Multi-line values go to GITHUB_OUTPUT with a delimiter the value cannot contain.
+              with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as h:
+                  for k, v in kv.items():
+                      delim = 'EOF_%s' % os.urandom(8).hex()
+                      h.write('%s<<%s\n%s\n%s\n' % (k, delim, v.rstrip('\n'), delim))
+
+          output(comment=comment)
+
+          s = ['### Dependabot triage', '',
+               '| | |', '|---|---|',
+               '| Action | **%s** |' % rec['action'], '| Rule | `%s` |' % rec['rule'],
+               '| Labels | %s |' % (', '.join(labels) or 'none'),
+               '| Required checks on `%s` | %s |' % (E('BASE_REF', ''),
+                   ', '.join(rec.get('required_checks', {}).get('contexts') or []) or 'none'),
+               '| Lockfile lines changed | %s |' % rec.get('lockfile', {}).get('lines_changed', 0),
+               '| Provenance / signature | NOT ESTABLISHED (no such check yet) |', '',
+               '| Package | Ecosystem | Type | From -> To | Update | Security | Rules | Verdict |',
+               '|---|---|---|---|---|---|---|---|']
+          for d in rec['dependencies']:
+              sec = d['security']['ghsa_id'] or d['security']['linkage']
+              s.append('| `%s` | %s | %s | %s -> %s | %s | %s | %s | %s |' % (
+                  d['name'], d['ecosystem'], d['dependency_type'], d['from'], d['to'],
+                  d['update_type'], sec, ', '.join(d['rules']) or '-', d['verdict']))
+          s.append('')
+          if rec['reasons']:
+              s.append('**Why**')
+              s.append('')
+              s += ['- %s' % w for w in rec['reasons']]
+              s.append('')
+          s.append('> The merge, when there is one, is `gh pr merge --auto --squash`: branch protection '
+                   'and the required checks still decide it.')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as h:
+              h.write('\n'.join(s) + '\n')
+          sys.exit(1 if rec['rule'] == 'wrong_trigger' else 0)
+          TRIAGE_PY
+          if [ ! -f "$dir/decision.env" ]; then
+            echo "::error title=Dependabot triage could not decide::the decision step wrote no record (rc=$rc)"
+            exit 1
+          fi
+          action="$(sed -n 's/^action=//p' "$dir/decision.env")"
+          rule="$(sed -n 's/^rule=//p' "$dir/decision.env")"
+          labels="$(sed -n 's/^labels=//p' "$dir/decision.env")"
+          urgent="$(sed -n 's/^urgent=//p' "$dir/decision.env")"
+          echo "action=$action" >> "$GITHUB_OUTPUT"
+          echo "rule=$rule" >> "$GITHUB_OUTPUT"
+          echo "labels=$labels" >> "$GITHUB_OUTPUT"
+          echo "urgent=$urgent" >> "$GITHUB_OUTPUT"
+          if [ "$rule" = "wrong_trigger" ]; then
+            echo "::error title=Wrong trigger::call this workflow from pull_request_target (see docs/adoption/DEPENDABOT_TRIAGE.md)"
+          fi
+          echo "::notice title=Dependabot triage::$action ($rule)"
+          exit "$rc"
+
+      - name: Keep the decision record
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dependabot-triage-${{ github.event.pull_request.number }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dependabot-triage/decision.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  auto-merge:
+    name: Enable auto-merge (branch protection still decides)
+    needs: classify
+    if: needs.classify.outputs.action == 'auto_merge'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Enable auto-merge
+        id: merge
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -uo pipefail
+          # KDEC-027: gh's token goes to this run's host only (gh api / -R default to github.com).
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
+          # --auto: GitHub merges when the required checks and reviews allow, never before.
+          # --squash: one commit, so the update reverts with one `git revert`.
+          err="$RUNNER_TEMP/merge.err"
+          if gh pr merge --auto --squash "$PR_URL" 2> "$err"; then
+            echo "### Dependabot triage: auto-merge enabled -- GitHub merges once every required check passes" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          why="$(head -c 600 "$err")"
+          note="$RUNNER_TEMP/merge-note.md"
+          {
+            echo "<!-- kit-dependabot-triage -->"
+            echo "**Dependabot triage:** this update qualified for auto-merge, and enabling it failed:"
+            echo ""
+            echo "    $why"
+            echo ""
+            echo "Usually the repository does not allow auto-merge (Settings > General > Allow auto-merge)."
+            echo "Nothing was merged. Merge it yourself, or fix the setting and re-run this workflow."
+          } > "$note"
+          gh pr comment "$PR_URL" --body-file "$note" || true
+          echo "::error title=Auto-merge could not be enabled::$why"
+          exit 1
+
+  human-review:
+    name: Ask a human, and say why
+    needs: classify
+    if: needs.classify.outputs.action == 'human_review'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Label, request review, comment
+        id: request
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          LABELS: ${{ needs.classify.outputs.labels }}
+          COMMENT: ${{ needs.classify.outputs.comment }}
+          REVIEW_TEAM: ${{ inputs.review_team }}
+        run: |
+          set -uo pipefail
+          # KDEC-027: gh's token goes to this run's host only (gh api / -R default to github.com).
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
+          fail=0
+          note() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
+          note "### Dependabot triage: human review requested"
+          # A human-review decision always names its label. None arriving means the decision did not
+          # reach this job intact: say so and fail, rather than ask for review with no label.
+          if [ -z "$LABELS" ] || [ -z "$COMMENT" ]; then
+            echo "::error title=Decision not received::labels or comment missing from the classify job"
+            exit 1
+          fi
+          # Labels: created when absent (issues: write), then added. Names were validated upstream.
+          IFS=',' read -r -a wanted <<< "$LABELS"
+          for l in "${wanted[@]}"; do
+            [ -z "$l" ] && continue
+            if ! gh api "repos/${REPO}/labels/${l}" > /dev/null 2>&1; then
+              color=fbca04
+              case "$l" in urgent*) color=b60205 ;; esac
+              gh label create "$l" --repo "$REPO" --color "$color" \
+                --description "Dependabot triage: a human must review this update" || fail=1
+            fi
+            gh pr edit "$PR_URL" --add-label "$l" || fail=1
+          done
+          # A PR that needs a human must not stay armed from an earlier run.
+          if [ "$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null' 2>/dev/null)" = "true" ]; then
+            gh pr merge --disable-auto "$PR_URL" || fail=1
+            note "- auto-merge, armed by an earlier run, was turned back off"
+          fi
+          if [ -n "$REVIEW_TEAM" ]; then
+            if gh pr edit "$PR_URL" --add-reviewer "$REVIEW_TEAM"; then
+              note "- review requested from \`$REVIEW_TEAM\`"
+            else
+              note "- review request to \`$REVIEW_TEAM\` FAILED (the token may not see teams); rely on CODEOWNERS"
+              echo "::warning title=Review request failed::$REVIEW_TEAM could not be requested; CODEOWNERS is the reliable route"
+            fi
+          fi
+          # One comment per PR, updated in place on every run (found by its marker).
+          body="$RUNNER_TEMP/triage-comment.md"
+          printf '%s\n' "$COMMENT" > "$body"
+          id="$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+                --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- kit-dependabot-triage -->"))) | .id' \
+                | head -n 1)" || id=""   # an unreadable list posts a new comment rather than none
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/${REPO}/issues/comments/${id}" -F "body=@${body}" > /dev/null || fail=1
+          else
+            gh pr comment "$PR_URL" --body-file "$body" || fail=1
+          fi
+          note "- labels: $LABELS"
+          if [ "$fail" != 0 ]; then
+            echo "::error title=Human review request incomplete::a label or the comment could not be written; the PR still needs a human"
+          fi
+          exit "$fail"
+
+  close:
+    name: Close an update to an excluded path, and say why
+    needs: classify
+    if: needs.classify.outputs.action == 'close'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Close with an explanation
+        id: close
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          COMMENT: ${{ needs.classify.outputs.comment }}
+        run: |
+          set -uo pipefail
+          # KDEC-027: gh's token goes to this run's host only (gh api / -R default to github.com).
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
+          gh pr close "$PR_URL" --comment "$COMMENT"
+          echo "### Dependabot triage: closed -- it changes an excluded path" >> "$GITHUB_STEP_SUMMARY"

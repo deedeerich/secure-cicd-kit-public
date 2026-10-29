@@ -55,10 +55,11 @@ WF = os.path.join(ROOT, ".github", "workflows", "reusable-security.yml")
 REG = os.path.join(ROOT, "scanner-registry.yaml")
 ACTION = os.path.join(ROOT, ".github", "actions", "resolve", "action.yml")
 USES = "$/.github/actions/resolve"
-JOB = "resolve"
+# G1 (KDEC-033): the resolver is the third part of the `plan` job, after discovery.
+JOB = "plan"
 STEP = "r"
 SCANNERS = ["secret-scan", "code-quality", "sast-semgrep", "sast-bandit", "codeql", "deps-scan",
-            "iac-scan", "sast-dotnet", "sast-java", "sast-go", "sast-cpp", "image-scan",
+            "iac-scan", "sast-dotnet", "sast-java", "sast-go", "sast-cpp", "sast-mobile", "image-scan",
             "malicious-deps", "sbom", "report", "security-gate"]
 
 
@@ -119,7 +120,9 @@ def make_tree(spec, base):
 
 # Lower-case on purpose: a harness constant, not vocabulary.
 discover_all_false = {"python": "false", "node": "false", "go": "false", "dotnet": "false",
-                      "java": "false", "cpp": "false", "iac": "false"}
+                      "java": "false", "cpp": "false", "php": "false", "iac": "false",
+                      # lane L-SCAN-B (KDEC-026)
+                      "kotlin": "false", "swift": "false", "mobile": "false"}
 
 
 def run_case(shell, files, discover=None, inputs=None, event="push", break_python=False,
@@ -192,11 +195,18 @@ def position_checks(doc):
     job = (doc.get("jobs") or {}).get(JOB) or {}
     needs = job.get("needs") or []
     needs = [needs] if isinstance(needs, str) else list(needs)
-    ok &= check("L21 resolve needs discover", "discover" in needs, "needs=%s" % needs)
+    # G1: the resolver follows discovery inside `plan` and runs only on a completed discovery.
+    ids = [s.get("id") for s in job.get("steps") or []]
+    rstep = next((s for s in job.get("steps") or [] if s.get("id") == "resolve"), {})
+    ok &= check("L21 resolve runs after discovery, only on a completed one",
+                "d" in ids and "resolve" in ids and ids.index("d") < ids.index("resolve")
+                and "steps.disc_part.outputs.discover_result == 'success'" in " ".join(str(rstep.get("if", "")).split()),
+                "steps=%s if=%r" % (ids, rstep.get("if")))
     ok &= check("L21 resolve waits for no scanner, report or gate",
                 not (set(needs) & set(SCANNERS)), "needs=%s" % needs)
     outputs = job.get("outputs") or {}
-    ok &= check("L21 resolve declares a state output", "state" in outputs,
+    ok &= check("L21 resolve declares a state output (resolve_state in plan)",
+                str(outputs.get("resolve_state", "")).strip() == "${{ steps.resolve.outputs.state }}",
                 "outputs=%s" % sorted(outputs))
     perms = job.get("permissions") or {}
     ok &= check("L21 resolve declares least privilege (no write)",
@@ -204,14 +214,17 @@ def position_checks(doc):
     reg = yaml.safe_load(io.open(REG, encoding="utf-8")) or {}
     row = (reg.get("jobs") or {}).get(JOB)
     ok &= check("L21 scanner-registry.yaml has a row for resolve (infrastructure)",
-                (row or {}).get("class") == "infrastructure", "row=%s" % row)
+                (row or {}).get("class") == "infrastructure" and "resolve" in ((row or {}).get("parts") or []),
+                "row=%s" % row)
     # ── the steps ship in the composite, and the job is wired to it completely ─────────────
-    # The job's outputs are what every consumer reads (needs.resolve.outputs.<name>); a composite
+    # The job's outputs are what every consumer reads (needs.plan.outputs.<name>); a composite
     # output the job does not map is an answer nobody can hear, and a composite input the job
     # does not pass is a value the step reads as "nobody said" -- an unknown, silently.
     comp, csteps = load_composite(doc)
+    comps = (row or {}).get("composite")
+    comps = [comps] if isinstance(comps, str) else list(comps or [])
     ok &= check("L21 the registry names the composite the job uses",
-                (row or {}).get("composite") == "resolve", "row=%s" % row)
+                "resolve" in comps, "row=%s" % row)
     use = next((s for s in job.get("steps") or [] if s.get("uses") == USES), {})
     passed = set((use.get("with") or {}))
     declared = set(comp.get("inputs") or {})
@@ -219,10 +232,11 @@ def position_checks(doc):
                 passed == declared, "missing=%s extra=%s" % (sorted(declared - passed),
                                                              sorted(passed - declared)))
     cout = set(comp.get("outputs") or {})
+    # In `plan` the resolver's `state` is published as resolve_state (discovery owns `state`).
+    jname = lambda k: "resolve_state" if k == "state" else k  # noqa: E731
     ok &= check("L21 every composite output is a job output of the same name",
-                cout == set(outputs) and all(
-                    str(outputs[k]).strip() == "${{ steps.%s.outputs.%s }}" % (use.get("id"), k)
-                    for k in cout),
+                all(str(outputs.get(jname(k), "")).strip()
+                    == "${{ steps.%s.outputs.%s }}" % (use.get("id"), k) for k in cout),
                 "composite=%s job=%s" % (sorted(cout), sorted(outputs)))
     ok &= check("L21 every composite run step declares shell: bash (a composite runs nothing without it)",
                 csteps and all(s.get("shell") == "bash" for s in csteps if s.get("run")),
@@ -231,7 +245,7 @@ def position_checks(doc):
     # selection says (KDEC-010), so no scanner needs to wait for resolve. What consumes the
     # selection is the gate (tests/prove_bootstrap_failure.py, capability_gap_* and
     # substitution_not_selected) and the report (tests/prove_capability_selection.py); the gate's
-    # reading of needs.resolve.result is asserted by tests/check_scanner_registry.py.
+    # reading of needs.plan.outputs.resolve_result is asserted by tests/check_scanner_registry.py.
     return ok
 
 
@@ -875,6 +889,155 @@ def proven_gap_checks(shell):
     return ok
 
 
+def php_checks(doc, shell):
+    """PHP, an ecosystem (lane L-PHP, 2026-10-21): its version sources feed resolution like every
+    other class, its capability rows are DATA in the registry with an honest `verified:` level,
+    and an UNVERIFIED range is never capable (KDEC-010) and never enforced (KDEC-014).
+
+    Sources, strongest first: .php-version (exact); composer.json config.platform.php (exact --
+    the version Composer resolves FOR); composer.json require.php (a constraint, never rounded to a
+    version); composer.lock platform-overrides.php / platform.php (the same two, as the lock
+    recorded them, read only where composer.json said nothing); a Dockerfile FROM php:<v> (exact).
+    """
+    import yaml
+    ok = True
+    ph = {"php": "true"}
+    job = (doc.get("jobs") or {}).get(JOB) or {}
+    use = next((s for s in job.get("steps") or [] if s.get("uses") == USES), {})
+    ok &= check("PHP the resolve job passes discover's php answer",
+                str((use.get("with") or {}).get("discovered-php", "")).strip()
+                == "${{ steps.d.outputs.php }}", "with=%s" % (use.get("with") or {}))
+
+    r = run_case(shell, {"web/composer.json": '{"require": {"php": "^8.1"}}\n',
+                         "web/index.php": "<?php echo 1;\n"}, discover=ph)
+    rec = one(r, **{"class": "php", "root": "web"})
+    rg = rec.get("range") or {}
+    ok &= check("PHP composer.json require.php ^8.1 -> constraint 8.1 .. <9, never a version",
+                rec.get("strength") == "constraint" and rec.get("version") is None
+                and rg.get("min") == "8.1" and rg.get("max") == "9" and rg.get("max_inclusive") is False
+                and rec.get("source") == "web/composer.json:require.php", "rec=%s" % rec)
+    r = run_case(shell, {"composer.json": '{"require": {"php": ">=7.4"},'
+                                          ' "config": {"platform": {"php": "8.2.12"}}}\n'},
+                 discover=ph)
+    rec = one(r, **{"class": "php"})
+    ok &= check("PHP config.platform.php 8.2.12 outranks require.php -> exact 8.2.12",
+                rec.get("strength") == "exact" and rec.get("version") == "8.2.12"
+                and rec.get("source") == "composer.json:config.platform.php", "rec=%s" % rec)
+    r = run_case(shell, {".php-version": "8.3\n", "composer.json": '{"require": {"php": "^8.1"}}\n'},
+                 discover=ph)
+    recs = records(r, **{"class": "php"}) or []
+    ok &= check("PHP .php-version outranks composer.json -> exact 8.3, one record",
+                len(recs) == 1 and recs[0].get("version") == "8.3"
+                and recs[0].get("source") == ".php-version", "recs=%s" % recs)
+    r = run_case(shell, {"composer.lock": '{"packages": [], "platform": {"php": ">=8.0 <8.4"}}\n'},
+                 discover=ph)
+    rec = one(r, **{"class": "php"})
+    ok &= check("PHP composer.lock platform.php, no composer.json -> constraint from the lock",
+                rec.get("strength") == "constraint" and (rec.get("range") or {}).get("min") == "8.0"
+                and rec.get("source") == "composer.lock:platform.php", "rec=%s" % rec)
+    r = run_case(shell, {"Dockerfile": "FROM php:8.2-apache\n", "index.php": "<?php\n"}, discover=ph)
+    rec = one(r, **{"class": "php"})
+    ok &= check("PHP Dockerfile FROM php:8.2-apache -> exact 8.2",
+                rec.get("version") == "8.2" and rec.get("source") == "Dockerfile:FROM", "rec=%s" % rec)
+    r = run_case(shell, {"a/composer.json": '{"require": {"php": "8.1.*"}}\n',
+                         "b/composer.json": '{"config": {"platform": {"php": "8.3.0"}}}\n'}, discover=ph)
+    roots = sorted((x.get("root"), x.get("strength")) for x in (records(r, **{"class": "php"}) or []))
+    ok &= check("PHP two composer roots -> two records, never one repository-wide version",
+                roots == [("a", "constraint"), ("b", "exact")], "roots=%s" % roots)
+
+    # COULD NOT READ IS NOT FOUND NOTHING; NOTHING DECLARED IS A GAP THAT NAMES ITS REMEDY.
+    r = run_case(shell, {"composer.json": '{"require": {"php": '}, discover=ph)
+    rec = one(r, **{"class": "php"})
+    ok &= check("PHP unparseable composer.json -> unreadable, state DISCOVERY_PARTIAL",
+                rec.get("strength") == "unreadable" and r.get("state") == "DISCOVERY_PARTIAL",
+                "rec=%s state=%s" % (rec, r.get("state")))
+    r = run_case(shell, {"src/index.php": "<?php echo 1;\n",
+                         "composer.json": '{"require": {"monolog/monolog": "^3"}}\n'}, discover=ph)
+    rec = one(r, **{"class": "php"})
+    ok &= check("PHP present, no PHP version declared -> strength none, remedy named",
+                rec.get("strength") == "none" and ".php-version" in (rec.get("remediation") or "")
+                and "require.php" in (rec.get("remediation") or ""), "rec=%s" % rec)
+    r = run_case(shell, {".php-version": "8.3\n"}, discover={"php": "false"})
+    ok &= check("PHP discover php=false -> no capability rows for php",
+                not cap(r, **{"class": "php"}), "rows=%s" % cap(r, **{"class": "php"}))
+
+    # THE CAPABILITY ROW IS DATA, HONEST ABOUT WHAT ESTABLISHED IT.
+    reg = yaml.safe_load(io.open(REG, encoding="utf-8")) or {}
+    row = (((reg.get("version_support") or {}).get("sast-semgrep") or {}).get("php") or [{}])[0]
+    ok &= check("PHP registry: sast-semgrep/semgrep declares a php row with a verified level",
+                row.get("tool") == "semgrep" and row.get("verified") in ("READ", "UNVERIFIED")
+                and (row.get("verified") != "READ" or row.get("corpus")), "row=%s" % row)
+    capsel = (reg.get("capability_selection") or {}).get("php-sast") or {}
+    ok &= check("PHP registry: php-sast is a capability, served by sast-semgrep/semgrep",
+                capsel.get("class") == "php" and capsel.get("candidates") == ["sast-semgrep/semgrep"],
+                "row=%s" % capsel)
+    r = run_case(shell, {"composer.json": '{"config": {"platform": {"php": "8.2.0"}}}\n',
+                         "index.php": "<?php\n"}, discover=ph)
+    s = sel(r, capability="php-sast", root=".")
+    st = cap_state(r, "sast-semgrep", "semgrep", **{"class": "php"})
+    if row.get("verified") != "READ":
+        ok &= check("PHP 8.2 on an UNVERIFIED semgrep row -> UNDETERMINED, VERSION_GAP, capped, NOT proven",
+                    st == "VERSION_SUPPORT_UNDETERMINED" and s.get("state") == "VERSION_GAP"
+                    and s.get("gap_ranges") == "UNVERIFIED" and s.get("established") is False
+                    and "sast-semgrep" in (r.get("capped_jobs") or "").split()
+                    and "sast-semgrep" not in (r.get("proven_gap_jobs") or "").split(),
+                    "state=%s sel=%s capped=%r" % (st, s, r.get("capped_jobs")))
+    else:
+        # A READ row (tests/corpora/php_corpus.py) is a range resolve can hold a target against:
+        # inside it -> SERVED; above it -> a gap the READ range ESTABLISHES (KDEC-014: enforced at
+        # uat/prod); a floor spanning its ceiling -> the TARGET is undetermined, recorded only.
+        lo, hi = str(row.get("min")), str(row.get("max"))
+        above = "%d.0" % (int(hi.split(".")[0]) + 1)
+        r = run_case(shell, {".php-version": lo + "\n", "index.php": "<?php\n"}, discover=ph)
+        s = sel(r, capability="php-sast", root=".")
+        ok &= check("PHP %s inside the measured %s..%s -> SERVED by sast-semgrep, not capped" % (lo, lo, hi),
+                    s.get("state") == "SERVED" and s.get("selected") == "sast-semgrep/semgrep"
+                    and "sast-semgrep" not in (r.get("capped_jobs") or "").split(), "sel=%s" % s)
+        r = run_case(shell, {".php-version": above + "\n", "index.php": "<?php\n"}, discover=ph)
+        s = sel(r, capability="php-sast", root=".")
+        ok &= check("PHP %s above the measured ceiling %s -> VERSION_GAP, READ, proven" % (above, hi),
+                    s.get("state") == "VERSION_GAP" and s.get("gap_ranges") == "READ"
+                    and s.get("established") is True
+                    and "sast-semgrep" in (r.get("proven_gap_jobs") or "").split(),
+                    "sel=%s proven=%r" % (s, r.get("proven_gap_jobs")))
+        # PHP 8.5: SCAN WHAT PARSES, FLAG THE REST (owner, 2026-10-22; KDEC-016 amended). Above
+        # the read ceiling and up to the row's MEASURED parse_evidence_max, Semgrep reports what it
+        # cannot parse per file (PartialParsing), so the job's parse evidence decides coverage:
+        # SERVED here, never a VERSION_GAP by declaration alone, and never proven at uat/prod. Above
+        # parse_evidence_max (9.0, checked above) KDEC-014 stands. FAILS ON 2cd078e: 8.5 was a
+        # proven VERSION_GAP refused at uat/prod.
+        pe = str(row.get("parse_evidence_max") or "")
+        ok &= check("PHP registry: the row's parse_evidence_max is above its read ceiling %s (8.5 "
+                    "is handled by parse evidence)" % hi,
+                    bool(pe) and tuple(int(x) for x in pe.split(".")) > tuple(int(x) for x in hi.split("."))
+                    and "parse evidence" in (row.get("basis") or ""), "row=%s" % row)
+        for target in ("8.5", "8.5.12"):
+            r = run_case(shell, {".php-version": target + "\n", "index.php": "<?php\n"}, discover=ph)
+            s = sel(r, capability="php-sast", root=".")
+            st = cap_state(r, "sast-semgrep", "semgrep", **{"class": "php"})
+            ok &= check("PHP %s above the read ceiling %s, inside parse evidence %s -> SERVED, not "
+                        "capped, not proven (the job's parse evidence decides)" % (target, hi, pe),
+                        s.get("state") == "SERVED" and st == "SCANNER_SUPPORTS"
+                        and "sast-semgrep" not in (r.get("capped_jobs") or "").split()
+                        and "sast-semgrep" not in (r.get("proven_gap_jobs") or "").split()
+                        and "parse evidence" in json.dumps(s),
+                        "sel=%s state=%s capped=%r" % (s, st, r.get("capped_jobs")))
+        r = run_case(shell, {"composer.json": '{"require": {"php": ">=%s"}}\n' % lo,
+                             "index.php": "<?php\n"}, discover=ph)
+        s = sel(r, capability="php-sast", root=".")
+        ok &= check("PHP require >=%s spans the ceiling -> a recorded gap, NOT proven" % lo,
+                    s.get("state") == "VERSION_GAP" and s.get("established") is False
+                    and "sast-semgrep" in (r.get("capped_jobs") or "").split()
+                    and "sast-semgrep" not in (r.get("proven_gap_jobs") or "").split(),
+                    "sel=%s proven=%r" % (s, r.get("proven_gap_jobs")))
+    c = cov(r, "php")
+    ok &= check("PHP coverage: .php files counted as class php, never a percentage",
+                c.get("files_in_scope") == 1 and "%" not in r["__summary__"], "row=%s" % c)
+    ok &= check("PHP is no longer an unclaimed class in coverage",
+                not cov(r, "PHP"), "row=%s" % cov(r, "PHP"))
+    return ok
+
+
 def cov(out, cls):
     rows = jload(out, "coverage")
     if not isinstance(rows, list):
@@ -914,6 +1077,18 @@ def coverage_checks(shell):
     ok &= check("L24 workflow YAML is a counted class",
                 cov(r, "GitHubActionsWorkflow").get("files_in_scope") == 1,
                 "row=%s" % cov(r, "GitHubActionsWorkflow"))
+    # LANE L-SCAN-A (KDEC-025): workflows, shell and PowerShell are no longer gaps. A class with no
+    # version to discover is covered by the registry's READ rows for it, on scope inference.
+    r2 = run_case(shell, dict(tree, **{"ops/a.sh": "x\n", "ops/b.ps1": "x\n"}),
+                  discover={"python": "true", "iac": "true", "workflows": "true", "shell": "true",
+                            "powershell": "true"}, inputs={"python_version": "3.12"})
+    for cls, tools in (("GitHubActionsWorkflow", ["deps-scan/actionlint", "deps-scan/zizmor"]),
+                       ("Shell", ["deps-scan/shellcheck"]),
+                       ("PowerShell", ["deps-scan/psscriptanalyzer"])):
+        row = cov(r2, cls)
+        ok &= check("L-SCAN-A %s covered by %s, scope inference, never a COVERAGE_GAP" % (cls, tools),
+                    row.get("covered_by") == tools and row.get("coverage_basis") == "scope-inference"
+                    and "COVERAGE_GAP" not in (row.get("note") or ""), "row=%s" % row)
     ok &= check("L24 iac counts .tf and Dockerfile", cov(r, "iac").get("files_in_scope") == 2,
                 "row=%s" % cov(r, "iac"))
     rows = jload(r, "coverage") or []
@@ -1274,6 +1449,7 @@ def main():
     ok &= capability_checks(shell)
     ok &= selection_checks(shell)
     ok &= proven_gap_checks(shell)
+    ok &= php_checks(doc, shell)
     ok &= coverage_checks(shell)
     ok &= platform_checks(doc)
     ok &= plan_checks(shell)

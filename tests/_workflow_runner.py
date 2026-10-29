@@ -85,6 +85,10 @@ def lookup(path, ctx):
             v = st['outputs'].get(parts[3], '') if len(parts) > 3 else ''
         else:
             v = st.get(parts[2], '')
+    elif parts[0] == 'env' and len(parts) == 2:
+        # The env context a step's `if:` sees: the job's env (resolved) with the harness's
+        # extra_env over it. KDEC-030's opt-in lease steps read env.KIT_TARGET_LEASE_ACCOUNT.
+        v = ctx.get('env', {}).get(parts[1], '')
     elif parts == ['job', 'status']:
         # job.status as GitHub reports it to a step: cancelled > failure > success.
         v = ctx.get('job_status', 'success')
@@ -105,8 +109,12 @@ def stringify(v):
     return '' if v is None else str(v)
 
 
-def run_job(path, inputs, path_prepend=None, extra_env=None, cancel_after=None, workdir=None):
-    """-> dict(steps={id_or_name: {...}}, order=[...], log=str, summary=str, rc=job result)."""
+def run_job(path, inputs, path_prepend=None, extra_env=None, cancel_after=None, workdir=None,
+            uses_outputs=None):
+    """-> dict(steps={id_or_name: {...}}, order=[...], log=str, summary=str, rc=job result).
+    `uses_outputs`: {step id: {output: value}} answered by a `uses:` step (a composite this harness
+    does not run, e.g. the known-exploited check): recorded stand-ins; absent, a `uses:` step has
+    no outputs, which every consumer reads as not established."""
     doc = D.load(path)
     bash, why = D.bash()
     if not bash:
@@ -117,6 +125,15 @@ def run_job(path, inputs, path_prepend=None, extra_env=None, cancel_after=None, 
     ctx = {'inputs': {k: stringify(v) for k, v in inputs.items()}, 'steps': {}, 'fn': {}}
     values = {'inputs.%s' % k: stringify(v) for k, v in inputs.items()}
     job_failed, cancelled, logs, order = False, False, [], []
+    if 'GITHUB_API_URL' not in (extra_env or {}):
+        # A job always runs with a repository and an API. A harness that names none gets a recorded
+        # one with no artifacts -- no rollback marker for the target (KDEC-023) -- rather than an
+        # unreadable answer the deploy's rollback check would (rightly) refuse on.
+        api_root = os.path.join(runner_temp, '_github_api')
+        write_default_api(api_root)
+        extra_env = dict({'GITHUB_REPOSITORY': 'o/r',
+                          'GITHUB_API_URL': 'file:///' + api_root.replace('\\', '/').lstrip('/')},
+                         **(extra_env or {}))
     try:
         for i, step in enumerate(D.steps(doc)):
             name = step.get('name') or step.get('uses') or '#%d' % i
@@ -125,6 +142,14 @@ def run_job(path, inputs, path_prepend=None, extra_env=None, cancel_after=None, 
                          'failure()': job_failed, 'cancelled()': cancelled}
             ctx['job_status'] = 'cancelled' if cancelled else ('failure' if job_failed else 'success')
             cond = step.get('if')
+            if cond is not None and 'env.' in str(cond):
+                for sname, st in ctx['steps'].items():
+                    for k, v in st['outputs'].items():
+                        values['steps.%s.outputs.%s' % (sname, k)] = v
+                    values['steps.%s.outcome' % sname] = st['outcome']
+                job_env = {k: expr_value(v, ctx, values) for k, v in (D.job(doc).get('env') or {}).items()}
+                job_env.update(extra_env or {})
+                ctx['env'] = job_env
             if cond is None:
                 run_it = not job_failed and not cancelled
             else:
@@ -136,7 +161,8 @@ def run_job(path, inputs, path_prepend=None, extra_env=None, cancel_after=None, 
                 order.append((name, 'skipped'))
                 continue
             if 'run' not in step:
-                ctx['steps'][sid] = {'outcome': 'success', 'conclusion': 'success', 'outputs': {}}
+                ctx['steps'][sid] = {'outcome': 'success', 'conclusion': 'success',
+                                     'outputs': dict((uses_outputs or {}).get(sid) or {})}
                 order.append((name, 'success'))
                 continue
             for sname, st in ctx['steps'].items():
@@ -208,6 +234,87 @@ def stub_bin(fake_state_path, log_path):
     return d
 
 
+def break_glass(inputs):
+    """KDEC-029 (owner, 2026-10-26): uat and prod are PROMOTED from a predecessor's verified record;
+    a deploy there that names none is refused PROMOTION_REFUSED_NO_PREDECESSOR before login, unless
+    it is break-glass under an attributed, time-limited exception. Proofs written before KDEC-029
+    that exercise a production-tier deploy's OTHER controls take this path, so they keep proving
+    those controls; tests/prove_promotion.py proves the promotion path itself."""
+    import datetime
+    exp = (datetime.date.today() + datetime.timedelta(days=3)).isoformat()
+    out = dict(inputs)
+    out['release_path'] = 'break-glass'
+    out.setdefault('weakening_reason', 'proof of a production-tier control (KDEC-029 break-glass)')
+    out.setdefault('weakening_authority', 'release-approvers')
+    out.setdefault('weakening_exception_ref', 'EXC-PROOF-1')
+    out.setdefault('weakening_expires', exp)
+    return out
+
+
+PROMOTION_SIGNER = 'o/secure-cicd-kit/.github/workflows/reusable-build-docker.yml'
+_GH_VERIFIED = r'''
+import json, sys
+ref = [x for x in sys.argv[1:] if x.startswith('oci://')]
+d = ref[0].rsplit('@sha256:', 1)[1] if ref else ''
+print(json.dumps([{'verificationResult': {'statement': {'subject': [{'name': 'x', 'digest': {'sha256': d}}]}}}]))
+'''
+_TRIVY_CLEAN = r'''
+import json, sys
+a = sys.argv[1:]
+if '--version' in a:
+    print('Version: 0.71.2'); sys.exit(0)
+out = a[a.index('--output') + 1]
+doc = {'Results': []} if a[0] == 'sbom' else {'version': '2.1.0', 'runs': [{'tool': {'driver': {'name': 'Trivy'}}, 'results': []}]}
+json.dump(doc, open(out, 'w'))
+'''
+
+
+def promoted(inputs, source_environment='test', source_run='90'):
+    """KDEC-029: a uat/prod deploy is a PROMOTION of a record its predecessor verified. Proofs written
+    before KDEC-029 that exercise a production-tier deploy's OTHER controls (the version-gap ruling)
+    deploy as a clean promotion of the same digest: a verified test record, the build's SBOM, a
+    verifying V1, a clean re-scan and KEV. -> (inputs, run_world keyword arguments).
+    tests/prove_promotion.py proves the promotion gate itself."""
+    import datetime
+    import hashlib
+    import json
+    import zipfile
+    digest = inputs.get('image_digest') or NEW
+    sbom = b'{"spdxVersion": "SPDX-2.3", "packages": []}'
+    at = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    rec = {'schema': 'kit-promotion-record/1', 'record_id': '%s-1-%s' % (source_run, source_environment),
+           'state': 'verified-for-promotion',
+           'artifact': {'digest': digest, 'sbom_sha256': hashlib.sha256(sbom).hexdigest(),
+                        'artifact_identity': 'REGISTRY_IDENTITY_PROVEN'},
+           'environment': {'name': source_environment, 'tier': 'test'},
+           'provenance': {'source_ref': 'refs/heads/main', 'build_workflow': PROMOTION_SIGNER,
+                          'build_run_id': source_run},
+           'conditions': {'established': [], 'missing': []}, 'validity': {'verified_at': at},
+           'run': {'id': source_run}, 'approval': {'approvers': []}}
+
+    def zipped(name, body):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as zf:
+            zf.writestr(name, body)
+        return buf.getvalue()
+    arts = [{'id': 1, 'name': 'kit-promotion-record-%s' % source_environment, 'expired': False,
+             'created_at': at, 'archive_download_url': '@API_ROOT@/zips/rec.zip',
+             'workflow_run': {'id': int(source_run), 'head_branch': 'main'}},
+            {'id': 2, 'name': 'sbom-' + digest.split(':', 1)[1], 'expired': False, 'created_at': at,
+             'archive_download_url': '@API_ROOT@/zips/sbom.zip',
+             'workflow_run': {'id': int(source_run), 'head_branch': 'main'}}]
+    out = dict(inputs, promote_from_run_id=source_run, promote_from_environment=source_environment,
+               promotion_predecessor=source_environment, attestation_signer_workflow=PROMOTION_SIGNER,
+               attestations_available=True, artifact_identity='REGISTRY_IDENTITY_PROVEN')
+    kw = {'api_files': {'repos/o/r/actions/artifacts': json.dumps({'total_count': 2, 'artifacts': arts})},
+          'api_binary': {'zips/rec.zip': zipped('promotion-record.json', json.dumps(rec)),
+                         'zips/sbom.zip': zipped('sbom.spdx.json', sbom)},
+          'tools': {'gh': _GH_VERIFIED, 'trivy': _TRIVY_CLEAN},
+          'uses_outputs': {'promotion_kev': {'kev_state': 'AVAILABLE', 'kev_verdict': 'CLEAR', 'kev_blocking': ''}},
+          'env_extra': {'GITHUB_REF': 'refs/heads/main'}}
+    return out, kw
+
+
 GOOD = 'sha256:' + 'a' * 64
 NEW = 'sha256:' + 'b' * 64
 REG, REPO = 'registry.example', 'shop/web'
@@ -242,26 +349,116 @@ def appservice_state(prior=GOOD, **faults):
     return s
 
 
-def run_world(path, inputs, state, cancel_after=None):
-    """Run the job against a fresh fake cloud. -> (result, final_state, az_calls)."""
+# What the fake GitHub API answers for the deploy's environment: required reviewers, self-review
+# prevented -- a protected environment, so the deploy's protection step (owner, 2026-10-22) passes
+# and each proof exercises what it is about. tests/prove_deploy_environment_protection.py proves the
+# refusals; a caller here may pass its own answer, or None for an environment that cannot be read.
+PROTECTED_ENVIRONMENT = {'protection_rules': [
+    {'type': 'required_reviewers', 'prevent_self_review': True,
+     'reviewers': [{'type': 'Team', 'reviewer': {'slug': 'release-approvers', 'name': 'Release approvers'}}]}]}
+
+
+def add_tools(bin_dir, tools):
+    """More stand-ins beside az and curl: {name: python source}. Each is reachable from bash (an
+    extensionless wrapper) and from Python's subprocess on Windows (a .cmd wrapper), like az."""
+    py = sys.executable
+    for name, src in tools.items():
+        script = os.path.join(bin_dir, '_tool_%s.py' % name)
+        io.open(script, 'w', encoding='utf-8').write(src)
+        io.open(os.path.join(bin_dir, name), 'w', encoding='utf-8', newline='\n').write(
+            '#!/bin/bash\nexec "%s" "%s" "$@"\n' % (py.replace('\\', '/'), script.replace('\\', '/')))
+        os.chmod(os.path.join(bin_dir, name), 0o755)
+        io.open(os.path.join(bin_dir, name + '.cmd'), 'w', encoding='utf-8', newline='\r\n').write(
+            '@echo off\r\n"%s" "%s" %%*\r\n' % (py, script))
+
+
+def write_default_api(api_root):
+    """The answers every deploy job reads from the GitHub API besides its environment: no artifact
+    (so no rollback marker for the target, KDEC-023) and the commit it was built from."""
+    import json
+    repo = os.path.join(api_root, 'repos', 'o', 'r')
+    os.makedirs(os.path.join(repo, 'actions'), exist_ok=True)
+    listing = os.path.join(repo, 'actions', 'artifacts')
+    if not os.path.exists(listing):
+        io.open(listing, 'w', encoding='utf-8').write(json.dumps({'total_count': 0, 'artifacts': []}))
+
+
+def run_world(path, inputs, state, cancel_after=None, environment_answer=PROTECTED_ENVIRONMENT,
+              api_files=None, env_extra=None, tools=None, uses_outputs=None, api_binary=None):
+    """Run the job against a fresh fake cloud. -> (result, final_state, az_calls). `api_files`:
+    {path under the API root: body} answered by the recorded GitHub API (KDEC-023's rollback
+    marker, commits, comparisons); `env_extra`: more job environment (the commit and the run id)."""
     import json
     work = tempfile.mkdtemp(prefix='fake-world-')
     try:
+        api = os.path.join(work, 'api', 'repos', 'o', 'r', 'environments')
+        os.makedirs(api)
+        if environment_answer is not None and inputs.get('github_environment'):
+            io.open(os.path.join(api, str(inputs['github_environment'])), 'w', encoding='utf-8').write(
+                json.dumps(environment_answer))
+        for rel, body in (api_files or {}).items():
+            p = os.path.join(work, 'api', *rel.split('/'))
+            if not os.path.isdir(os.path.dirname(p)):
+                os.makedirs(os.path.dirname(p))
+            # '@API_ROOT@' in a recorded answer is the file:// URL of this API (an artifact's
+            # archive_download_url points into it).
+            root_url = 'file:///' + os.path.join(work, 'api').replace('\\', '/').lstrip('/')
+            io.open(p, 'w', encoding='utf-8').write(body.replace('@API_ROOT@', root_url))
+        write_default_api(os.path.join(work, 'api'))
+        # OF-5 (K-1/K-2/K-3, scripts/release_gates.py): the world a deploy normally meets -- a landing
+        # zone that is READY and not blocked, a requester, and one independent reviewer's approval of
+        # this run's environment that quotes the digest. A proof about those gates passes its own
+        # values through env_extra / api_files; tests/prove_release_gates.py proves the refusals.
+        # GITHUB_SHA IS PART OF THE WORLD, NOT INHERITED. A hosted runner sets it for every step; a
+        # developer host does not. Inherited, the approval gate read the released commit's author from a
+        # record this world never wrote, refused at uat/prod as unreadable, and prove_deploy_direct_to_
+        # production passed locally and failed on the runner (self-test 40821569397, 2026-10-29). The
+        # world names one commit and writes its record below; a proof may still pass its own.
+        landing = {'KIT_ZONE_READINESS': 'READY', 'KIT_RELEASE_BLOCK': 'none', 'GITHUB_RUN_ID': '4242',
+                   'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_TRIGGERING_ACTOR': 'release-requester',
+                   'GITHUB_ACTOR': 'release-requester', 'GITHUB_SHA': '5' * 40}
+        env_extra = dict(landing, **(env_extra or {}))
+        approvals = os.path.join(work, 'api', 'repos', 'o', 'r', 'actions', 'runs', env_extra['GITHUB_RUN_ID'],
+                                 'approvals')
+        if not os.path.exists(approvals):
+            if not os.path.isdir(os.path.dirname(approvals)):
+                os.makedirs(os.path.dirname(approvals))
+            io.open(approvals, 'w', encoding='utf-8').write(json.dumps([
+                {'state': 'approved', 'user': {'login': 'independent-reviewer'},
+                 'comment': 'approved %s' % inputs.get('image_digest', ''),
+                 'environments': [{'name': str(inputs.get('github_environment') or '')}]}]))
+        if env_extra.get('GITHUB_SHA'):
+            commit = os.path.join(work, 'api', 'repos', 'o', 'r', 'commits', env_extra['GITHUB_SHA'])
+            if not os.path.exists(commit):
+                if not os.path.isdir(os.path.dirname(commit)):
+                    os.makedirs(os.path.dirname(commit))
+                io.open(commit, 'w', encoding='utf-8').write(json.dumps(
+                    {'author': {'login': 'release-author'}, 'parents': [{'sha': '0' * 40}]}))
         state_path = os.path.join(work, 'state.json')
         log_path = os.path.join(work, 'calls.jsonl')
         io.open(state_path, 'w', encoding='utf-8').write(json.dumps(state))
         io.open(log_path, 'w').close()
+        for rel, data in (api_binary or {}).items():
+            p = os.path.join(work, 'api', *rel.split('/'))
+            if not os.path.isdir(os.path.dirname(p)):
+                os.makedirs(os.path.dirname(p))
+            io.open(p, 'wb').write(data)
         bin_dir = stub_bin(state_path, log_path)
+        add_tools(bin_dir, tools or {})
         try:
             # Git Bash rewrites environment values that look like POSIX paths ("/health") into
             # Windows paths when it starts a native program -- a harness artefact no Linux
             # runner has. Excluding every variable from that conversion keeps values byte-exact.
             env = {'MSYS2_ENV_CONV_EXCL': '*', 'MSYS_NO_PATHCONV': '1',
                    'fake_az_state': state_path, 'fake_az_log': log_path,
-                   'AZURE_CONFIG_DIR': os.path.join(work, 'no-azure-config')}
+                   'AZURE_CONFIG_DIR': os.path.join(work, 'no-azure-config'),
+                   'GITHUB_REPOSITORY': 'o/r',
+                   'GITHUB_API_URL': 'file:///' + os.path.join(work, 'api').replace('\\', '/').lstrip('/')}
+            env.update(env_extra or {})
             rt = os.path.join(work, 'runner-temp')
             os.makedirs(rt)
-            res = run_job(path, inputs, path_prepend=bin_dir, extra_env=env,
+            env['FAKE_API_ROOT'] = os.path.join(work, 'api')
+            res = run_job(path, inputs, path_prepend=bin_dir, extra_env=env, uses_outputs=uses_outputs,
                           cancel_after=cancel_after, workdir=rt)
             final = json.load(io.open(state_path, encoding='utf-8'))
             calls = [json.loads(l) for l in io.open(log_path, encoding='utf-8') if l.strip()]

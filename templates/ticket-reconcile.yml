@@ -1,0 +1,120 @@
+# Consumer template -- the security scan AND its tickets, in one workflow (KDEC-024; T-19, T-17).
+# Copy to .github/workflows/security.yml IN PLACE OF templates/security.yml (this IS that template
+# plus three jobs). Replace YOUR_ORG and every 0000000000000000000000000000000000000000 with the
+# kit's 40-hex commit SHA; kit_ref is the same commit.
+#
+# WHAT RUNS WHEN
+#   pull request        the scan and the gate only. No ticket job is ever armed on a pull request.
+#   push to main        scan -> gate -> tickets (findings -> tickets: NEW tickets, closure on a
+#                       verified clearance citing this run and commit, RECURRED, cross-scanner
+#                       merges, SLA escalation) -> ledger (the ticket bindings, proposed as a PR).
+#   schedule (daily)    the ticket CLOCK alone, ONE small job, no scan: dispositions that expired
+#                       reopen their tickets (REOPENED_BY_LAPSE) and overdue SLAs are escalated.
+#
+# THE GATE NEVER WAITS FOR TICKETING. `security` needs nothing below it; a tracker outage makes the
+# ticket job red with TICKETING_UNAVAILABLE (exit 3) and the verdict is unchanged.
+#
+# TURNING TICKETING ON -- in the protected environment named below (`ticketing`; Settings ->
+# Environments; deployment branch policy: the default branch only). Jira shown; azdo and github
+# take the variables in docs/architecture/TICKETING_CONTRACT.md section 13.
+#   secrets    JIRA_TOKEN, and JIRA_EMAIL for basic auth (none with JIRA_AUTH_MODE=bearer: a service
+#              account's token through Atlassian's gateway; JIRA_CLOUD_ID optional, looked up)
+#   variables  JIRA_HOST, JIRA_PROJECT, JIRA_STAMP_FIELD, JIRA_EPIC_ID, JIRA_CALIBRATION_ISSUE,
+#              TICKET_CREATE_CEILING (required); JIRA_TRANSITION_REOPEN, JIRA_TRANSITION_DONE,
+#              JIRA_PRIORITY_LADDER, TICKET_CALL_BUDGET, TICKET_RETRY_CEILING (optional)
+#   register   .security/policy-registration.json `numbers.sla_period_days` (CRITICAL/HIGH/MEDIUM/
+#              LOW, in days) turns on SLA due dates; secret_exceptions are linked on tickets
+#   permissions as granted below: the scan's three; tickets contents: read; the ledger proposal
+#              contents: write + pull-requests: write (a pull request, never a push to main)
+# Set `apply: false` first: the run prints its plan and writes nothing. Then `apply: true`.
+#
+# TEST TICKETING IS CHOSEN BY THE BRANCH, NEVER BY A VARIABLE (KDEC-028). A push to the default
+# branch tickets in `ticketing` (the real project and routing). A push to `dev` (add your feature
+# branches to `on.push.branches` to test from them) tickets in `ticketing-test`: an environment
+# whose deployment branches are dev/feature and whose JIRA_PROJECT is a SANDBOX (e.g. SECTEST).
+# Test tickets carry the label kit-test and a [TEST] summary prefix, ignore the register's routing,
+# and never touch a real binding. The org/repository variable JIRA_REAL_PROJECTS lists the real
+# project keys; a test run whose project is one of them (or one the routing names) is refused
+# TICKETING_TEST_TARGETS_REAL_PROJECT. Nobody edits anything to switch, so nobody can forget to.
+
+name: Security
+
+on:
+  push:
+    branches: [main, dev]   # main: real tickets; dev: sandbox tickets in ticketing-test
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "23 5 * * *"   # daily 05:23 UTC -- the ticket clock only; no scan runs on it
+  workflow_dispatch:
+
+# Everything the kit's jobs request must be granted here, or GitHub refuses the whole run before any
+# job starts (startup_failure). tests/check_caller_permissions.py holds this template to that.
+permissions:
+  contents: read
+  security-events: write
+  actions: read          # the CodeQL job reads workflow metadata on private repositories
+
+jobs:
+  security:
+    # Not on the schedule: the clock costs one small job, not a full scan.
+    if: github.event_name != 'schedule'
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-security.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    with:
+      environment: prod       # the baseline-ledger environment this run is for
+    secrets:
+      SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}   # optional; remove if unused
+
+  # AFTER the scan, in the SAME run, from the scan's own evidence artifact (findings.json and
+  # findings-coverage.json). always(): a blocking verdict fails the security job, and blocking
+  # findings are exactly the ones that need tickets. An absent artifact is EVIDENCE_UNTRUSTED.
+  tickets:
+    needs: security
+    if: always() && github.event_name == 'push'
+    permissions:
+      contents: read
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-ticket-reconcile.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    with:
+      backend: jira
+      environment: ticketing            # the default branch: the real project
+      test_environment: ticketing-test  # any other branch: the sandbox project
+      default_branch: main
+      mode: reconcile
+      findings_artifact: ${{ needs.security.outputs.evidence_artifact }}
+      apply: true
+      kit_repository: YOUR_ORG/secure-cicd-kit
+      kit_ref: "0000000000000000000000000000000000000000"   # the same commit as the pin above
+    secrets:
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+
+  # The ticket bindings persist through the one reviewed write path: a pull request (T-20).
+  ledger:
+    needs: [security, tickets]
+    # The default branch only: a test run's bindings are sandbox tickets and are never proposed.
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-propose-ledger.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    with:
+      environment: prod
+      ticket-ledger-artifact: ticket-reconcile-${{ github.run_attempt }}
+
+  # THE CLOCK (T-17): one job on the schedule, no scan.
+  ticket-clock:
+    if: github.event_name == 'schedule'
+    permissions:
+      contents: read
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-ticket-reconcile.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    with:
+      backend: jira
+      environment: ticketing
+      default_branch: main
+      mode: resurface
+      apply: true
+      kit_repository: YOUR_ORG/secure-cicd-kit
+      kit_ref: "0000000000000000000000000000000000000000"   # the same commit as the pin above
+    secrets:
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}

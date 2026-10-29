@@ -134,6 +134,14 @@ JSON
 The run pauses as *Waiting* until approved. Note that **you cannot approve your own deployment** in
 organization-owned repos, though you can in a personal one.
 
+**At `uat` and `prod` they are not optional.** The deploy reads the environment's reviewers back and
+refuses without one (self-review prevented). It also reads the run's own approval (OF-5 K-1): the
+approver may be neither the person who started the run nor the author of the commit being released,
+and the approval **comment must quote the digest** being released (the full `sha256:...`, or at least
+its first 12 hex characters, as shown in the run summary) -- otherwise `RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST`.
+Outside a landing zone, also set the environment variable `KIT_ZONE_READINESS` to `READY` on `uat`
+and `prod` once you have decided the zone is ready: unset is refused there (`RELEASE_REFUSED_ZONE_NOT_READY`).
+
 ---
 
 ## 1.5 · Let other repositories consume the kit
@@ -188,7 +196,7 @@ This is a GitHub boundary, not a limitation of the kit. A private repository's r
 | `AZURE_CLIENT_ID` | deploy + build, `azure-login-oidc` | Yes for Azure | App registration (client) ID. An identifier, not a credential — stored as a secret to keep it out of logs. |
 | `AZURE_TENANT_ID` | same | Yes | Entra tenant ID |
 | `AZURE_SUBSCRIPTION_ID` | same | Yes | Target subscription |
-| `NVD_API_KEY` | `reusable-nvd-cve.yml` | Strongly recommended | Free NIST key. Without it the DB update is rate-limited and may take 30+ min. |
+| `NVD_API_KEY` | `reusable-nvd-cve.yml` | Only if you empty the datafeed | Free NIST key. Not used by default: the NVD database is built from the Dependency-Check project's public datafeed (§9). Used only when `nvd_datafeed_url` is `""`. |
 | `SEMGREP_APP_TOKEN` | `reusable-security.yml` | Optional | Managed rules / dashboard only. Everything works without it. |
 | `JIRA_EMAIL` + `JIRA_TOKEN`, or `AZDO_PAT` | `reusable-ticket-reconcile.yml` | Only for ticketing | One backend per run. Held in the protected environment named by the workflow's `environment` input. |
 
@@ -275,7 +283,8 @@ you with nothing while you are still assuming you have something.
    secret resolves through `secrets: inherit`.
 4. **Run it and verify from evidence, not assumption.** For `NVD_API_KEY` the tell is specific: the
    *"no NVD API key is configured"* warning must **not** fire, and the database update must succeed.
-   A silent fall-through to the un-keyed path looks like success and takes 20–40 minutes.
+   A silent fall-through to the un-keyed path looks like success and takes 20–40 minutes. (This
+   applies only where `nvd_datafeed_url` is set to `""`; by default the key is not used, §9.)
 5. **Only now delete the environment secret**, and confirm the next run still passes.
 6. **Record the change.** Which secrets moved, when, and who owns rotation.
 
@@ -585,12 +594,27 @@ the vending creates the empty target and the deploy identity, and the kit only r
 
 ---
 
-## 9 · NVD API key
+## 9 · NVD data source and API key
 
-Free: **https://nvd.nist.gov/developers/request-an-api-key**
+**Where the NVD data comes from.** By default `reusable-nvd-cve.yml` builds Dependency-Check's NVD
+database from the Dependency-Check project's **public datafeed**,
+`https://dependency-check.github.io/DependencyCheck_Builder/nvd_cache/` (input
+`nvd_datafeed_url`). That is a third-party host. **Unless the organisation runs the Release 4 mirror** (below), there
+is no organisation-hosted mirror: the runner needs outbound access to that host, and the database is only as current and as available as
+that feed. The kit does not claim NVD coverage beyond that. The Release 4 mirror (below) is optional, built and proven locally, and not yet
+run live. The CISA KEV catalog and Trivy's vulnerability database are likewise fetched from their
+public publishers unless that mirror is configured.
 
-A missing key does **not** fail the workflow — it degrades to unauthenticated and rate-limited with a
-warning. *"The scan ran"* and *"the scan had current data"* are different claims.
+**The API key is used only if the datafeed is emptied.** With `nvd_datafeed_url: ""` the workflow
+uses the NVD API directly, and then `NVD_API_KEY` matters. Free:
+**https://nvd.nist.gov/developers/request-an-api-key**. In that mode a missing key does **not** fail
+the workflow — it degrades to unauthenticated and rate-limited with a warning. *"The scan ran"* and
+*"the scan had current data"* are different claims.
+
+**At scale (Release 4, KDEC-032 proposed):** the organisation can host the NVD datafeed, the KEV catalog
+and the Trivy database itself, privately, refreshed once a day for every repository — and a scan refuses
+a mirror that is stale or does not match its manifest instead of reading it as clean. Setup, from the
+Azure side to the first verified refresh: [`FEED_MIRRORS.md`](FEED_MIRRORS.md).
 
 ---
 
@@ -604,7 +628,7 @@ warning. *"The scan ran"* and *"the scan had current data"* are different claims
 | Deploy succeeds, app never healthy | **ACR pull rights missing** (§8 #5) |
 | App registration not in member picker | Searching by object ID — search by **display name** |
 | Secret set but empty at runtime | Set as a **Variable**, or at the wrong scope (repo vs environment) |
-| NVD job runs 30+ min | No `NVD_API_KEY` |
+| NVD job runs 30+ min | `nvd_datafeed_url` set to `""` and no `NVD_API_KEY`, or the runner cannot reach the public datafeed (§9) |
 
 ## 11 · Minimum setup
 

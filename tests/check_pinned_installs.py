@@ -35,9 +35,20 @@ SCOPE = ['.github/workflows/reusable-nvd-cve.yml', '.github/workflows/validate-s
          '.github/workflows/reusable-build-docker.yml', '.github/actions/docker-build-push/action.yml',
          # syft from a release asset with sha256 (was install.sh from `main`); semgrep pinned to
          # the version tests/prove_semgrep_rulesets.py measured.
-         ('.github/workflows/reusable-security.yml', {'sbom', 'sast-dotnet', 'sast-java'})]
-NOT_YET_IN_SCOPE = ['.github/workflows/reusable-security.yml jobs other than sbom, sast-dotnet and '
-                    'sast-java (ledger L15, coordinator): secret-scan installs detect-secrets and '
+         ('.github/workflows/reusable-security.yml', {'sbom', 'sast-dotnet', 'sast-java', 'sast-mobile'}),
+         # The one pin list the kit's own proofs run with (normalizer-drift and the tree-clean job
+         # both install from it; tests/prove_tree_clean_job.py J4 holds it in this scope).
+         '.github/actions/selftest-tools/action.yml',
+         # OF-5 K-8: the Static Web Apps deploy (Trivy for the promotion re-scan) and its packaging
+         # composite (Syft for the site's SBOM).
+         '.github/workflows/reusable-deploy-staticwebapp.yml', '.github/actions/static-site-package/action.yml']
+# KDEC-028: every overlay's composite actions install tools too (a scanner CLI by version and
+# sha256, an image by digest). DISCOVERED, never named: the neutral core names no overlay. A
+# neutral copy has no overlays/, so this adds nothing there.
+SCOPE += sorted(os.path.relpath(f, ROOT).replace(os.sep, '/') for f in __import__('glob').glob(
+    os.path.join(ROOT, 'overlays', '*', 'actions', '*', 'action.yml')))
+NOT_YET_IN_SCOPE = ['.github/workflows/reusable-security.yml jobs other than sbom, sast-dotnet, sast-java and '
+                    'sast-mobile (ledger L15, coordinator): secret-scan installs detect-secrets and '
                     'code-quality installs ruff/mypy without a version']
 
 RULES = [
@@ -49,6 +60,17 @@ RULES = [
      'pip package without an exact version'),
 ]
 DOWNLOAD = re.compile(r'releases/download/')
+
+
+def _expand(doc):
+    """The workflow with every `$/` composite step expanded into its job, as the runner sees it.
+
+    Scanner job bodies live in `.github/actions/<scanner>/` (ledger L64); this reads the steps a
+    job actually runs. One rule, tests/_composite_expand.py, for every reader.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.expanded_doc(doc)
 
 
 def steps(doc):
@@ -105,7 +127,7 @@ def main():
         if not os.path.exists(p):
             print('UNKNOWN: %s missing; an absent file is not a pinned one.' % rel)
             return 2
-        doc = yaml.safe_load(io.open(p, encoding='utf-8')) or {}
+        doc = _expand(yaml.safe_load(io.open(p, encoding='utf-8'))) or {}
         seen = set()
         for jn, ss in steps(doc):
             if jobs is not None and jn not in jobs:

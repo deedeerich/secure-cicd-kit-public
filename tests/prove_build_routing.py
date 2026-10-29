@@ -31,6 +31,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import _step_harness as H  # noqa: E402
+import _trivy_step as ts  # noqa: E402 - the shipped Trivy step read as trivy-action's `with:`
 
 WF = '.github/workflows/reusable-build-docker.yml'
 
@@ -47,7 +48,7 @@ def main():
         return 2
     posture = H.step(WF, 'build', 'posture')
     trivy = [s for s in H.load(WF)['jobs']['build']['steps']
-             if 'trivy-action' in str(s.get('uses', ''))]
+             if ts.is_trivy(s)]
     if posture is None or len(trivy) != 1:
         print('UNKNOWN: posture step or the single Trivy gate step not found.')
         return 2

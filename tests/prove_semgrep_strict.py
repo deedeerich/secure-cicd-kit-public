@@ -21,9 +21,13 @@ WHAT IT PROVES
     P3  every `semgrep scan` in the flagship (the C# and Java jobs install Semgrep in-step, so
         they are checked by reading, not run) passes --strict and maps exit 3 to COLLECTION_FAILED
 
-    NOT PROVEN HERE: the sast-semgrep job runs the semgrep/semgrep:1.90.0 container; this runs the
-    locally installed Semgrep. Semgrep documents exit 3 under --strict for both; the 1.90.0 run is
-    owed to a hosted run (reported, not claimed).
+    P4  the Semgrep this runs is the release the sast-semgrep job's container pins by digest (the
+        `# X.Y.Z` on its image line; tests/_semgrep_pin.py). FAILS ON 7fe3d54: the job ran the
+        semgrep/semgrep 1.90.0 tag while this ran 1.178.0, so P1 held a release the job never ran.
+
+    NOT PROVEN HERE: the same release, not the same packaging -- this runs Semgrep from PATH (pip
+    in self-test, pinned to the job's release), the job runs the image. The image's own exit 3 is
+    owed to a hosted run of the job (reported, not claimed).
 
 EXIT  0 all hold, 1 any does not, 2 could not be checked (no bash, no semgrep, no registry)
 """
@@ -42,8 +46,16 @@ UNPARSEABLE = 'password = "hunter2"\nif x ==== :\n  ))) (((\nclass\n'
 PARSES = 'def add(a, b):\n    return a + b\n'
 
 
+def _shipped(path):
+    """The flagship's text plus the scanner composites it calls through `$/` (ledger L64): a
+    scanner's commands live there now, and reading the workflow alone would count fewer sites."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.shipped_text(path)
+
+
 def static_check():
-    text = io.open(h.WF, encoding='utf-8').read()
+    text = _shipped(h.WF)
     calls = [m.start() for m in re.finditer(r'^\s*semgrep scan\b', text, re.M)]
     bad = []
     if not calls:
@@ -79,7 +91,17 @@ def main():
         if not h.have(bash, 'semgrep', h.path_prefix(sb.shim)):
             print('UNKNOWN: semgrep is required to RUN the step.')
             return 2
-        vals = {'inputs.paths': '.', 'inputs.semgrep_config': 'p/python',
+        # P4 the Semgrep run here is the release the job's container pins, by digest (lane L-SG)
+        import _semgrep_pin
+        image, pinned, problem = _semgrep_pin.flagship(h.WF)
+        local = _semgrep_pin.path_version(bash, h.path_prefix(sb.shim))
+        print('  P4 job image %s (%s); Semgrep on PATH %s' % (image, pinned, local))
+        if problem:
+            bad.append('P4 %s' % problem)
+        if not pinned or local != pinned:
+            bad.append('P4 this ran Semgrep %s, but the job runs %s (%s): exit 3 would be proved '
+                       'for a release the job does not run' % (local, pinned, image))
+        vals ={'inputs.paths': '.', 'inputs.semgrep_config': 'p/python',
                 'inputs.soft_fail_sast': 'false', 'inputs.advisory_mode': 'false'}
         results = {}
         for name, files in (('unparseable', {'app.py': UNPARSEABLE}),

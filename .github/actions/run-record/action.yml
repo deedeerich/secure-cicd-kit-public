@@ -1,0 +1,60 @@
+name: run-record
+description: >-
+  Builds the run record (schemas/assurance-result.schema.json) from the security gate's own outputs
+  and validates it against the schema before emitting it. An invalid record is not emitted.
+  scripts/run_record.py; tests/prove_gate_run_record.py (ledger L36).
+inputs:
+  assurance-state: {description: gate assurance_state, required: true}
+  enforcement-state: {description: gate enforcement_state, required: true}
+  secret-gate: {description: gate secret_gate, required: false, default: ''}
+  discovery-state: {description: discovery state, required: false, default: ''}
+  scanner-states: {description: gate scanner_states JSON, required: false, default: '{}'}
+  report-result: {description: steps.report_part.outputs.report_result, required: false, default: ''}
+  blocking-findings: {description: the report's blocking_findings count, required: false, default: ''}
+  evidence-artifact: {description: gate evidence_artifact, required: false, default: ''}
+  secret-exceptions: {description: gate secret_exceptions_applied JSON (finding ticket approver expires entry renewals history), required: false, default: '[]'}
+  policy-exceptions: {description: the policy step's policy_weakenings JSON (register softenings in force, with renewals and history; KDEC-018), required: false, default: '[]'}
+outputs:
+  run_record: {description: valid or invalid, value: "${{ steps.r.outputs.run_record }}"}
+  assurance_result: {description: the record as compact JSON (empty when invalid), value: "${{ steps.r.outputs.assurance_result }}"}
+runs:
+  using: composite
+  steps:
+    - name: Build and validate the run record
+      id: r
+      shell: bash
+      env:
+        # Gate outputs and run identity arrive as DATA (tests/lint_injection.py).
+        ASSURANCE: ${{ inputs.assurance-state }}
+        ENFORCEMENT: ${{ inputs.enforcement-state }}
+        SECRET_GATE: ${{ inputs.secret-gate }}
+        DISCOVERY: ${{ inputs.discovery-state }}
+        SCANNER_STATES: ${{ inputs.scanner-states }}
+        REPORT_RESULT: ${{ inputs.report-result }}
+        BLOCKING_FINDINGS: ${{ inputs.blocking-findings }}
+        EVIDENCE_ARTIFACT: ${{ inputs.evidence-artifact }}
+        SECRET_EXCEPTIONS: ${{ inputs.secret-exceptions }}
+        POLICY_EXCEPTIONS: ${{ inputs.policy-exceptions }}
+        REPOSITORY: ${{ github.repository }}
+        REPOSITORY_ID: ${{ github.repository_id }}
+        COMMIT_SHA: ${{ github.sha }}
+        REF: ${{ github.ref }}
+        RUN_ID: ${{ github.run_id }}
+      run: |
+        set -uo pipefail
+        kit_root="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)"
+        if [ ! -s "${kit_root}/scripts/run_record.py" ]; then
+          echo "::warning title=Run record not built::scripts/run_record.py is not in the kit delivered by \$/."
+          { echo "run_record=invalid"; echo "assurance_result="; } >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        python3 "${kit_root}/scripts/run_record.py" --schema "${kit_root}/schemas/assurance-result.schema.json" \
+          --out "${RUNNER_TEMP:-/tmp}/assurance-result.json" --github-output "$GITHUB_OUTPUT"
+        rc=$?
+        # The record step records; it never decides. An invalid record is named and not emitted;
+        # the verdict step decides the job. suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE --
+        # discards: the exit code; preserved_by: run_record=invalid in $GITHUB_OUTPUT.
+        if [ "$rc" != "0" ]; then
+          echo "::warning title=Run record invalid::the run record did not validate against schemas/assurance-result.schema.json and was not emitted (see the lines above)."
+        fi
+        exit 0

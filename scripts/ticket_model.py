@@ -333,6 +333,23 @@ MUTATION_CLASS = {
         ROUTINE_RECONCILIATION,
         'marking an elapsed deferral as past due in the run\'s report. It changes no state and '
         'grants nothing; it makes an obligation VISIBLE, which is the opposite of a disposition'),
+    # KDEC-024 (lane L-TKT). Three more unattended writes, each evidenced, none a judgement.
+    'ticket.sla_escalate': (
+        ROUTINE_RECONCILIATION,
+        'announcing a breached SLA: one comment, the priority raised one step, a kit-owned label. '
+        'The deadline is DERIVED from the register\'s numbers and is never moved; escalation '
+        'makes an overdue obligation MORE visible and accepts nothing (TC 5.1: the run "may '
+        'announce a breach")'),
+    'ticket.merge_supersede': (
+        ROUTINE_RECONCILIATION,
+        'closing a ticket SUPERSEDED by the oldest ticket for the same finding, once a second '
+        'scanner\'s data anchors both to one identity (D4). The surviving ticket names every '
+        'scanner and member; nothing is deleted, the absorbed ticket says what superseded it, and '
+        'the rule choosing the survivor (the lowest tracker id) is stated, not a judgement'),
+    'ticket.disagreement_label': (
+        ROUTINE_RECONCILIATION,
+        'labelling a ticket whose finding a peer scanner of the same class covered and did not '
+        'report (CONTESTED_ANCHORED). It routes the question to a person and suppresses nothing'),
 
     # ── DISPOSITION. A person approves it, by role, with a reason. ──────────────────
     'ticket.close.' + AUTHORITY_OVERRIDE: (

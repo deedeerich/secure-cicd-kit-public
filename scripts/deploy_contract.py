@@ -51,8 +51,61 @@ def read_evidence(name):
         return None
 
 
+# KDEC-030 draft (the seam contract, "The kit's wiring"): when the GitHub environment opts into the
+# cross-repository target lease (KIT_TARGET_LEASE_ACCOUNT), EVERY mutating az call below is fenced
+# immediately before it is sent -- this function is the one path every kit mutation takes (the deploy
+# steps, the reversal, the rollback sequence through `reverse`, the generic ARM rollback through
+# rollback_dependencies). A refused fence means the call is NOT sent: (False, None, '<CODE>: why'),
+# and the loss is sticky for the rest of the run (target_lease.py records it beside the token). Reads
+# are never fenced. Off (the variable empty): nothing here runs and az behaves exactly as before.
+# Fencing stops a stale holder before its next call; it cannot recall a call already sent.
+AZ_MUTATING_VERBS = frozenset(['update', 'set', 'swap', 'activate', 'deactivate', 'create', 'delete',
+                               'restart', 'start', 'stop', 'add', 'remove', 'purge', 'deploy', 'import',
+                               'assign', 'unassign', 'reset', 'invoke-action', 'up'])
+AZ_READ_METHODS = frozenset(['get', 'head', 'options'])
+
+
+def az_is_mutating(*args):
+    """True for an az call that changes Azure: a mutating verb among the command words (before the
+    first option), or `az rest` with any method but a read. `--method` defaults to get in az rest."""
+    words = []
+    for a in args:
+        if str(a).startswith('-'):
+            break
+        words.append(str(a))
+    if words[:1] == ['rest']:
+        a = list(args)
+        method = a[a.index('--method') + 1].lower() if '--method' in a and a.index('--method') + 1 < len(a) else 'get'
+        return method not in AZ_READ_METHODS
+    if words[:2] == ['account', 'get-access-token']:
+        return False
+    return any(w in AZ_MUTATING_VERBS for w in words[1:])
+
+
+def lease_fence(args):
+    """-> '' when the call may be sent, else the refusal ('<CODE>: why'). Inert when the lease is off."""
+    if not os.environ.get('KIT_TARGET_LEASE_ACCOUNT') or not az_is_mutating(*args):
+        return ''
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import target_lease
+    except Exception as e:  # noqa: BLE001 -- a fence that cannot run refuses
+        return 'LEASE_STORE_UNREACHABLE: target_lease.py is not beside the deploy contract (%s)' % e
+    try:
+        target_lease.fence_token_file()
+    except target_lease.LeaseError as e:
+        msg = '%s: %s' % (e.code, e)
+        print('::error title=target lease %s::the mutating call az %s was NOT sent: %s'
+              % (e.code, ' '.join(str(x) for x in args[:4]), ' '.join(msg.split())))
+        return msg
+    return ''
+
+
 def az(*args):
     """-> (ok, parsed JSON or None, error text). A failed read is reported, never blanked."""
+    refused = lease_fence(args)
+    if refused:
+        return False, None, refused
     exe = shutil.which('az')
     if not exe:
         return False, None, 'az CLI not found'
@@ -71,6 +124,9 @@ def az(*args):
 
 def az_raw(*args):
     """-> (ok, text, error text) for a call whose answer is not JSON (a log file)."""
+    refused = lease_fence(args)
+    if refused:
+        return False, '', refused
     exe = shutil.which('az')
     if not exe:
         return False, '', 'az CLI not found'
@@ -92,7 +148,9 @@ def utc_now():
 def output(**kv):
     path = os.environ.get('GITHUB_OUTPUT')
     for k, v in kv.items():
-        line = '%s=%s' % (k, '' if v is None else v)
+        # One line per value: a newline in a value would end the file command early and let the
+        # rest set another output (output injection; KDEC-027, tests/check_output_writes.py).
+        line = '%s=%s' % (k, '' if v is None else ' '.join(str(v).splitlines()))
         print(line)
         if path:
             io.open(path, 'a', encoding='utf-8').write(line + '\n')
@@ -352,6 +410,176 @@ def cmd_capability(a):
     return 0
 
 
+# ----------------------------------------------------------------------------- the seam (OF-5 K-6)
+# KDEC-030 R3: every app setting and environment key has exactly one owner. An unassigned key is the
+# landing zone's; the kit owns the env key release_ownership_stamp and the keys the hand-off assigns
+# it in KIT_SETTING_KEYS (empty by default). With the seam in force (the environment opts into the
+# lease), the `seam` step refuses, after the capture and before the first mutation:
+#   SEAM_SETTING_OWNERSHIP_CONFLICT  a key the kit would write that it does not own, or a kit key the
+#                                    landing zone also claims (made slot-sticky -- sticky configuration
+#                                    is the landing zone's, R1 -- or backed by a secret, also the landing
+#                                    zone's), or a KIT_SETTING_KEYS value that is not a list of names
+#   SEAM_SWAP_MOVES_LZ_SETTING       an App Service swap that would carry a non-sticky landing-zone
+#                                    setting or connection string differing between slot and production
+#   SEAM_OWNERSHIP_NOT_ESTABLISHED   the settings could not be read, or the key list could not be parsed
+# Values are never shown: keys are named, values compared by digest. tests/prove_seam_setting_ownership.py.
+SEAM_HELD = 'SEAM_OWNERSHIP_HELD'
+SEAM_NOT_IN_FORCE = 'SEAM_OWNERSHIP_NOT_IN_FORCE'
+SEAM_NOT_ESTABLISHED = 'SEAM_OWNERSHIP_NOT_ESTABLISHED'
+SEAM_CONFLICT = 'SEAM_SETTING_OWNERSHIP_CONFLICT'
+SEAM_SWAP = 'SEAM_SWAP_MOVES_LZ_SETTING'
+KIT_STAMP_KEY = 'release_ownership_stamp'
+# What each adapter's own steps write as settings or env keys (cmd_mutate). App Service writes tags and
+# the image only (whether App Service's container-set command also writes DOCKER_* settings is the seam
+# contract's U4, a live question).
+KIT_PLANNED_SETTING_WRITES = {'containerapp': [KIT_STAMP_KEY], 'appservice': []}
+SETTING_NAME = r'^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$'
+
+
+def _named(keys):
+    import re
+    return ', '.join(k if re.match(SETTING_NAME, k) else '(a key that is not a plain name)' for k in sorted(keys))
+
+
+def _digest(v):
+    import hashlib
+    return hashlib.sha256(json.dumps(v, sort_keys=True).encode('utf-8')).hexdigest()
+
+
+def decide_seam(adapter, keys_text, prod, slot, strings, swap, planned=None):
+    """Pure. -> (outcome, why). `prod`/`slot`: the target's settings as az lists them (App Service
+    appsettings with slotSetting; Container Apps env entries), None when unreadable. `strings`:
+    (production, slot) connection strings, None when unreadable. `swap`: a swap will follow."""
+    import re
+    raw = [k for k in re.split(r'[,\s]+', keys_text or '') if k]
+    if any(not re.match(SETTING_NAME, k) for k in raw) or re.search(r'[^A-Za-z0-9_.:,\s-]', keys_text or ''):
+        return SEAM_NOT_ESTABLISHED, ('KIT_SETTING_KEYS is not a list of setting names, so which keys the kit '
+                                      'owns cannot be read')
+    kit = set(raw) | {KIT_STAMP_KEY}
+    writes = KIT_PLANNED_SETTING_WRITES.get(adapter, []) if planned is None else planned
+    stray = [k for k in writes if k not in kit]
+    if stray:
+        return SEAM_CONFLICT, ('this deploy would write %s, which the hand-off does not assign to the kit; an '
+                               'unassigned key is the landing zone\'s' % _named(stray))
+    if prod is None:
+        return SEAM_NOT_ESTABLISHED, 'the target\'s settings could not be read'
+    both = []
+    for e in list(prod) + list(slot or []):
+        name = (e or {}).get('name')
+        if name in raw and ((e or {}).get('slotSetting') is True or (e or {}).get('secretRef')):
+            both.append(name)
+    if both:
+        return SEAM_CONFLICT, ('KIT_SETTING_KEYS assigns %s to the kit, and the landing zone also claims it (a '
+                               'slot-sticky setting or a secret-backed key is the landing zone\'s)' % _named(set(both)))
+    if not swap:
+        return SEAM_HELD, 'no key outside the kit\'s is written'
+    if slot is None or strings is None:
+        return SEAM_NOT_ESTABLISHED, 'the slot\'s settings or the connection strings could not be read before the swap'
+    moving = []
+    for a_list, b_list in ((prod, slot), (strings[0] or [], strings[1] or [])):
+        sticky = set(e.get('name') for e in list(a_list) + list(b_list) if (e or {}).get('slotSetting') is True)
+        av = dict((e.get('name'), _digest(e.get('value'))) for e in a_list if e.get('name'))
+        bv = dict((e.get('name'), _digest(e.get('value'))) for e in b_list if e.get('name'))
+        for k in sorted(set(av) | set(bv)):
+            if k in kit or k in sticky:
+                continue
+            if av.get(k) != bv.get(k):
+                moving.append(k)
+    if moving:
+        return SEAM_SWAP, ('the swap would carry %s -- non-sticky landing-zone setting(s) that differ between the '
+                           'slot and production -- into production. The landing zone makes each sticky or equal '
+                           'across slots (KDEC-030); the kit does not swap them' % _named(set(moving)))
+    return SEAM_HELD, 'no key outside the kit\'s is written, and the swap moves no landing-zone setting'
+
+
+def cmd_seam(a):
+    """The `seam` step (OF-5 K-6): read the target's settings and decide, before the first mutation."""
+    if not os.environ.get('KIT_TARGET_LEASE_ACCOUNT'):
+        output(seam_ownership=SEAM_NOT_IN_FORCE)
+        print('The seam is not in force for this environment (no KIT_TARGET_LEASE_ACCOUNT): nothing decided.')
+        return 0
+    app, rg, slot = env('webapp_name') or env('containerapp_name'), env('resource_group'), env('slot')
+    prod = slot_list = strings = None
+    swap = False
+    if a.adapter == 'containerapp':
+        ok, shown, _err = az('containerapp', 'show', '-n', app, '-g', rg)
+        if ok and isinstance(shown, dict):
+            cs = (((shown.get('properties') or {}).get('template') or {}).get('containers') or [{}])
+            prod = list((cs[0] or {}).get('env') or [])
+    else:
+        ok, got, _err = az('webapp', 'config', 'appsettings', 'list', '-n', app, '-g', rg)
+        prod = got if ok and isinstance(got, list) else None
+        swap = bool(slot) and env('swap_on_healthy') == 'true'
+        if swap:
+            ok, got, _err = az('webapp', 'config', 'appsettings', 'list', '-n', app, '-g', rg, '--slot', slot)
+            slot_list = got if ok and isinstance(got, list) else None
+            ok1, p_cs, _e1 = az('webapp', 'config', 'connection-string', 'list', '-n', app, '-g', rg)
+            ok2, s_cs, _e2 = az('webapp', 'config', 'connection-string', 'list', '-n', app, '-g', rg, '--slot', slot)
+            strings = (p_cs, s_cs) if ok1 and ok2 and isinstance(p_cs, list) and isinstance(s_cs, list) else None
+    outcome, why = decide_seam(a.adapter, env('kit_setting_keys'), prod, slot_list, strings, swap)
+    write_evidence('seam.json', {'seam_ownership': outcome, 'why': why, 'swap_checked': swap,
+                                 'kit_setting_keys': [k for k in (env('kit_setting_keys') or '').replace(',', ' ').split() if k]})
+    output(seam_ownership=outcome)
+    summary('### Field ownership at the seam (KDEC-030 R3, before the first mutation)\n\n`%s`: %s' % (outcome, why))
+    if outcome != SEAM_HELD:
+        print('::error title=Deploy refused before the first mutation (%s)::%s. Nothing was changed.' % (outcome, why))
+        return 1
+    print('seam ownership %s: %s' % (outcome, why))
+    return 0
+
+
+# ----------------------------------------------------------------------------- edge purge (D-4, OF-5 K-7)
+# KDEC-030 D-4 (decided 2026-10-26): after a VERIFIED release the kit purges the edge cache of the app's
+# OWN Front Door endpoint, the one the landing zone names in KIT_EDGE_ENDPOINT (one endpoint per
+# user-facing app, purge-only role at that endpoint). The kit purges no other endpoint: the vended one
+# is the only one it is ever handed. Without one it is not applicable, recorded, never a pass. A failed
+# purge leaves a healthy release serving behind a stale cache: an advisory, never a failed release.
+# tests/prove_handoff_extended.py.
+EDGE_PURGED = 'EDGE_PURGED'
+EDGE_PURGE_NOT_APPLICABLE = 'EDGE_PURGE_NOT_APPLICABLE'
+EDGE_PURGE_REFUSED = 'EDGE_PURGE_REFUSED'
+EDGE_PURGE_FAILED = 'EDGE_PURGE_FAILED'
+EDGE_ENDPOINT_ID = (r'^/subscriptions/([0-9A-Fa-f-]{36})/resourceGroups/([A-Za-z0-9._()-]{1,90})/providers/'
+                    r'Microsoft\.Cdn/profiles/([A-Za-z0-9-]{1,260})/afdEndpoints/([A-Za-z0-9-]{1,46})$')
+EDGE_PURGE_PATHS = ['/*']   # the app's own endpoint only; versioned asset names make this cheap (D-4)
+
+
+def cmd_purge(a):
+    import re
+    value = env('kit_edge_endpoint').strip()
+    record = {'endpoint_vended': bool(value), 'paths': EDGE_PURGE_PATHS, 'at': utc_now()}
+
+    def done(outcome, why, rc=0):
+        record.update(edge_purge=outcome, why=why)
+        write_evidence('edge-purge.json', record)
+        output(edge_purge=outcome)
+        summary('Edge purge (D-4): `%s` -- %s' % (outcome, why))
+        print('edge purge %s: %s' % (outcome, why))
+        return rc
+    if not value:
+        return done(EDGE_PURGE_NOT_APPLICABLE, 'this environment vends no edge endpoint (KIT_EDGE_ENDPOINT): '
+                    'not applicable, recorded -- never a pass')
+    if a.adapter == 'appservice' and env('slot') and env('swapped') != 'success':
+        return done(EDGE_PURGE_NOT_APPLICABLE, 'production was not changed (staged in a slot, not swapped), so '
+                    'nothing new is served from the endpoint')
+    m = re.match(EDGE_ENDPOINT_ID, value)
+    if not m:
+        print('::warning title=Edge purge refused::KIT_EDGE_ENDPOINT is not a Front Door endpoint resource id '
+              '(.../Microsoft.Cdn/profiles/<profile>/afdEndpoints/<endpoint>); nothing was purged.')
+        return done(EDGE_PURGE_REFUSED, 'the vended value is not an afdEndpoints resource id', 1)
+    _sub, rg, profile, endpoint = m.groups()
+    record.update(resource_group=rg, profile=profile, endpoint=endpoint)
+    ok, _out, err = az('afd', 'endpoint', 'purge', '--resource-group', rg, '--profile-name', profile,
+                       '--endpoint-name', endpoint, '--content-paths', *EDGE_PURGE_PATHS)
+    if not ok:
+        print('::warning title=Edge purge failed::the release is healthy; the cache of endpoint %s may serve the '
+              'previous content until it expires (%s).' % (endpoint, ' '.join(str(err).split())[:200]))
+        return done(EDGE_PURGE_FAILED, 'the purge of %s/%s did not complete: %s' % (profile, endpoint,
+                                                                                ' '.join(str(err).split())[:200]), 1)
+    return done(EDGE_PURGED, 'purged %s on %s/%s (the app\'s own endpoint)' % (', '.join(EDGE_PURGE_PATHS), profile,
+                                                                             endpoint))
+
+
 # ----------------------------------------------------------------------------- manifest
 def release_id():
     return 'run-%s-%s' % (env('github_run_id') or 'local', env('github_run_attempt') or '1')
@@ -440,13 +668,17 @@ def cmd_mutate(a):
         return 0
     slot = env('slot') or 'production'
     prior_img = (snap.get('images') or {}).get(slot, '')
+    rid, err, prior_stamp = resource_id('appservice', slot, with_stamp=True)
+    # KDEC-021: the slot's previous ownership stamp is kept, as the swap keeps production's, so the
+    # reversal hands the slot back to the release it held before. Without it a stacked sequence
+    # could never reverse the earlier release: the slot still carried the later one's stamp.
     entry = {'action': 'MODIFIED', 'object_type': 'slot-container', 'object': slot,
              'prior': ('DOCKER|' + prior_img) if prior_img else '', 'post': 'DOCKER|' + ref,
-             'stamp': stamp_value(ref), 'mutated_at': utc_now()}
+             'stamp': stamp_value(ref), 'mutated_at': utc_now(), 'object_id': rid,
+             'prior_stamp': prior_stamp}
     m['entries'].append(entry)
     save_manifest(m)
     output(mutation_started='true')
-    rid, err = resource_id('appservice', slot)
     steps = []
     if rid:
         steps.append(('tag', 'update', '--resource-id', rid, '--operation', 'Merge', '--tags',
@@ -1008,6 +1240,14 @@ def reverse_appservice(m, snap):
                                'release_ownership_stamp=%s' % (prop.get('prior_stamp') or ''))
                 r['stamp_restored'] = okk
                 err = err or e
+            elif done and prop['action'] == 'MODIFIED' and prop.get('object_id') \
+                    and 'prior_stamp' in prop:
+                # The slot's image is restored; so is its previous owner's claim (KDEC-021).
+                okk, _, e = az('tag', 'update', '--resource-id', prop['object_id'],
+                               '--operation', 'Merge', '--tags',
+                               'release_ownership_stamp=%s' % (prop.get('prior_stamp') or ''))
+                r['stamp_restored'] = okk
+                err = err or e
             r['performed'], r['error'] = done, err
         results.append(r)
     return results
@@ -1120,7 +1360,8 @@ def verify_appservice_reversal(snap):
 
 
 # ----------------------------------------------------------------------------- provenance
-def resource_id(adapter, slot=''):
+def resource_id(adapter, slot='', with_stamp=False):
+    """-> (id, error), or (id, error, ownership stamp) with `with_stamp` -- one read for both."""
     if adapter == 'containerapp':
         ok, shown, err = az('containerapp', 'show', '-n', env('containerapp_name'),
                             '-g', env('resource_group'))
@@ -1130,7 +1371,10 @@ def resource_id(adapter, slot=''):
             args += ['--slot', slot]
         ok, shown, err = az(*args)
     if not ok or not isinstance(shown, dict) or not shown.get('id'):
-        return None, err or 'no resource id in the response'
+        out = (None, err or 'no resource id in the response')
+        return out + ('',) if with_stamp else out
+    if with_stamp:
+        return shown['id'], '', (shown.get('tags') or {}).get('release_ownership_stamp', '')
     return shown['id'], ''
 
 
@@ -1264,37 +1508,63 @@ def derive_outcome(adapter, live):
 
 
 # ----------------------------------------------------------------------------- promotion
-# DCR gap 11 / 7.7. Deployment success is not trust progression. Verified-for-promotion is a
-# CONJUNCTION; this run credits the conditions it established and names the rest. The verified
-# state is not emitted while any condition is unestablished -- and three of them have no evidence
-# source in this kit yet, so on today's kit it is never emitted. That is the honest reading.
+# DCR gap 11 / 7.7; KDEC-029 (owner, 2026-10-26, closing O-11). Deployment success is not trust
+# progression. Verified-for-promotion is a CONJUNCTION, and every condition now has a source:
+# identity from the build (artifact_identity) AND V1 in this deploy; running, traffic and
+# reconciliation from the live read-back; the end-to-end test period, DAST and the security-
+# settings posture from the steps after serving (scripts/promotion.py, their evidence files); the
+# release verdict; and the default branch the digest was built from. "Tested" is the owner's
+# definition: health, the e2e test period, DAST (where configured) with no new blocking finding,
+# and the posture check. At prod the active checks are not run (passive only) and read as
+# not-applicable there; DAST not configured is not a failure (decision 3: "where configured").
 PROMOTION_CONDITIONS = ['exact artefact identity established', 'expected artefact observed running',
-                        'intended traffic observed', 'functional tests passed',
-                        'operational validation passed', 'dependencies verified',
-                        'required reviews and gates passed', 'state reconciliation complete']
+                        'intended traffic observed', 'state reconciliation complete',
+                        'end-to-end test period passed', 'dynamic scan shows no new blocking finding',
+                        'security-settings posture passed', 'required reviews and gates passed',
+                        'built from the default branch']
+PASSIVE_OK = ('NOT_APPLICABLE_PASSIVE',)
 
 
-def promotion(outcome):
+def promotion(outcome, content_proven=False):
+    """`content_proven`: the static-site adapter recomputed the released files' content digest before
+    login (CONTENT_DIGEST_PROVEN) -- its equivalent of the registry proof, passed by its own code, never
+    read from a caller input."""
     v = read_evidence('verification.json') or {}
+    gate = read_evidence('promotion-gate.json') or {}
+    carried = gate.get('carried') or {}
     held = []
-    # P-02: V1 inside the deploy VERIFIED the signed provenance of exactly this digest -- the one
-    # promotion condition this run can establish about identity. A held or absent V1 credits nothing.
-    if outcome == 'DEPLOY_HEALTHY' and env('attestation_outcome') == 'ATTESTATION_VERIFIED':
-        held.append('exact artefact identity established')
     if outcome == 'DEPLOY_HEALTHY':
+        identity = env('artifact_identity') or (carried.get('artifact') or {}).get('artifact_identity')
+        # P-02: V1 inside the deploy VERIFIED the signed provenance of exactly this digest, and the
+        # build proved the registry identity of what it scanned. A held or absent V1 credits nothing.
+        if env('attestation_outcome') == 'ATTESTATION_VERIFIED' and (identity == 'REGISTRY_IDENTITY_PROVEN' or
+                                                                   content_proven):
+            held.append('exact artefact identity established')
         if v.get('runtime_deployed') is True:
             held.append('expected artefact observed running')
         if v.get('serving_verified') in (True, 'not-applicable'):
             held.append('intended traffic observed')
         held.append('state reconciliation complete')
-        if env('routing_result') == 'PROCEED' and not env('controls_unavailable').strip():
+        tp = (read_evidence('test-period.json') or {}).get('result')
+        if tp == 'PASSED' or tp in PASSIVE_OK:
+            held.append('end-to-end test period passed')
+        da = (read_evidence('dast.json') or {}).get('result')
+        if da in ('DAST_PASSED', 'NOT_CONFIGURED') or da in PASSIVE_OK:
+            held.append('dynamic scan shows no new blocking finding')
+        if (read_evidence('security-settings.json') or {}).get('result') == 'POSTURE_PASSED':
+            held.append('security-settings posture passed')
+        if env('routing_result') in ('PROCEED', 'PROCEED_WITH_ADVISORY'):
             held.append('required reviews and gates passed')
+        branch = env('default_branch') or 'main'
+        ref = (carried.get('provenance') or {}).get('source_ref') if env('promote_from_run_id')             else (env('github_ref') or '')
+        if ref in ('refs/heads/%s' % branch, branch):
+            held.append('built from the default branch')
     missing = [c for c in PROMOTION_CONDITIONS if c not in held]
     return {'state': 'not-verified' if missing else 'verified-for-promotion',
             'established': held, 'missing': missing,
-            'note': 'health is one probe, not functional or operational validation; artefact '
-                    'identity is credited only when V1 in this deploy verified the digest\'s signed '
-                    'build provenance; no dependency verification exists in this kit'}
+            'note': 'KDEC-029: tested = health, the end-to-end test period, DAST where configured, '
+                    'and the security-settings posture; identity needs the build-proven registry '
+                    'identity and V1 verified in this deploy; prod runs passive checks only'}
 
 
 # ----------------------------------------------------------------------------- six questions
@@ -1376,7 +1646,11 @@ def cmd_report(a):
     # gap was ruled on, so a refused exception is on the record too.
     ruling = env('version_gap_ruling')
     exc = {'accepted_by': env('weakening_authority'), 'reason': env('weakening_reason'),
-           'exception_ref': env('weakening_exception_ref'), 'expires': env('weakening_expires')}
+           'exception_ref': env('weakening_exception_ref'), 'expires': env('weakening_expires'),
+           # KDEC-018 item 4: how often it was renewed, and its history, as the verdict step read them.
+           'renewals': (int(env('exception_renewals')) if env('exception_renewals').isdigit()
+                        else env('exception_renewals') or None),
+           'history': env('exception_history') or None}
     exc = exc if ruling in ('VERSION_GAP_EXCEPTION_ACCEPTED', 'VERSION_GAP_REFUSED') else None
     outcome, why = derive_outcome(adapter, live)
     report = {'deployment_outcome': outcome, 'why': why,
@@ -1458,11 +1732,13 @@ def main(argv):
     sub = ap.add_subparsers(dest='cmd', required=True)
     cmds = {'capture': cmd_capture, 'capability': cmd_capability, 'mutate': cmd_mutate, 'swap': cmd_swap,
             'verify': cmd_verify, 'redirect': cmd_redirect, 'serving': cmd_serving,
-            'reverse': cmd_reverse, 'unhealthy': cmd_unhealthy,
+            'reverse': cmd_reverse, 'unhealthy': cmd_unhealthy, 'seam': cmd_seam, 'purge': cmd_purge,
             'provenance': cmd_provenance, 'report': cmd_report}
     for name in cmds:
         p = sub.add_parser(name)
-        p.add_argument('--adapter', choices=('containerapp', 'appservice'), required=True)
+        # staticwebapp: only `purge` (the Static Web Apps reusable's D-4 step); its other steps are
+        # static_site_contract.py's. A static site has no slot, so the purge reads no swap.
+        p.add_argument('--adapter', choices=('containerapp', 'appservice', 'staticwebapp'), required=True)
     sub.add_parser('created-revision')
     a = ap.parse_args(argv)
     if a.cmd == 'created-revision':

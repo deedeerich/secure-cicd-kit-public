@@ -76,6 +76,11 @@ def check(files, load):
             if not m:
                 continue
             callee_path = os.path.join(ROOT, m.group(1))
+            # KDEC-028: an overlay's consumer template calls ./.github/workflows/<f>, which in
+            # the consumer's repository is the overlay's workflows/<f>, copied beside it.
+            ov = re.match(r'^(.*[\\/]overlays[\\/][^\\/]+)[\\/]templates[\\/]', f)
+            if ov and str(job.get('uses')).startswith('./'):
+                callee_path = os.path.join(ov.group(1), 'workflows', os.path.basename(m.group(1)))
             if not os.path.isfile(callee_path):
                 bad.append('%s job %s: calls %s, which does not exist' % (rel(f), jname, m.group(1)))
                 continue
@@ -126,8 +131,13 @@ def main():
         print('SELF-TEST FAILED: an insufficient grant was not detected')
         return 2
 
+    # OVERLAY WORKFLOWS ARE CALLERS TOO. They ship in a consumer's copy and call the core by
+    # owner/repo/...@sha; a grant short of what the core asks is the same startup_failure there,
+    # and no workflow in this repository runs them to find out. A neutral copy has no overlays/.
     files = sorted(glob.glob(os.path.join(ROOT, '.github', 'workflows', '*.yml')) +
-                   glob.glob(os.path.join(ROOT, 'templates', '*.yml')))
+                   glob.glob(os.path.join(ROOT, 'templates', '*.yml')) +
+                   glob.glob(os.path.join(ROOT, 'overlays', '*', 'workflows', '*.yml')) +
+                   glob.glob(os.path.join(ROOT, 'overlays', '*', 'templates', '*.yml')))
     if not files:
         print('UNKNOWN: no workflows found.')
         return 2

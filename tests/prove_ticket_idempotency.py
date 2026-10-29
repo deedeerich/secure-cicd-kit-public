@@ -242,9 +242,13 @@ MUTANTS = [
      'every degraded run ever and escalate a healthy cell'),
 
     # T-08. A reopen says why: the registered lapse, a falsified REMEDIATED, or an unbacked close.
+    # KDEC-024 moved the call onto two lines (RECURRED has its own comment); the mutant follows it,
+    # keeping the rest of the statement as an inert tuple so only the comment is removed.
     ('a reopen does not say why on the ticket',
-     "                        ok_c, d_c = backend.comment(hit['ref'], reopen_comment(cls_r, today))",
-     "                        ok_c, d_c = True, 'not written'",
+     "                        ok_c, d_c = backend.comment(\n                            hit['ref'], "
+     "recurred_comment(",
+     "                        ok_c, d_c = True, 'not written'; _unwritten = (\n"
+     "                            hit['ref'], recurred_comment(",
      'a reopened ticket would carry no reason, so a lapse reads as the bridge flapping'),
 
     ('an expired disposition reads as an unbacked closure',
@@ -271,9 +275,11 @@ MUTANTS = [
      'a block rewrite would discard the human text before and after the delimiters'),
 
     # T1. Two loci, two clusters, one stamp: one ticket for two obligations.
+    # L48 (KDEC-024): the hash now lives in finding_correlation.cluster_key, the kit's one key
+    # function; the orchestrator's delegate is where the locus can still be dropped.
     ('the cluster key omits the locus',
-     "    h.update(('CLUSTER/%s/%s/%s' % (subject or '', locus or '', anchor or '')).encode('utf-8'))",
-     "    h.update(('CLUSTER/%s/%s/%s' % (subject or '', '', anchor or '')).encode('utf-8'))",
+     "    return fc.cluster_key(subject, locus, anchor)",
+     "    return fc.cluster_key(subject, '', anchor)",
      'one advisory in two manifests would share one stamp, so one ticket stands for two '
      'obligations and the second reads as a dangling reference'),
 

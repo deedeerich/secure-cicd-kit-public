@@ -59,9 +59,36 @@ outputs:
   cpp:
     description: true / false, as python.
     value: ${{ steps.d.outputs.cpp }}
+  php:
+    description: true / false, as python. composer.json, composer.lock or *.php (lane L-PHP).
+    value: ${{ steps.d.outputs.php }}
+  kotlin:
+    description: true / false, as python. *.kt or *.kts (lane L-SCAN-B, KDEC-026) -- read by sast-semgrep's p/kotlin floor, CodeQL's java-kotlin leg and resolve.
+    value: ${{ steps.d.outputs.kotlin }}
+  swift:
+    description: true / false, as python. *.swift (KDEC-026) -- read by resolve; Swift is scanned in sast-mobile.
+    value: ${{ steps.d.outputs.swift }}
+  mobile:
+    description: true / false, as python. AndroidManifest.xml, Info.plist, *.swift, *.m or *.mm (KDEC-026) -- starts sast-mobile.
+    value: ${{ steps.d.outputs.mobile }}
   iac:
     description: true / false, as python, after iac_mode.
     value: ${{ steps.d.outputs.iac }}
+  # ARTEFACT CLASSES, NOT LANGUAGES (lane L-SCAN-A, KDEC-025). Each decides whether one linter
+  # runs, by artefact presence alone -- the language selector does not reach them, as it does not
+  # reach iac. A linter skipped here costs nothing; "true" also when the probe could not look.
+  workflows:
+    description: true / false. A GitHub Actions workflow under .github/workflows (actionlint + zizmor, deps-scan).
+    value: ${{ steps.d.outputs.workflows }}
+  shell:
+    description: true / false. A *.sh or *.bash script (shellcheck, deps-scan).
+    value: ${{ steps.d.outputs.shell }}
+  powershell:
+    description: true / false. A *.ps1, *.psm1 or *.psd1 file (PSScriptAnalyzer, deps-scan).
+    value: ${{ steps.d.outputs.powershell }}
+  dockerfile:
+    description: true / false. A Dockerfile* / *.dockerfile / Containerfile (hadolint, iac-scan).
+    value: ${{ steps.d.outputs.dockerfile }}
   state:
     description: COMPLETE / DISCOVERY_PARTIAL / DISCOVERY_UNAVAILABLE.
     value: ${{ steps.d.outputs.state }}
@@ -101,6 +128,15 @@ outputs:
   platform_source:
     description: How the platform values were established; "none" when nobody asked successfully.
     value: ${{ steps.platform.outputs.platform_source }}
+  push_ruleset:
+    description: ON / OFF / UNKNOWN -- an active push ruleset refuses .env and key files (leak gate 2b, KDEC-031).
+    value: ${{ steps.platform.outputs.push_ruleset }}
+  branch_gate:
+    description: ON / OFF / UNKNOWN -- the default branch requires a PR and the Security gate check (leak gate 4).
+    value: ${{ steps.platform.outputs.branch_gate }}
+  local_baseline:
+    description: ON / OFF / UNKNOWN -- the checkout's .gitignore ignores .env and keys and a gitleaks pre-commit hook is configured (leak gate 1).
+    value: ${{ steps.platform.outputs.local_baseline }}
 
 runs:
   using: composite
@@ -154,7 +190,7 @@ runs:
 
         # FAIL-SAFE: if the survey itself cannot run, everything is enabled and the state says so.
         trap 'echo "::error title=Discovery failed::Applicability could not be established."; \
-              for k in python node go dotnet java cpp iac; do echo "$k=true" >> "$GITHUB_OUTPUT"; done; \
+              for k in python node go dotnet java cpp php kotlin swift mobile iac workflows shell powershell dockerfile; do echo "$k=true" >> "$GITHUB_OUTPUT"; done; \
               echo "state=DISCOVERY_UNAVAILABLE" >> "$GITHUB_OUTPUT"; exit 0' ERR
 
         # PER-PROBE SENTINEL FILES, NOT ONE GLOBAL FLAG, AND NOT VARIABLES.
@@ -242,7 +278,9 @@ runs:
               "c#"|csharp|dotnet|.net) ;;
               c|c++|cpp) ;;
               tf|terraform|iac) ;;
-              go|java|kotlin|scala) ;;
+              go|java|kotlin|scala|php) ;;
+              # KDEC-026: kotlin was accepted and matched nothing; now it and these are classes.
+              kt|swift|objc|objective-c|android|ios|mobile) ;;
               *) _unknown="$_unknown $_w" ;;
             esac
           done
@@ -253,7 +291,7 @@ runs:
             # to "scan less" -- that is the same inversion as treating a failed probe as absence.
             echo "::error title=Unrecognised language selector::language=\'$sel\' contains$_unknown,"
             echo "which this kit does not recognise. Refusing to silently scan less. Use auto, or"
-            echo "a list of: python node go java dotnet cpp iac (aliases: js/ts, py, c#, c++, tf)."
+            echo "a list of: python node go java dotnet cpp php kotlin swift mobile iac (aliases: js/ts, py, c#, c++, tf, kt, objc/android/ios = mobile)."
             echo "| (selector) | UNRECOGNISED | $_unknown -- refused, see error |" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
@@ -264,8 +302,12 @@ runs:
               "c#"|csharp|dotnet|.net) _w=dotnet ;;
               c|c++|cpp) _w=cpp ;;
               tf|terraform|iac) _w=iac ;;
+              kt) _w=kotlin ;;
+              objc|objective-c|android|ios) _w=mobile ;;
             esac
             [ "$_w" = "$1" ] && return 0
+            # Swift is scanned in the mobile job, so naming swift also selects mobile.
+            [ "$_w" = "swift" ] && [ "$1" = "mobile" ] && return 0
           done
           return 1
         }
@@ -319,7 +361,26 @@ runs:
         dn="$(probe dotnet -name '*.csproj' -o -name '*.sln')"
         jv="$(probe java   -name pom.xml -o -name build.gradle -o -name build.gradle.kts)"
         cp="$(probe cpp    -name '*.c' -o -name '*.cpp' -o -name '*.cc' -o -name '*.h' -o -name '*.hpp')"
-        ia="$(probe iac    -name '*.tf' -o -name '*.bicep' -o -name 'Dockerfile*' -o -name Chart.yaml -o -name kustomization.yaml -o -name azuredeploy.json)"
+        # PHP: the source, the Composer manifest, or its lock. Each alone is PHP here; the lock is
+        # what the dependency scan reads, and the source is what Semgrep reads (lane L-PHP).
+        ph="$(probe php    -name '*.php' -o -name composer.json -o -name composer.lock)"
+        # KOTLIN, SWIFT AND THE MOBILE PLATFORMS ARE CLASSES, NOT COVERAGE GAPS (lane L-SCAN-B,
+        # KDEC-026). `.kt` was a declared gap and `.m` / `.mm` were never asked about, so an
+        # Objective-C-only repository reported nothing at all. kotlin starts sast-semgrep's p/kotlin
+        # floor and CodeQL's java-kotlin leg; mobile starts sast-mobile (mobsfscan and the kit's
+        # Android/iOS configuration rules); swift is read by resolve for its version. `.m` is also
+        # MATLAB's extension: such a repository gets one mobile scan that finds nothing -- over-
+        # scanning is a cost, an unprobed class is a hole.
+        kt="$(probe kotlin -name '*.kt' -o -name '*.kts')"
+        sw="$(probe swift  -name '*.swift')"
+        mb="$(probe mobile -name AndroidManifest.xml -o -name Info.plist -o -name '*.swift' -o -name '*.m' -o -name '*.mm')"
+        ia="$(probe iac   -name '*.tf' -o -name '*.bicep' -o -name 'Dockerfile*' -o -name Chart.yaml -o -name kustomization.yaml -o -name azuredeploy.json)"
+        # ARTEFACT CLASSES WITH A LINTER EACH (lane L-SCAN-A, KDEC-025). They were COVERAGE_GAP rows
+        # -- present, and nothing here could read them. Each now decides whether its linter runs.
+        wf="$(probe workflows -path '*/.github/workflows/*.yml' -o -path '*/.github/workflows/*.yaml')"
+        sh_="$(probe shell -name '*.sh' -o -name '*.bash')"
+        ps_="$(probe powershell -name '*.ps1' -o -name '*.psm1' -o -name '*.psd1')"
+        dk="$(probe dockerfile -name 'Dockerfile*' -o -name '*.dockerfile' -o -name '*.Dockerfile' -o -name Containerfile)"
 
         # WHAT IS HERE THAT WE CANNOT SCAN?
         #
@@ -345,17 +406,17 @@ runs:
         # individually by emit(), so DISCOVERY_UNAVAILABLE needs no special case -- it falls
         # out of every probe having failed.
         failed=0
-        for k in python node go dotnet java cpp iac; do
+        for k in python node go dotnet java cpp php kotlin swift mobile iac; do
           [ -e "$FAILDIR/$k" ] && failed=$((failed + 1))
         done
-        if [ "$failed" -eq 7 ]; then
+        if [ "$failed" -eq 11 ]; then
           state=DISCOVERY_UNAVAILABLE
           echo "::error title=Discovery unavailable::Every probe failed. Applicability could not"
           echo "be established at all, so every capability is force-enabled. Results from this"
           echo "run must NOT be read as coverage."
         elif [ "$failed" -gt 0 ]; then
           state=DISCOVERY_PARTIAL
-          echo "::warning title=Discovery partial::$failed of 7 probes failed. What the other"
+          echo "::warning title=Discovery partial::$failed of 11 probes failed. What the other"
           echo "probes established still holds; the failed ones are enabled as UNDETERMINED."
         fi
 
@@ -365,6 +426,33 @@ runs:
         emit dotnet "$dn" "*.csproj / *.sln"
         emit java   "$jv" "pom.xml / build.gradle"
         emit cpp    "$cp" "*.c / *.cpp / *.h"
+        emit php    "$ph" "*.php / composer.json / composer.lock"
+        emit kotlin "$kt" "*.kt / *.kts"
+        emit swift  "$sw" "*.swift"
+        emit mobile "$mb" "AndroidManifest.xml / Info.plist / *.swift / *.m / *.mm"
+
+        # PRESENCE DECIDES, NEVER THE LANGUAGE SELECTOR (the iac rule below, for the same reason):
+        # a workflow, a shell script or a Dockerfile is not written in the application's language.
+        # A probe that could not look runs the linter and degrades the state; it is never absence.
+        emit_artifact() {
+          n="$1"; found="$2"; label="$3"
+          if [ -e "$FAILDIR/$n" ]; then
+            echo "$n=true" >> "$GITHUB_OUTPUT"
+            [ "$state" = "COMPLETE" ] && state=DISCOVERY_PARTIAL
+            echo "| $n | UNDETERMINED -> RUN | probe failed or deeper entries unsearched; presence unknown, so enabled |" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$found" = "yes" ]; then
+            echo "$n=true" >> "$GITHUB_OUTPUT"
+            printf '  %-8s RUN                   %s\n' "$n" "$label"
+            echo "| $n | RUN | $label |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "$n=false" >> "$GITHUB_OUTPUT"
+            echo "| $n | NOT_APPLICABLE | searched, none found -- $label skipped at no cost |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+        }
+        emit_artifact workflows  "$wf"  ".github/workflows/*.yml -- actionlint + zizmor"
+        emit_artifact shell      "$sh_" "*.sh / *.bash -- shellcheck"
+        emit_artifact powershell "$ps_" "*.ps1 / *.psm1 / *.psd1 -- PSScriptAnalyzer"
+        emit_artifact dockerfile "$dk"  "Dockerfile* / *.dockerfile / Containerfile -- hadolint"
 
         # IaC carries its own mode, because "off by default" was the wrong worldview.
         case "$iac_mode" in
@@ -442,9 +530,8 @@ runs:
           case "$1" in
             rs)     printf 'Rust' ;;
             rb)     printf 'Ruby' ;;
-            php)    printf 'PHP' ;;
-            swift)  printf 'Swift' ;;
-            kt|kts) printf 'Kotlin' ;;
+            # Swift and Kotlin left this list with lane L-SCAN-B (KDEC-026): they are scanned
+            # (sast-mobile, sast-semgrep's p/kotlin floor, CodeQL java-kotlin), not gaps.
             scala)  printf 'Scala' ;;
             ex|exs) printf 'Elixir' ;;
             erl)    printf 'Erlang' ;;
@@ -460,9 +547,6 @@ runs:
             nim)    printf 'Nim' ;;
             vb)     printf 'VisualBasic' ;;
             fs)     printf 'FSharp' ;;
-            sh)     printf 'Shell' ;;
-            ps1)    printf 'PowerShell' ;;
-            gha)    printf 'GitHubActionsWorkflow' ;;
             *)      printf '%s' "$1" ;;
           esac
         }
@@ -479,11 +563,11 @@ runs:
 
         unsupported=""
         unsup_raw="$(find "$scope" -maxdepth 8 -type f \( \
-            -name '*.rs' -o -name '*.rb' -o -name '*.php' -o -name '*.swift' -o -name '*.kt' \
+            -name '*.rs' -o -name '*.rb' \
             -o -name '*.scala' -o -name '*.ex' -o -name '*.exs' -o -name '*.erl' -o -name '*.hs' \
             -o -name '*.lua' -o -name '*.pl' -o -name '*.r' -o -name '*.jl' -o -name '*.dart' \
             -o -name '*.groovy' -o -name '*.clj' -o -name '*.zig' -o -name '*.nim' \
-            -o -name '*.vb' -o -name '*.fs' -o -name '*.sh' -o -name '*.ps1' \) \
+            -o -name '*.vb' -o -name '*.fs' \) \
             -not -path '*/node_modules/*' -not -path '*/vendor/*' -not -path '*/.git/*' \
             -print 2>/dev/null)"
         unsup_rc=$?
@@ -515,35 +599,82 @@ runs:
         fi
         echo "unsupported=$unsupported" >> "$GITHUB_OUTPUT"
 
-        # THE PIPELINE'S OWN DEFINITION FILES ARE AN ARTIFACT CLASS TOO.
+        # A COMPOSER MANIFEST WITHOUT ITS LOCK IS PHP NO CARRIED SCANNER CAN RESOLVE (lane L-PHP).
+        # The dependency scan (Trivy fs) reads composer.lock and never composer.json: measured with
+        # trivy 0.71.2 on 2026-10-21, a composer.json naming a package with a CRITICAL advisory and
+        # no lock beside it produced no result at all, while the same package in a composer.lock
+        # was reported. A manifest is a set of CONSTRAINTS; the lock is the versions. So each
+        # composer.json with no composer.lock in its directory is declared, named and counted --
+        # never left to read as a dependency scan that passed over nothing.
+        if [ "$ph" = "yes" ]; then
+          # suppression: PRESENTATION_ONLY -- find's stderr is noise on unreadable subtrees; the
+          # EXIT STATUS is captured beside it and drives an UNDETERMINED row, never absence.
+          # discards: find's stderr on permission-denied or unreadable subtrees
+          # preserved_by: cj_rc, which turns a failed probe into an explicit UNDETERMINED row
+          cj_rc=0
+          cj_raw="$(find "$scope" -maxdepth 8 -type f -name composer.json \
+              -not -path '*/node_modules/*' -not -path '*/vendor/*' -not -path '*/.git/*' \
+              -print 2>/dev/null)" || cj_rc=$?
+          if [ "$cj_rc" -ne 0 ]; then
+            echo "::warning title=Composer lock probe failed::Could not determine whether every"
+            echo "composer.json has its composer.lock. Unknown, not absent."
+            echo "| PHPDependenciesUnlocked | UNDETERMINED | probe failed; whether each composer.json has its lock is unknown |" >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$cj_raw" ]; then
+            _unlocked=0
+            while IFS= read -r _cj; do
+              [ -n "$_cj" ] || continue
+              [ -f "$(dirname "$_cj")/composer.lock" ] || _unlocked=$((_unlocked + 1))
+            done <<< "$cj_raw"
+            if [ "$_unlocked" -gt 0 ]; then
+              declare_gap PHPDependenciesUnlocked "$_unlocked" "a composer.lock beside each composer.json; Trivy reads only composer.lock, so these dependency sets are unresolved"
+            fi
+          fi
+        fi
+
+        # THE PIPELINE'S OWN DEFINITION FILES, SHELL AND POWERSHELL ARE NO LONGER GAPS (lane L-SCAN-A,
+        # KDEC-025). Each is an artefact class answered above (workflows / shell / powershell) and
+        # read by a pinned linter inside deps-scan: actionlint + zizmor, shellcheck, PSScriptAnalyzer.
+        # A gap row here for them would now be a false admission -- something DID look.
         #
-        # Workflow YAML decides what runs, with what permissions, against which refs -- and no
-        # probe above asks about it, so a repository whose only unscanned artifact was
-        # .github/workflows/*.yml produced a completely silent survey. Checkov's CKV_GHA_* rules
-        # fire only when the IaC job happens to be enabled and pointed at the right scope; that
-        # is incidental coverage, not a declared capability, and this kit ships no actionlint.
-        # suppression: PRESENTATION_ONLY -- find's stderr is noise on unreadable subtrees; the
-        # EXIT STATUS is captured on the next line and drives UNDETERMINED rather than reading
-        # as 'no workflows here'.
-        # discards: find's stderr on permission-denied or unreadable subtrees
-        # preserved_by: gha_rc on the next line, which turns a failed probe into an explicit
-        # preserved_by: UNDETERMINED row instead of a silent absence
-        gha_raw="$(find "$scope" -maxdepth 8 -type f -path '*/.github/workflows/*' \
-            \( -name '*.yml' -o -name '*.yaml' \) \
-            -not -path '*/node_modules/*' -not -path '*/vendor/*' -not -path '*/.git/*' \
-            -print 2>/dev/null)"
-        gha_rc=$?
-        if [ "$gha_rc" -ne 0 ]; then
-          echo "::warning title=Workflow coverage probe failed::Could not determine whether"
-          echo "GitHub Actions workflow definitions are present. Unknown, not absent."
-          echo "| GitHubActionsWorkflow | UNDETERMINED | probe failed; presence unknown |" >> "$GITHUB_STEP_SUMMARY"
-        elif [ -n "$gha_raw" ]; then
-          # suppression: EXPECTED_NEGATIVE_RESULT -- grep exits 1 on a zero count, which is a
-          # count and not an error; unguarded it would fire the ERR trap.
-          # discards: grep's exit status, which only distinguishes count==0 from count>0
-          # preserved_by: the COUNT grep -c printed, which is what the gap row reports
-          _n="$(printf '%s\n' "$gha_raw" | grep -c . || true)"
-          declare_gap "$(gap_class gha)" "${_n:-0}" "a workflow linter (e.g. actionlint)"
+        # AN UNPINNED PYTHON REQUIREMENT IS A CONSTRAINT, NOT A VERSION (lane L-SCAN-A, KDEC-025) --
+        # the PHP rule above, for pip. Measured 2026-10-23: `django>=2.0,<2.1` in requirements.txt
+        # drew NO result from Trivy 0.71.2 or OSV-Scanner 2.7.0 (both carried, both run), while
+        # pip-audit 2.9.0 resolved the range to 2.0.13 and reported 18 advisories. Pinned lines are
+        # read by both (OSV-Scanner also resolves their transitive dependencies), so a file is named
+        # only when one of its requirement lines carries no exact `==` / `===` version.
+        if [ "$py" = "yes" ]; then
+          # suppression: PRESENTATION_ONLY -- find's stderr is noise on unreadable subtrees; the
+          # EXIT STATUS is captured beside it and drives an UNDETERMINED row, never absence.
+          # discards: find's stderr on permission-denied or unreadable subtrees
+          # preserved_by: rq_rc, which turns a failed probe into an explicit UNDETERMINED row
+          rq_rc=0
+          rq_raw="$(find "$scope" -maxdepth 8 -type f -name '*requirements*.txt' \
+              -not -path '*/node_modules/*' -not -path '*/vendor/*' -not -path '*/.git/*' \
+              -print 2>/dev/null)" || rq_rc=$?
+          if [ "$rq_rc" -ne 0 ]; then
+            echo "::warning title=Requirements pin probe failed::Could not read whether each"
+            echo "requirements file pins its versions. Unknown, not absent."
+            echo "| PythonDependenciesUnpinned | UNDETERMINED | probe failed; whether each requirements file pins its versions is unknown |" >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$rq_raw" ]; then
+            _unpinned=0
+            while IFS= read -r _rq; do
+              [ -n "$_rq" ] || continue
+              # A requirement line: comments, markers, continuations and option lines (-r, -c, -e,
+              # --hash, --index-url) stripped. Pinned = NAME[extras] == or === VERSION, no wildcard.
+              # suppression: EXPECTED_NEGATIVE_RESULT -- grep exits 1 when NO line is unpinned,
+              # which is the answer "pinned", not an error; unguarded it would fire the ERR trap.
+              # discards: grep's exit status, which only distinguishes "some unpinned" from "none"
+              # preserved_by: the line count grep -c printed, which decides whether the file is named
+              _u="$(sed -e 's/[[:space:]]#.*$//' -e 's/^#.*$//' -e 's/;.*$//' -e 's/\\$//' \
+                      -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$_rq" 2>/dev/null \
+                    | grep -v -e '^$' -e '^-' \
+                    | grep -c -v -E '^[A-Za-z0-9][A-Za-z0-9._-]*(\[[^]]*\])?[[:space:]]*===?[[:space:]]*[A-Za-z0-9._+!-]+$' || true)"
+              [ "${_u:-0}" -gt 0 ] && _unpinned=$((_unpinned + 1))
+            done <<< "$rq_raw"
+            if [ "$_unpinned" -gt 0 ]; then
+              declare_gap PythonDependenciesUnpinned "$_unpinned" "an exact == version on every requirement line (or a lock); Trivy and OSV-Scanner read versions, and a range is not one"
+            fi
+          fi
         fi
 
         # THE SEARCH BOUND IS A COVERAGE GAP OF ITS OWN (W4K-120). Every probe above, and every
@@ -618,6 +749,8 @@ runs:
         GH_TOKEN: ${{ github.token }}
       run: |
         set -uo pipefail
+        # KDEC-027: gh's token goes to this run's host only (gh api / -R default to github.com).
+        GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
 
         ghas=unknown; codescan=unknown; secret=unknown
         push=unknown; dep=unknown; depupd=unknown; vis=unknown
@@ -681,6 +814,78 @@ runs:
           cfg=ABSENT
         fi
 
+        # -- LEAK GATES (lane L-LEAK, KDEC-031 PROPOSED) -------------------------------------
+        # The layers between a developer's `.env` and the default branch, each ON / OFF / UNKNOWN.
+        # OFF only where every source that could say ON was read and none did; a 403, a missing
+        # scope or an unreadable body is UNKNOWN, never ON. Same token, same host (GH_HOST above).
+        # The security-gate job records them (step `leakgates`); tests/prove_leak_gate_posture.py.
+        prs=UNKNOWN; bgate=UNKNOWN; lrails=UNKNOWN
+        R="${GITHUB_REPOSITORY:-}"
+        defb=""; [ -n "${repo_json:-}" ] && defb=$(printf '%s' "$repo_json" | jq -r '.default_branch // empty' 2>/dev/null)
+        case "$defb" in *[!A-Za-z0-9._/-]*) defb="" ;; esac
+        # 2b: an ACTIVE push ruleset that refuses .env and keys/certificates by path or extension.
+        # GitHub stores extensions as `*.ext` (it refuses a bare `.ext` with 422); the leading `*` is
+        # stripped before comparing.
+        covers='[.rules[]? | select(.type=="file_path_restriction") | .parameters.restricted_file_paths[]?] as $p
+          | [.rules[]? | select(.type=="file_extension_restriction") | .parameters.restricted_file_extensions[]? | ltrimstr("*")] as $e
+          | ($p | any(. == ".env" or . == "**/.env"))
+            and ([".pem", ".key"] | all(. as $x | ($e | index($x)) != null or ($p | any(. == ("*" + $x) or . == ("**/*" + $x)))))'
+        if rs=$(gh api "repos/$R/rulesets?includes_parents=true&per_page=100" 2>/dev/null) &&
+           printf '%s' "$rs" | jq -e 'type == "array"' >/dev/null 2>&1; then
+          prs=OFF; unread=0
+          for id in $(printf '%s' "$rs" | jq -r '.[] | select(.target == "push" and .enforcement == "active") | .id' 2>/dev/null); do
+            case "$id" in ''|*[!0-9]*) continue ;; esac
+            if one=$(gh api "repos/$R/rulesets/$id" 2>/dev/null) &&
+               printf '%s' "$one" | jq -e 'type == "object" and has("rules")' >/dev/null 2>&1; then
+              if printf '%s' "$one" | jq -e "$covers" >/dev/null 2>&1; then prs=ON; break; fi
+            else
+              unread=1
+            fi
+          done
+          [ "$prs" = OFF ] && [ "$unread" = 1 ] && prs=UNKNOWN
+        fi
+        # 4: the default branch requires a PR AND the `Security gate` check -- from rulesets
+        # (rules/branches, readable with read access) or classic protection (the branch GET shows
+        # its required checks; only the admin-only protection endpoint shows a required PR).
+        if [ -n "$defb" ]; then
+          pr=UNKNOWN; chk=UNKNOWN; rules_ok=0; classic=UNKNOWN; prot_read=0
+          gate_re='(^| )Security gate$'
+          if rb=$(gh api "repos/$R/rules/branches/$defb" 2>/dev/null) &&
+             printf '%s' "$rb" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            rules_ok=1
+            printf '%s' "$rb" | jq -e 'any(.[]; .type == "pull_request")' >/dev/null 2>&1 && pr=ON
+            printf '%s' "$rb" | jq -e --arg re "$gate_re" 'any(.[]; .type == "required_status_checks" and any(.parameters.required_status_checks[]?; (.context // "") | test($re)))' >/dev/null 2>&1 && chk=ON
+          fi
+          if br=$(gh api "repos/$R/branches/$defb" 2>/dev/null) &&
+             printf '%s' "$br" | jq -e 'type == "object" and has("protected")' >/dev/null 2>&1; then
+            if printf '%s' "$br" | jq -e '.protected == true' >/dev/null 2>&1; then
+              classic=SOME
+              printf '%s' "$br" | jq -e --arg re "$gate_re" '[.protection.required_status_checks.contexts[]?, .protection.required_status_checks.checks[]?.context] | any(test($re))' >/dev/null 2>&1 && chk=ON
+            else
+              classic=NONE
+            fi
+          fi
+          if [ "$pr" != ON ] && [ "$classic" = SOME ]; then
+            bp=$(gh api "repos/$R/branches/$defb/protection" 2>&1) && prot_read=1
+            case "$bp" in *"Branch not protected"*) prot_read=1 ;; esac
+            if [ "$prot_read" = 1 ] && printf '%s' "$bp" | jq -e '.required_pull_request_reviews != null' >/dev/null 2>&1; then pr=ON; fi
+          fi
+          if [ "$rules_ok" = 1 ] && { [ "$classic" = NONE ] || [ "$prot_read" = 1 ]; }; then [ "$pr" = ON ] || pr=OFF; fi
+          if [ "$rules_ok" = 1 ] && [ "$classic" != UNKNOWN ]; then [ "$chk" = ON ] || chk=OFF; fi
+          if [ "$pr" = ON ] && [ "$chk" = ON ]; then bgate=ON
+          elif [ "$pr" = OFF ] || [ "$chk" = OFF ]; then bgate=OFF; fi
+        fi
+        # 1: local rails in the checkout -- the .gitignore ignores .env and a key, and a pre-commit
+        # config runs gitleaks. Hooks are feedback, not enforcement; this says only whether the
+        # repository ships them.
+        if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+          lrails=OFF
+          n=$(printf '.env\n.env.local\nleak-probe.pem\n' | git check-ignore --no-index --stdin 2>/dev/null | grep -c . || true)
+          if [ "${n:-0}" = 3 ] && grep -qs 'gitleaks' .pre-commit-config.yaml .pre-commit-config.yml; then
+            lrails=ON
+          fi
+        fi
+
         {
           echo "ghas_available=$ghas"
           echo "code_scanning=$codescan"
@@ -689,8 +894,11 @@ runs:
           echo "dependabot_alerts=$dep"
           echo "dependabot_updates=$depupd"
           echo "dependabot_config=$cfg"
-          echo "visibility=$vis"
+          echo "visibility=${vis//[$'\r\n']/ }"
           echo "platform_source=$how"
+          echo "push_ruleset=$prs"
+          echo "branch_gate=$bgate"
+          echo "local_baseline=$lrails"
         } >> "$GITHUB_OUTPUT"
 
         {
@@ -707,6 +915,9 @@ runs:
           echo "| Dependabot updates | $depupd | $how |"
           echo "| dependabot.yml | $cfg | file presence |"
           echo "| Repository visibility | $vis | repos API |"
+          echo "| Push ruleset refusing secret files (leak gate 2b) | $prs | rulesets API; private/internal repositories only |"
+          echo "| Branch gate: PR + Security gate required (leak gate 4) | $bgate | rules/branches + branch protection |"
+          echo "| Local rails: .gitignore + gitleaks hook (leak gate 1) | $lrails | the checkout |"
           echo ""
           if [ "$how" = "none" ]; then
             echo "**The settings object was not readable by this token.** That is expected for a"

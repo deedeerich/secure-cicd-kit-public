@@ -51,6 +51,26 @@
     "expected_signal": "sast:java-semgrep"
   },
   {
+    "path": "php/composer.lock",
+    "expected_signal": "deps:php-cve",
+    "tool": "trivy-deps"
+  },
+  {
+    "path": "php/sqli.php",
+    "expected_signal": "sast:php-sqli",
+    "tool": "semgrep"
+  },
+  {
+    "path": "php/xss.php",
+    "expected_signal": "sast:php-xss",
+    "tool": "semgrep"
+  },
+  {
+    "path": "php/cmd.php",
+    "expected_signal": "sast:php-command-injection",
+    "tool": "semgrep"
+  },
+  {
     "path": "services/api/package-lock.json",
     "expected_signal": "deps:node-cve-second-root"
   },
