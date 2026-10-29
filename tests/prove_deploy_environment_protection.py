@@ -33,7 +33,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, 'scripts'))
 sys.path.insert(0, HERE)
-DEPLOYS = ['.github/workflows/reusable-deploy-appservice.yml', '.github/workflows/reusable-deploy-containerapp.yml']
+DEPLOYS = ['.github/workflows/reusable-deploy-appservice.yml', '.github/workflows/reusable-deploy-containerapp.yml',
+           '.github/workflows/reusable-deploy-staticwebapp.yml']
 
 
 def team(slug):

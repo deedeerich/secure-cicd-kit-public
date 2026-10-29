@@ -16,6 +16,7 @@ templates to this rule.
 | `reusable-build-docker.yml` | Build once → Trivy gate **before** push → Syft SPDX SBOM → push those bytes → digest read back → attest | OIDC | `contents: read`, `id-token: write`, `attestations: write` |
 | `reusable-deploy-containerapp.yml` | Container Apps deploy by digest, verdict-gated, revision probed before traffic, reversible | OIDC | `contents: read`, `id-token: write` |
 | `reusable-deploy-appservice.yml` | App Service deploy by digest, verdict-gated, slot-staged (or direct below uat), reversible | OIDC | `contents: read`, `id-token: write` |
+| `reusable-deploy-staticwebapp.yml` | Static Web Apps deploy by content digest (OF-5 K-8, KDEC-034 proposed): verdict-gated, staged in a preview environment, verified on the marker the site serves, reversible to the prior artefact. Stub-proven; a live run is owed | OIDC | `contents: read`, `id-token: write`, `attestations: read`, `actions: read` |
 | `reusable-propose-ledger.yml` | Proposes baseline-ledger changes as a pull request (protected default branch only) | none | `contents: write`, `pull-requests: write` |
 | `reusable-ticket-reconcile.yml` | Findings → Jira or Azure DevOps tickets, post-merge or scheduled | tracker | `contents: read` |
 | `reusable-dependabot-triage.yml` | Dependabot PRs: `--auto --squash` only when nothing can change behaviour (FUTURE_WORK §6); otherwise label, comment why and ask a human; excluded fixture paths closed. Call from `pull_request_target` ([DEPENDABOT_TRIAGE.md](DEPENDABOT_TRIAGE.md)) | none (optional `METADATA_TOKEN`) | `contents: write`, `pull-requests: write`, `issues: write` |
@@ -114,6 +115,62 @@ that merge, in parallel); everything else is a `workflow_dispatch`.
 Health checks run **before** traffic moves: Container Apps probes the new revision on its own name
 before any traffic shifts and reverses only what the run changed; App Service health-checks the slot
 and never swaps an unhealthy one (a direct deploy with `slot: ''` is refused at `uat`/`prod`).
+
+### What the deploy also refuses before login, from the landing zone's side (OF-5, KDEC-034 proposed)
+
+The landing zone and the kit were reviewed against each other (2026-10-28) and the stronger mechanism
+taken on each side. The deploy reusables now also hold, before Azure login:
+
+| Check | What refuses | Where it comes from |
+|---|---|---|
+| platform stop | `KIT_RELEASE_BLOCK` set to anything but `none` (`platform_halted`, `ttl_expired`, `budget_cap_reached`), at **every** tier: `RELEASE_BLOCKED_BY_PLATFORM` | the landing zone writes it into each environment on every halt, TTL or budget-cap change |
+| zone readiness | at `uat`/`prod`, `KIT_ZONE_READINESS` not `READY` or `READY_WITH_EXCEPTIONS` -- `NOT_READY`, `UNKNOWN` or **unset**: `RELEASE_REFUSED_ZONE_NOT_READY` | the landing zone's readiness gates. **Outside a landing zone, set `KIT_ZONE_READINESS: READY` on your uat and prod environments yourself** once you have decided the zone is ready; unknown is never a pass |
+| release approval | at `uat`/`prod`: no approval of this run's environment (an admin bypass leaves none), an approval by the requester or by the released commit's author, or no independent approval comment that **quotes the digest** (full `sha256:...` or its first 12 hex characters): `RELEASE_APPROVAL_ABSENT`, `SELF_DEPLOYMENT_APPROVAL`, `RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST` | GitHub's own self-review prevention excludes only the run's trigger. **Reviewers: approve with the digest in the comment.** `deploy_approval.confirm_digest: required` in the policy register demands it below uat too |
+
+With the KDEC-030 seam opted in (`KIT_TARGET_LEASE_ACCOUNT` vended), before the first mutation the
+deploy also refuses a setting it does not own or one the landing zone also claims
+(`SEAM_SETTING_OWNERSHIP_CONFLICT`; the kit owns only `release_ownership_stamp` and the keys in
+`KIT_SETTING_KEYS`) and an App Service swap that would carry a non-sticky landing-zone setting into
+production (`SEAM_SWAP_MOVES_LZ_SETTING`); keeps its release record create-only in the target's lease
+container, `releases/` (`RELEASE_RECORD_KEPT`), where the landing zone reads it; and an `arm` rollback
+never reverses a landing-zone entry (`ROLLBACK_REFUSED_PLATFORM_OWNED`) or takes its evidence
+(`ROLLBACK_REFUSED_FOREIGN_EVIDENCE`). When the environment vends `KIT_EDGE_ENDPOINT`, a verified
+release purges the app's own Front Door endpoint, and no other (`EDGE_PURGED`; a failed purge is an
+advisory, never a failed release). The daily deployed scan labels each finding with the landing zone's
+drift dimension and class as well as its own rule. Variables and roles:
+`docs/architecture/LZ_KIT_HANDOFF_CONTRACT.md`, "The extended hand-off set".
+
+### Static sites (Azure Static Web Apps) -- OF-5 K-8, KDEC-034 PROPOSED
+
+A static site has no registry digest, so the kit names it by its **content**. After your own build,
+`.github/actions/static-site-package` (input `path`: the built site) writes `kit-release.json` into the
+site root -- the tree digest (sha256 over the sorted `<path>\0<sha256 of the file>` lines of every other
+file) and the build's provenance -- uploads the site as `kit-static-site-<hex>` and its SBOM as
+`sbom-<hex>`, and outputs `site_digest`. Sign the marker in your attest job (`actions/attest`,
+`subject-path` = the marker; the job that holds `attestations: write` is the only one that does), then
+call `reusable-deploy-staticwebapp.yml` with `site_name`, `resource_group`, `site_digest` (and
+`artifact_run_id` when the build ran in another run). It refuses before login on the same verdict,
+binding, zone, protection, approval and promotion rules as the container deploys, and also when the
+artefact's files do not hash to `site_digest` (`SITE_DIGEST_MISMATCH`) or `preview_environment: ''` at
+uat/prod. It stages in the preview environment (`staging` by default), verifies the marker that preview
+serves and its health, then releases to production and reads production's marker back (NOW SERVING is
+that live marker, never the input). A failed preview is removed and production is never touched; a failed
+production gets the prior release's artefact back, re-verified by digest and on the live marker -- which
+needs that artefact to still exist, so keep `retention-days` at least as long as a release may stand (an
+expired one is `rollback_capability UNAVAILABLE`, refused at uat/prod). The deployment token is read with
+the deploy identity, masked, and handed to the pinned SWA CLI (2.0.2) through its environment: never a
+repository secret. **Unlink the site from its repository**: the posture check fails a site whose
+`repositoryUrl` is set (its own generated workflow can deploy around the kit) and a Free plan. The deploy
+identity needs a role that can read the site's deployment token and its environments, delete a preview
+environment, and write tags (e.g. `Contributor` scoped to the one static site); the landing zone vends it.
+It takes the same seam step and edge purge as the container deploys (KDEC-030 D-4 parity): with the lease
+on (`KIT_TARGET_LEASE_ACCOUNT`), the site's production app settings are read before the preview deploy
+and a `KIT_SETTING_KEYS` key the landing zone backs with a Key Vault reference refuses
+(`SEAM_SETTING_OWNERSHIP_CONFLICT`; unreadable: `SEAM_OWNERSHIP_NOT_ESTABLISHED`) -- the adapter itself
+writes no app setting; and after production is verified and stamped it purges only the Front Door
+endpoint vended in `KIT_EDGE_ENDPOINT` (`EDGE_PURGED`; none vended: `EDGE_PURGE_NOT_APPLICABLE`; a failed
+purge is an advisory, never a failed release). STUBBED, not live: `tests/prove_deploy_staticwebapp.py`
+(J11, J12).
 
 ## Build once, promote the same digest (KDEC-029)
 

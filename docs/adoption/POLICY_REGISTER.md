@@ -327,6 +327,37 @@ default, because it cannot tell a value the gate emitted from one a caller typed
 softening of deploy approval below the uat/prod default is recorded by the gate and **not** honoured
 by the deploy. If the API cannot be read, uat/prod refuse (`ENVIRONMENT_PROTECTION_NOT_ESTABLISHED`).
 
+### One approver list, shared with the landing zone (OF-5 K-9, K-1)
+
+The landing zone writes each uat/prod environment's reviewers; the deploy checks them against this
+register. Two lists drift, and every release is then refused -- so there is **one** list. Name it once
+in the central register and point every tier's `deploy_approval` at it:
+
+```json
+"approver_lists": {"deployment-approvers": ["architects", "security", "platform"]},
+...
+"deploy_approval": {"approver_groups_from": "deployment-approvers", "approvers_required": 1,
+                    "self_review_prevented": "required"}
+```
+
+Or keep the list in its own file -- the **configurable source** -- beside the central register, the
+same file the landing zone's hand-off write reads (`"approver_lists_source": "approver-lists.json"`,
+holding `{"approver_lists": {...}}`). Resolution and `--validate` read it; its sha256 is in the
+resolution notes; it cannot be read -> `REGISTRATION_UNAVAILABLE`, never the default. Refused by name:
+`approver_groups` and `approver_groups_from` in one entry, or `approver_lists` and
+`approver_lists_source` together (`POLICY_REGISTER_CONFLICT`); a name no list defines, or a
+repository file naming a list -- the list is the central register's (`REGISTRATION_UNAVAILABLE`). The
+resolved `deploy_approval` output carries the groups and the list's name. The landing zone reads that
+list and refuses a worksheet that disagrees (its `HANDOFF_APPROVER_LIST_MISMATCH`). Proof:
+`tests/prove_approver_list_source.py`.
+
+**The approval itself (K-1).** At uat and prod the deploy also reads its own run's approvals before
+login: an approval of the environment must exist, its reviewer may be neither the requester nor the
+released commit's author (`SELF_DEPLOYMENT_APPROVAL`), and an independent approval's comment must
+quote the digest being released, in full or by at least its first 12 hex characters
+(`RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST`). `deploy_approval.confirm_digest: required` demands the same
+below uat; nothing relaxes it at uat/prod. Outcomes: `release_approval`.
+
 ## What a work administrator creates
 
 1. In the private kit repository: `policy/policy-registration.json` (copy

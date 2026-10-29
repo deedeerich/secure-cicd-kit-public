@@ -37,6 +37,12 @@
         "properties": {"team": {"type": "string", "minLength": 1}, "product": {"type": "string", "minLength": 1}}
       }
     },
+    "approver_lists": {
+      "type": "object", "minProperties": 1, "description": "CENTRAL ONLY (OF-5 K-9). Each approver list once, by name: {name: [group, ...]}. A deploy_approval names one with approver_groups_from, so every tier, and the landing zone's hand-off write, read ONE list. Not together with approver_lists_source.",
+      "propertyNames": {"pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+      "additionalProperties": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+    },
+    "approver_lists_source": {"type": "string", "minLength": 1, "description": "CENTRAL ONLY (OF-5 K-9). A path, relative to this register, of a JSON file {\"approver_lists\": {name: [group, ...]}}: the shared list file the landing zone's hand-off write reads too. Read when the register is resolved or validated; unreadable refuses the register (REGISTRATION_UNAVAILABLE), never the default. Not together with approver_lists."},
     "numbers": {"type": "object", "description": "Owner-configured numbers (SLA periods and the like); nothing in the kit defaults any of them -- except max_exception_renewals, whose kit default is 2.",
       "properties": {
         "max_exception_renewals": {"type": "integer", "minimum": 0, "maximum": 5, "description": "KDEC-018: how many times one exception (a secret exception, a softening decision, a deploy's version-gap exception) may be renewed -- the number of prior grants in its `renews`. CENTRAL ONLY (the authority's scope). Kit default 2. Never unlimited: 0 means no renewal, 5 bounds one exception at six grants. Over it: EXCEPTION_RENEWAL_LIMIT."}
@@ -157,6 +163,8 @@
             "approver_groups": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Reviewer teams (slugs) of which ONE must be a required reviewer of the environment."},
             "approvers_required": {"enum": [0, 1]},
             "self_review_prevented": {"enum": ["required", "not_required"]},
+            "approver_groups_from": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", "description": "CENTRAL ONLY (OF-5 K-9): the approver list (approver_lists or its source) whose groups this tier demands. Not together with approver_groups."},
+            "confirm_digest": {"enum": ["required", "not_required"], "description": "OF-5 K-1: the approving reviewer quotes the digest being released. Always demanded at uat and prod by the deploy; a register may demand it below uat, never relax it."},
             "ai_review": {"enum": ["advisory", "none"], "description": "An AI review comments on pull requests. Advisory only: never a gate, never an approval."}
           }
         },

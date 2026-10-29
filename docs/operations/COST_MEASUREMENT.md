@@ -1,11 +1,12 @@
 # Cost measurement: the acceptance test for the cost redesign
 
 ```
-Phase: plan + tool (lane L-COST, steps 1-3). Nothing in this document has been run yet.
-Truth State: the tool's arithmetic is fixture-tested (scripts/measure_cost.py --self-test).
-             No before/after run exists. Every saving in the proposal stays an ESTIMATE until this
-             procedure has produced >= 5 before and >= 5 after runs per class.
-Who runs it: the coordinator, after lane/cost-step1-3 is merged. Not the lane.
+Phase: MEASURED (2026-10-28) for steps 1-3, on the free public repositories: 5 before and 5 after
+       runs per class, every run completed and used. Results below.
+Truth State: billed figures are COMPUTED billed minutes from measured durations, NOT
+             invoice-reconciled. The savings for steps 1-3 are measured; every later step's saving
+             stays an ESTIMATE until this procedure has run for it.
+Who runs it: the coordinator, after a lane is merged. Not the lane.
 ```
 
 ## What it decides
@@ -118,6 +119,46 @@ Then run the two remaining criteria at the after commit: `consumer-path-test.yml
 Report each class as the proposal's reporting rule requires: commit SHA (before and after), the
 medians, the computed-billed label, the coverage delta (per-scanner invariant differences, expected
 to be none), and the negative-control and 24/24 results. Attach `cost-result.json`.
+
+## Results, 2026-10-28 (steps 1-3: dynamic CodeQL matrix, template triggers, `plan` and `Security gate`)
+
+Before = the export of `fecc3a5` (mirror `a7e3118`; `hello-world` pinned to it at `41cf693`). After =
+the export of trunk `fd3cfb7` (mirror `4d7dcc5`; `hello-world` at `ba64162`). Five runs per class and
+phase; none excluded, no tool failure. Medians:
+
+| class | before: jobs / billed | after: jobs / billed | billed saving | raw minutes | wall clock |
+|---|---|---|---|---|---|
+| small (`hello-world`) | 19 / **20** | 12 / **13** | **-7 (-35.0%)** | 6.88 -> 6.25 | 1.68 -> 1.55 min |
+| monorepo (six-language fixture) | 24 / **27** | 21 / **24** | **-3 (-11.1%)** | 12.88 -> 13.12 | 2.48 -> 2.28 min |
+| iac-heavy (Terraform fixture) | 11 / **11** | 8 / **8** | **-3 (-27.3%)** | 3.57 -> 3.48 | 1.32 -> 1.38 min |
+
+All billed figures: **computed billed minutes from measured durations, not invoice-reconciled.**
+
+The four criteria:
+
+1. **Billed minutes dropped** in every class (above).
+2. **Every invariant held per scanner identity**: `scripts/measure_cost.py compute` found no
+   applicability, execution, gate or SARIF-count difference for any scanner in any class
+   (`invariant_differences` empty for all three; no `UNSTABLE_*`, no `ABSENT`).
+3. **24/24 held**: `consumer-path-test.yml`'s expected-versus-observed step, replayed over each of the
+   ten monorepo runs' own SARIF and seed artifacts at the commit it ran (before runs 40787303716,
+   40787663077, 40788026726, 40788395723, 40788752733; after runs 40791360475, 40791710577,
+   40792067039, 40792417058, 40792656359): 24/24 seeded signals detected and 1/1 negative control
+   clean, every run.
+4. **The negative control still blocks**: every monorepo and iac-heavy run, before and after, ended red
+   at its `Security gate` and nowhere else; every small run ended red at the gate on `hello-world`'s
+   seeded findings.
+
+**The redesign passes for steps 1-3 in all three classes.**
+
+What the runs also showed, and what was done with it: on the monorepo fixture the `c-cpp`, `csharp`
+and `java-kotlin` CodeQL legs ran to a green job and wrote no SARIF, before and after alike (so it is
+not a delta). The logs of run 40791360475 name the cause: `autobuild` found no build system at the
+checkout root, the database held no code, and analyze failed under continue-on-error. Fixed on
+integrate/r8: each leg names its build mode (buildless `none` for those three), each leg reports its
+own state to its row, and a leg that initialised and could not analyse fails (part 04). The monorepo
+class's CodeQL rows therefore change after that fix -- by adding analysis, which a later measurement
+records as a coverage increase, not a regression.
 
 ## What this does not establish
 

@@ -5,6 +5,26 @@ Commit ids are on the build trunk `fix/normalization-and-discovery`. Versions 1.
 `10b-CHANGE-LOG-EARLIER.md`. A reader whose last copy was v1.10 (`a907dc8`) reads
 `12-CHANGES-SINCE-A907DC8.md` first: it groups every change since by what an integrator must do.
 
+## Unreleased — CodeQL legs build what they can and report what they did (integrate/r8, 2026-10-28)
+
+Found on the cost runs of the six-language fixture (public mirror, cost/after run 40791360475): the
+C/C++, C# and Java legs ran autobuild at the checkout root, found no build system (the projects sit in
+subdirectories), held an empty database (`database finalize` exit 32), wrote no SARIF, and stayed
+green, so the gate read the CodeQL job as a success. Proven locally, each failed first
+(`prove_codeql_dynamic_matrix.py`, `prove_codeql_build_outcome.py` C4..C6,
+`prove_codeql_rows_read_sarif.py` per-leg and partial, `prove_gate_policy_enforcement.py`
+crawl_codeql_*). Hosted on the public mirror (throwaway branch, deleted): run 40809492962, all six
+CodeQL legs COMPLETE / PASS with their findings, 24/24, the capability floor HELD, the negative
+control blocked.
+
+| change | parts affected |
+|---|---|
+| Each CodeQL leg names its build mode: `none` (buildless) for Python, JavaScript/TypeScript, C#, Java and C/C++; `autobuild` for Go and for Kotlin (not extracted buildless) | 02, 04 |
+| Each leg files its own state (`sarif-codeql-leg-<leg>` artifact); its row reads it, not the job result six legs share | 04 |
+| An autobuild leg whose build did not succeed is `PARTIAL` in its row and in the verdict (`COVERAGE_PARTIAL`, `CODEQL_BUILD_PARTIAL`) | 02, 04, 05 |
+| A leg that initialised and could not analyse fails its job (`COLLECTION_FAILED`); the gate reads it as untrusted evidence. A licence that refused init (`UNAVAILABLE`) still never fails the build | 02, 04, 05 |
+| The six-language fixture's C# compiles: `Fixture.csproj` references `System.Data.SqlClient` 4.9.0 (not vulnerable), which `Vuln.cs` uses. Hosted run 40808064559 showed the buildless C# leg analysing it and reporting compiler errors as error-level notifications, which validity row 5 correctly reads as a failed run (`prove_fixture_dotnet_compiles.py`, failed first: CS1069) | 04 |
+
 ## Unreleased — strictest org, exception history from git, exploited in the wild (lane L-POL, 2026-10-23)
 
 KDEC-022 (owner, 2026-10-23). Proven locally, each failed first (`prove_authority_floor.py` A12,

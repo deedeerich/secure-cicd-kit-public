@@ -63,6 +63,7 @@ runs:
         RESOURCE_GROUP: ${{ inputs.resource-group }}
         CONTAINERAPP_NAME: ${{ inputs.app-name }}
         WEBAPP_NAME: ${{ inputs.app-name }}
+        SITE_NAME: ${{ inputs.app-name }}
         SLOTS: ${{ inputs.slots }}
         KEV_STATE: ${{ inputs.kev-state }}
         KEV_BLOCKING: ${{ inputs.kev-blocking }}

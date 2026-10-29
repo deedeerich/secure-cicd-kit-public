@@ -737,6 +737,26 @@ def cmd_dast(a):
 def security_settings(adapter):
     """-> (result, [failed checks], [checks read]). Passive: reads only."""
     failed, read = [], []
+    if adapter == 'staticwebapp':
+        # OF-5 K-8. What a static site's posture can show: a Free plan (no private endpoint, no custom
+        # authentication, no SLA) and a site still LINKED to a repository -- whose own generated SWA
+        # workflow can deploy around the kit, with no verdict, digest or read-back -- fail; the
+        # public network access is read and recorded (a public website is the point; R8 is the
+        # landing zone's network decision, never a release's).
+        ok, shown, err = dc.az('staticwebapp', 'show', '-n', env('site_name'), '-g', env('resource_group'))
+        if not ok or not isinstance(shown, dict):
+            return 'POSTURE_UNREADABLE', [err or 'no answer'], read
+
+        def g(k):
+            return shown.get(k) if shown.get(k) is not None else (shown.get('properties') or {}).get(k)
+        sku = ((g('sku') or {}).get('name') if isinstance(g('sku'), dict) else g('sku')) or ''
+        read += ['sku=%s' % sku, 'repositoryUrl=%s' % (g('repositoryUrl') or ''),
+                 'publicNetworkAccess=%s' % (g('publicNetworkAccess') or 'not reported')]
+        if str(sku).lower() == 'free':
+            failed.append('Free plan: no private endpoint, no custom authentication, no SLA')
+        if g('repositoryUrl'):
+            failed.append('linked to a repository: its generated workflow can deploy around the kit')
+        return ('POSTURE_FAILED' if failed else 'POSTURE_PASSED'), failed, read
     if adapter == 'containerapp':
         ok, shown, err = dc.az('containerapp', 'show', '-n', env('containerapp_name'),
                                '-g', env('resource_group'))
@@ -801,7 +821,9 @@ def cmd_record(a):
         rid, _ = dc.resource_id(a.adapter)
     artifact = dict(carried.get('artifact') or {}) if promoted else {}
     artifact.update({'digest': env('image_digest'),
-                     'image': dc.intended_ref(),
+                     # OF-5 K-8: a static site has no image; its artefact is named by its content digest.
+                     'image': ('static-site:%s@%s' % (env('site_name'), env('image_digest'))
+                               if a.adapter == 'staticwebapp' else dc.intended_ref()),
                      'sbom_sha256': artifact.get('sbom_sha256') or meta.get('sbom_sha256') or None,
                      'artifact_identity': artifact.get('artifact_identity') or
                      env('artifact_identity') or meta.get('artifact_identity') or None,
@@ -889,6 +911,13 @@ def serving_now(adapter):
             return None
         return [{'where': 'revision %s' % t['revision'], 'weight': t['weight'], 'image': t['image'],
                  'digest': t['image'].split('@', 1)[1] if '@' in t['image'] else None} for t in live]
+    if adapter == 'staticwebapp':
+        # OF-5 K-8 x K-10: a static site serves what its live marker names (the content digest), read now.
+        import static_site_contract as ss  # noqa: E402  (beside this file in the kit and the deploy)
+        digest, _why = ss.read_marker(ss.host_of(ss.PRODUCTION))
+        if digest is None:
+            return None
+        return [{'where': 'production', 'weight': 100, 'image': 'static site %s' % digest, 'digest': digest}]
     out = []
     for slot in ['production'] + [s for s in (env('slots') or '').split(',') if s.strip()]:
         img = dc.appservice_slot_image(slot.strip())
@@ -921,6 +950,43 @@ DRIFT_RULES = {'KIT-ARTIFACT-DRIFT': 'the serving digest is not the last promote
                'KIT-RESCAN-NOT-ESTABLISHED': 'the serving digest could not be re-scanned'}
 
 
+# OF-5 K-10 (the LZ-vs-kit review's P13): every finding of the daily scan ALSO carries the landing zone's
+# drift vocabulary -- a DIMENSION (iac, identity, authentication, authorisation, network_exposure,
+# security_control, monitoring, and release from its seam detector) and a CLASS (benign, operational,
+# critical; not_attempted when nothing was established, never "no drift") -- so one view serves the
+# platform admins and the application owner. The kit's own rules, routing and tickets are unchanged.
+# Vocabulary: assurance-taxonomy.yaml :: lz_drift_dimension, lz_drift_class.
+LZ_DRIFT = {'KIT-ARTIFACT-DRIFT': ('release', 'operational'),
+            'KIT-SERVING-UNREADABLE': ('release', 'not_attempted'),
+            'KIT-SECURITY-SETTINGS': ('security_control', 'operational'),
+            'KIT-BREAK-GLASS-TESTING-OWED': ('release', 'operational'),
+            'KIT-RESCAN-NOT-ESTABLISHED': ('security_control', 'not_attempted'),
+            'KIT-KNOWN-EXPLOITED-SERVING': ('security_control', 'critical')}
+# Plain-text traffic to what serves is exposure, the landing zone's critical class.
+LZ_EXPOSURE_FAILURES = ('ingress allows plain HTTP (allowInsecure true)', 'HTTPS is not enforced')
+
+
+def lz_tag(f, dimension=None, cls=None):
+    """Add the landing zone's dimension and class to one SARIF result (its properties)."""
+    d, c = LZ_DRIFT.get(f['ruleId'], ('release', 'operational'))
+    f.setdefault('properties', {}).update(lz_drift_dimension=dimension or d, lz_drift_class=cls or c)
+    return f
+
+
+def lz_view(results, rescans=()):
+    """The drift view in the landing zone's terms: one row per kit finding, plus security drift."""
+    view = [{'rule': r['ruleId'], 'where': ((r.get('locations') or [{}])[0].get('physicalLocation') or {})
+             .get('artifactLocation', {}).get('uri'), 'dimension': (r.get('properties') or {}).get('lz_drift_dimension'),
+             'class': (r.get('properties') or {}).get('lz_drift_class'), 'text': (r.get('message') or {}).get('text')}
+            for r in results]
+    for s in rescans:
+        if s.get('state') == 'COMPLETE' and (s.get('critical') or s.get('high')):
+            view.append({'rule': 'security drift (re-scan of what serves)', 'where': s.get('digest'),
+                         'dimension': 'security_control', 'class': 'critical' if s.get('critical') else 'operational',
+                         'text': '%d critical, %d high' % (len(s.get('critical') or []), len(s.get('high') or []))})
+    return view
+
+
 def cmd_deployed_scan(a):
     """Phase 1 of the daily scan for ONE environment (the job's own): reconcile, then the two
     drifts. Writes promotion/deployed/: deployed-state.json, state SARIFs, and the re-scan SARIF the
@@ -931,7 +997,7 @@ def cmd_deployed_scan(a):
            'promoted': None, 'artifact_drift': None, 'security_drift': None, 'rescans': [],
            'posture': None, 'break_glass_owed': None}
     results = []
-    where = 'deployed/%s/%s' % (envname, env('containerapp_name') or env('webapp_name'))
+    where = 'deployed/%s/%s' % (envname, env('containerapp_name') or env('webapp_name') or env('site_name'))
     serving = serving_now(adapter)
     doc['serving'] = serving
     try:
@@ -949,11 +1015,14 @@ def cmd_deployed_scan(a):
         want = (doc['promoted'] or {}).get('digest')
         drift = [s for s in serving if s['weight'] > 0 and s['digest'] != want]
         doc['artifact_drift'] = bool(drift) if want else None
+        verified = set((r.get('artifact') or {}).get('digest') for r in recs if r.get('state') == VERIFIED)
         for s in drift:
-            results.append(finding('KIT-ARTIFACT-DRIFT', '%s serves %s at %d%%; the last promoted '
-                                   'digest is %s.' % (s['where'], s['digest'] or s['image'], s['weight'],
-                                                      want or 'none on record'),
-                                   '%s/%s' % (where, s['where'].replace(' ', '-'))))
+            # A digest no kit run of this environment verified is serving: the landing zone's critical class.
+            results.append(lz_tag(finding('KIT-ARTIFACT-DRIFT', '%s serves %s at %d%%; the last promoted '
+                                          'digest is %s.' % (s['where'], s['digest'] or s['image'], s['weight'],
+                                                             want or 'none on record'),
+                                          '%s/%s' % (where, s['where'].replace(' ', '-'))),
+                                  cls='operational' if s['digest'] in verified else 'critical'))
     # Security drift: re-scan EVERY digest truly serving -- never a nominal tag -- from its build SBOM.
     vuln_results = []
     for s in [x for x in (serving or []) if x['digest']]:
@@ -974,8 +1043,11 @@ def cmd_deployed_scan(a):
     result, failed, read = security_settings(adapter)
     doc['posture'] = {'result': result, 'failed': failed, 'read': read}
     if result != 'POSTURE_PASSED':
-        results.append(finding('KIT-SECURITY-SETTINGS', 'Security settings of %s: %s (%s).' % (
-            envname, result, '; '.join(failed)), where))
+        exposed = any(f in LZ_EXPOSURE_FAILURES for f in failed)
+        results.append(lz_tag(finding('KIT-SECURITY-SETTINGS', 'Security settings of %s: %s (%s).' % (
+            envname, result, '; '.join(failed)), where),
+            dimension='network_exposure' if exposed else 'security_control',
+            cls='critical' if exposed else ('not_attempted' if result == 'POSTURE_UNREADABLE' else 'operational')))
     if last and last.get('state') == BREAK_GLASS:
         dig = (last.get('artifact') or {}).get('digest')
         pred = (last.get('predecessor') or {}).get('required') or 'test'
@@ -990,6 +1062,10 @@ def cmd_deployed_scan(a):
                                    '%s) is still owed: %s.' % (dig, ((last.get('break_glass') or {}).get('exception') or {}).get('exception_ref'),
                                                                ', '.join((last.get('break_glass') or {}).get('testing_owed') or [])),
                                    '%s/break-glass' % where))
+    for r in results:
+        if 'lz_drift_dimension' not in (r.get('properties') or {}):
+            lz_tag(r)
+    doc['drift_view'] = lz_view(results, doc['rescans'])
     # The state rows the core report reads (scripts/scan_report.py --batch): one for the state
     # findings, one per re-scan SARIF, named by environment so every environment's rows can be
     # merged into one report. Coverage rows are what let a ticket close on clearance.
@@ -1017,6 +1093,10 @@ def cmd_deployed_scan(a):
               'Artifact drift: **%s**; security drift: **%s**; posture: `%s`; break-glass owed: %s' % (
                   doc['artifact_drift'], doc['security_drift'], result, doc['break_glass_owed']),
               'Nothing is rolled back by this scan: findings change promotion eligibility and tickets.']
+    if doc['drift_view']:
+        lines += ['', 'In the landing zone\'s drift terms (one view for both):', '',
+                  '| finding | dimension | class |', '|---|---|---|']
+        lines += ['| %s | %s | %s |' % (v['rule'], v['dimension'], v['class']) for v in doc['drift_view']]
     summary('\n'.join(lines))
     print('\n'.join(lines))
     return 0
@@ -1036,14 +1116,15 @@ def cmd_deployed_finish(a):
         return 1
     res = doc['runs'][0]['results']
     state = env('kev_state') or 'UNAVAILABLE'
-    where = 'deployed/%s/%s' % (envname, env('containerapp_name') or env('webapp_name'))
+    where = 'deployed/%s/%s' % (envname, env('containerapp_name') or env('webapp_name') or env('site_name'))
     if state != 'AVAILABLE' and scan.get('rescans'):
-        res.append(finding('KIT-RESCAN-NOT-ESTABLISHED', 'The KEV re-check of what %s serves could not '
-                           'be completed (kev_state %s).' % (envname, state), where + '/kev'))
+        res.append(lz_tag(finding('KIT-RESCAN-NOT-ESTABLISHED', 'The KEV re-check of what %s serves could not '
+                                  'be completed (kev_state %s).' % (envname, state), where + '/kev')))
     for tok in [t for t in (env('kev_blocking') or '').split() if t]:
-        res.append(finding('KIT-KNOWN-EXPLOITED-SERVING', 'A known-exploited CVE is in what %s serves: %s.'
-                           % (envname, tok), '%s/%s' % (where, tok.split('@', 1)[0])))
+        res.append(lz_tag(finding('KIT-KNOWN-EXPLOITED-SERVING', 'A known-exploited CVE is in what %s serves: %s.'
+                                  % (envname, tok), '%s/%s' % (where, tok.split('@', 1)[0]))))
         scan['security_drift'] = True
+    scan['drift_view'] = lz_view(res, scan.get('rescans') or [])
     rules = doc['runs'][0]['tool']['driver']['rules']
     if not any(r['id'] == 'KIT-KNOWN-EXPLOITED-SERVING' for r in rules):
         rules.append({'id': 'KIT-KNOWN-EXPLOITED-SERVING',
@@ -1120,7 +1201,7 @@ def main(argv):
             'deployed-finish': cmd_deployed_finish, 'deployed-report': cmd_deployed_report}
     for name in cmds:
         p = sub.add_parser(name)
-        p.add_argument('--adapter', choices=('containerapp', 'appservice'), default='containerapp')
+        p.add_argument('--adapter', choices=('containerapp', 'appservice', 'staticwebapp'), default='containerapp')
         p.add_argument('--state-dir', default='')
     sub.add_parser('self-test')
     a = ap.parse_args(argv)

@@ -159,7 +159,10 @@ def ctx(scanner='success', kit='success', report='success', advisory='false',
          # The sast-cpp job's build-metadata state (KDEC-026): PARTIAL / CPP_ANALYSIS_PARTIAL when
          # any C/C++ source had no compilation database. '' when the job did not run.
          'needs.sast-cpp.outputs.scan_state': '',
-         'needs.sast-cpp.outputs.scan_reason': ''}
+         'needs.sast-cpp.outputs.scan_reason': '',
+         # The row builder's CodeQL legs whose autobuild did not succeed (PARTIAL), space-separated.
+         # '' when none did, or no CodeQL leg ran.
+         'steps.rows.outputs.codeql_partial': ''}
     # What each scanner job HANDS the gate (lane L-S, O-24: the gate is the single enforcement
     # point): FINDINGS when its own threshold fired unsoftened, '' otherwise -- '' here, nothing.
     for s in FINDINGS_STATE_JOBS:

@@ -361,12 +361,15 @@ class AzureBlobLeaseStore(object):
             self._bearer = os.environ.get('TARGET_LEASE_BEARER') or bearer_from_az()
         return self._bearer
 
-    def _call(self, method, key, comp='', headers=None):
-        url = '%s/%s/%s' % (self.base, container_for(key), LEASE_BLOB) + ('?comp=' + comp if comp else '')
+    def _call(self, method, key, comp='', headers=None, blob=LEASE_BLOB, query='', data=None):
+        url = '%s/%s' % (self.base, container_for(key)) + ('/' + blob if blob else '')
+        q = '&'.join(x for x in (query, 'comp=' + comp if comp else '') if x)
+        url += '?' + q if q else ''
         h = {'Authorization': 'Bearer ' + self._token(), 'x-ms-version': API_VERSION,
              'x-ms-date': formatdate(usegmt=True)}
         h.update({k: v for k, v in (headers or {}).items() if v is not None})
-        data = b'' if method == 'PUT' else None
+        if data is None and method == 'PUT':
+            data = b''
         req = urllib.request.Request(url, data=data, method=method, headers=h)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
@@ -421,6 +424,29 @@ class AzureBlobLeaseStore(object):
         enc = base64.b64encode(json.dumps(md, sort_keys=True).encode('utf-8')).decode('ascii')
         self._call('PUT', key, 'metadata', {'x-ms-lease-id': lease_id, 'x-ms-meta-' + META_KEY: enc})
 
+    # OF-5 K-4 (KDEC-030 kit item 2): the target's durable `releases/` folder, beside its lease blob.
+    def put_record(self, key, name, data):
+        """Create `releases/...` once (If-None-Match: *): a record is never overwritten (409 instead)."""
+        self._call('PUT', key, blob=name, data=data,
+                   headers={'x-ms-blob-type': 'BlockBlob', 'If-None-Match': '*',
+                            'Content-Type': 'application/json', 'Content-Length': str(len(data)),
+                            'x-ms-meta-kind': 'kit-release-record'})
+
+    def retention_policy(self, key):
+        """-> 'present' | 'absent' | 'unreadable': whether the container carries an immutability
+        policy (or a legal hold) -- the landing zone's retention of what the kit keeps there."""
+        try:
+            h = self._call('HEAD', key, blob='', query='restype=container')[1]
+        except LeaseError as e:
+            if e.code == 'LEASE_TARGET_NOT_VENDED':
+                raise
+            return 'unreadable'
+        flags = [h.get('x-ms-has-immutability-policy'), h.get('x-ms-has-legal-hold'),
+                 h.get('x-ms-immutable-storage-with-versioning-enabled')]
+        if any(str(f).lower() == 'true' for f in flags):
+            return 'present'
+        return 'absent' if any(f is not None for f in flags) else 'unreadable'
+
     def read(self, key, lease_id, now=None):
         try:
             h = self._call('HEAD', key, headers={'x-ms-lease-id': lease_id})[1]
@@ -450,7 +476,8 @@ class AzureBlobLeaseStore(object):
 #         store again: no further mutation. --mark-mutating marks the lease `mutating` for the
 #         child's whole run and clean only when it exits 0 (a halted rollback stays a human decision).
 UNKNOWN_CODES = ('LEASE_STORE_UNREACHABLE', 'LEASE_TARGET_NOT_VENDED')
-ARM_TYPES = {'containerapp': 'Microsoft.App/containerApps', 'appservice': 'Microsoft.Web/sites'}
+ARM_TYPES = {'containerapp': 'Microsoft.App/containerApps', 'appservice': 'Microsoft.Web/sites',
+             'staticwebapp': 'Microsoft.Web/staticSites'}
 LOST_SUFFIX = '.lost'
 DEFAULT_TOKEN = os.path.join('kit-target-lease', 'token.json')
 
@@ -589,6 +616,75 @@ def _hold(a, cmd, done):
         rc)
 
 
+RELEASE_RECORD_SCHEMA = 'kit-release-record/1'
+RECORD_KEPT = 'RELEASE_RECORD_KEPT'
+RECORD_NOT_KEPT = 'RELEASE_RECORD_NOT_KEPT'
+
+
+def release_record(rec, target, environment, routing_result, written_at, tok):
+    """The record the landing zone reads (OF-5 K-4): its fields first, the promotion record whole."""
+    live = rec.get('live_state') or {}
+    return {'schema': RELEASE_RECORD_SCHEMA, 'kind': 'kit-release', 'written_at': written_at,
+            'target_resource_id': target, 'environment': environment,
+            'digest': (rec.get('artifact') or {}).get('digest'),
+            'now_serving': live.get('now_serving') or [],
+            'deployment_outcome': live.get('deployment_outcome'),
+            'state': rec.get('state'), 'validity': rec.get('validity') or {},
+            'run': rec.get('run') or {}, 'routing_result': routing_result or None,
+            'gate_routing_result': (rec.get('provenance') or {}).get('gate_routing_result'),
+            'lease': {'holder': tok.holder, 'generation': tok.generation},
+            'promotion_record': rec}
+
+
+def _record(a, now, github_output):
+    """`record`: keep this run's release record in the target's releases/ folder, create-only.
+
+    Uses the run's lease token for the target and the store (the lease need not still be held: the
+    folder is not the leased blob). EXIT 0 kept; 1 refused (no record, a name that already exists);
+    2 the store could not be reached or the target's container was never vended -- fail closed."""
+    def done(value, why, code, **extra):
+        _emit(dict({'release_record': value, 'release_record_reason': why}, **extra), github_output)
+        return code
+    path = a.token_file or default_token_file()
+    if not os.path.exists(path):
+        _emit({'target_lease': 'LEASE_NOT_HELD', 'target_lease_reason': 'no lease token at %s: this run '
+               'never acquired the target, so it has no release record to keep there' % path}, github_output)
+        return 1
+    cfg, tok = _load_token(path)
+    try:
+        with open(a.record_file, encoding='utf-8') as f:
+            rec = json.load(f)
+        if not isinstance(rec, dict):
+            raise ValueError('not an object')
+    except (OSError, ValueError) as e:
+        return done(RECORD_NOT_KEPT, 'there is no promotion record to keep (%s)' % e, 1)
+    stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime(now))
+    env_slug = re.sub(r'[^A-Za-z0-9._-]', '-', a.environment or 'env')[:40]
+    run = rec.get('run') or {}
+    name = 'releases/%s/%s-%s-%s.json' % (env_slug, stamp, re.sub(r'\D', '', str(run.get('id') or '')) or 'local',
+                                          re.sub(r'\D', '', str(run.get('attempt') or '')) or '1')
+    store = _store(cfg)
+    try:
+        retention = store.retention_policy(tok.target)
+        doc = release_record(rec, tok.target, a.environment, a.routing_result,
+                             time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now)), tok)
+        doc['retention_policy'] = retention
+        store.put_record(tok.target, name, json.dumps(doc, indent=1, sort_keys=True).encode('utf-8'))
+    except LeaseError as e:
+        if e.code in (409, 412):
+            return done(RECORD_NOT_KEPT, '%s already exists in %s: a release record is never overwritten'
+                        % (name, container_for(tok.target)), 1)
+        return done(RECORD_NOT_KEPT, '%s: %s' % (e.code, e), 2)
+    if retention != 'present':
+        print('::warning title=Release record retention not established::%s/%s is kept, but the container '
+              'carries %s immutability policy. The landing zone sets a time-based retention on it at least '
+              'as long as its Git evidence (docs/architecture/LZ_KIT_HANDOFF_CONTRACT.md).'
+              % (container_for(tok.target), name, 'no' if retention == 'absent' else 'an unreadable'))
+    return done(RECORD_KEPT, 'kept as %s/%s' % (container_for(tok.target), name), 0,
+                release_record_path='%s/%s' % (container_for(tok.target), name),
+                release_record_retention=retention)
+
+
 def run_cli(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     cmd = []
@@ -596,7 +692,8 @@ def run_cli(argv=None):
         k = argv.index('--')
         argv, cmd = argv[:k], argv[k + 1:]
     p = argparse.ArgumentParser(description='The cross-repository target lease (KDEC-030 draft).')
-    p.add_argument('op', choices=['acquire', 'fence', 'begin', 'end', 'release', 'status', 'break', 'hold'])
+    p.add_argument('op', choices=['acquire', 'fence', 'begin', 'end', 'release', 'status', 'break', 'hold',
+                                  'record'])
     p.add_argument('--resource-id', default='')
     p.add_argument('--adapter', default='', help='with --subscription --resource-group --name: builds the id')
     p.add_argument('--subscription', default='')
@@ -616,6 +713,9 @@ def run_cli(argv=None):
     p.add_argument('--authority', default=os.environ.get('TARGET_LEASE_BREAK_AUTHORITY') or 'platform-admins')
     p.add_argument('--now', type=float, default=None, help='a fixed clock, for proofs only')
     p.add_argument('--github-output', default=os.environ.get('GITHUB_OUTPUT') or '')
+    p.add_argument('--record-file', default='', help='record: the promotion record to keep in releases/')
+    p.add_argument('--environment', default='', help='record: the GitHub environment (the folder)')
+    p.add_argument('--routing-result', default='', help='record: the routing_result of the deploy itself')
     a = p.parse_args(argv)
     now = a.now if a.now is not None else time.time()
     out = {}
@@ -626,6 +726,8 @@ def run_cli(argv=None):
         return code
 
     try:
+        if a.op == 'record':
+            return _record(a, now, a.github_output)
         if a.op == 'hold':
             return _hold(a, cmd, done)
         if a.op in ('acquire', 'status', 'break'):

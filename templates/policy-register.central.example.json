@@ -6,6 +6,7 @@
   "proposed_by": "team-type analysis harness (example), run <reference>",
   "environment_names": {"development": "dev", "qa": "test", "staging": "uat", "production": "prod"},
   "orgs": {"example-org-a": "example-enterprise", "example-org-b": "example-enterprise"},
+  "approver_lists": {"deployment-approvers": ["architects", "security", "platform"]},
   "repositories": {
     "example-org-a/payments-api": {"team": "payments", "product": "ledger"},
     "example-org-a/payments-web": {"team": "payments", "product": "checkout"},
@@ -58,7 +59,7 @@
       "id": "org-b-solo-field-tool",
       "scope": {"org": "example-org-b", "product": "field-tool"},
       "team_pattern": "solo_dev",
-      "deploy_approval": {"approver_groups": ["architects", "security", "platform"], "approvers_required": 1, "self_review_prevented": "required", "ai_review": "advisory"},
+      "deploy_approval": {"approver_groups_from": "deployment-approvers", "approvers_required": 1, "self_review_prevented": "required", "ai_review": "advisory"},
       "decision": {"authority": "Dana Example", "approver_role": "security-lead", "reason": "one developer: uat and prod need one approver from architecture, security or platform who is not the developer; an AI review comments on pull requests, advisory only", "decided_on": "2026-10-22", "expires": "2027-01-31", "environment_reviewers": ["architects", "security", "platform"]}
     }
   ]

@@ -25,6 +25,12 @@ WHAT MUST HAPPEN
         finding).
     F7  the floor step sits in the security-gate job, runs `if: always()`, reads the floor from the
         kit (`$/`), never from the consumer's checkout.
+    F8  END TO END: the MUTATED workflow's own verdict step, run with the floor BREACHED, fails on
+        the floor -- its error names the floor and gosec -- and not on a crash. The hosted run of
+        this mutation (public mirror, run 40806832142, 2026-10-28) showed why: the deletion left the
+        verdict loop's `sast-go=${G_NEEDS_SAST_GO_RESULT}` behind, the step died under `set -u`
+        before it read the floor, and the run failed closed for the wrong reason. A contributor's
+        deletion is only complete when the verdict loop forgets the job too, so the mutation does.
 
 EXIT  0 all hold   1 a violation   2 could not be checked
 """
@@ -65,6 +71,8 @@ def mutate(wf_text, reg):
             continue                                   # the gate's needs list
         if 'needs.%s.' % VICTIM in line:
             continue                                   # every env line reading it
+        if VICTIM.upper().replace('-', '_') in line:
+            continue                                   # the verdict loop's own references (F8)
         if re.search(r'^\s*add\s+"%s"\s' % IDENT, line):
             continue                                   # its report row
         if re.match(r'^\s+expect:', line):
@@ -191,6 +199,27 @@ def main():
         if failed != want_fail:
             bad.append('F6 floor %r advisory=%s -> gate %s, want %s'
                        % (floor_state, advisory, 'FAIL' if failed else 'PASS', 'FAIL' if want_fail else 'PASS'))
+    # F8: the mutated workflow's own verdict step, end to end.
+    msteps = pbf._expand(mdoc)['jobs']['security-gate'].get('steps') or []
+    mgate = next((s for s in msteps if s.get('name') == (pbf.gate_step() or {}).get('name')), None)
+    if not mgate:
+        bad.append('F8 the mutated workflow has no verdict step')
+    else:
+        c = pbf.ctx(advisory='false')
+        for k in [k for k in c if VICTIM in k]:
+            c.pop(k)                                   # the job is gone: nothing reads it
+        c['steps.floor.outputs.floor_state'] = 'BREACHED'
+        c['steps.floor.outputs.floor_missing'] = IDENT
+        body, _seen = pbf.substitute(mgate.get('run') or '', c)
+        env, _unk = pbf.resolve_env(mgate.get('env'), c)
+        rc, emitted, log, _summary = pbf.run(bash, body, env)
+        crashed = 'unbound variable' in log
+        named = 'capability floor' in log and IDENT in log
+        print('F8 mutated workflow, floor BREACHED -> gate exit %d, floor named %s, crashed %s'
+              % (rc, named, crashed))
+        if rc == 0 or crashed or not named:
+            bad.append('F8 the mutated verdict step must fail ON THE FLOOR (exit %d, floor named %s, '
+                       'crashed %s): %s' % (rc, named, crashed, log[-400:]))
     for b in bad:
         print('VIOLATION: ' + b)
     if bad:

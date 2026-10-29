@@ -372,6 +372,19 @@ on:
       promotion_gate:
         description: "PROMOTION_ALLOWED or the PROMOTION_REFUSED_* code, in promotion mode; empty otherwise."
         value: ${{ jobs.deploy.outputs.promotion_gate }}
+      release_approval:
+        description: >-
+          K-1 (OF-5): the run's own approval, read before login: RELEASE_APPROVAL_VERIFIED |
+          RELEASE_APPROVAL_NOT_REQUIRED | RELEASE_APPROVAL_ABSENT | SELF_DEPLOYMENT_APPROVAL |
+          RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST | RELEASE_APPROVAL_NOT_ESTABLISHED. At uat and prod only the
+          first proceeds.
+        value: ${{ jobs.deploy.outputs.release_approval }}
+      zone_readiness:
+        description: "K-2 (OF-5): the landing zone's readiness as vended (READY | READY_WITH_EXCEPTIONS | NOT_READY | UNKNOWN)."
+        value: ${{ jobs.deploy.outputs.zone_readiness }}
+      release_block:
+        description: "K-3 (OF-5): RELEASE_NOT_BLOCKED | RELEASE_BLOCK_NOT_VENDED | RELEASE_BLOCKED_BY_PLATFORM."
+        value: ${{ jobs.deploy.outputs.release_block }}
 
 # Concurrency for a CHANGE workflow is the opposite of concurrency for a validation
 # workflow. Validation cancels the superseded run — the answer is stale, killing it costs
@@ -422,6 +435,9 @@ jobs:
       environment_protection: ${{ steps.protection.outputs.environment_protection }}
       promotion_state: ${{ steps.promotion_record.outputs.promotion_state }}
       promotion_gate: ${{ steps.promotion_gate.outputs.promotion_gate }}
+      release_approval: ${{ steps.approval.outputs.release_approval }}
+      zone_readiness: ${{ steps.zone.outputs.zone_readiness }}
+      release_block: ${{ steps.zone.outputs.release_block }}
     # SAFE_ENV_TRANSPORT (L100/L38). Every caller input reaches the scripts below as DATA in the
     # environment, never as text substituted into a script body. The digest guard used to read
     # `d='${{ inputs.image_digest }}'` -- validation that ran after bash had already parsed the
@@ -467,6 +483,18 @@ jobs:
       # lease account into this environment. Empty: every lease step below is skipped and the
       # deploy is exactly as before. tests/prove_target_lease_crossrepo.py W1-W6.
       KIT_TARGET_LEASE_ACCOUNT: ${{ vars.KIT_TARGET_LEASE_ACCOUNT }}
+      # OF-5 (the LZ-vs-kit deployment review, K-2 and K-3): the landing zone writes its platform stop
+      # (none | platform_halted | ttl_expired | budget_cap_reached) and the zone's readiness (READY |
+      # READY_WITH_EXCEPTIONS | NOT_READY | UNKNOWN) into this environment. The zone step refuses on
+      # them before login. tests/prove_release_gates.py.
+      KIT_RELEASE_BLOCK: ${{ vars.KIT_RELEASE_BLOCK }}
+      KIT_ZONE_READINESS: ${{ vars.KIT_ZONE_READINESS }}
+      # OF-5 K-6 / K-7: the app-setting keys the hand-off assigns to the kit (empty by default: every key
+      # is the landing zone's). Read by the seam step, opt-in with the lease.
+      KIT_SETTING_KEYS: ${{ vars.KIT_SETTING_KEYS }}
+      # OF-5 K-7 / KDEC-030 D-4: the app's own edge endpoint (a Front Door afdEndpoints resource id),
+      # purged after a verified release. Unset: not applicable.
+      KIT_EDGE_ENDPOINT: ${{ vars.KIT_EDGE_ENDPOINT }}
       # KDEC-029: promotion and the checks that make a deploy "tested".
       PROMOTE_FROM_RUN_ID: ${{ inputs.promote_from_run_id }}
       PROMOTE_FROM_ENVIRONMENT: ${{ inputs.promote_from_environment }}
@@ -898,6 +926,176 @@ jobs:
               else:
                   print('rollback_capability %s: %s' % (cap, why))
               return 0
+
+
+          # ----------------------------------------------------------------------------- the seam (OF-5 K-6)
+          # KDEC-030 R3: every app setting and environment key has exactly one owner. An unassigned key is the
+          # landing zone's; the kit owns the env key release_ownership_stamp and the keys the hand-off assigns
+          # it in KIT_SETTING_KEYS (empty by default). With the seam in force (the environment opts into the
+          # lease), the `seam` step refuses, after the capture and before the first mutation:
+          #   SEAM_SETTING_OWNERSHIP_CONFLICT  a key the kit would write that it does not own, or a kit key the
+          #                                    landing zone also claims (made slot-sticky -- sticky configuration
+          #                                    is the landing zone's, R1 -- or backed by a secret, also the landing
+          #                                    zone's), or a KIT_SETTING_KEYS value that is not a list of names
+          #   SEAM_SWAP_MOVES_LZ_SETTING       an App Service swap that would carry a non-sticky landing-zone
+          #                                    setting or connection string differing between slot and production
+          #   SEAM_OWNERSHIP_NOT_ESTABLISHED   the settings could not be read, or the key list could not be parsed
+          # Values are never shown: keys are named, values compared by digest. tests/prove_seam_setting_ownership.py.
+          SEAM_HELD = 'SEAM_OWNERSHIP_HELD'
+          SEAM_NOT_IN_FORCE = 'SEAM_OWNERSHIP_NOT_IN_FORCE'
+          SEAM_NOT_ESTABLISHED = 'SEAM_OWNERSHIP_NOT_ESTABLISHED'
+          SEAM_CONFLICT = 'SEAM_SETTING_OWNERSHIP_CONFLICT'
+          SEAM_SWAP = 'SEAM_SWAP_MOVES_LZ_SETTING'
+          KIT_STAMP_KEY = 'release_ownership_stamp'
+          # What each adapter's own steps write as settings or env keys (cmd_mutate). App Service writes tags and
+          # the image only (whether App Service's container-set command also writes DOCKER_* settings is the seam
+          # contract's U4, a live question).
+          KIT_PLANNED_SETTING_WRITES = {'containerapp': [KIT_STAMP_KEY], 'appservice': []}
+          SETTING_NAME = r'^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$'
+
+
+          def _named(keys):
+              import re
+              return ', '.join(k if re.match(SETTING_NAME, k) else '(a key that is not a plain name)' for k in sorted(keys))
+
+
+          def _digest(v):
+              import hashlib
+              return hashlib.sha256(json.dumps(v, sort_keys=True).encode('utf-8')).hexdigest()
+
+
+          def decide_seam(adapter, keys_text, prod, slot, strings, swap, planned=None):
+              """Pure. -> (outcome, why). `prod`/`slot`: the target's settings as az lists them (App Service
+              appsettings with slotSetting; Container Apps env entries), None when unreadable. `strings`:
+              (production, slot) connection strings, None when unreadable. `swap`: a swap will follow."""
+              import re
+              raw = [k for k in re.split(r'[,\s]+', keys_text or '') if k]
+              if any(not re.match(SETTING_NAME, k) for k in raw) or re.search(r'[^A-Za-z0-9_.:,\s-]', keys_text or ''):
+                  return SEAM_NOT_ESTABLISHED, ('KIT_SETTING_KEYS is not a list of setting names, so which keys the kit '
+                                                'owns cannot be read')
+              kit = set(raw) | {KIT_STAMP_KEY}
+              writes = KIT_PLANNED_SETTING_WRITES.get(adapter, []) if planned is None else planned
+              stray = [k for k in writes if k not in kit]
+              if stray:
+                  return SEAM_CONFLICT, ('this deploy would write %s, which the hand-off does not assign to the kit; an '
+                                         'unassigned key is the landing zone\'s' % _named(stray))
+              if prod is None:
+                  return SEAM_NOT_ESTABLISHED, 'the target\'s settings could not be read'
+              both = []
+              for e in list(prod) + list(slot or []):
+                  name = (e or {}).get('name')
+                  if name in raw and ((e or {}).get('slotSetting') is True or (e or {}).get('secretRef')):
+                      both.append(name)
+              if both:
+                  return SEAM_CONFLICT, ('KIT_SETTING_KEYS assigns %s to the kit, and the landing zone also claims it (a '
+                                         'slot-sticky setting or a secret-backed key is the landing zone\'s)' % _named(set(both)))
+              if not swap:
+                  return SEAM_HELD, 'no key outside the kit\'s is written'
+              if slot is None or strings is None:
+                  return SEAM_NOT_ESTABLISHED, 'the slot\'s settings or the connection strings could not be read before the swap'
+              moving = []
+              for a_list, b_list in ((prod, slot), (strings[0] or [], strings[1] or [])):
+                  sticky = set(e.get('name') for e in list(a_list) + list(b_list) if (e or {}).get('slotSetting') is True)
+                  av = dict((e.get('name'), _digest(e.get('value'))) for e in a_list if e.get('name'))
+                  bv = dict((e.get('name'), _digest(e.get('value'))) for e in b_list if e.get('name'))
+                  for k in sorted(set(av) | set(bv)):
+                      if k in kit or k in sticky:
+                          continue
+                      if av.get(k) != bv.get(k):
+                          moving.append(k)
+              if moving:
+                  return SEAM_SWAP, ('the swap would carry %s -- non-sticky landing-zone setting(s) that differ between the '
+                                     'slot and production -- into production. The landing zone makes each sticky or equal '
+                                     'across slots (KDEC-030); the kit does not swap them' % _named(set(moving)))
+              return SEAM_HELD, 'no key outside the kit\'s is written, and the swap moves no landing-zone setting'
+
+
+          def cmd_seam(a):
+              """The `seam` step (OF-5 K-6): read the target's settings and decide, before the first mutation."""
+              if not os.environ.get('KIT_TARGET_LEASE_ACCOUNT'):
+                  output(seam_ownership=SEAM_NOT_IN_FORCE)
+                  print('The seam is not in force for this environment (no KIT_TARGET_LEASE_ACCOUNT): nothing decided.')
+                  return 0
+              app, rg, slot = env('webapp_name') or env('containerapp_name'), env('resource_group'), env('slot')
+              prod = slot_list = strings = None
+              swap = False
+              if a.adapter == 'containerapp':
+                  ok, shown, _err = az('containerapp', 'show', '-n', app, '-g', rg)
+                  if ok and isinstance(shown, dict):
+                      cs = (((shown.get('properties') or {}).get('template') or {}).get('containers') or [{}])
+                      prod = list((cs[0] or {}).get('env') or [])
+              else:
+                  ok, got, _err = az('webapp', 'config', 'appsettings', 'list', '-n', app, '-g', rg)
+                  prod = got if ok and isinstance(got, list) else None
+                  swap = bool(slot) and env('swap_on_healthy') == 'true'
+                  if swap:
+                      ok, got, _err = az('webapp', 'config', 'appsettings', 'list', '-n', app, '-g', rg, '--slot', slot)
+                      slot_list = got if ok and isinstance(got, list) else None
+                      ok1, p_cs, _e1 = az('webapp', 'config', 'connection-string', 'list', '-n', app, '-g', rg)
+                      ok2, s_cs, _e2 = az('webapp', 'config', 'connection-string', 'list', '-n', app, '-g', rg, '--slot', slot)
+                      strings = (p_cs, s_cs) if ok1 and ok2 and isinstance(p_cs, list) and isinstance(s_cs, list) else None
+              outcome, why = decide_seam(a.adapter, env('kit_setting_keys'), prod, slot_list, strings, swap)
+              write_evidence('seam.json', {'seam_ownership': outcome, 'why': why, 'swap_checked': swap,
+                                           'kit_setting_keys': [k for k in (env('kit_setting_keys') or '').replace(',', ' ').split() if k]})
+              output(seam_ownership=outcome)
+              summary('### Field ownership at the seam (KDEC-030 R3, before the first mutation)\n\n`%s`: %s' % (outcome, why))
+              if outcome != SEAM_HELD:
+                  print('::error title=Deploy refused before the first mutation (%s)::%s. Nothing was changed.' % (outcome, why))
+                  return 1
+              print('seam ownership %s: %s' % (outcome, why))
+              return 0
+
+
+          # ----------------------------------------------------------------------------- edge purge (D-4, OF-5 K-7)
+          # KDEC-030 D-4 (decided 2026-10-26): after a VERIFIED release the kit purges the edge cache of the app's
+          # OWN Front Door endpoint, the one the landing zone names in KIT_EDGE_ENDPOINT (one endpoint per
+          # user-facing app, purge-only role at that endpoint). The kit purges no other endpoint: the vended one
+          # is the only one it is ever handed. Without one it is not applicable, recorded, never a pass. A failed
+          # purge leaves a healthy release serving behind a stale cache: an advisory, never a failed release.
+          # tests/prove_handoff_extended.py.
+          EDGE_PURGED = 'EDGE_PURGED'
+          EDGE_PURGE_NOT_APPLICABLE = 'EDGE_PURGE_NOT_APPLICABLE'
+          EDGE_PURGE_REFUSED = 'EDGE_PURGE_REFUSED'
+          EDGE_PURGE_FAILED = 'EDGE_PURGE_FAILED'
+          EDGE_ENDPOINT_ID = (r'^/subscriptions/([0-9A-Fa-f-]{36})/resourceGroups/([A-Za-z0-9._()-]{1,90})/providers/'
+                              r'Microsoft\.Cdn/profiles/([A-Za-z0-9-]{1,260})/afdEndpoints/([A-Za-z0-9-]{1,46})$')
+          EDGE_PURGE_PATHS = ['/*']   # the app's own endpoint only; versioned asset names make this cheap (D-4)
+
+
+          def cmd_purge(a):
+              import re
+              value = env('kit_edge_endpoint').strip()
+              record = {'endpoint_vended': bool(value), 'paths': EDGE_PURGE_PATHS, 'at': utc_now()}
+
+              def done(outcome, why, rc=0):
+                  record.update(edge_purge=outcome, why=why)
+                  write_evidence('edge-purge.json', record)
+                  output(edge_purge=outcome)
+                  summary('Edge purge (D-4): `%s` -- %s' % (outcome, why))
+                  print('edge purge %s: %s' % (outcome, why))
+                  return rc
+              if not value:
+                  return done(EDGE_PURGE_NOT_APPLICABLE, 'this environment vends no edge endpoint (KIT_EDGE_ENDPOINT): '
+                              'not applicable, recorded -- never a pass')
+              if a.adapter == 'appservice' and env('slot') and env('swapped') != 'success':
+                  return done(EDGE_PURGE_NOT_APPLICABLE, 'production was not changed (staged in a slot, not swapped), so '
+                              'nothing new is served from the endpoint')
+              m = re.match(EDGE_ENDPOINT_ID, value)
+              if not m:
+                  print('::warning title=Edge purge refused::KIT_EDGE_ENDPOINT is not a Front Door endpoint resource id '
+                        '(.../Microsoft.Cdn/profiles/<profile>/afdEndpoints/<endpoint>); nothing was purged.')
+                  return done(EDGE_PURGE_REFUSED, 'the vended value is not an afdEndpoints resource id', 1)
+              _sub, rg, profile, endpoint = m.groups()
+              record.update(resource_group=rg, profile=profile, endpoint=endpoint)
+              ok, _out, err = az('afd', 'endpoint', 'purge', '--resource-group', rg, '--profile-name', profile,
+                                 '--endpoint-name', endpoint, '--content-paths', *EDGE_PURGE_PATHS)
+              if not ok:
+                  print('::warning title=Edge purge failed::the release is healthy; the cache of endpoint %s may serve the '
+                        'previous content until it expires (%s).' % (endpoint, ' '.join(str(err).split())[:200]))
+                  return done(EDGE_PURGE_FAILED, 'the purge of %s/%s did not complete: %s' % (profile, endpoint,
+                                                                                          ' '.join(str(err).split())[:200]), 1)
+              return done(EDGE_PURGED, 'purged %s on %s/%s (the app\'s own endpoint)' % (', '.join(EDGE_PURGE_PATHS), profile,
+                                                                                       endpoint))
 
 
           # ----------------------------------------------------------------------------- manifest
@@ -1845,7 +2043,10 @@ jobs:
           PASSIVE_OK = ('NOT_APPLICABLE_PASSIVE',)
 
 
-          def promotion(outcome):
+          def promotion(outcome, content_proven=False):
+              """`content_proven`: the static-site adapter recomputed the released files' content digest before
+              login (CONTENT_DIGEST_PROVEN) -- its equivalent of the registry proof, passed by its own code, never
+              read from a caller input."""
               v = read_evidence('verification.json') or {}
               gate = read_evidence('promotion-gate.json') or {}
               carried = gate.get('carried') or {}
@@ -1854,7 +2055,8 @@ jobs:
                   identity = env('artifact_identity') or (carried.get('artifact') or {}).get('artifact_identity')
                   # P-02: V1 inside the deploy VERIFIED the signed provenance of exactly this digest, and the
                   # build proved the registry identity of what it scanned. A held or absent V1 credits nothing.
-                  if env('attestation_outcome') == 'ATTESTATION_VERIFIED' and identity == 'REGISTRY_IDENTITY_PROVEN':
+                  if env('attestation_outcome') == 'ATTESTATION_VERIFIED' and (identity == 'REGISTRY_IDENTITY_PROVEN' or
+                                                                             content_proven):
                       held.append('exact artefact identity established')
                   if v.get('runtime_deployed') is True:
                       held.append('expected artefact observed running')
@@ -2048,11 +2250,13 @@ jobs:
               sub = ap.add_subparsers(dest='cmd', required=True)
               cmds = {'capture': cmd_capture, 'capability': cmd_capability, 'mutate': cmd_mutate, 'swap': cmd_swap,
                       'verify': cmd_verify, 'redirect': cmd_redirect, 'serving': cmd_serving,
-                      'reverse': cmd_reverse, 'unhealthy': cmd_unhealthy,
+                      'reverse': cmd_reverse, 'unhealthy': cmd_unhealthy, 'seam': cmd_seam, 'purge': cmd_purge,
                       'provenance': cmd_provenance, 'report': cmd_report}
               for name in cmds:
                   p = sub.add_parser(name)
-                  p.add_argument('--adapter', choices=('containerapp', 'appservice'), required=True)
+                  # staticwebapp: only `purge` (the Static Web Apps reusable's D-4 step); its other steps are
+                  # static_site_contract.py's. A static site has no slot, so the purge reads no swap.
+                  p.add_argument('--adapter', choices=('containerapp', 'appservice', 'staticwebapp'), required=True)
               sub.add_parser('created-revision')
               a = ap.parse_args(argv)
               if a.cmd == 'created-revision':
@@ -3797,6 +4001,26 @@ jobs:
           def security_settings(adapter):
               """-> (result, [failed checks], [checks read]). Passive: reads only."""
               failed, read = [], []
+              if adapter == 'staticwebapp':
+                  # OF-5 K-8. What a static site's posture can show: a Free plan (no private endpoint, no custom
+                  # authentication, no SLA) and a site still LINKED to a repository -- whose own generated SWA
+                  # workflow can deploy around the kit, with no verdict, digest or read-back -- fail; the
+                  # public network access is read and recorded (a public website is the point; R8 is the
+                  # landing zone's network decision, never a release's).
+                  ok, shown, err = dc.az('staticwebapp', 'show', '-n', env('site_name'), '-g', env('resource_group'))
+                  if not ok or not isinstance(shown, dict):
+                      return 'POSTURE_UNREADABLE', [err or 'no answer'], read
+
+                  def g(k):
+                      return shown.get(k) if shown.get(k) is not None else (shown.get('properties') or {}).get(k)
+                  sku = ((g('sku') or {}).get('name') if isinstance(g('sku'), dict) else g('sku')) or ''
+                  read += ['sku=%s' % sku, 'repositoryUrl=%s' % (g('repositoryUrl') or ''),
+                           'publicNetworkAccess=%s' % (g('publicNetworkAccess') or 'not reported')]
+                  if str(sku).lower() == 'free':
+                      failed.append('Free plan: no private endpoint, no custom authentication, no SLA')
+                  if g('repositoryUrl'):
+                      failed.append('linked to a repository: its generated workflow can deploy around the kit')
+                  return ('POSTURE_FAILED' if failed else 'POSTURE_PASSED'), failed, read
               if adapter == 'containerapp':
                   ok, shown, err = dc.az('containerapp', 'show', '-n', env('containerapp_name'),
                                          '-g', env('resource_group'))
@@ -3861,7 +4085,9 @@ jobs:
                   rid, _ = dc.resource_id(a.adapter)
               artifact = dict(carried.get('artifact') or {}) if promoted else {}
               artifact.update({'digest': env('image_digest'),
-                               'image': dc.intended_ref(),
+                               # OF-5 K-8: a static site has no image; its artefact is named by its content digest.
+                               'image': ('static-site:%s@%s' % (env('site_name'), env('image_digest'))
+                                         if a.adapter == 'staticwebapp' else dc.intended_ref()),
                                'sbom_sha256': artifact.get('sbom_sha256') or meta.get('sbom_sha256') or None,
                                'artifact_identity': artifact.get('artifact_identity') or
                                env('artifact_identity') or meta.get('artifact_identity') or None,
@@ -3949,6 +4175,13 @@ jobs:
                       return None
                   return [{'where': 'revision %s' % t['revision'], 'weight': t['weight'], 'image': t['image'],
                            'digest': t['image'].split('@', 1)[1] if '@' in t['image'] else None} for t in live]
+              if adapter == 'staticwebapp':
+                  # OF-5 K-8 x K-10: a static site serves what its live marker names (the content digest), read now.
+                  import static_site_contract as ss  # noqa: E402  (beside this file in the kit and the deploy)
+                  digest, _why = ss.read_marker(ss.host_of(ss.PRODUCTION))
+                  if digest is None:
+                      return None
+                  return [{'where': 'production', 'weight': 100, 'image': 'static site %s' % digest, 'digest': digest}]
               out = []
               for slot in ['production'] + [s for s in (env('slots') or '').split(',') if s.strip()]:
                   img = dc.appservice_slot_image(slot.strip())
@@ -3981,6 +4214,43 @@ jobs:
                          'KIT-RESCAN-NOT-ESTABLISHED': 'the serving digest could not be re-scanned'}
 
 
+          # OF-5 K-10 (the LZ-vs-kit review's P13): every finding of the daily scan ALSO carries the landing zone's
+          # drift vocabulary -- a DIMENSION (iac, identity, authentication, authorisation, network_exposure,
+          # security_control, monitoring, and release from its seam detector) and a CLASS (benign, operational,
+          # critical; not_attempted when nothing was established, never "no drift") -- so one view serves the
+          # platform admins and the application owner. The kit's own rules, routing and tickets are unchanged.
+          # Vocabulary: assurance-taxonomy.yaml :: lz_drift_dimension, lz_drift_class.
+          LZ_DRIFT = {'KIT-ARTIFACT-DRIFT': ('release', 'operational'),
+                      'KIT-SERVING-UNREADABLE': ('release', 'not_attempted'),
+                      'KIT-SECURITY-SETTINGS': ('security_control', 'operational'),
+                      'KIT-BREAK-GLASS-TESTING-OWED': ('release', 'operational'),
+                      'KIT-RESCAN-NOT-ESTABLISHED': ('security_control', 'not_attempted'),
+                      'KIT-KNOWN-EXPLOITED-SERVING': ('security_control', 'critical')}
+          # Plain-text traffic to what serves is exposure, the landing zone's critical class.
+          LZ_EXPOSURE_FAILURES = ('ingress allows plain HTTP (allowInsecure true)', 'HTTPS is not enforced')
+
+
+          def lz_tag(f, dimension=None, cls=None):
+              """Add the landing zone's dimension and class to one SARIF result (its properties)."""
+              d, c = LZ_DRIFT.get(f['ruleId'], ('release', 'operational'))
+              f.setdefault('properties', {}).update(lz_drift_dimension=dimension or d, lz_drift_class=cls or c)
+              return f
+
+
+          def lz_view(results, rescans=()):
+              """The drift view in the landing zone's terms: one row per kit finding, plus security drift."""
+              view = [{'rule': r['ruleId'], 'where': ((r.get('locations') or [{}])[0].get('physicalLocation') or {})
+                       .get('artifactLocation', {}).get('uri'), 'dimension': (r.get('properties') or {}).get('lz_drift_dimension'),
+                       'class': (r.get('properties') or {}).get('lz_drift_class'), 'text': (r.get('message') or {}).get('text')}
+                      for r in results]
+              for s in rescans:
+                  if s.get('state') == 'COMPLETE' and (s.get('critical') or s.get('high')):
+                      view.append({'rule': 'security drift (re-scan of what serves)', 'where': s.get('digest'),
+                                   'dimension': 'security_control', 'class': 'critical' if s.get('critical') else 'operational',
+                                   'text': '%d critical, %d high' % (len(s.get('critical') or []), len(s.get('high') or []))})
+              return view
+
+
           def cmd_deployed_scan(a):
               """Phase 1 of the daily scan for ONE environment (the job's own): reconcile, then the two
               drifts. Writes promotion/deployed/: deployed-state.json, state SARIFs, and the re-scan SARIF the
@@ -3991,7 +4261,7 @@ jobs:
                      'promoted': None, 'artifact_drift': None, 'security_drift': None, 'rescans': [],
                      'posture': None, 'break_glass_owed': None}
               results = []
-              where = 'deployed/%s/%s' % (envname, env('containerapp_name') or env('webapp_name'))
+              where = 'deployed/%s/%s' % (envname, env('containerapp_name') or env('webapp_name') or env('site_name'))
               serving = serving_now(adapter)
               doc['serving'] = serving
               try:
@@ -4009,11 +4279,14 @@ jobs:
                   want = (doc['promoted'] or {}).get('digest')
                   drift = [s for s in serving if s['weight'] > 0 and s['digest'] != want]
                   doc['artifact_drift'] = bool(drift) if want else None
+                  verified = set((r.get('artifact') or {}).get('digest') for r in recs if r.get('state') == VERIFIED)
                   for s in drift:
-                      results.append(finding('KIT-ARTIFACT-DRIFT', '%s serves %s at %d%%; the last promoted '
-                                             'digest is %s.' % (s['where'], s['digest'] or s['image'], s['weight'],
-                                                                want or 'none on record'),
-                                             '%s/%s' % (where, s['where'].replace(' ', '-'))))
+                      # A digest no kit run of this environment verified is serving: the landing zone's critical class.
+                      results.append(lz_tag(finding('KIT-ARTIFACT-DRIFT', '%s serves %s at %d%%; the last promoted '
+                                                    'digest is %s.' % (s['where'], s['digest'] or s['image'], s['weight'],
+                                                                       want or 'none on record'),
+                                                    '%s/%s' % (where, s['where'].replace(' ', '-'))),
+                                            cls='operational' if s['digest'] in verified else 'critical'))
               # Security drift: re-scan EVERY digest truly serving -- never a nominal tag -- from its build SBOM.
               vuln_results = []
               for s in [x for x in (serving or []) if x['digest']]:
@@ -4034,8 +4307,11 @@ jobs:
               result, failed, read = security_settings(adapter)
               doc['posture'] = {'result': result, 'failed': failed, 'read': read}
               if result != 'POSTURE_PASSED':
-                  results.append(finding('KIT-SECURITY-SETTINGS', 'Security settings of %s: %s (%s).' % (
-                      envname, result, '; '.join(failed)), where))
+                  exposed = any(f in LZ_EXPOSURE_FAILURES for f in failed)
+                  results.append(lz_tag(finding('KIT-SECURITY-SETTINGS', 'Security settings of %s: %s (%s).' % (
+                      envname, result, '; '.join(failed)), where),
+                      dimension='network_exposure' if exposed else 'security_control',
+                      cls='critical' if exposed else ('not_attempted' if result == 'POSTURE_UNREADABLE' else 'operational')))
               if last and last.get('state') == BREAK_GLASS:
                   dig = (last.get('artifact') or {}).get('digest')
                   pred = (last.get('predecessor') or {}).get('required') or 'test'
@@ -4050,6 +4326,10 @@ jobs:
                                              '%s) is still owed: %s.' % (dig, ((last.get('break_glass') or {}).get('exception') or {}).get('exception_ref'),
                                                                          ', '.join((last.get('break_glass') or {}).get('testing_owed') or [])),
                                              '%s/break-glass' % where))
+              for r in results:
+                  if 'lz_drift_dimension' not in (r.get('properties') or {}):
+                      lz_tag(r)
+              doc['drift_view'] = lz_view(results, doc['rescans'])
               # The state rows the core report reads (scripts/scan_report.py --batch): one for the state
               # findings, one per re-scan SARIF, named by environment so every environment's rows can be
               # merged into one report. Coverage rows are what let a ticket close on clearance.
@@ -4077,6 +4357,10 @@ jobs:
                         'Artifact drift: **%s**; security drift: **%s**; posture: `%s`; break-glass owed: %s' % (
                             doc['artifact_drift'], doc['security_drift'], result, doc['break_glass_owed']),
                         'Nothing is rolled back by this scan: findings change promotion eligibility and tickets.']
+              if doc['drift_view']:
+                  lines += ['', 'In the landing zone\'s drift terms (one view for both):', '',
+                            '| finding | dimension | class |', '|---|---|---|']
+                  lines += ['| %s | %s | %s |' % (v['rule'], v['dimension'], v['class']) for v in doc['drift_view']]
               summary('\n'.join(lines))
               print('\n'.join(lines))
               return 0
@@ -4096,14 +4380,15 @@ jobs:
                   return 1
               res = doc['runs'][0]['results']
               state = env('kev_state') or 'UNAVAILABLE'
-              where = 'deployed/%s/%s' % (envname, env('containerapp_name') or env('webapp_name'))
+              where = 'deployed/%s/%s' % (envname, env('containerapp_name') or env('webapp_name') or env('site_name'))
               if state != 'AVAILABLE' and scan.get('rescans'):
-                  res.append(finding('KIT-RESCAN-NOT-ESTABLISHED', 'The KEV re-check of what %s serves could not '
-                                     'be completed (kev_state %s).' % (envname, state), where + '/kev'))
+                  res.append(lz_tag(finding('KIT-RESCAN-NOT-ESTABLISHED', 'The KEV re-check of what %s serves could not '
+                                            'be completed (kev_state %s).' % (envname, state), where + '/kev')))
               for tok in [t for t in (env('kev_blocking') or '').split() if t]:
-                  res.append(finding('KIT-KNOWN-EXPLOITED-SERVING', 'A known-exploited CVE is in what %s serves: %s.'
-                                     % (envname, tok), '%s/%s' % (where, tok.split('@', 1)[0])))
+                  res.append(lz_tag(finding('KIT-KNOWN-EXPLOITED-SERVING', 'A known-exploited CVE is in what %s serves: %s.'
+                                            % (envname, tok), '%s/%s' % (where, tok.split('@', 1)[0]))))
                   scan['security_drift'] = True
+              scan['drift_view'] = lz_view(res, scan.get('rescans') or [])
               rules = doc['runs'][0]['tool']['driver']['rules']
               if not any(r['id'] == 'KIT-KNOWN-EXPLOITED-SERVING' for r in rules):
                   rules.append({'id': 'KIT-KNOWN-EXPLOITED-SERVING',
@@ -4180,7 +4465,7 @@ jobs:
                       'deployed-finish': cmd_deployed_finish, 'deployed-report': cmd_deployed_report}
               for name in cmds:
                   p = sub.add_parser(name)
-                  p.add_argument('--adapter', choices=('containerapp', 'appservice'), default='containerapp')
+                  p.add_argument('--adapter', choices=('containerapp', 'appservice', 'staticwebapp'), default='containerapp')
                   p.add_argument('--state-dir', default='')
               sub.add_parser('self-test')
               a = ap.parse_args(argv)
@@ -4556,12 +4841,15 @@ jobs:
                       self._bearer = os.environ.get('TARGET_LEASE_BEARER') or bearer_from_az()
                   return self._bearer
 
-              def _call(self, method, key, comp='', headers=None):
-                  url = '%s/%s/%s' % (self.base, container_for(key), LEASE_BLOB) + ('?comp=' + comp if comp else '')
+              def _call(self, method, key, comp='', headers=None, blob=LEASE_BLOB, query='', data=None):
+                  url = '%s/%s' % (self.base, container_for(key)) + ('/' + blob if blob else '')
+                  q = '&'.join(x for x in (query, 'comp=' + comp if comp else '') if x)
+                  url += '?' + q if q else ''
                   h = {'Authorization': 'Bearer ' + self._token(), 'x-ms-version': API_VERSION,
                        'x-ms-date': formatdate(usegmt=True)}
                   h.update({k: v for k, v in (headers or {}).items() if v is not None})
-                  data = b'' if method == 'PUT' else None
+                  if data is None and method == 'PUT':
+                      data = b''
                   req = urllib.request.Request(url, data=data, method=method, headers=h)
                   try:
                       with urllib.request.urlopen(req, timeout=self.timeout) as r:
@@ -4616,6 +4904,29 @@ jobs:
                   enc = base64.b64encode(json.dumps(md, sort_keys=True).encode('utf-8')).decode('ascii')
                   self._call('PUT', key, 'metadata', {'x-ms-lease-id': lease_id, 'x-ms-meta-' + META_KEY: enc})
 
+              # OF-5 K-4 (KDEC-030 kit item 2): the target's durable `releases/` folder, beside its lease blob.
+              def put_record(self, key, name, data):
+                  """Create `releases/...` once (If-None-Match: *): a record is never overwritten (409 instead)."""
+                  self._call('PUT', key, blob=name, data=data,
+                             headers={'x-ms-blob-type': 'BlockBlob', 'If-None-Match': '*',
+                                      'Content-Type': 'application/json', 'Content-Length': str(len(data)),
+                                      'x-ms-meta-kind': 'kit-release-record'})
+
+              def retention_policy(self, key):
+                  """-> 'present' | 'absent' | 'unreadable': whether the container carries an immutability
+                  policy (or a legal hold) -- the landing zone's retention of what the kit keeps there."""
+                  try:
+                      h = self._call('HEAD', key, blob='', query='restype=container')[1]
+                  except LeaseError as e:
+                      if e.code == 'LEASE_TARGET_NOT_VENDED':
+                          raise
+                      return 'unreadable'
+                  flags = [h.get('x-ms-has-immutability-policy'), h.get('x-ms-has-legal-hold'),
+                           h.get('x-ms-immutable-storage-with-versioning-enabled')]
+                  if any(str(f).lower() == 'true' for f in flags):
+                      return 'present'
+                  return 'absent' if any(f is not None for f in flags) else 'unreadable'
+
               def read(self, key, lease_id, now=None):
                   try:
                       h = self._call('HEAD', key, headers={'x-ms-lease-id': lease_id})[1]
@@ -4645,7 +4956,8 @@ jobs:
           #         store again: no further mutation. --mark-mutating marks the lease `mutating` for the
           #         child's whole run and clean only when it exits 0 (a halted rollback stays a human decision).
           UNKNOWN_CODES = ('LEASE_STORE_UNREACHABLE', 'LEASE_TARGET_NOT_VENDED')
-          ARM_TYPES = {'containerapp': 'Microsoft.App/containerApps', 'appservice': 'Microsoft.Web/sites'}
+          ARM_TYPES = {'containerapp': 'Microsoft.App/containerApps', 'appservice': 'Microsoft.Web/sites',
+                       'staticwebapp': 'Microsoft.Web/staticSites'}
           LOST_SUFFIX = '.lost'
           DEFAULT_TOKEN = os.path.join('kit-target-lease', 'token.json')
 
@@ -4784,6 +5096,75 @@ jobs:
                   rc)
 
 
+          RELEASE_RECORD_SCHEMA = 'kit-release-record/1'
+          RECORD_KEPT = 'RELEASE_RECORD_KEPT'
+          RECORD_NOT_KEPT = 'RELEASE_RECORD_NOT_KEPT'
+
+
+          def release_record(rec, target, environment, routing_result, written_at, tok):
+              """The record the landing zone reads (OF-5 K-4): its fields first, the promotion record whole."""
+              live = rec.get('live_state') or {}
+              return {'schema': RELEASE_RECORD_SCHEMA, 'kind': 'kit-release', 'written_at': written_at,
+                      'target_resource_id': target, 'environment': environment,
+                      'digest': (rec.get('artifact') or {}).get('digest'),
+                      'now_serving': live.get('now_serving') or [],
+                      'deployment_outcome': live.get('deployment_outcome'),
+                      'state': rec.get('state'), 'validity': rec.get('validity') or {},
+                      'run': rec.get('run') or {}, 'routing_result': routing_result or None,
+                      'gate_routing_result': (rec.get('provenance') or {}).get('gate_routing_result'),
+                      'lease': {'holder': tok.holder, 'generation': tok.generation},
+                      'promotion_record': rec}
+
+
+          def _record(a, now, github_output):
+              """`record`: keep this run's release record in the target's releases/ folder, create-only.
+
+              Uses the run's lease token for the target and the store (the lease need not still be held: the
+              folder is not the leased blob). EXIT 0 kept; 1 refused (no record, a name that already exists);
+              2 the store could not be reached or the target's container was never vended -- fail closed."""
+              def done(value, why, code, **extra):
+                  _emit(dict({'release_record': value, 'release_record_reason': why}, **extra), github_output)
+                  return code
+              path = a.token_file or default_token_file()
+              if not os.path.exists(path):
+                  _emit({'target_lease': 'LEASE_NOT_HELD', 'target_lease_reason': 'no lease token at %s: this run '
+                         'never acquired the target, so it has no release record to keep there' % path}, github_output)
+                  return 1
+              cfg, tok = _load_token(path)
+              try:
+                  with open(a.record_file, encoding='utf-8') as f:
+                      rec = json.load(f)
+                  if not isinstance(rec, dict):
+                      raise ValueError('not an object')
+              except (OSError, ValueError) as e:
+                  return done(RECORD_NOT_KEPT, 'there is no promotion record to keep (%s)' % e, 1)
+              stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime(now))
+              env_slug = re.sub(r'[^A-Za-z0-9._-]', '-', a.environment or 'env')[:40]
+              run = rec.get('run') or {}
+              name = 'releases/%s/%s-%s-%s.json' % (env_slug, stamp, re.sub(r'\D', '', str(run.get('id') or '')) or 'local',
+                                                    re.sub(r'\D', '', str(run.get('attempt') or '')) or '1')
+              store = _store(cfg)
+              try:
+                  retention = store.retention_policy(tok.target)
+                  doc = release_record(rec, tok.target, a.environment, a.routing_result,
+                                       time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now)), tok)
+                  doc['retention_policy'] = retention
+                  store.put_record(tok.target, name, json.dumps(doc, indent=1, sort_keys=True).encode('utf-8'))
+              except LeaseError as e:
+                  if e.code in (409, 412):
+                      return done(RECORD_NOT_KEPT, '%s already exists in %s: a release record is never overwritten'
+                                  % (name, container_for(tok.target)), 1)
+                  return done(RECORD_NOT_KEPT, '%s: %s' % (e.code, e), 2)
+              if retention != 'present':
+                  print('::warning title=Release record retention not established::%s/%s is kept, but the container '
+                        'carries %s immutability policy. The landing zone sets a time-based retention on it at least '
+                        'as long as its Git evidence (docs/architecture/LZ_KIT_HANDOFF_CONTRACT.md).'
+                        % (container_for(tok.target), name, 'no' if retention == 'absent' else 'an unreadable'))
+              return done(RECORD_KEPT, 'kept as %s/%s' % (container_for(tok.target), name), 0,
+                          release_record_path='%s/%s' % (container_for(tok.target), name),
+                          release_record_retention=retention)
+
+
           def run_cli(argv=None):
               argv = list(sys.argv[1:] if argv is None else argv)
               cmd = []
@@ -4791,7 +5172,8 @@ jobs:
                   k = argv.index('--')
                   argv, cmd = argv[:k], argv[k + 1:]
               p = argparse.ArgumentParser(description='The cross-repository target lease (KDEC-030 draft).')
-              p.add_argument('op', choices=['acquire', 'fence', 'begin', 'end', 'release', 'status', 'break', 'hold'])
+              p.add_argument('op', choices=['acquire', 'fence', 'begin', 'end', 'release', 'status', 'break', 'hold',
+                                            'record'])
               p.add_argument('--resource-id', default='')
               p.add_argument('--adapter', default='', help='with --subscription --resource-group --name: builds the id')
               p.add_argument('--subscription', default='')
@@ -4811,6 +5193,9 @@ jobs:
               p.add_argument('--authority', default=os.environ.get('TARGET_LEASE_BREAK_AUTHORITY') or 'platform-admins')
               p.add_argument('--now', type=float, default=None, help='a fixed clock, for proofs only')
               p.add_argument('--github-output', default=os.environ.get('GITHUB_OUTPUT') or '')
+              p.add_argument('--record-file', default='', help='record: the promotion record to keep in releases/')
+              p.add_argument('--environment', default='', help='record: the GitHub environment (the folder)')
+              p.add_argument('--routing-result', default='', help='record: the routing_result of the deploy itself')
               a = p.parse_args(argv)
               now = a.now if a.now is not None else time.time()
               out = {}
@@ -4821,6 +5206,8 @@ jobs:
                   return code
 
               try:
+                  if a.op == 'record':
+                      return _record(a, now, a.github_output)
                   if a.op == 'hold':
                       return _hold(a, cmd, done)
                   if a.op in ('acquire', 'status', 'break'):
@@ -4886,6 +5273,394 @@ jobs:
           if __name__ == '__main__':
               sys.exit(run_cli())
           kit_target_lease_py
+          cat > "$RUNNER_TEMP/kit-deploy/release_gates.py" <<'kit_release_gates_py'
+          #!/usr/bin/env python3
+          """The release preconditions the landing zone's design is stronger on, enforced by the kit before
+          login (OF-5, the LZ-vs-kit deployment review, 2026-10-28; KDEC-034 PROPOSED).
+
+          WHY THIS EXISTS
+
+              The landing zone (LZ) and the kit were reviewed against each other step by step and the
+              stronger mechanism taken on each side. Three of the LZ's were missing from the kit's releases:
+
+                K-3  STOP. The LZ halts its own pipeline (ops/halt.json) and blocks applies on a budget cap or
+                     a TTL (apply_block). A release refused only on verdict, protection and policy, so a halted
+                     or capped platform still took releases. The vend now writes the block into every kit
+                     environment as KIT_RELEASE_BLOCK; anything but `none` refuses the release before login,
+                     at every tier (RELEASE_BLOCKED_BY_PLATFORM). Unset: no landing zone writes one; recorded.
+                K-2  READINESS. The LZ's eight behavioural readiness gates decide whether the ZONE may take
+                     anything beyond dev; UNKNOWN is never a pass. The vend writes the zone's readiness into
+                     every kit environment as KIT_ZONE_READINESS. At uat and prod only READY and
+                     READY_WITH_EXCEPTIONS release; NOT_READY, UNKNOWN, unset or an unregistered value refuses
+                     before login (RELEASE_REFUSED_ZONE_NOT_READY). Below uat it is recorded, never refused.
+                K-1  CONSENT BOUND TO THE CHANGE. The LZ's owner confirms the exact plan digest, and the
+                     approver, the confirmer and the requester are three people. GitHub's environment
+                     reviewers with self-review prevented exclude only the run's trigger: the author of the
+                     commit being released may approve it, and nothing ties the approval to the digest. So at
+                     uat and prod the kit reads the run's own approvals (GET .../actions/runs/{id}/approvals)
+                     and refuses before login unless an approval for THIS environment exists
+                     (RELEASE_APPROVAL_ABSENT -- an administrator bypass leaves none), no approving reviewer is
+                     the requester (the triggering actor or the actor) or the release's author (the author of
+                     the released commit, and of a merge commit's second parent) (SELF_DEPLOYMENT_APPROVAL,
+                     the LZ's own name for it), and an independent approval's comment names the digest being
+                     released -- the full digest or at least its first 12 hex characters
+                     (RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST). The approving reviewer who names the digest is
+                     the CONFIRMER: approver/confirmer, requester and author are distinct people. A second,
+                     separate confirmer is not possible inside one job (an environment admits on ONE
+                     approval). Anything that cannot be read is RELEASE_APPROVAL_NOT_ESTABLISHED, a refusal.
+                     Below uat it is recorded (RELEASE_APPROVAL_NOT_REQUIRED) unless the policy register's
+                     deploy_approval for the tier sets `confirm_digest: required`, which can only tighten.
+
+              Vocabulary: assurance-taxonomy.yaml :: release_block, zone_readiness, zone_readiness_gate,
+              release_approval. Proven by tests/prove_release_gates.py. Inlined into the deploy reusables by
+              scripts/inline_deploy_scripts.py (a reusable workflow called cross-repo has no scripts/).
+
+          USAGE (one subcommand per workflow step; inputs arrive through env:, as data -- the names below are
+                 the job's environment variables, written lower-case here and upper-cased on lookup)
+              release_gates.py zone                       kit_release_block, kit_zone_readiness, environment_tier
+              release_gates.py approval --digest D [--source-commit SHA]
+                                                          environment_tier, deploy_environment, deploy_approval,
+                                                          github_run_id, github_sha, github_triggering_actor,
+                                                          github_actor, github_repository, github_api_url, gh_token
+              release_gates.py --self-test
+
+          EXIT 0 permitted   1 refused (by name)   2 usage
+          """
+          import argparse
+          import io
+          import json
+          import os
+          import re
+          import sys
+          import urllib.parse
+          import urllib.request
+
+          PRODUCTION_TIERS = ('uat', 'prod')
+          TIERS = ('sandbox', 'dev', 'test', 'uat', 'prod')
+
+          # release_block (K-3). The LZ's values of KIT_RELEASE_BLOCK; `none` is the only permitting one.
+          BLOCK_VALUES = ('none', 'platform_halted', 'ttl_expired', 'budget_cap_reached')
+          NOT_BLOCKED = 'RELEASE_NOT_BLOCKED'
+          BLOCK_NOT_VENDED = 'RELEASE_BLOCK_NOT_VENDED'
+          BLOCKED = 'RELEASE_BLOCKED_BY_PLATFORM'
+
+          # zone_readiness (the LZ's register vocabulary, as vended) and zone_readiness_gate (K-2).
+          READINESS = ('READY', 'READY_WITH_EXCEPTIONS', 'NOT_READY', 'UNKNOWN')
+          READINESS_PERMITS = ('READY', 'READY_WITH_EXCEPTIONS')
+          ZONE_PERMITTED = 'ZONE_READINESS_PERMITTED'
+          ZONE_NOT_REQUIRED = 'ZONE_READINESS_NOT_REQUIRED'
+          ZONE_REFUSED = 'RELEASE_REFUSED_ZONE_NOT_READY'
+
+          # release_approval (K-1)
+          APPROVAL_VERIFIED = 'RELEASE_APPROVAL_VERIFIED'
+          APPROVAL_NOT_REQUIRED = 'RELEASE_APPROVAL_NOT_REQUIRED'
+          APPROVAL_ABSENT = 'RELEASE_APPROVAL_ABSENT'
+          SELF_APPROVAL = 'SELF_DEPLOYMENT_APPROVAL'
+          NOT_BOUND = 'RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST'
+          NOT_ESTABLISHED = 'RELEASE_APPROVAL_NOT_ESTABLISHED'
+          APPROVAL_PERMITS = (APPROVAL_VERIFIED, APPROVAL_NOT_REQUIRED)
+          MIN_DIGEST_PREFIX = 12          # hex characters an approval comment must quote, at least
+          DIGEST_RE = re.compile(r'^(?:sha256:)?([0-9a-f]{64})$')
+
+
+          def env(name, default=''):
+              """Lower-case names, upper-cased on lookup: they are settings, not vocabulary."""
+              return os.environ.get(name.upper(), default)
+
+
+          def output(**values):
+              """One line per value to $GITHUB_OUTPUT (a newline in a value would end the file command early)."""
+              path = os.environ.get('GITHUB_OUTPUT')
+              lines = ['%s=%s' % (k, ' '.join(str('' if v is None else v).split())) for k, v in values.items()]
+              print('\n'.join(lines))
+              if path:
+                  with io.open(path, 'a', encoding='utf-8') as fh:
+                      fh.write('\n'.join(lines) + '\n')
+
+
+          def summary(text):
+              path = env('github_step_summary')
+              if path:
+                  with io.open(path, 'a', encoding='utf-8') as fh:
+                      fh.write(text + '\n')
+
+
+          def plain(v):
+              """A value is shown only when it is a plain token (vended or caller text could carry `::`)."""
+              return bool(re.match(r'^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$', v or ''))
+
+
+          def shown(v):
+              if not v:
+                  return '(unset)'
+              return "'%s'" % v if plain(v) else '(a value that is not a plain token, not shown)'
+
+
+          # ----------------------------------------------------------------------------- K-2, K-3
+          def decide_block(value):
+              """-> (release_block, permits, why)."""
+              v = (value or '').strip()
+              if not v:
+                  return BLOCK_NOT_VENDED, True, ('this environment carries no KIT_RELEASE_BLOCK: no landing zone '
+                                                  'writes one here, so no platform stop is in force (recorded)')
+              if v == 'none':
+                  return NOT_BLOCKED, True, 'the landing zone reports no halt, TTL or budget block on this workload'
+              if v in BLOCK_VALUES:
+                  return BLOCKED, False, ('the landing zone has stopped releases into this workload: KIT_RELEASE_BLOCK '
+                                          'is %s. Releases resume when the platform clears it to none' % shown(v))
+              return BLOCKED, False, ('KIT_RELEASE_BLOCK is %s, which is not none: anything but none refuses, and an '
+                                      'unregistered value is not read as a clearance' % shown(v))
+
+
+          def decide_zone(tier, value):
+              """-> (zone_readiness, zone_readiness_gate, permits, why)."""
+              v = (value or '').strip()
+              readiness = v if v in READINESS else 'UNKNOWN'
+              what = ('KIT_ZONE_READINESS is unset' if not v else
+                      'KIT_ZONE_READINESS is %s' % shown(v) + ('' if v in READINESS else ', not a registered readiness value'))
+              if tier not in TIERS:
+                  return readiness, ZONE_REFUSED, False, ('environment_tier %s is not a registered tier, so it cannot be '
+                                                          'shown to be below production' % shown(tier))
+              if tier not in PRODUCTION_TIERS:
+                  return readiness, ZONE_NOT_REQUIRED, True, '%s; below uat the zone\'s readiness is recorded, not required' % what
+              if readiness in READINESS_PERMITS:
+                  return readiness, ZONE_PERMITTED, True, '%s: the zone may take a %s release' % (what, tier)
+              return readiness, ZONE_REFUSED, False, ('%s, and %s is a production tier. The landing zone\'s readiness '
+                                                      'gates decide whether the zone may take anything beyond dev; only '
+                                                      'READY or READY_WITH_EXCEPTIONS releases at uat and prod, and '
+                                                      'UNKNOWN is never a pass' % (what, tier))
+
+
+          def cmd_zone(_a):
+              tier = env('environment_tier').strip()
+              block, block_ok, block_why = decide_block(env('kit_release_block'))
+              readiness, gate, zone_ok, zone_why = decide_zone(tier, env('kit_zone_readiness'))
+              output(release_block=block, zone_readiness=readiness, zone_readiness_gate=gate)
+              summary('### Platform stop and zone readiness (before login)\n\n| check | outcome | why |\n|---|---|---|\n'
+                      '| release block (K-3) | `%s` | %s |\n| zone readiness (K-2) | `%s` / `%s` | %s |'
+                      % (block, block_why, readiness, gate, zone_why))
+              refused = []
+              if not block_ok:
+                  refused.append('%s: %s' % (BLOCKED, block_why))
+              if not zone_ok:
+                  refused.append('%s: %s' % (ZONE_REFUSED, zone_why))
+              if refused:
+                  for r in refused:
+                      print('::error title=Release refused before login::%s. Nothing was deployed.' % r)
+                  return 1
+              if readiness == 'READY_WITH_EXCEPTIONS' and tier in PRODUCTION_TIERS:
+                  print('::warning title=Zone ready with exceptions::the landing zone is READY_WITH_EXCEPTIONS; this %s '
+                        'release proceeds and the exceptions are the landing zone\'s record.' % tier)
+              print('release block %s; zone readiness %s (%s)' % (block, readiness, gate))
+              return 0
+
+
+          # ----------------------------------------------------------------------------- K-1
+          class Unreadable(Exception):
+              pass
+
+
+          def api(path):
+              """GET /repos/<repository>/<path> (a file:// base is the local stand-in). Unreadable on any failure."""
+              base = env('GITHUB_API_URL', 'https://api.github.com').rstrip('/')  # unset means github.com
+              repo = env('github_repository')
+              if not repo:
+                  raise Unreadable('no repository is named')
+              url = '%s/repos/%s/%s' % (base, repo, path)
+              req = urllib.request.Request(url, headers={'Accept': 'application/vnd.github+json',
+                                                         'X-GitHub-Api-Version': '2022-11-28'})
+              token = env('gh_token')
+              if token and url.startswith('https://'):
+                  req.add_unredirected_header('Authorization', 'Bearer %s' % token)
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      return json.loads(resp.read().decode('utf-8'))
+              except Exception as exc:  # noqa: BLE001 -- any failure is "could not read", never a pass
+                  raise Unreadable('GET %s failed: %s' % (url.split('?')[0], type(exc).__name__))
+
+
+          def digest_bound(comment, digest):
+              """True when the comment quotes the digest: the full value, or at least its first 12 hex."""
+              m = DIGEST_RE.match((digest or '').strip().lower())
+              if not m:
+                  return False
+              hexd = m.group(1)
+              for tok in re.findall(r'(?:sha256:)?[0-9a-f]{%d,64}' % MIN_DIGEST_PREFIX, (comment or '').lower()):
+                  tok = tok.split(':', 1)[-1]
+                  if hexd.startswith(tok):
+                      return True
+              return False
+
+
+          def confirm_demand(tier, demand_json):
+              """-> 'required' | 'not_required', or None when the demand cannot be read. The kit default
+              requires the digest at uat and prod; a passed demand can only tighten that."""
+              base = 'required' if tier in PRODUCTION_TIERS else 'not_required'
+              if not (demand_json or '').strip():
+                  return base
+              try:
+                  doc = json.loads(demand_json)
+              except ValueError:
+                  return None
+              if not isinstance(doc, dict):
+                  return None
+              sup = doc.get(tier, {}) if any(k in TIERS for k in doc) else doc
+              if not isinstance(sup, dict):
+                  return None
+              return 'required' if 'required' in (base, sup.get('confirm_digest')) else 'not_required'
+
+
+          def authors_of(sha):
+              """-> the logins that authored the released commit (and a merge commit's second parent)."""
+              out = set()
+              doc = api('commits/%s' % sha)
+              if not isinstance(doc, dict):
+                  raise Unreadable('commit %s answered no object' % sha[:12])
+              login = ((doc.get('author') or {}).get('login') or '').strip()
+              if not login:
+                  raise Unreadable('commit %s has no GitHub author login (its author email is not linked to an '
+                                   'account), so the approver cannot be shown not to be its author' % sha[:12])
+              out.add(login.lower())
+              parents = doc.get('parents') or []
+              if len(parents) > 1 and isinstance(parents[1], dict) and parents[1].get('sha'):
+                  p = api('commits/%s' % parents[1]['sha'])
+                  plog = (((p or {}).get('author') or {}).get('login') or '').strip()
+                  if not plog:
+                      raise Unreadable('the merged branch head %s has no GitHub author login' % parents[1]['sha'][:12])
+                  out.add(plog.lower())
+              return out
+
+
+          def decide_approval(tier, environment, digest, approvals, requesters, authors, confirm):
+              """Pure. -> (outcome, why, approvers). `approvals`/`authors` None = could not be read."""
+              if confirm is None:
+                  return NOT_ESTABLISHED, 'the policy\'s deploy_approval could not be read', []
+              production = tier in PRODUCTION_TIERS
+              if not production and confirm != 'required':
+                  return APPROVAL_NOT_REQUIRED, 'below uat the run\'s approval is recorded, not required', []
+              if approvals is None:
+                  return NOT_ESTABLISHED, 'the run\'s environment approvals could not be read', []
+              mine = [a for a in approvals if isinstance(a, dict) and a.get('state') == 'approved' and
+                      any(str((e or {}).get('name') or '').lower() == (environment or '').lower()
+                          for e in a.get('environments') or [])]
+              who = sorted(set(((a.get('user') or {}).get('login') or '').lower() for a in mine) - {''})
+              if not mine or not who:
+                  return APPROVAL_ABSENT, ('no reviewer approved this run\'s deployment to %s (an administrator bypass, '
+                                           'or an environment without required reviewers, leaves no approval)'
+                                           % shown(environment)), who
+              req = set(r.lower() for r in requesters if r)
+              if not req:
+                  return NOT_ESTABLISHED, 'the run names no requester (triggering actor), so independence cannot be shown', who
+              if authors is None:
+                  return NOT_ESTABLISHED, 'the released commit\'s author could not be read', who
+              selfies = [(w, 'the requester') for w in who if w in req] + \
+                        [(w, 'the release\'s author') for w in who if w in authors and w not in req]
+              if selfies:
+                  return SELF_APPROVAL, \
+                      'approved by %s: the approver must be neither the requester nor the release\'s author' % ', '.join(
+                          '%s (%s)' % (shown(w), role) for w, role in selfies), who
+              if confirm == 'required':
+                  bound = [((a.get('user') or {}).get('login') or '').lower() for a in mine
+                           if digest_bound(a.get('comment'), digest)]
+                  if not bound:
+                      return NOT_BOUND, ('no approval comment names the digest being released. The approving reviewer '
+                                         'confirms the exact artefact by quoting it (at least sha256:%s): approve with '
+                                         'the digest in the comment' % ((digest or '').split(':', 1)[-1][:MIN_DIGEST_PREFIX]
+                                                                      or '<digest>')), who
+                  return APPROVAL_VERIFIED, ('approved by %s, who is neither the requester nor the author, and the approval '
+                                             'names the digest (confirmer %s)' % (', '.join(who), ', '.join(sorted(set(bound))))), who
+              return APPROVAL_VERIFIED, 'approved by %s, neither the requester nor the author' % ', '.join(who), who
+
+
+          def cmd_approval(a):
+              tier = env('environment_tier').strip()
+              environment = env('deploy_environment').strip()
+              confirm = confirm_demand(tier, env('deploy_approval'))
+              approvals = authors = None
+              notes = []
+              needed = tier in PRODUCTION_TIERS or confirm == 'required'
+              if tier not in TIERS:
+                  outcome, why, who = NOT_ESTABLISHED, 'environment_tier %s is not a registered tier' % shown(tier), []
+              else:
+                  if needed and confirm is not None:
+                      try:
+                          if not env('github_run_id').strip():
+                              raise Unreadable('no run id is named, so the run\'s approvals cannot be read')
+                          doc = api('actions/runs/%s/approvals' % env('github_run_id').strip())
+                          approvals = doc if isinstance(doc, list) else None
+                          if approvals is None:
+                              notes.append('the approvals answer is not a list')
+                      except Unreadable as exc:
+                          notes.append(str(exc))
+                      try:
+                          authors = set()
+                          for sha in [s for s in (env('github_sha'), a.source_commit) if s]:
+                              authors |= authors_of(sha)
+                      except Unreadable as exc:
+                          authors = None
+                          notes.append(str(exc))
+                  requesters = [env('github_triggering_actor'), env('github_actor')]
+                  outcome, why, who = decide_approval(tier, environment, a.digest, approvals, requesters, authors, confirm)
+              if notes:
+                  why = '%s (%s)' % (why, '; '.join(notes))
+              refused = outcome not in APPROVAL_PERMITS
+              output(release_approval=outcome, release_approval_by=','.join(who))
+              summary('### Release approval (K-1, before login)\n\n`%s` at tier `%s`: %s' % (outcome, tier or 'none', why))
+              if refused:
+                  print('::error title=Release refused before login (approval)::%s: %s. Nothing was deployed.' % (outcome, why))
+                  return 1
+              print('release approval %s: %s' % (outcome, why))
+              return 0
+
+
+          # ----------------------------------------------------------------------------- self-test
+          def self_test():
+              fails = []
+              d = 'sha256:' + 'ab' * 32
+
+              def appr(login, comment='', env_name='prod', state='approved'):
+                  return {'state': state, 'user': {'login': login}, 'comment': comment, 'environments': [{'name': env_name}]}
+              cases = [
+                  (decide_block(''), BLOCK_NOT_VENDED), (decide_block('none'), NOT_BLOCKED),
+                  (decide_block('ttl_expired'), BLOCKED), (decide_block('NONE'), BLOCKED),
+                  (decide_zone('prod', 'READY')[1], ZONE_PERMITTED), (decide_zone('prod', '')[1], ZONE_REFUSED),
+                  (decide_zone('dev', 'NOT_READY')[1], ZONE_NOT_REQUIRED),
+                  (decide_approval('prod', 'prod', d, [appr('rev', d[:19])], ['dev1'], {'dev2'}, 'required')[0],
+                   APPROVAL_VERIFIED),
+                  (decide_approval('prod', 'prod', d, [appr('dev2', d)], ['dev1'], {'dev2'}, 'required')[0], SELF_APPROVAL),
+                  (decide_approval('prod', 'prod', d, [appr('rev', 'lgtm')], ['dev1'], {'dev2'}, 'required')[0], NOT_BOUND),
+                  (decide_approval('prod', 'prod', d, [], ['dev1'], {'dev2'}, 'required')[0], APPROVAL_ABSENT),
+              ]
+              for i, (got, want) in enumerate(cases):
+                  got = got[0] if isinstance(got, tuple) else got
+                  if got != want:
+                      fails.append('case %d: %s, wanted %s' % (i, got, want))
+              if confirm_demand('prod', json.dumps({'prod': {'confirm_digest': 'not_required'}})) != 'required':
+                  fails.append('a passed demand relaxed the digest confirmation at prod')
+              if fails:
+                  print('release_gates self-test FAILED: ' + '; '.join(fails))
+                  return 2
+              print('release_gates self-test ok. The full proof is tests/prove_release_gates.py.')
+              return 0
+
+
+          def main(argv=None):
+              argv = list(sys.argv[1:] if argv is None else argv)
+              if argv[:1] == ['--self-test']:
+                  return self_test()
+              ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+              sub = ap.add_subparsers(dest='cmd', required=True)
+              sub.add_parser('zone')
+              p = sub.add_parser('approval')
+              p.add_argument('--digest', default='')
+              p.add_argument('--source-commit', default='')
+              a = ap.parse_args(argv)
+              return {'zone': cmd_zone, 'approval': cmd_approval}[a.cmd](a)
+
+
+          if __name__ == '__main__':
+              sys.exit(main())
+          kit_release_gates_py
 
       - name: Bind the tier and target to the GitHub environment (refuse before login)
         id: bind
@@ -4961,6 +5736,25 @@ jobs:
             echo "target_binding=UNBOUND" >> "$GITHUB_OUTPUT"
             echo "This GitHub environment vends no KIT_* values: the inputs are used as given (UNBOUND)."
           fi
+          # OF-5 K-7: which of the EXTENDED hand-off set this environment vends -- names only, never a
+          # value -- so the posture record shows what the landing zone wrote here. Each value is read
+          # and decided by its own step (zone, seam, purge, the lease).
+          vended=""
+          for v in KIT_RELEASE_BLOCK KIT_ZONE_READINESS KIT_SETTING_KEYS KIT_EDGE_ENDPOINT KIT_TARGET_LEASE_ACCOUNT; do
+            if [ -n "${!v:-}" ]; then vended="${vended:+$vended,}$v"; fi
+          done
+          echo "handoff_vended=${vended}" >> "$GITHUB_OUTPUT"
+          echo "Extended hand-off set vended here: ${vended:-none}."
+
+      - name: Platform stop and zone readiness (refuse before login)
+        id: zone
+        # OF-5 K-3: the landing zone's halt, TTL and budget-cap block reach releases -- KIT_RELEASE_BLOCK
+        # anything but `none` refuses at EVERY tier (RELEASE_BLOCKED_BY_PLATFORM). K-2: the zone's
+        # readiness gates reach uat and prod -- only READY or READY_WITH_EXCEPTIONS release there;
+        # NOT_READY, UNKNOWN or unset refuses (RELEASE_REFUSED_ZONE_NOT_READY); below uat it is recorded.
+        # After the bind step (the tier is the vended one). The body is identical in both deploy
+        # reusables. scripts/release_gates.py; tests/prove_release_gates.py.
+        run: python3 "$RUNNER_TEMP/kit-deploy/release_gates.py" zone
 
       - name: Verify the environment's deployment protection (refuse before login)
         id: protection
@@ -5375,6 +6169,26 @@ jobs:
           ATTESTATION_OUTCOME: ${{ steps.attestation.outputs.outcome }}
         run: python3 "$RUNNER_TEMP/kit-deploy/promotion.py" gate-decide --adapter appservice
 
+      - name: Release approval -- not the requester's or the author's own, bound to the digest (refuse before login)
+        id: approval
+        # OF-5 K-1: the landing zone binds consent to the exact change (the plan digest) and to distinct
+        # people. GitHub's self-review prevention excludes only the run's trigger, so at uat and prod
+        # this reads the run's own approvals and refuses unless one exists for this environment
+        # (RELEASE_APPROVAL_ABSENT: an administrator bypass leaves none), no approver is the requester
+        # or the released commit's author (SELF_DEPLOYMENT_APPROVAL), and an independent approval quotes
+        # the digest (RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST). Unreadable is a refusal. After the
+        # promotion gate (its source commit's author counts too); the body is identical in both deploy
+        # reusables. scripts/release_gates.py; tests/prove_release_gates.py.
+        env:
+          DEPLOY_APPROVAL: ${{ inputs.deploy_approval }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          source_commit="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(((d.get("carried") or {}).get("provenance") or {}).get("source_sha") or "")' \
+            "$RUNNER_TEMP/deploy-evidence/promotion-gate.json" 2>/dev/null || true)"
+          python3 "$RUNNER_TEMP/kit-deploy/release_gates.py" approval --digest "${IMAGE_DIGEST:-}" \
+            --source-commit "$source_commit"
+
       - name: Azure login (OIDC)
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         # The hand-off contract vends the identifiers as VARIABLES of this environment (the
@@ -5416,6 +6230,17 @@ jobs:
         # recorded in deploy-evidence/capability.json.
         id: capability
         run: python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" capability --adapter appservice
+
+      - name: Field ownership at the seam (KDEC-030 R3, opt-in; refuse before the first mutation)
+        # OF-5 K-6. Every app setting and env key has one owner; the kit owns release_ownership_stamp and
+        # the keys the hand-off assigns it (KIT_SETTING_KEYS). With the seam in force this refuses a key
+        # the kit would write that it does not own, a kit key the landing zone also claims (slot-sticky or
+        # secret-backed) -- SEAM_SETTING_OWNERSHIP_CONFLICT -- and, on App Service, a swap that would carry
+        # a non-sticky landing-zone setting into production (SEAM_SWAP_MOVES_LZ_SETTING). Unreadable is a
+        # refusal. tests/prove_seam_setting_ownership.py.
+        id: seam
+        if: env.KIT_TARGET_LEASE_ACCOUNT != ''
+        run: python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" seam --adapter appservice
 
       - name: Target lease -- fence and mark the mutation
         # From here to the end step the lease reads `mutating`: a run that dies inside this
@@ -5514,6 +6339,20 @@ jobs:
         env:
           SWAPPED: ${{ steps.swap.outcome }}
         run: python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" provenance --adapter appservice
+
+      - name: Purge the app's own edge endpoint (D-4, after a verified release)
+        # KDEC-030 D-4 (decided 2026-10-26), OF-5 K-7: the edge cache of ONLY the app's own Front Door
+        # endpoint -- the one the landing zone vends in KIT_EDGE_ENDPOINT -- after the release is verified
+        # and stamped. None vended: not applicable, recorded. Fenced like every mutating az call.
+        # suppression: FAILURE_ISOLATION_WITH_STATE_CAPTURE -- a failed purge is the edge_purge output
+        # (EDGE_PURGE_FAILED), routed PROCEED_WITH_ADVISORY by the posture step; the release outcome stays
+        # the report step's. tests/prove_handoff_extended.py.
+        id: purge
+        continue-on-error: true
+        if: steps.serving.outcome == 'success'
+        env:
+          SWAPPED: ${{ steps.swap.outcome }}
+        run: python3 "$RUNNER_TEMP/kit-deploy/deploy_contract.py" purge --adapter appservice
 
       - name: Target lease -- end the mutation (after-fence)
         # MUTATED_WITHOUT_LEASE if the lease was lost while a change was in flight: the change
@@ -5657,6 +6496,15 @@ jobs:
           # What the deploy's own controls established, as data.
           JOB_STATUS: ${{ job.status }}
           BIND_OUTCOME: ${{ steps.bind.outcome }}
+          ZONE_OUTCOME: ${{ steps.zone.outcome }}
+          APPROVAL_OUTCOME: ${{ steps.approval.outcome }}
+          SEAM_OUTCOME: ${{ steps.seam.outcome }}
+          SEAM_OWNERSHIP: ${{ steps.seam.outputs.seam_ownership }}
+          EDGE_PURGE: ${{ steps.purge.outputs.edge_purge }}
+          HANDOFF_VENDED: ${{ steps.bind.outputs.handoff_vended }}
+          RELEASE_APPROVAL: ${{ steps.approval.outputs.release_approval }}
+          ZONE_READINESS: ${{ steps.zone.outputs.zone_readiness }}
+          RELEASE_BLOCK: ${{ steps.zone.outputs.release_block }}
           TARGET_BINDING: ${{ steps.bind.outputs.target_binding }}
           VERDICT_OUTCOME: ${{ steps.verdict.outcome }}
           TIER_OUTCOME: ${{ steps.tier.outcome }}
@@ -5810,6 +6658,9 @@ jobs:
             case "$2" in success|failure) req="$req,$1"; exe="$exe,$1" ;; esac
           }
           ran target-binding "${BIND_OUTCOME:-}"
+          ran zone-readiness "${ZONE_OUTCOME:-}"
+          ran release-approval "${APPROVAL_OUTCOME:-}"
+          ran seam-ownership "${SEAM_OUTCOME:-}"
           ran gate-verdict "${VERDICT_OUTCOME:-}"
           ran attestation-verify "${ATTEST_OUTCOME:-}"
           ran tier-guard "${TIER_OUTCOME:-}"
@@ -5889,6 +6740,8 @@ jobs:
           elif [ "${ATTEST_OUTCOME:-}" = "success" ] && [ -z "${ATTEST_ROUTE:-}" ]; then
             route=EVIDENCE_UNTRUSTED   # V1 ran and answered nothing: not a verification
           elif [ "${BIND_OUTCOME:-}" = "failure" ] || [ "${TIER_OUTCOME:-}" = "failure" ] ||
+               [ "${ZONE_OUTCOME:-}" = "failure" ] || [ "${APPROVAL_OUTCOME:-}" = "failure" ] ||
+               [ "${SEAM_OUTCOME:-}" = "failure" ] ||
                [ "${CAPABILITY_OUTCOME:-}" = "failure" ] || [ "${ROLLBACK_CHECK_OUTCOME:-}" = "failure" ]; then
             route=BLOCKED
           elif [ "${REPORT_OUTCOME:-}" = "failure" ] || [ "${JOB_STATUS:-success}" != "success" ]; then
@@ -5901,7 +6754,8 @@ jobs:
           elif [ "$auth" = "WEAKENING_UNATTRIBUTED" ] || [ "$auth" = "WEAKENING_EXCEPTION_EXPIRED" ]; then
             route=DECISION_REQUIRED
           elif [ "$inforce" -gt 0 ] || [ "$W_ROUTING_RESULT" = "PROCEED_WITH_ADVISORY" ] ||
-               [ "${ATTEST_ROUTE:-}" = "PROCEED_WITH_ADVISORY" ]; then
+               [ "${ATTEST_ROUTE:-}" = "PROCEED_WITH_ADVISORY" ] ||
+               [ "${EDGE_PURGE:-}" = "EDGE_PURGE_FAILED" ] || [ "${EDGE_PURGE:-}" = "EDGE_PURGE_REFUSED" ]; then
             route=PROCEED_WITH_ADVISORY
           fi
 
@@ -5944,6 +6798,15 @@ jobs:
             echo "| version-gap ruling (KDEC-014) | \`${VERSION_GAP_RULING:-not reported}\` |"
             echo "| GitHub environment | \`${W_GITHUB_ENVIRONMENT:-none}\` — at uat/prod its required reviewers approve the deploy (KDEC-014) |"
             echo "| attestation (V1) | \`${ATTEST_RESULT:-not run}\` routes \`${ATTEST_ROUTE:-none}\`${ATTEST_DEBT:+ — held: \`$ATTEST_DEBT\`, trigger: the plan} |"
+            echo "| platform stop and zone readiness (OF-5 K-3, K-2) | \`${RELEASE_BLOCK:-not reported}\`, zone \`${ZONE_READINESS:-not reported}\` |"
+            # Absent is said as absent: the bind step answers on every path it reaches, the purge step only
+            # after a verified release (no answer: it did not run, which is not a purge).
+            if [ -z "${HANDOFF_VENDED:-}" ]; then vended_row="none (or the bind step did not run)"; else vended_row="$HANDOFF_VENDED"; fi
+            if [ -z "${EDGE_PURGE:-}" ]; then purge_row="not run"; else purge_row="$EDGE_PURGE"; fi
+            echo "| extended hand-off vended here (OF-5 K-7) | \`${vended_row}\` |"
+            echo "| edge purge (D-4) | \`${purge_row}\` |"
+            echo "| field ownership at the seam (OF-5 K-6) | \`${SEAM_OWNERSHIP:-not run (the seam is opt-in with the lease)}\` |"
+            echo "| release approval (OF-5 K-1) | \`${RELEASE_APPROVAL:-not reported}\` -- not the requester's or the author's own, bound to the digest |"
             echo "| tier and target binding (B-13) | \`${TARGET_BINDING:-not reported}\` — BOUND: held to the values this environment vends; UNBOUND: it vends none |"
             echo "| rollback dependency check (KDEC-023) | \`${ROLLBACK_CHECK:-not reported}\` -- a deploy built before a rollback of its target, checked for what it took out |"
             if [ "${VERSION_GAP_RULING:-}" = "VERSION_GAP_EXCEPTION_ACCEPTED" ]; then
@@ -6006,6 +6869,30 @@ jobs:
           if-no-files-found: warn
           overwrite: true
           retention-days: 30
+
+      - name: Keep the release record in the target's lease store (OF-5 K-4, opt-in with the lease)
+        # The artifact above lives 30 days; the landing zone's evidence lives in Git. With the lease on
+        # (KDEC-030), the record is ALSO written, create-only, to the target's releases/ folder in the
+        # lease store -- what the landing zone's seam detector, destroy evidence and status read -- with
+        # the deploy's own routing result. Never overwritten (a name that exists is refused); an
+        # unvended container or an unreachable store fails this step (RELEASE_RECORD_NOT_KEPT); the
+        # store's retention policy is read and recorded. tests/prove_release_record_store.py.
+        id: release_record
+        if: >-
+          always() && env.KIT_TARGET_LEASE_ACCOUNT != '' && steps.lease_acquire.outcome == 'success' &&
+          steps.promotion_record.outputs.promotion_record_name != ''
+        env:
+          DEPLOY_ROUTING_RESULT: ${{ steps.posture.outputs.routing_result }}
+        run: |
+          routing="${DEPLOY_ROUTING_RESULT:-}"
+          if [ -z "${DEPLOY_ROUTING_RESULT:-}" ]; then
+            # The posture step answered nothing: an outcome nobody reported is evidence nobody can rely on.
+            routing=EVIDENCE_UNTRUSTED
+            echo "::warning title=No routing result::the posture step reported none; the release record says EVIDENCE_UNTRUSTED."
+          fi
+          python3 "$RUNNER_TEMP/kit-deploy/target_lease.py" record \
+            --record-file "$RUNNER_TEMP/promotion/record/promotion-record.json" \
+            --environment "${DEPLOY_ENVIRONMENT:-}" --routing-result "$routing"
 
       - name: Keep the run record (deploy evidence)
         # The snapshot, change manifest, capability, verification, reversal and outcome files are

@@ -27,7 +27,7 @@ on:
         type: string
         default: '["prod"]'
       adapter:
-        description: "containerapp | appservice"
+        description: "containerapp | appservice | staticwebapp (OF-5 K-8: what a static site serves is its live marker)"
         type: string
         default: containerapp
       slots:

@@ -109,9 +109,12 @@ but they are no longer what keeps a scanner job green. A non-secret scanner job 
 findings on record** could not finish its scan, and the gate reads it as untrusted, not as findings.
 
 A run that skipped part of its input is not a clean run: every `semgrep scan` runs with `--strict`, so
-a file Semgrep cannot parse is exit 3 and `COLLECTION_FAILED`, not a warning and a zero; a CodeQL
-autobuild that did not succeed makes that language's state `PARTIAL` in the summary (`1542c05`; the
-gate does not read it yet, part 04).
+a file Semgrep cannot parse is exit 3 and `COLLECTION_FAILED`, not a warning and a zero. Each CodeQL
+leg names its build mode (`none`, buildless, for Python, JavaScript/TypeScript, C#, Java and C/C++;
+`autobuild` for Go and for Kotlin) and files its own state for the report: an autobuild that did not
+succeed makes that language `PARTIAL` in its row and in the verdict (`COVERAGE_PARTIAL`), and a leg
+that initialised and could not analyse fails its job, which the gate reads as untrusted evidence
+(integrate/r8, part 04).
 
 **Detection is separated from enforcement**, and **redaction precedes every publication** in the job,
 including the last upload (VERIFIED: 29 uploads, each preceded by a redaction, checked by

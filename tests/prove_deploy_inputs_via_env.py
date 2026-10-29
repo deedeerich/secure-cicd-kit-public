@@ -48,6 +48,7 @@ ROOT = os.path.dirname(HERE)
 DEPLOY_WORKFLOWS = [
     os.path.join(ROOT, '.github', 'workflows', 'reusable-deploy-appservice.yml'),
     os.path.join(ROOT, '.github', 'workflows', 'reusable-deploy-containerapp.yml'),
+    os.path.join(ROOT, '.github', 'workflows', 'reusable-deploy-staticwebapp.yml'),
 ]
 EXPR = re.compile(r'\$\{\{(.*?)\}\}')
 

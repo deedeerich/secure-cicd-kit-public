@@ -104,16 +104,16 @@ rules are both required; neither replaces the other.
 | Diagnostic settings on the target (`Microsoft.Insights/diagnosticSettings`) and platform logging | LZ | -- | never writes |
 | Platform runtime: `alwaysOn`, `healthCheckPath`, `http20Enabled`, container `resources` and `probes`, `activeRevisionsMode` | LZ | -- | never writes; a change between its snapshot and its mutate makes it refuse |
 | Secrets (`configuration.secrets`, Key Vault references) | LZ | -- | never writes |
-| App settings, connection strings and container env -- every key **not** assigned to the kit (default: all keys) | LZ | -- | never writes; a write outside its assigned keys is refused `SEAM_SETTING_OWNERSHIP_CONFLICT` (owed) |
+| App settings, connection strings and container env -- every key **not** assigned to the kit (default: all keys) | LZ | -- | never writes; a write outside its assigned keys is refused `SEAM_SETTING_OWNERSHIP_CONFLICT` (built 2026-10-28, OF-5 K-6, opt-in with the lease) |
 | App settings / env keys assigned to the kit (the hand-off's kit setting keys; empty today) and the env key `release_ownership_stamp` | kit | `ignore_changes` on each key by index (`app_settings["<k>"]`); the Container Apps env list is ignored whole **only together with** the seam detector (the block-list problem) | -- |
-| Slot configuration: sticky settings (`slotConfigNames`) | LZ | -- | never writes; refuses a swap that would move a non-sticky LZ key `SEAM_SWAP_MOVES_LZ_SETTING` (owed) |
+| Slot configuration: sticky settings (`slotConfigNames`) | LZ | -- | never writes; refuses a swap that would move a non-sticky LZ key `SEAM_SWAP_MOVES_LZ_SETTING` (built 2026-10-28, OF-5 K-6) |
 | Deployment slots: existence and each slot's networking, identity, security and settings | LZ | -- | never writes; a missing slot fails the snapshot |
 | Slot contents (the image in a slot) and the swap | kit | `ignore_changes` on each slot resource's image attribute | -- |
 | Configured image: `linuxFxVersion` / `application_stack` image; `template.containers[].image` | kit | `ignore_changes` on exactly that attribute | -- |
 | Revision suffix, the revision set, `configuration.ingress.traffic` (weights, labels) | kit | `ignore_changes` on `template[0].revision_suffix` and `ingress[0].traffic_weight` | -- |
 | Tags `release_ownership_stamp`, `deploy_provenance_digest`, `deploy_provenance_metadata_sha256`, `deploy_provenance_run` | kit | `ignore_changes` on each tag by key (`tags["<k>"]`), never the whole map | -- |
 | Every other tag | LZ | -- | never writes |
-| Shared entries: Front Door routes/origins/rules, DNS records, WAF rules, NSG and firewall rules | LZ | -- | never writes; its rollback refuses them `ROLLBACK_REFUSED_PLATFORM_OWNED` (owed) |
+| Shared entries: Front Door routes/origins/rules, DNS records, WAF rules, NSG and firewall rules | LZ | -- | never writes; its rollback refuses them `ROLLBACK_REFUSED_PLATFORM_OWNED` (built 2026-10-28, OF-5 K-5, opt-in with the lease) |
 | Edge cache purge of the app's own Front Door endpoint (an action, not a field) | kit | not a field; nothing to ignore | -- |
 
 A Terraform illustration of the LZ's side (attribute paths are U5: illustrative until checked against
@@ -583,22 +583,30 @@ outcome), `scripts/rollback_sequence.py` (the evidence check), `assurance-taxono
 14. Human break-glass: PIM for Groups, approval + justification + ticket, short activation, alerts; two
     emergency access accounts per Microsoft's guidance.
 
-**The kit** (L-PROMO has merged):
+**The kit** (L-PROMO has merged; items 2-6 and 8 built 2026-10-28 on lane `lane/lz-strengths`, the
+LZ-vs-kit review OF-5, KDEC-034 PROPOSED -- every one opt-in with the lease, as item 1):
 
 1. **Built 2026-10-27, opt-in** (*The kit's wiring*): the live adapter, the composite, both deploy
    reusables (the test period held with a heartbeat) and the rollback sequence (one lease for the
    sequence, held through every step and test period), with a fence before every mutating `az` call.
-2. Write each release record into the target's `releases/` (durable; the GitHub artifact stays too).
-3. Refuse an app-setting or env write outside the kit's assigned keys (`SEAM_SETTING_OWNERSHIP_CONFLICT`);
-   refuse a swap that would move a non-sticky LZ-owned key (`SEAM_SWAP_MOVES_LZ_SETTING`).
-4. The rollback changes in the table above.
-5. Add to `LZ_KIT_HANDOFF_CONTRACT.md`: two hand-off variables (the seam storage account; the kit's
-   setting keys -- names fixed with that change; the container name is derived), and the deploy
-   identity's data-plane role.
-6. Register the new outcomes in `assurance-taxonomy.yaml`.
+2. **Built (K-4):** each release record written create-only into the target's `releases/`
+   (`target_lease.py record`, `RELEASE_RECORD_KEPT`); the GitHub artifact stays too. Retention is the
+   LZ's immutability policy on the container, read and recorded. `tests/prove_release_record_store.py`.
+3. **Built (K-6):** the `seam` step refuses an app-setting or env write outside the kit's assigned keys,
+   or a kit key the LZ also claims (`SEAM_SETTING_OWNERSHIP_CONFLICT`), and a swap that would move a
+   non-sticky LZ-owned key (`SEAM_SWAP_MOVES_LZ_SETTING`), before the first mutation.
+   `tests/prove_seam_setting_ownership.py`.
+4. **Built (K-5):** the rollback changes in the table above (`entry_owner`, `--seam-ownership`).
+   `tests/prove_seam_app_rollback_refuses_shared_entry.py`.
+5. **Built (K-7):** `LZ_KIT_HANDOFF_CONTRACT.md` "The extended hand-off set": `KIT_TARGET_LEASE_ACCOUNT`,
+   `KIT_SETTING_KEYS`, `KIT_RELEASE_BLOCK`, `KIT_ZONE_READINESS`, `KIT_EDGE_ENDPOINT`, `KIT_ACR_*` as
+   repository variables, the lease data-plane role and the purge-only role. `tests/prove_handoff_extended.py`.
+6. **Built:** the outcomes registered in `assurance-taxonomy.yaml` (no longer CANDIDATES, except
+   `seam_field_drift`, whose emitter is the LZ's seam detector).
 7. **Built 2026-10-27:** the `runner_label` input on both deploy reusables and the rollback sequence
    (default `ubuntu-latest`); a private-network runner is the consumer's to supply (D-2).
-8. The post-deploy purge of the app's own endpoint (above); `not applicable` without Front Door.
+8. **Built (K-7, D-4):** the post-deploy purge of the app's own endpoint (`EDGE_PURGED`;
+   `EDGE_PURGE_NOT_APPLICABLE` without one, never a pass; a failed purge is an advisory).
 
 ## Negative tests to build after L-PROMO merges
 
@@ -653,9 +661,10 @@ target **stays closed** until (1) both sides use the **live** lease (a real stor
 path, the real identities) and (2) the field-ownership rules are in force in that test: the LZ IaC carries
 the narrow `ignore_changes` above and the seam detector runs. A stub or emulator result does not open it.
 
-Vocabulary: `assurance-taxonomy.yaml` registers `target_lease` (emitted by the model) and, as CANDIDATES
-marked KDEC-030 draft, `seam_field_drift`, `seam_ownership_refusal` and two `rollback_dependency_outcome`
-values, so the wiring cannot invent second spellings. Nothing emits the candidates yet.
+Vocabulary: `assurance-taxonomy.yaml` registers `target_lease` (emitted by the model and the CLI),
+`seam_ownership_refusal` and `seam_ownership_check` (the deploy's `seam` step, OF-5 K-6), the two
+`rollback_dependency_outcome` values (the ARM rollback, K-5), `release_record` (K-4) and `edge_purge`
+(D-4). `seam_field_drift` stays a CANDIDATE: the LZ's seam detector emits it.
 
 ## Decided 2026-10-26, and what stays open
 

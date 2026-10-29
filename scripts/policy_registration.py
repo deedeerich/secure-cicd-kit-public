@@ -25,7 +25,7 @@ THE FORMAT (schemas/policy-registration.schema.json; templates/policy-register.c
        {id, scope: {[enterprise] | [org], [team], [product], [repository], [environment_tier]},
         [rung], [controls: {control: routing_result}], [team_pattern], [merge_reaches_tier],
         [deploy_approval: {[approver_groups], [approvers_required], [self_review_prevented],
-                           [ai_review]}],
+                           [ai_review], [confirm_digest]}],
         decision: {authority, reason, decided_on, expires, [approver_role], [exception_ref],
                    [environment_reviewers], [evidence_refs]}, [notes],
         [secret_exceptions: [{finding, ticket, explanation, approver, expires,
@@ -114,7 +114,9 @@ USAGE
 EXIT  0 resolved   1 refused (state printed)   2 usage, or self-test failed
 """
 import argparse
+import copy
 import datetime
+import hashlib
 import io
 import json
 import os
@@ -208,7 +210,7 @@ CONTROL_KEYS = rl.control_classes + JOBS
 JOB_DEFAULT_CLASS = 'new_critical_high'
 
 TOP_KEYS = ('schema_version', 'register_id', 'sign_off', 'proposed_by', 'notes', 'environment_names',
-            'orgs', 'repositories', 'numbers', 'policies')
+            'orgs', 'repositories', 'numbers', 'policies', 'approver_lists', 'approver_lists_source')
 ORG_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
 ENTRY_KEYS = ('id', 'scope', 'rung', 'controls', 'team_pattern', 'merge_reaches_tier', 'deploy_approval',
               'decision', 'notes', 'secret_exceptions', 'known_exploited_exceptions', 'ticket_routing')
@@ -266,7 +268,19 @@ DECISION_REQUIRED_FIELDS = ('authority', 'reason', 'decided_on', 'expires')
 DECISION_KEYS = DECISION_REQUIRED_FIELDS + ('approver_role', 'exception_ref', 'environment_reviewers',
                                             'evidence_refs', 'renews')
 SIGN_OFF_KEYS = ('by', 'role', 'date', 'reference')
-APPROVAL_KEYS = ('approver_groups', 'approvers_required', 'self_review_prevented', 'ai_review')
+# confirm_digest (OF-5 K-1): the approving reviewer quotes the digest being released. The deploy
+# demands it at uat and prod whatever the register says (scripts/release_gates.py); a register may
+# demand it below uat too, never relax it at uat/prod.
+APPROVAL_KEYS = ('approver_groups', 'approvers_required', 'self_review_prevented', 'ai_review', 'confirm_digest',
+                 'approver_groups_from')
+# ONE APPROVER LIST (OF-5 K-9, the LZ-vs-kit review's P6). The landing zone writes the uat/prod reviewers
+# and the kit checks them: two lists drift. The central register names each list ONCE -- inline in
+# `approver_lists` {name: [group]}, or in the file `approver_lists_source` names (relative to the
+# register; {"approver_lists": {...}}), the shared file the landing zone's hand-off write reads too --
+# and a deploy_approval names it with `approver_groups_from` instead of approver_groups. Two lists in
+# one entry, or two sources of one list, are a conflict; a name nothing defines, or a source that
+# cannot be read, refuses the register (never the default). A repository file cannot name a list.
+LIST_NAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
 SELF_REVIEW = ('required', 'not_required')
 # An AI review comments; it never approves and never gates (owner, 2026-10-22).
 AI_REVIEW = ('advisory', 'none')
@@ -370,6 +384,27 @@ def check_document(doc, origin):
         for n, t in names.items():
             if not _s(n) or t not in rl.tier_order:
                 bad('environment_names[%r] = %r is not a registered environment_tier' % (n, t))
+    if origin == ORIGIN_REPOSITORY and ('approver_lists' in doc or 'approver_lists_source' in doc):
+        bad('approver lists belong to the central register: one list, which the landing zone reads too')
+    al = doc.get('approver_lists')
+    if al is not None:
+        if not isinstance(al, dict) or not al:
+            bad('approver_lists is not a non-empty object {name: [group, ...]}')
+        else:
+            for ln, groups in al.items():
+                if not LIST_NAME_RE.match(str(ln)):
+                    bad('approver_lists name %r is not a plain name' % ln)
+                if not isinstance(groups, list) or not groups or any(not _s(g) for g in groups):
+                    bad('approver_lists[%r] is not a non-empty list of group names' % ln)
+    src = doc.get('approver_lists_source')
+    if src is not None:
+        if isinstance(src, dict) and src.get('loaded'):
+            pass  # read by load_approver_lists; the lists it held are approver_lists now
+        elif not _s(src) or os.path.isabs(src) or '..' in src.replace('\\', '/').split('/'):
+            bad('approver_lists_source %r is not a path relative to the central register' % (src,))
+        elif al is not None:
+            p.append((POLICY_REGISTER_CONFLICT, 'the register holds approver_lists AND names approver_lists_source: '
+                      'two sources of one list, and which governs would be an accident'))
     orgs = doc.get('orgs', {})
     if origin == ORIGIN_REPOSITORY and 'orgs' in doc:
         bad('orgs belongs to the central register; a repository does not place its org in an enterprise')
@@ -527,14 +562,22 @@ def check_document(doc, origin):
                 bad('%s deploy_approval carries unknown field %r' % (where, k))
             elif k == 'approver_groups' and (not isinstance(v, list) or any(not _s(g) for g in v)):
                 bad('%s deploy_approval.approver_groups must be a list of group names' % where)
+            elif k == 'approver_groups_from' and (origin == ORIGIN_REPOSITORY or not LIST_NAME_RE.match(_s(v))):
+                bad('%s deploy_approval.approver_groups_from %r: a list name, and only the central register\'s '
+                    '(a repository file cannot name the shared list)' % (where, v))
             elif k == 'approvers_required' and v not in (0, 1):
                 bad('%s deploy_approval.approvers_required %r: GitHub environments admit on ONE listed '
                     'reviewer, so the register can say 0 or 1 and nothing it cannot enforce' % (where, v))
             elif k == 'self_review_prevented' and v not in SELF_REVIEW:
                 bad('%s deploy_approval.self_review_prevented %r is not required | not_required' % (where, v))
+            elif k == 'confirm_digest' and v not in SELF_REVIEW:
+                bad('%s deploy_approval.confirm_digest %r is not required | not_required' % (where, v))
             elif k == 'ai_review' and v not in AI_REVIEW:
                 bad('%s deploy_approval.ai_review %r: an AI review comments, advisory only -- it is never '
                     'a gate or an approval (advisory | none)' % (where, v))
+        if 'approver_groups' in da and 'approver_groups_from' in da:
+            p.append((POLICY_REGISTER_CONFLICT, '%s deploy_approval names approver_groups AND approver_groups_from: '
+                      'two lists in one entry' % where))
         dec = e.get('decision')
         if not isinstance(dec, dict):
             unattributed('%s has no decision: every registration is a decision a named person made' % where)
@@ -562,6 +605,61 @@ def check_document(doc, origin):
             unattributed('%s applies at uat/prod and changes enforcement there, so its decision must name '
                          'the environment\'s required reviewers (decision.environment_reviewers)' % where)
     return p
+
+
+def load_approver_lists(doc, base_dir):
+    """Read `approver_lists_source` (relative to the central register) into `approver_lists`.
+    -> (problems, note). The source becomes {'loaded': path, 'sha256': ...} so the record says where
+    the list came from; a source that cannot be read is REGISTRATION_UNAVAILABLE, never the default."""
+    src = (doc or {}).get('approver_lists_source')
+    if not isinstance(src, str):
+        return [], None
+    if 'approver_lists' in doc:
+        return [(POLICY_REGISTER_CONFLICT, 'the register holds approver_lists AND names approver_lists_source: two '
+                 'sources of one list')], None
+    if not _s(src) or os.path.isabs(src) or '..' in src.replace('\\', '/').split('/'):
+        return [(rl.REGISTRATION_UNAVAILABLE, 'approver_lists_source %r is not a path relative to the central '
+                 'register' % src)], None
+    path = os.path.join(base_dir or '.', src)
+    try:
+        raw = io.open(path, 'rb').read()
+        got = json.loads(raw.decode('utf-8'))
+    except (OSError, ValueError, UnicodeDecodeError) as exc:
+        return [(rl.REGISTRATION_UNAVAILABLE, 'the approver list source %s could not be read (%s): an unreadable '
+                 'list is not an empty one' % (src, type(exc).__name__))], None
+    lists = got.get('approver_lists') if isinstance(got, dict) else None
+    if not isinstance(lists, dict) or not lists or any(
+            not LIST_NAME_RE.match(str(n)) or not isinstance(g, list) or not g or any(not _s(x) for x in g)
+            for n, g in lists.items()):
+        return [(rl.REGISTRATION_UNAVAILABLE, 'the approver list source %s is not {"approver_lists": {name: '
+                 '[group, ...]}}' % src)], None
+    sha = hashlib.sha256(raw).hexdigest()
+    doc['approver_lists'] = lists
+    doc['approver_lists_source'] = {'loaded': src, 'sha256': sha}
+    return [], 'approver lists read from %s (sha256 %s): the one list the landing zone reads too' % (src, sha)
+
+
+def expand_approver_lists(central, repo_doc):
+    """-> (central with every approver_groups_from resolved into approver_groups, problems)."""
+    if central is None:
+        return central, []
+    src = central.get('approver_lists_source')
+    lists = central.get('approver_lists') or {}
+    out, problems = copy.deepcopy(central), []
+    for e in out.get('policies') or []:
+        da = e.get('deploy_approval') if isinstance(e, dict) else None
+        if not isinstance(da, dict) or 'approver_groups_from' not in da:
+            continue
+        name = da['approver_groups_from']
+        if isinstance(src, str):
+            problems.append((rl.REGISTRATION_UNAVAILABLE, 'entry %r names list %r, and the approver list source %s '
+                             'was never read' % (e.get('id'), name, src)))
+        elif name not in lists:
+            problems.append((rl.REGISTRATION_UNAVAILABLE, 'entry %r names approver list %r, which the register does '
+                             'not define: a list nobody wrote is not an empty one' % (e.get('id'), name)))
+        else:
+            da['approver_groups'] = sorted(_s(g) for g in lists[name])
+    return out, problems
 
 
 def scope_key(sc, origin):
@@ -1130,6 +1228,9 @@ def resolve(central, repo_doc, repository, environment, event, supplied_inputs, 
     for origin, doc in ((ORIGIN_CENTRAL, central), (ORIGIN_REPOSITORY, repo_doc)):
         if doc is not None:
             problems += [(c, '%s register: %s' % (origin, m)) for c, m in check_document(doc, origin)]
+    if not problems:
+        central, more = expand_approver_lists(central, repo_doc)
+        problems += [(c, 'central register: %s' % m) for c, m in more]
     if problems:
         state = _refusal_state([c for c, _m in problems])
         return _blank(state, 'the policy register is refused: %s' % problems[0][1],
@@ -1305,6 +1406,15 @@ def resolve_from_ref(repo, default_ref, path, central_path, repository, environm
                               notes=notes + [m for _c, m in problems],
                               defects=[m for _c, m in problems], registration_ref=sha or None,
                               refusals=sorted(set(c for c, _m in problems)))
+            if origin == ORIGIN_CENTRAL:
+                lp, lnote = load_approver_lists(doc, os.path.dirname(os.path.abspath(central_path)))
+                if lp:
+                    state = _refusal_state([c for c, _m in lp])
+                    return _blank(state, 'the central register is refused: %s' % lp[0][1], notes=notes + [m for _c, m in lp],
+                                  defects=[m for _c, m in lp], registration_ref=sha or None,
+                                  refusals=sorted(set(c for c, _m in lp)))
+                if lnote:
+                    notes.append(lnote)
             docs[origin] = doc
     # KDEC-022 item 2: each register's renewal history, from git. A register that is absent needs none.
     history = {}
@@ -1430,7 +1540,13 @@ def main(argv=None):
             print('REFUSED: cannot read %s: %s' % (a.validate, exc))
             return 1
         doc, problems = parse_registration(text, a.origin)
-        if doc is not None:
+        if doc is not None and a.origin == ORIGIN_CENTRAL:
+            problems, lnote = load_approver_lists(doc, os.path.dirname(os.path.abspath(a.validate)))
+            if lnote:
+                print(lnote)
+            if not problems:
+                _expanded, problems = expand_approver_lists(doc, None)
+        if doc is not None and not problems:
             # The committed history of this file, with this version as the newest (KDEC-022 item 2).
             problems = validate(doc, a.origin, today, eh.history_for_file(a.validate, extra_text=text))
         for c, m in problems:

@@ -232,7 +232,30 @@ def same_version(requested, have):
 
 
 # ----------------------------------------------------------------------------- input
-def load_step(st, root, where, p, locked=None):
+FOREIGN = 'ROLLBACK_REFUSED_FOREIGN_EVIDENCE'
+PLATFORM_OWNED = rd.PLATFORM_OWNED
+
+
+def foreign_evidence(st, locked):
+    """OF-5 K-5 (KDEC-030): with the seam in force, an `arm` step's resources.json must be the evidence
+    of a KIT deploy (release_id run-<id>-<attempt>, no landing-zone producer) of the LOCKED target.
+    A landing-zone apply's evidence fed to the kit's rollback would have two systems reversing the
+    same entries. -> the refusal text, or None."""
+    res = st['_ev'].get('resources.json') or {}
+    rel = _s(res.get('release_id'))
+    producer = _s(res.get('producer')).lower()
+    if not KIT_RELEASE.match(rel):
+        return ('%s: resources.json belongs to %r, which is not a kit deploy run (run-<id>-<attempt>) -- a '
+                'landing-zone apply\'s evidence is reversed only by the landing zone\'s recovery' % (FOREIGN, rel))
+    if producer and (producer.startswith('lz') or 'landing' in producer):
+        return '%s: resources.json was produced by %r, not by a kit deploy' % (FOREIGN, res.get('producer'))
+    if locked and target_of(st) != locked:
+        return ('%s: resources.json is the evidence of %s, not of the locked target %s' % (FOREIGN, target_of(st),
+                                                                                              locked))
+    return None
+
+
+def load_step(st, root, where, p, locked=None, seam=False):
     """Read one step's deploy evidence into it. Problems are appended to `p`."""
     for k in st:
         if k not in STEP_KEYS and not k.startswith('_'):
@@ -253,6 +276,11 @@ def load_step(st, root, where, p, locked=None):
         except (OSError, ValueError) as exc:
             p.append('%s: %s could not be read from %s (%s)' % (where, name, d, exc))
     st['_dir'], st['_ev'] = d, ev
+    if seam and st.get('adapter') == 'arm' and ev.get('resources.json') is not None:
+        why = foreign_evidence(st, locked)
+        if why:
+            p.append('%s: %s' % (where, why))
+            return True
     man = ev.get('manifest.json') or ev.get('resources.json') or {}
     if man and man.get('release_id') != 'run-%s-%s' % (rid, att):
         p.append('%s: the manifest belongs to %r, not run %s attempt %s' % (
@@ -271,7 +299,7 @@ def load_step(st, root, where, p, locked=None):
     return True
 
 
-def read_sequence(path, root, locked=None):
+def read_sequence(path, root, locked=None, seam=False):
     """-> (sequence, problems). Every step's evidence is read here, BEFORE anything is touched: a
     sequence that cannot be read whole is refused whole."""
     try:
@@ -294,7 +322,7 @@ def read_sequence(path, root, locked=None):
         if not isinstance(st, dict):
             p.append('%s is not an object' % where)
             continue
-        if not load_step(st, root, where, p, locked):
+        if not load_step(st, root, where, p, locked, seam):
             continue
         if (st['run_id'], st['run_attempt']) in seen:
             p.append('%s names run %s attempt %s twice' % (where, st['run_id'], st['run_attempt']))
@@ -876,12 +904,15 @@ def run_arm_step(st, n, total, seq_id, work, cfg):
             el = ineligible(HUMAN, 'a standing deployment', 'the deployment\'s own outcome was %r, so it '
                             'is not a standing deployment to reverse' % outcome, [])
         else:
-            rv = rd.review(st['_ev']['resources.json'], reg, st.get('_sequence_releases') or ())
+            rv = rd.review(st['_ev']['resources.json'], reg, st.get('_sequence_releases') or (),
+                           seam=cfg.get('seam', False))
+            free = [n for n in rv['_nodes'].values() if n.get('decision') == 'reverse']
             checks = [{'check': 'a standing deployment', 'held': True, 'detail': 'the deploy reported DEPLOY_HEALTHY'},
                       {'check': 'dependency review', 'held': rv['outcome'] in (rd.CLEAR, rd.SCOPED),
                        'detail': '%s: %s' % (rv['outcome'], rv['why'])}]
-            el = {'eligible': rv['outcome'] != rd.REFUSED, 'basis': rv['basis'],
-                  'disposition': HUMAN if rv['outcome'] in (rd.PARTIAL, rd.REFUSED) else None,
+            el = {'eligible': rv['outcome'] != rd.REFUSED and (rv['outcome'] != PLATFORM_OWNED or bool(free)),
+                  'basis': rv['basis'],
+                  'disposition': HUMAN if rv['outcome'] in (rd.PARTIAL, rd.REFUSED, PLATFORM_OWNED) else None,
                   'why': rv['why'], 'checks': checks}
         rec['eligibility'] = el
         if not el['eligible']:
@@ -912,7 +943,7 @@ def run_arm_step(st, n, total, seq_id, work, cfg):
                 what = 'rolled back and verified' if rv['outcome'] in (rd.CLEAR, rd.SCOPED) else \
                     'partly rolled back (the parts independent of the cross-edit, verified)'
                 halt = run_period(st, n, total, seq_id, cfg, rec, label, what)
-                if not halt and rv['outcome'] == rd.PARTIAL:
+                if not halt and rv['outcome'] in (rd.PARTIAL, PLATFORM_OWNED):
                     halt = (STOPPED_DEPENDENCY, '%s: %s. Reversed and verified: %s. Left for a human '
                             'decision: %s. The test period passed on that state; nothing after it was '
                             'touched' % (label, rv['why'], ', '.join(r['id'].rsplit('/', 1)[-1] for r in rv['reversed'])
@@ -956,7 +987,7 @@ def blocked_step_record(st, n, why):
 
 # ----------------------------------------------------------------------------- the sequence
 def run(seq_path, root, work, e2e_cmd, e2e_timeout, contract=None, period=None, interval=0.0,
-        period_minutes=None, locked=None, fetch_cmd=''):
+        period_minutes=None, locked=None, fetch_cmd='', seam=False):
     """`period` in seconds; `period_minutes` is the reusable's form and wins when given; with
     neither, the default (DEFAULT_PERIOD_MINUTES)."""
     contract = contract or os.path.join(HERE, 'deploy_contract.py')
@@ -976,7 +1007,7 @@ def run(seq_path, root, work, e2e_cmd, e2e_timeout, contract=None, period=None, 
               'lock': {'target': locked} if locked else None,
               'target_version': None, 'final_version': None, 'baseline': {}, 'inserted': [],
               'steps': [], 'escalation': None}
-    seq, problems = read_sequence(seq_path, root, locked)
+    seq, problems = read_sequence(seq_path, root, locked, seam)
     if seq is not None:
         record['sequence_id'] = _s(seq.get('sequence_id')) or None
         record['target_version'] = _s(seq.get('target_version')) or None
@@ -1001,7 +1032,8 @@ def run(seq_path, root, work, e2e_cmd, e2e_timeout, contract=None, period=None, 
         return finish(record, REFUSED_NO_PERIOD, 'the end-to-end test period is 0. A test period '
                       'after every step is the rule (KDEC-021: "There needs to be an end to end test '
                       'period"); one instant is not a period, so nothing was touched')
-    cfg = {'period': period, 'interval': interval or 0, 'e2e_cmd': e2e_cmd, 'e2e_timeout': e2e_timeout}
+    cfg = {'period': period, 'interval': interval or 0, 'e2e_cmd': e2e_cmd, 'e2e_timeout': e2e_timeout,
+           'seam': seam}
     for i, st in enumerate(seq['steps']):
         st['_position'] = i + 1
     queue = list(reversed(seq['steps']))
@@ -1281,6 +1313,9 @@ def main(argv):
                    help='RG/NAME of the target whose concurrency lock the caller holds; a step on '
                         'any other target is refused')
     p.add_argument('--fetch-evidence-command', default='')
+    p.add_argument('--seam-ownership', action='store_true',
+                   help='OF-5 K-5 (KDEC-030): the landing zone owns the platform; refuse its entries '
+                        '(ROLLBACK_REFUSED_PLATFORM_OWNED) and its evidence (ROLLBACK_REFUSED_FOREIGN_EVIDENCE)')
     p.add_argument('--summary', default='')
     p.add_argument('--github-output', default='')
     lr = sub.add_parser('list-runs', help='print "run_id run_attempt" per step, for fetching evidence')
@@ -1308,7 +1343,7 @@ def main(argv):
     record = run(seq_path, a.evidence_root, a.work, a.e2e_command, a.e2e_timeout_seconds,
                  period=a.test_period_seconds, interval=interval,
                  period_minutes=a.test_period_minutes, locked=_s(a.locked_target) or None,
-                 fetch_cmd=a.fetch_evidence_command)
+                 fetch_cmd=a.fetch_evidence_command, seam=a.seam_ownership)
     problems = validate(record)
     if problems:
         print('::error title=Rollback sequence record invalid::%s' % '; '.join(problems[:5]))
@@ -1326,6 +1361,8 @@ def main(argv):
             fh.write('steps_verified=%d\n' % sum(1 for s in record['steps'] if s['step_result'] == STEP_VERIFIED))
             fh.write('steps_total=%d\n' % len(record['steps']))
             fh.write('rollback_state=%s\n' % (record.get('rollback_state') or ''))
+            if FOREIGN in (record.get('why') or ''):
+                fh.write('rollback_refusal=%s\n' % FOREIGN)
     return 0 if record['result'] == SEQUENCE_VERIFIED else 1
 
 

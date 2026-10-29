@@ -405,6 +405,30 @@ def run_world(path, inputs, state, cancel_after=None, environment_answer=PROTECT
             root_url = 'file:///' + os.path.join(work, 'api').replace('\\', '/').lstrip('/')
             io.open(p, 'w', encoding='utf-8').write(body.replace('@API_ROOT@', root_url))
         write_default_api(os.path.join(work, 'api'))
+        # OF-5 (K-1/K-2/K-3, scripts/release_gates.py): the world a deploy normally meets -- a landing
+        # zone that is READY and not blocked, a requester, and one independent reviewer's approval of
+        # this run's environment that quotes the digest. A proof about those gates passes its own
+        # values through env_extra / api_files; tests/prove_release_gates.py proves the refusals.
+        landing = {'KIT_ZONE_READINESS': 'READY', 'KIT_RELEASE_BLOCK': 'none', 'GITHUB_RUN_ID': '4242',
+                   'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_TRIGGERING_ACTOR': 'release-requester',
+                   'GITHUB_ACTOR': 'release-requester'}
+        env_extra = dict(landing, **(env_extra or {}))
+        approvals = os.path.join(work, 'api', 'repos', 'o', 'r', 'actions', 'runs', env_extra['GITHUB_RUN_ID'],
+                                 'approvals')
+        if not os.path.exists(approvals):
+            if not os.path.isdir(os.path.dirname(approvals)):
+                os.makedirs(os.path.dirname(approvals))
+            io.open(approvals, 'w', encoding='utf-8').write(json.dumps([
+                {'state': 'approved', 'user': {'login': 'independent-reviewer'},
+                 'comment': 'approved %s' % inputs.get('image_digest', ''),
+                 'environments': [{'name': str(inputs.get('github_environment') or '')}]}]))
+        if env_extra.get('GITHUB_SHA'):
+            commit = os.path.join(work, 'api', 'repos', 'o', 'r', 'commits', env_extra['GITHUB_SHA'])
+            if not os.path.exists(commit):
+                if not os.path.isdir(os.path.dirname(commit)):
+                    os.makedirs(os.path.dirname(commit))
+                io.open(commit, 'w', encoding='utf-8').write(json.dumps(
+                    {'author': {'login': 'release-author'}, 'parents': [{'sha': '0' * 40}]}))
         state_path = os.path.join(work, 'state.json')
         log_path = os.path.join(work, 'calls.jsonl')
         io.open(state_path, 'w', encoding='utf-8').write(json.dumps(state))

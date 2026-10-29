@@ -350,13 +350,20 @@ jobs:
             # sequence at once: LEASE_LOST, nothing further is mutated.
             hold=(python3 "$KIT_DIR/scripts/target_lease.py" hold --every 180 --mark-mutating "rollback sequence ${GITHUB_RUN_ID}" --)
           fi
+          seam=()
+          if [ -n "${KIT_TARGET_LEASE_ACCOUNT:-}" ]; then
+            # OF-5 K-5 (KDEC-030 R4): with the seam in force the landing zone owns the platform. An
+            # `arm` step never reverses a landing-zone entry (ROLLBACK_REFUSED_PLATFORM_OWNED) and never
+            # takes a landing-zone apply's evidence for a kit deploy's (ROLLBACK_REFUSED_FOREIGN_EVIDENCE).
+            seam=(--seam-ownership)
+          fi
           ${hold[@]+"${hold[@]}"} python3 "$KIT_DIR/scripts/rollback_sequence.py" run --sequence-env sequence \
             --evidence-root "$RUNNER_TEMP/rollback-evidence" --work "$RUNNER_TEMP/rollback-work" \
             --out "$RUNNER_TEMP/rollback-sequence.json" --e2e-command "$E2E_TEST_COMMAND" \
             --e2e-timeout-seconds "$((E2E_TIMEOUT_MINUTES * 60))" \
             --test-period-minutes "$E2E_TEST_PERIOD_MINUTES" \
             --check-interval-minutes "$E2E_CHECK_INTERVAL_MINUTES" \
-            --locked-target "$LOCKED_TARGET" --fetch-evidence-command "$fetch" \
+            --locked-target "$LOCKED_TARGET" --fetch-evidence-command "$fetch" ${seam[@]+"${seam[@]}"} \
             --summary "$GITHUB_STEP_SUMMARY" --github-output "$kv" || rc=$?
           sequence_result="$(sed -n 's/^sequence_result=//p' "$kv" | tail -1)"
           steps_verified="$(sed -n 's/^steps_verified=//p' "$kv" | tail -1)"

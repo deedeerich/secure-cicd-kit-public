@@ -74,6 +74,12 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # same against Azure and a real artifact store needs a live run.
     "reusable-deployed-scan.yml": ["deployed-scan", "deployed-scan-live"],
     "action:deployed-scan": ["deployed-scan"],
+    # OF-5 K-8 (KDEC-034 PROPOSED, 2026-10-28): the Static Web Apps deploy adapter and the packaging
+    # composite that makes its artefact. TWO CAPABILITIES, as the rollback sequence has: the contract
+    # (digest, preview, read-back, reversal, refusals before login) is proven locally against the stub
+    # cloud; the same against a real static site and the real SWA CLI needs a live run.
+    "reusable-deploy-staticwebapp.yml": ["deploy-staticwebapp", "deploy-staticwebapp-live"],
+    "action:static-site-package": ["deploy-staticwebapp"],
     # KDEC-032 PROPOSED (Release 4, lane L-MIRROR, 2026-10-27): the organisation-hosted feed mirrors.
     # TWO CAPABILITIES, as the deployed scan has: the manifest, the refusals (stale, unreachable,
     # tampered), the explicit fallback and the refresh's upstream verification are proven locally on
@@ -515,6 +521,10 @@ VALIDATION_REGISTRY: dict[str, dict] = {
     # OBSERVED 2026-10-27, locally (lane L-MIRROR): tests/prove_feed_mirror.py M1..M14. Level `tool`:
     # no storage account, private endpoint or runner has been involved.
     "feed-mirror": {"probe": "tests/prove_feed_mirror.py", "state": "observed", "level": "tool"},
+    # OBSERVED 2026-10-28, locally (OF-5 K-8): tests/prove_deploy_staticwebapp.py P1, S1, J1..J10 -- the
+    # reusable run step by step as shipped against the stub cloud, a SWA CLI stand-in and a recorded
+    # GitHub API. Level `tool`: nothing has run against Azure or on a runner.
+    "deploy-staticwebapp": {"probe": "tests/prove_deploy_staticwebapp.py", "state": "observed", "level": "tool"},
     "version-metadata-wired": {"probe": "tests/prove_build_push_round_trip.py",
                                "state": "observed", "level": "tool"},
     }
@@ -749,6 +759,17 @@ DEFERRALS: dict[str, dict] = {
                                    "from the mirror registry at its digest",
                          "trigger": "the first apply of infra/feed-mirrors (docs/adoption/FEED_MIRRORS.md)",
                          "expires": "2026-12-31"},
+    "deploy-staticwebapp-live": {"reason": "a live run needs a Static Web App (Standard) on the owner's personal "
+                                           "tenant, a deploy identity with the site's contributor role, and "
+                                           "a dispatch of reusable-deploy-staticwebapp.yml from the trunk",
+                                 "owner": "kit-maintainer",
+                                 "proves": "on the personal tenant: a packaged site released through a preview "
+                                           "environment to production, NOW SERVING read from the live marker; "
+                                           "an unhealthy release reversed to the prior artefact; the SWA CLI "
+                                           "2.0.2 deploy client and the deployment-token read behaving as read "
+                                           "(KDEC-034 U-SWA1..U-SWA3)",
+                                 "trigger": "the next live deploy acceptance run (KDEC-012)",
+                                 "expires": "2026-12-31"},
     "attestation-verify":  {"reason": "IMPLEMENTATION_HELD -- the owner's plan (Pro) offers no "
                                       "attestations on private repositories, so V1 cannot be armed "
                                       "there; classification and routing are proven locally only",
@@ -859,7 +880,11 @@ DEFERRALS: dict[str, dict] = {
 
 # Ratchet. Accepted debt may shrink, never grow. A new deferral must displace an old one or
 # raise this number deliberately, in a reviewable diff, with a reason in the commit message.
-MAX_ACCEPTED_DEBT = 7    # RAISED 6 -> 7 on 2026-10-27 for feed-mirror-live (KDEC-032 PROPOSED, lane
+MAX_ACCEPTED_DEBT = 8    # RAISED 7 -> 8 on 2026-10-28 for deploy-staticwebapp-live (OF-5 K-8, KDEC-034
+                         # PROPOSED): a NEW capability -- the Static Web Apps adapter against a real site --
+                         # whose local half is observed; nothing existing became provable in this change,
+                         # so nothing could be displaced. Ratchet it back when it closes.
+                         # RAISED 6 -> 7 on 2026-10-27 for feed-mirror-live (KDEC-032 PROPOSED, lane
                          # L-MIRROR): a NEW capability -- the organisation feed mirrors against a real
                          # private storage account -- whose local half is observed; nothing existing
                          # became provable in this change, so nothing could be displaced. Ratchet it

@@ -33,6 +33,12 @@ CASES (docs/PROOF_RULE.md)
                 UNDETERMINED (the licence case where init really failed is unchanged)
     recovery    a language not discovered -> NOT_APPLICABLE, whatever the platform said
     static      the row builder passes a CodeQL file name per leg, not the leg name
+    per-leg     (integrate/r8) one leg failed to analyse, so needs.codeql.result is failure: the
+                failed leg's row reads execution FAILED and the analysed leg's row still reads
+                COMPLETE / PASS -- each row carries ITS leg (codeql-leg-<leg>.state), not the
+                aggregate job result six legs share
+    partial     a leg whose autobuild did not succeed files PARTIAL: its row's PASS is capped at
+                PARTIAL and the step names the leg in its codeql_partial output for the gate
 
 EXIT 0 every case decided as it must; 1 a case decided wrongly; 2 could not be checked (UNKNOWN).
 """
@@ -103,15 +109,18 @@ def main():
 
     sb = h.Sandbox('codeql-rows-')
     try:
-        def states_for(name, discovered, platform, files):
-            vals = {'needs.codeql.result': 'success', 'inputs.image_ref': '',
+        outs = {}
+
+        def states_for(name, discovered, platform, files, codeql_result='success'):
+            vals = {'needs.codeql.result': codeql_result, 'inputs.image_ref': '',
                     'needs.plan.outputs.state': 'COMPLETE',
                     'needs.plan.outputs.code_scanning': platform,
                     'needs.plan.outputs.platform_source': 'api'}
             for flag in ('python', 'node', 'go', 'dotnet', 'java', 'cpp', 'iac'):
                 vals['needs.plan.outputs.%s' % flag] = 'true' if flag in discovered else 'false'
             ws = sb.workspace(name, dict({'_sarif/.keep': ''}, **files))
-            rc, log, _o, _u = sb.run(bash, step, vals, ws)
+            rc, log, o, _u = sb.run(bash, step, vals, ws)
+            outs[name] = o
             if rc != 0:
                 bad.append('%s: the state builder exited %d\n%s' % (name, rc, log[-400:]))
             return os.path.join(ws, '_states')
@@ -166,6 +175,44 @@ def main():
             print('  recovery  platform=%-11s absent legs NOT_APPLICABLE: %s'
                   % (platform, 'ok' if not any(b.startswith('recovery(%s)' % platform) for b in bad)
                      else 'NO'))
+        # per-leg: c-cpp initialised and did not analyse (its leg failed, so the job result is
+        # failure); python analysed. Each row must read its own leg.
+        st = states_for('per-leg', {'python', 'cpp'}, 'ENABLED',
+                        {'_sarif/python.sarif': codeql_sarif('python', 'py/sql-injection'),
+                         '_sarif/codeql-leg-python.state': 'COMPLETE' + chr(10),
+                         '_sarif/codeql-leg-c-cpp.state': 'COLLECTION_FAILED' + chr(10)},
+                        codeql_result='failure')
+        py, cc = state(st, 'python') or {}, state(st, 'c-cpp') or {}
+        print('  per-leg   python  execution=%r gate=%r | c-cpp execution=%r gate=%r'
+              % (py.get('execution'), py.get('gate'), cc.get('execution'), cc.get('gate')))
+        if py.get('execution') != 'COMPLETE' or py.get('gate') != 'PASS':
+            bad.append('per-leg: the python leg analysed; its row must read COMPLETE / PASS whatever '
+                       'another leg did (got %r / %r)' % (py.get('execution'), py.get('gate')))
+        if cc.get('execution') != 'FAILED' or cc.get('gate') == 'PASS':
+            bad.append('per-leg: the c-cpp leg did not analyse; its row must read execution FAILED, '
+                       'never PASS (got %r / %r)' % (cc.get('execution'), cc.get('gate')))
+        # The same c-cpp failure with a GREEN job (the defect: analyze failed under
+        # continue-on-error and the job stayed green) must still read FAILED from its leg file.
+        st = states_for('per-leg-green-job', {'cpp'}, 'ENABLED',
+                        {'_sarif/codeql-leg-c-cpp.state': 'COLLECTION_FAILED' + chr(10)})
+        cc = state(st, 'c-cpp') or {}
+        if cc.get('execution') != 'FAILED':
+            bad.append('per-leg: a leg that filed COLLECTION_FAILED must read FAILED even when the job '
+                       'result says success (got %r)' % cc.get('execution'))
+
+        # partial: java-kotlin's autobuild did not succeed; the analysis it did make is retained.
+        st = states_for('partial', {'java'}, 'ENABLED',
+                        {'_sarif/java.sarif': codeql_sarif('java-kotlin', 'java/sql-injection'),
+                         '_sarif/codeql-leg-java-kotlin.state': 'PARTIAL' + chr(10)})
+        jk = state(st, 'java-kotlin') or {}
+        named = outs.get('partial', {}).get('codeql_partial', '')
+        print('  partial   java-kotlin gate=%r codeql_partial=%r' % (jk.get('gate'), named))
+        if jk.get('gate') != 'PARTIAL':
+            bad.append('partial: a PARTIAL leg with a retained SARIF must cap its row at PARTIAL (got %r)'
+                       % jk.get('gate'))
+        if 'java-kotlin' not in named.split():
+            bad.append('partial: the step must name the PARTIAL leg in codeql_partial for the gate '
+                       '(got %r)' % named)
     finally:
         sb.close()
     if bad:

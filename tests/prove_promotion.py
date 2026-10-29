@@ -147,8 +147,10 @@ def world_api(records, sbom=True, revocations=None, approvals=True):
     if approvals:
         for rid in ('201', '202', '301'):
             files['repos/o/r/actions/runs/%s/approvals' % rid] = json.dumps(
-                [{'state': 'approved', 'comment': 'ok', 'user': {'login': 'approver-a'},
-                  'environments': [{'name': 'test'}]}])
+                [{'state': 'approved', 'comment': 'ok %s' % W.NEW, 'user': {'login': 'approver-a'},
+                  # OF-5 K-1: an independent approval of the environment the run deploys, quoting the
+                  # digest (scripts/release_gates.py refuses anything less at uat and prod).
+                  'environments': [{'name': 'test'}, {'name': 'prod'}]}])
     return files, binary
 
 

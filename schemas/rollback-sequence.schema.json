@@ -554,7 +554,8 @@
                   "ROLLBACK_DEPENDENCY_CLEAR",
                   "ROLLBACK_SCOPED_TO_PRODUCT_CONFIG",
                   "ROLLBACK_PARTIAL_DEPENDENCY_CONFLICT",
-                  "ROLLBACK_REFUSED_DEPENDENCY_CONFLICT"
+                  "ROLLBACK_REFUSED_DEPENDENCY_CONFLICT",
+                  "ROLLBACK_REFUSED_PLATFORM_OWNED"
                 ]
               },
               "rollback_state": {

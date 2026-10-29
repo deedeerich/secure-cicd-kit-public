@@ -379,6 +379,17 @@ NOT_VOCABULARY = {
     # vends to opt a deploy into the target lease, the lease CLI's bearer override (the proof's
     # stand-in token) and break-authority list, and the LZ snippet's variable naming the target.
     "KIT_TARGET_LEASE_ACCOUNT", "TARGET_LEASE_BEARER", "TARGET_LEASE_BREAK_AUTHORITY", "TARGET_RESOURCE_ID",
+    # OF-5 (KDEC-034 proposed): SETTINGS the landing zone vends into each kit environment (its platform stop
+    # and the zone's readiness), and the runner's own variables naming who started a run -- the same class
+    # as GITHUB_SHA. Their VALUES are registered (release_block, zone_readiness); the names are not states.
+    "KIT_RELEASE_BLOCK", "KIT_ZONE_READINESS", "GITHUB_ACTOR", "GITHUB_TRIGGERING_ACTOR",
+    # OF-5 K-6/K-7: the app-setting keys the hand-off assigns to the kit, and the app's own edge endpoint
+    # (the purge scope, D-4) -- vended settings whose values are names, never states.
+    "KIT_SETTING_KEYS", "KIT_EDGE_ENDPOINT",
+    # OF-5 K-10: Python constant names referenced as attributes from another module (the deployed scan's
+    # rule table and its landing-zone mapping in scripts/promotion.py; the promotion proof's SBOM digest).
+    # Containers of values, never states.
+    "DRIFT_RULES", "LZ_DRIFT", "SBOM_SHA",
     # The token-file override the az fence and the hold read, and the proof's az stand-in log.
     "KIT_TARGET_LEASE_TOKEN", "AZ_STUB_LOG",
     # The leak-gate helpers (developer-safety/, docs/adoption/LEAK_GATES.md): bash's own version
@@ -412,6 +423,12 @@ NOT_VOCABULARY = {
     # The self-test verdict's environment (KDEC-033): the runner's event name and the two JSON values
     # the `required` job hands scripts/selftest_required.py. Names, not states.
     "GITHUB_EVENT_NAME", "NEEDS_JSON", "PLAN_SKIPS",
+    # OF-5 K-8 (the Static Web Apps adapter): environment-variable NAMES. The bind step body every deploy
+    # reusable shares names the container deploys' target variables (ACR_LOGIN_SERVER, IMAGE_REPOSITORY)
+    # even where a static site binds nothing to them; the promotion code reads ARTIFACT_IDENTITY; the
+    # SWA CLI reads its deployment token from SWA_CLI_DEPLOYMENT_TOKEN (its own setting, never ours). And
+    # a constant of tests/_workflow_runner.py referenced as an attribute. None is a state.
+    "ACR_LOGIN_SERVER", "IMAGE_REPOSITORY", "ARTIFACT_IDENTITY", "SWA_CLI_DEPLOYMENT_TOKEN", "PROMOTION_SIGNER",
 }
 
 TOKEN = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")

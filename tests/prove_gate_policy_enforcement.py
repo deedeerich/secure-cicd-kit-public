@@ -633,6 +633,14 @@ def main():
              dict(scanners(), **{'needs.sast-cpp.outputs.scan_state': 'PARTIAL',
                                  'needs.sast-cpp.outputs.scan_reason': 'CPP_ANALYSIS_PARTIAL'}),
              (True, 'ALLOWED'), 'PROCEED_WITH_ADVISORY', 'COVERAGE_PARTIAL', True),
+            # CodeQL legs (integrate/r8): an autobuild leg whose build did not succeed is named in
+            # the row builder's codeql_partial -- COVERAGE_PARTIAL, advisory, never a PASS -- and a
+            # leg that initialised and could not analyse FAILS its job, read here as any crash.
+            ('crawl_codeql_partial_clean', policy_outputs(work, None, environment='dev'),
+             dict(scanners(), **{'steps.rows.outputs.codeql_partial': 'c-cpp'}),
+             (True, 'ALLOWED'), 'PROCEED_WITH_ADVISORY', 'COVERAGE_PARTIAL', True),
+            ('crawl_codeql_leg_failed', policy_outputs(work, None, environment='dev'),
+             scanners(failed=('codeql',)), (False, 'BLOCKED'), 'EVIDENCE_UNTRUSTED', None, False),
         ]
         for name, pol, seeded, (gate_zero, enf), route, cause, verdict_zero in cases:
             if name != 'no_policy_step' and not pol.get('steps.policy.outputs.policy_state'):

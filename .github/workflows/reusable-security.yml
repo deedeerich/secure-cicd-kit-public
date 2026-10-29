@@ -1957,14 +1957,21 @@ jobs:
         run: |
           set -euo pipefail
           legs=""
-          leg() { legs="${legs:+$legs,}{\"lang\":\"$1\",\"gate\":\"true\"}"; }
-          [ "$D_PYTHON" = "true" ] && leg python
-          [ "$D_NODE" = "true" ] && leg javascript-typescript
-          [ "$D_GO" = "true" ] && leg go
-          [ "$D_DOTNET" = "true" ] && leg csharp
+          # EACH LEG NAMES ITS BUILD MODE. autobuild looks for a build system at the checkout root;
+          # in a monorepo (pom.xml, .csproj in subdirectories) it found none, the database held no
+          # code and analyze failed -- c-cpp, csharp and java-kotlin wrote no SARIF on the cost runs
+          # of the six-language fixture (run 40791360475). `none` extracts every source file with no
+          # build, as GitHub's default setup does. Go has no buildless mode, and Kotlin is not
+          # extracted buildless, so those legs keep autobuild. tests/prove_codeql_dynamic_matrix.py.
+          leg() { legs="${legs:+$legs,}{\"lang\":\"$1\",\"gate\":\"true\",\"build_mode\":\"$2\"}"; }
+          [ "$D_PYTHON" = "true" ] && leg python none
+          [ "$D_NODE" = "true" ] && leg javascript-typescript none
+          [ "$D_GO" = "true" ] && leg go autobuild
+          [ "$D_DOTNET" = "true" ] && leg csharp none
           # Kotlin with no pom.xml or Gradle file starts this leg too (KDEC-026).
-          if [ "$D_JAVA" = "true" ] || [ "$D_KOTLIN" = "true" ]; then leg java-kotlin; fi
-          [ "$D_CPP" = "true" ] && leg c-cpp
+          jk_mode=none; [ "$D_KOTLIN" = "true" ] && jk_mode=autobuild
+          if [ "$D_JAVA" = "true" ] || [ "$D_KOTLIN" = "true" ]; then leg java-kotlin "$jk_mode"; fi
+          [ "$D_CPP" = "true" ] && leg c-cpp none
           echo "codeql_matrix=[$legs]" >> "$GITHUB_OUTPUT"
           echo "CodeQL legs: [$legs]"
       # THE DISCOVERY PART'S RESULT: success only when the checkout, the survey, the platform probe
@@ -3023,6 +3030,8 @@ jobs:
         uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: ${{ matrix.lang }}
+          # From the plan: `none` (buildless) or `autobuild` (go; java-kotlin with Kotlin).
+          build-mode: ${{ matrix.build_mode }}
           # Without this, CodeQL runs its built-in `code-scanning` suite -- curated for
           # precision, and missing taint-tracking queries an assurance kit wants. The kit
           # reported "CodeQL ran" and a reader had no way to know WHICH queries ran.
@@ -3030,7 +3039,7 @@ jobs:
 
       - name: CodeQL — build
         id: cq_build
-        if: matrix.gate == 'true' && steps.cq_init.outcome == 'success'
+        if: matrix.gate == 'true' && steps.cq_init.outcome == 'success' && matrix.build_mode == 'autobuild'
         continue-on-error: true
         uses: github/codeql-action/autobuild@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
 
@@ -3092,6 +3101,85 @@ jobs:
           echo "count=$n" >> "$GITHUB_OUTPUT"
           echo "CodeQL results: $n across$files"
 
+      # The state this job reports is the whole point. A scanner that did not run must not be
+      # indistinguishable from a scanner that ran and found nothing.
+      - name: CodeQL — declare state
+        id: cq_state
+        if: always() && matrix.gate == 'true'
+        env:
+          # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (ledger L38).
+          IN_CODEQL_QUERIES: ${{ inputs.codeql_queries }}
+          # What the count step established about the SARIF analyze wrote (validity rows 1-6).
+          CQ_COLLECTION: ${{ steps.cq_count.outputs.collection }}
+          # The autobuild step's own outcome. It is continue-on-error, and until 2026-10-16 its
+          # outcome was read nowhere (PIPELINE_ORDERING 3.5): a build that compiled some modules
+          # and failed on others left a partial database, an analysis that succeeded, and COMPLETE.
+          CQ_BUILD: ${{ steps.cq_build.outcome }}
+          # `none` legs build nothing, so a skipped autobuild there is not a partial database.
+          CQ_BUILD_MODE: ${{ matrix.build_mode }}
+          CQ_LANG: ${{ matrix.lang }}
+        run: |
+          if [ "${{ steps.cq_init.outcome }}" != "success" ]; then
+            # Almost always: GHAS is not enabled on this private repository.
+            state=UNAVAILABLE
+            echo "reason=CodeQL could not initialise. On a private repository this means GitHub" >> "$GITHUB_OUTPUT"
+            echo "::warning title=CodeQL: UNAVAILABLE::CodeQL did NOT run for ${{ matrix.lang }}."
+            echo "On a private repository this normally means GitHub Advanced Security is not"
+            echo "enabled. The build is NOT failed for that -- but this is unestablished scope,"
+            echo "not a clean result. Nothing here proves the absence of what CodeQL would find."
+          elif [ "${{ steps.cq_analyze.outcome }}" != "success" ]; then
+            state=COLLECTION_FAILED
+            echo "::warning title=CodeQL: COLLECTION_FAILED::CodeQL initialised for ${{ matrix.lang }}"
+            echo "but analysis did not complete. Treat as unestablished, not as zero findings."
+          elif [ "${CQ_COLLECTION:-}" != "COMPLETE" ]; then
+            # analyze completed and the document it wrote records no run, no results array or a
+            # failed invocation -- a hollow report, which is not an analysis of anything.
+            state=COLLECTION_FAILED
+            echo "::warning title=CodeQL: COLLECTION_FAILED::CodeQL analysed ${{ matrix.lang }} but"
+            echo "its SARIF failed validity rows 1-6 (collection '${CQ_COLLECTION:-none}'). Unestablished, not zero."
+          elif [ "${CQ_BUILD_MODE:-autobuild}" != "none" ] && [ "${CQ_BUILD:-NOT_RUN}" != "success" ]; then
+            # The database holds what the build produced. A build that did not succeed may have
+            # compiled part of the code, so the analysis covers an unknown part of it: PARTIAL,
+            # never COMPLETE (scanner_state.PARTIAL: established for some of the scope).
+            state=PARTIAL
+            echo "::warning title=CodeQL: PARTIAL::CodeQL analysed ${{ matrix.lang }}, but its autobuild"
+            echo "step did not succeed (outcome '${CQ_BUILD:-none}'). Code the build did not compile is"
+            echo "not in the database; zero findings here does not cover it."
+          else
+            state=COMPLETE
+            echo "::notice title=CodeQL: analysed ${{ matrix.lang }}::Results are in the Security tab"
+            echo "and in the sarif-codeql-${{ matrix.lang }} artifact."
+          fi
+          # WHICH QUERIES RAN IS PART OF THE RESULT. "CodeQL: 0 findings" means something
+          # different under the precision-tuned default suite than under security-extended,
+          # and a reader who cannot see which one ran cannot tell those apart.
+          {
+            echo ""
+            echo "### CodeQL — ${{ matrix.lang }}"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Query suite | \`${IN_CODEQL_QUERIES}\` |"
+            echo "| Taint tracking | included in security-extended and security-and-quality |"
+            echo "| Build mode | \`${CQ_BUILD_MODE:-autobuild}\` |"
+            echo "| State | ${state} |"
+            echo ""
+            echo "A finding count is only meaningful alongside the suite that produced it."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          # ONE LEG, ONE STATE, FOR THE REPORT. Six legs share one job result, so the row builder
+          # could only read "the codeql job" -- a leg that did not analyse sat green beside five that
+          # did. Each leg files its own state; the row for its language reads it.
+          mkdir -p codeql-leg
+          echo "$state" > "codeql-leg/codeql-leg-${CQ_LANG}.state"
+          # INITIALISED AND DID NOT ANALYSE IS A COLLECTION FAILURE, and a collection failure fails
+          # its job, as the count step's hollow-SARIF exit already did. Until 2026-10-28 this leg
+          # stayed green and the gate read needs.codeql.result = success over no analysis. A licence
+          # that refused init (UNAVAILABLE) never fails the build. tests/prove_codeql_build_outcome.py.
+          if [ "$state" = "COLLECTION_FAILED" ]; then
+            echo "::error title=CodeQL: COLLECTION_FAILED::${CQ_LANG} initialised and was not analysed. An absent analysis is not zero findings."
+            exit 1
+          fi
       # BEGIN REDACT_STEP — generated by scripts/inline_normalizer.py. DO NOT EDIT HERE.
       - name: Redact credential material before upload
         if: always()
@@ -3123,6 +3211,14 @@ jobs:
           path: codeql-results
           retention-days: 30
           if-no-files-found: warn
+      - name: CodeQL — keep this leg's state for the report
+        if: always() && matrix.gate == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sarif-codeql-leg-${{ matrix.lang }}-${{ github.run_attempt }}
+          path: codeql-leg
+          retention-days: 30
+          if-no-files-found: warn
       - name: CodeQL — publish to the Security tab where available
         id: cs_codeql
         if: always() && matrix.gate == 'true' && steps.cq_analyze.outcome == 'success'
@@ -3138,68 +3234,6 @@ jobs:
           # codebase, and that ambiguity is how a control becomes false assurance.
           echo "::warning title=CodeQL: NOT published to the Security tab::The analysis SUCCEEDED."
           echo "Its redacted results are in the sarif-codeql-${{ matrix.lang }} artifact."
-
-      # The state this job reports is the whole point. A scanner that did not run must not be
-      # indistinguishable from a scanner that ran and found nothing.
-      - name: CodeQL — declare state
-        id: cq_state
-        if: always() && matrix.gate == 'true'
-        env:
-          # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (ledger L38).
-          IN_CODEQL_QUERIES: ${{ inputs.codeql_queries }}
-          # What the count step established about the SARIF analyze wrote (validity rows 1-6).
-          CQ_COLLECTION: ${{ steps.cq_count.outputs.collection }}
-          # The autobuild step's own outcome. It is continue-on-error, and until 2026-10-16 its
-          # outcome was read nowhere (PIPELINE_ORDERING 3.5): a build that compiled some modules
-          # and failed on others left a partial database, an analysis that succeeded, and COMPLETE.
-          CQ_BUILD: ${{ steps.cq_build.outcome }}
-        run: |
-          if [ "${{ steps.cq_init.outcome }}" != "success" ]; then
-            # Almost always: GHAS is not enabled on this private repository.
-            echo "state=UNAVAILABLE" >> "$GITHUB_OUTPUT"
-            echo "reason=CodeQL could not initialise. On a private repository this means GitHub" >> "$GITHUB_OUTPUT"
-            echo "::warning title=CodeQL: UNAVAILABLE::CodeQL did NOT run for ${{ matrix.lang }}."
-            echo "On a private repository this normally means GitHub Advanced Security is not"
-            echo "enabled. The build is NOT failed for that -- but this is unestablished scope,"
-            echo "not a clean result. Nothing here proves the absence of what CodeQL would find."
-          elif [ "${{ steps.cq_analyze.outcome }}" != "success" ]; then
-            echo "state=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
-            echo "::warning title=CodeQL: COLLECTION_FAILED::CodeQL initialised for ${{ matrix.lang }}"
-            echo "but analysis did not complete. Treat as unestablished, not as zero findings."
-          elif [ "${CQ_COLLECTION:-}" != "COMPLETE" ]; then
-            # analyze completed and the document it wrote records no run, no results array or a
-            # failed invocation -- a hollow report, which is not an analysis of anything.
-            echo "state=COLLECTION_FAILED" >> "$GITHUB_OUTPUT"
-            echo "::warning title=CodeQL: COLLECTION_FAILED::CodeQL analysed ${{ matrix.lang }} but"
-            echo "its SARIF failed validity rows 1-6 (collection '${CQ_COLLECTION:-none}'). Unestablished, not zero."
-          elif [ "${CQ_BUILD:-NOT_RUN}" != "success" ]; then
-            # The database holds what the build produced. A build that did not succeed may have
-            # compiled part of the code, so the analysis covers an unknown part of it: PARTIAL,
-            # never COMPLETE (scanner_state.PARTIAL: established for some of the scope).
-            echo "state=PARTIAL" >> "$GITHUB_OUTPUT"
-            echo "::warning title=CodeQL: PARTIAL::CodeQL analysed ${{ matrix.lang }}, but its autobuild"
-            echo "step did not succeed (outcome '${CQ_BUILD:-none}'). Code the build did not compile is"
-            echo "not in the database; zero findings here does not cover it."
-          else
-            echo "state=COMPLETE" >> "$GITHUB_OUTPUT"
-            echo "::notice title=CodeQL: analysed ${{ matrix.lang }}::Results are in the Security tab"
-            echo "and in the sarif-codeql-${{ matrix.lang }} artifact."
-          fi
-          # WHICH QUERIES RAN IS PART OF THE RESULT. "CodeQL: 0 findings" means something
-          # different under the precision-tuned default suite than under security-extended,
-          # and a reader who cannot see which one ran cannot tell those apart.
-          {
-            echo ""
-            echo "### CodeQL — ${{ matrix.lang }}"
-            echo ""
-            echo "| | |"
-            echo "|---|---|"
-            echo "| Query suite | \`${IN_CODEQL_QUERIES}\` |"
-            echo "| Taint tracking | included in security-extended and security-and-quality |"
-            echo "| State | ${state:-see above} |"
-            echo ""
-            echo "A finding count is only meaningful alongside the suite that produced it."
-          } >> "$GITHUB_STEP_SUMMARY"
 
   deps-scan:
     needs: [plan]
@@ -4990,6 +5024,7 @@ jobs:
           merge-multiple: true
 
       - name: Build per-scanner state
+        id: rows
         env:
           # EVERY VALUE ARRIVES AS DATA, NEVER AS SCRIPT TEXT.
           #
@@ -5292,14 +5327,34 @@ jobs:
             # language that left no SARIF keeps the platform's word: that is the case where init
             # really did not run, and it stays unestablished.
             if [ "$3" = "true" ] && [ -n "$(sarif_for "$2")" ]; then _a=APPLICABLE; fi
-            add "codeql-$1" "$_a" "$R_CODEQL" "$1" "$2" codeql
+            # THE LEG'S OWN STATE OUTRANKS THE SHARED JOB RESULT. Six legs are one job, so one leg
+            # that could not analyse made every row FAILED, and one that failed under
+            # continue-on-error left every row COMPLETE. Each leg files codeql-leg-<leg>.state; a leg
+            # that filed nothing (an older kit, a lost artifact) keeps the job result.
+            _r="$R_CODEQL"; _ls=""
+            [ -f "_sarif/codeql-leg-$1.state" ] && _ls="$(tr -d '[:space:]' < "_sarif/codeql-leg-$1.state")"
+            case "$_ls" in
+              COMPLETE|PARTIAL) _r=success ;;
+              COLLECTION_FAILED) _r=failure ;;
+            esac
+            add "codeql-$1" "$_a" "$_r" "$1" "$2" codeql
+            # An autobuild leg whose build did not succeed analysed an unknown part of the code:
+            # its PASS is PARTIAL, and the gate is told which legs (codeql_partial).
+            if [ "$_ls" = "PARTIAL" ]; then
+              cq_partial="${cq_partial:+$cq_partial }$1"
+              _sf="_states/state-codeql-$1.json"
+              jq '.gate = (if .gate == "PASS" then "PARTIAL" else .gate end) | .scope += "; PARTIAL: autobuild did not succeed"' \
+                "$_sf" > "$_sf.tmp" && mv "$_sf.tmp" "$_sf"
+            fi
           }
+          cq_partial=""
           cq_lang python                python.sarif     "$D_PYTHON"
           cq_lang javascript-typescript javascript.sarif "$D_NODE"
           cq_lang go                    go.sarif         "$D_GO"
           cq_lang csharp                csharp.sarif     "$D_DOTNET"
           cq_lang java-kotlin           java.sarif       "$D_JAVA"
           cq_lang c-cpp                 cpp.sarif        "$D_CPP"
+          echo "codeql_partial=$cq_partial" >> "$GITHUB_OUTPUT"
 
           # --- EXTERNAL EVIDENCE (KDEC-028): a caller's own scanner, adopted by contract ----------
           # A caller may run a scanner this kit does not ship, in the same run, before calling it,
@@ -5495,6 +5550,8 @@ jobs:
           G_NEEDS_SAST_BANDIT_RESULT: ${{ needs.sast-bandit.result }}
           G_NEEDS_SAST_CPP_RESULT: ${{ needs.sast-cpp.result }}
           G_NEEDS_SAST_CPP_OUTPUTS_SCAN_STATE: ${{ needs.sast-cpp.outputs.scan_state }}
+          # CodeQL legs whose autobuild did not succeed (PARTIAL), from the row builder.
+          G_CODEQL_PARTIAL: ${{ steps.rows.outputs.codeql_partial }}
           G_NEEDS_SAST_CPP_OUTPUTS_SCAN_REASON: ${{ needs.sast-cpp.outputs.scan_reason }}
           G_NEEDS_SAST_DOTNET_RESULT: ${{ needs.sast-dotnet.result }}
           G_NEEDS_SAST_GO_RESULT: ${{ needs.sast-go.result }}
@@ -5730,6 +5787,14 @@ jobs:
               coverage_partial="${coverage_partial}${coverage_partial:+ }${name}"
               echo "::warning title=sast-cpp PARTIAL (${G_NEEDS_SAST_CPP_OUTPUTS_SCAN_REASON:-CPP_ANALYSIS_PARTIAL})::C/C++ source without build metadata was analysed source-only. Its findings stand; it is not a complete analysis."
               echo "| (coverage) | PARTIAL — ${G_NEEDS_SAST_CPP_OUTPUTS_SCAN_REASON:-CPP_ANALYSIS_PARTIAL} | sast-cpp analysed some C/C++ without a compilation database (COVERAGE_PARTIAL) |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            # CODEQL ANALYSED WITHOUT A SUCCESSFUL BUILD: those legs' databases hold an unknown part of
+            # the code. The job succeeded and its findings stand; the scan is PARTIAL.
+            if [ "$name" = "codeql" ] && [ "$res" = "success" ] && [ -n "${G_CODEQL_PARTIAL:-}" ]; then
+              [ -z "${st:-}" ] && st=PARTIAL
+              coverage_partial="${coverage_partial}${coverage_partial:+ }${name}"
+              echo "::warning title=codeql PARTIAL (CODEQL_BUILD_PARTIAL)::autobuild did not succeed for: ${G_CODEQL_PARTIAL}. Their findings stand; the analysis is not complete."
+              echo "| (coverage) | PARTIAL — CODEQL_BUILD_PARTIAL | codeql analysed ${G_CODEQL_PARTIAL} after an autobuild that did not succeed (COVERAGE_PARTIAL) |" >> "$GITHUB_STEP_SUMMARY"
             fi
             if [ "$name" = "sbom" ] && [ "$res" = "success" ] && [ "$LICENCE_STATE" = "FINDINGS" ]; then
               st=FINDINGS

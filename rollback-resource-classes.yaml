@@ -35,6 +35,20 @@
 #                       other entries in the same collection.
 #   parent_excludes     body paths of the parent that ARM mirrors from its children; ignored when the
 #                       parent is read back for "untouched".
+# ENTRY OWNER (OF-5 K-5; KDEC-030 R4, "Rollback: what the generic ARM rollback must refuse")
+#   entry_owner         WHO may reverse it, beside the class that says HOW. With the seam in force
+#                       (rollback_sequence.py --seam-ownership, passed by the rollback reusable
+#                       when the environment opts into the KDEC-030 lease):
+#                       landing-zone        the platform and every shared entry: never reversed
+#                                           by an application rollback; the landing zone's own
+#                                           recovery is the reverser (ROLLBACK_REFUSED_PLATFORM_OWNED)
+#                       kit-release-fields  a release target: the kit owns its release fields
+#                                           and reverses them through the deploy adapters, never by
+#                                           a whole-body ARM PUT (refused the same way)
+#                       release             a workload the release itself creates in its own
+#                                           resource group; the ARM rollback may reverse it
+#                       Without the seam, the classes decide alone, as before: a deployer that is
+#                       not a landing zone still owns its own entries.
 # FLAGS
 #   data: true          holds data: a resource the release CREATED is never deleted by a rollback
 #                       (a human decides); a modification is restored like any other.
@@ -62,6 +76,7 @@
   "types": {
     "Microsoft.Network/networkSecurityGroups": {
       "class": "SHARED_MULTI_CONFIG",
+      "entry_owner": "landing-zone",
       "api_version": "2023-09-01",
       "child_collections": [
         "securityRules"
@@ -76,6 +91,7 @@
     },
     "Microsoft.Cdn/profiles": {
       "class": "SHARED_MULTI_CONFIG",
+      "entry_owner": "landing-zone",
       "api_version": "2024-02-01",
       "child_collections": [
         "afdEndpoints",
@@ -93,6 +109,7 @@
     },
     "Microsoft.Network/frontDoors": {
       "class": "SHARED_MULTI_CONFIG",
+      "entry_owner": "landing-zone",
       "api_version": "2021-06-01",
       "inline_collections": {
         "routingRules": "properties.routingRules",
@@ -104,6 +121,7 @@
     },
     "Microsoft.Network/frontDoorWebApplicationFirewallPolicies": {
       "class": "SHARED_MULTI_CONFIG",
+      "entry_owner": "landing-zone",
       "api_version": "2022-05-01",
       "inline_collections": {
         "customRules": "properties.customRules.rules"
@@ -114,6 +132,7 @@
     },
     "Microsoft.Network/firewallPolicies": {
       "class": "SHARED_MULTI_CONFIG",
+      "entry_owner": "landing-zone",
       "api_version": "2023-09-01",
       "child_collections": [
         "ruleCollectionGroups"
@@ -127,6 +146,7 @@
     },
     "Microsoft.Network/azureFirewalls": {
       "class": "SHARED_MULTI_CONFIG",
+      "entry_owner": "landing-zone",
       "api_version": "2023-09-01",
       "inline_collections": {
         "applicationRuleCollections": "properties.applicationRuleCollections",
@@ -141,6 +161,7 @@
     },
     "Microsoft.Network/applicationGateways": {
       "class": "SHARED_MULTI_CONFIG",
+      "entry_owner": "landing-zone",
       "api_version": "2023-09-01",
       "inline_collections": {
         "httpListeners": "properties.httpListeners",
@@ -159,6 +180,7 @@
     },
     "Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies": {
       "class": "SHARED_MULTI_CONFIG",
+      "entry_owner": "landing-zone",
       "api_version": "2023-09-01",
       "inline_collections": {
         "customRules": "properties.customRules"
@@ -169,6 +191,7 @@
     },
     "Microsoft.Network/routeTables": {
       "class": "SHARED_MULTI_CONFIG",
+      "entry_owner": "landing-zone",
       "api_version": "2023-09-01",
       "child_collections": [
         "routes"
@@ -182,6 +205,7 @@
     },
     "Microsoft.Network/loadBalancers": {
       "class": "SHARED_MULTI_CONFIG",
+      "entry_owner": "landing-zone",
       "api_version": "2023-09-01",
       "inline_collections": {
         "loadBalancingRules": "properties.loadBalancingRules",
@@ -191,6 +215,7 @@
     },
     "Microsoft.Network/virtualNetworks": {
       "class": "SHARED_MULTI_CONFIG",
+      "entry_owner": "landing-zone",
       "api_version": "2023-09-01",
       "child_collections": [
         "subnets"
@@ -201,6 +226,7 @@
     },
     "Microsoft.Network/dnsZones": {
       "class": "SHARED_MULTI_CONFIG",
+      "entry_owner": "landing-zone",
       "api_version": "2018-05-01",
       "child_collections": [
         "A",
@@ -216,6 +242,7 @@
     },
     "Microsoft.Network/privateDnsZones": {
       "class": "SHARED_MULTI_CONFIG",
+      "entry_owner": "landing-zone",
       "api_version": "2020-06-01",
       "child_collections": [
         "A",
@@ -230,6 +257,7 @@
     },
     "Microsoft.ApiManagement/service": {
       "class": "SHARED_MULTI_CONFIG",
+      "entry_owner": "landing-zone",
       "api_version": "2022-08-01",
       "child_collections": [
         "apis",
@@ -241,105 +269,128 @@
     },
     "Microsoft.Web/sites": {
       "class": "STABLE",
+      "entry_owner": "kit-release-fields",
       "api_version": "2023-12-01"
     },
     "Microsoft.Web/serverfarms": {
       "class": "STABLE",
+      "entry_owner": "landing-zone",
       "api_version": "2023-12-01"
     },
     "Microsoft.App/containerApps": {
       "class": "STABLE",
+      "entry_owner": "kit-release-fields",
       "api_version": "2024-03-01"
     },
     "Microsoft.App/jobs": {
       "class": "STABLE",
+      "entry_owner": "release",
       "api_version": "2024-03-01"
     },
     "Microsoft.App/managedEnvironments": {
       "class": "STABLE",
+      "entry_owner": "landing-zone",
       "api_version": "2024-03-01"
     },
     "Microsoft.ContainerService/managedClusters": {
       "class": "STABLE",
+      "entry_owner": "landing-zone",
       "api_version": "2024-05-01"
     },
     "Microsoft.ContainerInstance/containerGroups": {
       "class": "STABLE",
+      "entry_owner": "release",
       "api_version": "2023-05-01"
     },
     "Microsoft.ContainerRegistry/registries": {
       "class": "STABLE",
+      "entry_owner": "landing-zone",
       "api_version": "2023-07-01",
       "data": true
     },
     "Microsoft.Sql/servers": {
       "class": "STABLE",
+      "entry_owner": "landing-zone",
       "api_version": "2023-08-01-preview",
       "data": true
     },
     "Microsoft.Sql/servers/databases": {
       "class": "STABLE",
+      "entry_owner": "landing-zone",
       "api_version": "2023-08-01-preview",
       "data": true
     },
     "Microsoft.DBforPostgreSQL/flexibleServers": {
       "class": "STABLE",
+      "entry_owner": "landing-zone",
       "api_version": "2023-06-01-preview",
       "data": true
     },
     "Microsoft.DBforMySQL/flexibleServers": {
       "class": "STABLE",
+      "entry_owner": "landing-zone",
       "api_version": "2023-06-30",
       "data": true
     },
     "Microsoft.DocumentDB/databaseAccounts": {
       "class": "STABLE",
+      "entry_owner": "landing-zone",
       "api_version": "2024-05-15",
       "data": true
     },
     "Microsoft.Cache/redis": {
       "class": "STABLE",
+      "entry_owner": "landing-zone",
       "api_version": "2024-03-01",
       "data": true
     },
     "Microsoft.Storage/storageAccounts": {
       "class": "STABLE",
+      "entry_owner": "landing-zone",
       "api_version": "2023-05-01",
       "data": true
     },
     "Microsoft.KeyVault/vaults": {
       "class": "STABLE",
+      "entry_owner": "landing-zone",
       "api_version": "2023-07-01",
       "data": true
     },
     "Microsoft.ServiceBus/namespaces": {
       "class": "STABLE",
+      "entry_owner": "landing-zone",
       "api_version": "2022-10-01-preview",
       "data": true
     },
     "Microsoft.EventHub/namespaces": {
       "class": "STABLE",
+      "entry_owner": "landing-zone",
       "api_version": "2024-01-01",
       "data": true
     },
     "Microsoft.Compute/virtualMachines": {
       "class": "STABLE",
+      "entry_owner": "landing-zone",
       "api_version": "2024-03-01"
     },
     "Microsoft.Compute/virtualMachineScaleSets": {
       "class": "STABLE",
+      "entry_owner": "landing-zone",
       "api_version": "2024-03-01"
     },
     "Microsoft.Network/privateEndpoints": {
       "class": "STABLE",
+      "entry_owner": "landing-zone",
       "api_version": "2023-09-01"
     },
     "Microsoft.ManagedIdentity/userAssignedIdentities": {
       "class": "STABLE",
+      "entry_owner": "landing-zone",
       "api_version": "2023-01-31"
     },
     "Microsoft.Authorization/roleAssignments": {
       "class": "STABLE",
+      "entry_owner": "landing-zone",
       "api_version": "2022-04-01",
       "reversal": "human"
     }

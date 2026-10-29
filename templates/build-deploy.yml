@@ -447,6 +447,13 @@ jobs:
             echo "controls_unavailable=$(jq -r '(.provenance.controls_unavailable // []) | join(",")' "$r")"
             echo "advisory_causes=$(jq -r '(.provenance.advisory_causes // []) | join(",")' "$r")"
           } >> "$GITHUB_OUTPUT"
+          # OF-5 K-1: at uat and prod the deploy refuses an approval whose comment does not quote the
+          # digest being released. Show the approver what to quote (a sha256 value only, never other text).
+          d="$(jq -r '.artifact.digest // ""' "$r")"
+          if printf '%s' "$d" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            { echo "### For the approver"; echo ""
+              echo "Approve with this digest in the comment (or at least its first 12 hex characters): \`$d\`"; } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   promote:
     needs: [promotion-source]

@@ -98,6 +98,13 @@ CLEAR = 'ROLLBACK_DEPENDENCY_CLEAR'
 SCOPED = 'ROLLBACK_SCOPED_TO_PRODUCT_CONFIG'
 PARTIAL = 'ROLLBACK_PARTIAL_DEPENDENCY_CONFLICT'
 REFUSED = 'ROLLBACK_REFUSED_DEPENDENCY_CONFLICT'
+# OF-5 K-5 (KDEC-030 R4): with the seam in force, what the landing zone owns is never an application
+# rollback's to reverse. Outranks PARTIAL and REFUSED: the full rollback is refused, independent
+# release-owned nodes are still reversed, and a human decides the rest.
+PLATFORM_OWNED = 'ROLLBACK_REFUSED_PLATFORM_OWNED'
+OWNER_LZ = 'landing-zone'
+OWNER_KIT_FIELDS = 'kit-release-fields'
+OWNER_RELEASE = 'release'
 # rollback_state, reused
 HUMAN = 'ROLLBACK_REQUIRES_HUMAN_DECISION'
 AUTO = 'AUTO_ROLLBACK_ALLOWED'
@@ -501,18 +508,42 @@ def _held_by_policy(n):
     return None
 
 
-def review(ev, reg, sequence_releases=()):
+def platform_owned(n):
+    """-> the refusal reason when the seam forbids an application rollback this node, else None."""
+    owner = ((n['_info'].get('spec') or {}).get('entry_owner'))
+    if owner == OWNER_LZ:
+        return ("%s: the landing zone owns this %s %s (entry_owner landing-zone); an application rollback "
+                "never reverses it -- the landing zone's recovery is its reverser (W7, entry level, tested "
+                "after every step)" % (PLATFORM_OWNED, n['type'], 'entry' if n['kind'] == 'entry' else 'resource'))
+    if owner == OWNER_KIT_FIELDS:
+        return ("%s: a %s is a release target whose other fields the landing zone owns; the kit reverses "
+                "only its own release fields, through the deploy adapters, never by a whole-body ARM PUT"
+                % (PLATFORM_OWNED, n['type']))
+    return None
+
+
+def review(ev, reg, sequence_releases=(), seam=False):
     """The dependency review of one release, from a fresh live read. -> review dict (with private
-    keys the reversal uses; `public()` strips them for the record)."""
+    keys the reversal uses; `public()` strips them for the record). With `seam` (OF-5 K-5) a node the
+    landing zone owns is refused before it is read, and everything tied to it is held."""
     release = ev.get('release_id') or ''
     nodes = {}
+    owned = {}
     for raw in ev.get('nodes') or []:
         n = _node(raw, reg, release)
         nodes[n['id']] = n
+        why_owned = platform_owned(n) if seam else None
+        if why_owned:
+            # Never read for reversal, never written: the landing zone's to judge, not ours.
+            n['mark'], n['reason'] = mark_not_judged, why_owned
+            owned[n['id']] = why_owned
+            continue
         mark_node(n, reg, release, set(sequence_releases))
     edges = build_graph(nodes, ev, reg)
-    blockers = {}
+    blockers = dict(owned)
     for nid, n in nodes.items():
+        if nid in owned:
+            continue
         held = _held_by_policy(n) if n['in_release'] else None
         if n['mark'] in (mark_other, mark_unknown):
             blockers[nid] = n['reason']
@@ -565,6 +596,8 @@ def review(ev, reg, sequence_releases=()):
     has_entries = any(n['kind'] == 'entry' for n in rel)
     if not blockers:
         outcome = SCOPED if has_entries else CLEAR
+    elif owned:
+        outcome = PLATFORM_OWNED
     elif free:
         outcome = PARTIAL
     else:
@@ -573,7 +606,7 @@ def review(ev, reg, sequence_releases=()):
     basis = None
     if outcome in (SCOPED, CLEAR):
         basis = OWNED_PART if moved else UNTOUCHED
-    elif outcome == PARTIAL:
+    elif outcome == PARTIAL or (outcome == PLATFORM_OWNED and free):
         basis = OWNED_PART
     why = {CLEAR: 'nothing else changed what the release changed: the full rollback runs',
            SCOPED: 'only the product\'s own entries in the shared resources are reversed%s' % (
@@ -583,7 +616,13 @@ def review(ev, reg, sequence_releases=()):
                     'or tied to one that is; the %d independent of them are reversed and the rest '
                     'left for a human decision' % (len(rel) - len(free), len(rel), len(free)),
            REFUSED: 'no rollback: every node the release changed is cross-edited or tied to one that '
-                    'is; nothing is touched and a human decides'}[outcome]
+                    'is; nothing is touched and a human decides',
+           PLATFORM_OWNED: "a FULL rollback is refused: %d of %d nodes the release changed are the landing "
+                           "zone's (or tied to one), which an application rollback never reverses -- the "
+                           "landing zone's recovery is their reverser; %s" % (
+                               len(rel) - len(free), len(rel),
+                               'the %d independent release-owned node(s) are reversed and a human decides the '
+                               'rest' % len(free) if free else 'nothing is touched and a human decides')}[outcome]
     for n in rel:
         if n['decision'] == 'reverse':
             n['reason'] = n['reason'] or 'independent of every cross-edit'
@@ -820,6 +859,11 @@ def self_test():
         fails.append('a gateway listener did not resolve as an inline entry')
     if set(v.get('class') for v in reg['types'].values()) != {SHARED, STABLE}:
         fails.append('a registry type has neither class')
+    # OF-5 K-5: every type says who may reverse it, and every shared type is the landing zone's.
+    if any(v.get('entry_owner') not in (OWNER_LZ, OWNER_KIT_FIELDS, OWNER_RELEASE) for v in reg['types'].values()):
+        fails.append('a registry type names no entry_owner (landing-zone, kit-release-fields or release)')
+    if any(v.get('entry_owner') != OWNER_LZ for v in reg['types'].values() if v.get('class') == SHARED):
+        fails.append('a SHARED_MULTI_CONFIG type is not landing-zone owned')
     for f in fails:
         print('SELF-TEST FAILED: ' + f)
     if fails:

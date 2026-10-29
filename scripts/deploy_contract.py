@@ -410,6 +410,176 @@ def cmd_capability(a):
     return 0
 
 
+# ----------------------------------------------------------------------------- the seam (OF-5 K-6)
+# KDEC-030 R3: every app setting and environment key has exactly one owner. An unassigned key is the
+# landing zone's; the kit owns the env key release_ownership_stamp and the keys the hand-off assigns
+# it in KIT_SETTING_KEYS (empty by default). With the seam in force (the environment opts into the
+# lease), the `seam` step refuses, after the capture and before the first mutation:
+#   SEAM_SETTING_OWNERSHIP_CONFLICT  a key the kit would write that it does not own, or a kit key the
+#                                    landing zone also claims (made slot-sticky -- sticky configuration
+#                                    is the landing zone's, R1 -- or backed by a secret, also the landing
+#                                    zone's), or a KIT_SETTING_KEYS value that is not a list of names
+#   SEAM_SWAP_MOVES_LZ_SETTING       an App Service swap that would carry a non-sticky landing-zone
+#                                    setting or connection string differing between slot and production
+#   SEAM_OWNERSHIP_NOT_ESTABLISHED   the settings could not be read, or the key list could not be parsed
+# Values are never shown: keys are named, values compared by digest. tests/prove_seam_setting_ownership.py.
+SEAM_HELD = 'SEAM_OWNERSHIP_HELD'
+SEAM_NOT_IN_FORCE = 'SEAM_OWNERSHIP_NOT_IN_FORCE'
+SEAM_NOT_ESTABLISHED = 'SEAM_OWNERSHIP_NOT_ESTABLISHED'
+SEAM_CONFLICT = 'SEAM_SETTING_OWNERSHIP_CONFLICT'
+SEAM_SWAP = 'SEAM_SWAP_MOVES_LZ_SETTING'
+KIT_STAMP_KEY = 'release_ownership_stamp'
+# What each adapter's own steps write as settings or env keys (cmd_mutate). App Service writes tags and
+# the image only (whether App Service's container-set command also writes DOCKER_* settings is the seam
+# contract's U4, a live question).
+KIT_PLANNED_SETTING_WRITES = {'containerapp': [KIT_STAMP_KEY], 'appservice': []}
+SETTING_NAME = r'^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$'
+
+
+def _named(keys):
+    import re
+    return ', '.join(k if re.match(SETTING_NAME, k) else '(a key that is not a plain name)' for k in sorted(keys))
+
+
+def _digest(v):
+    import hashlib
+    return hashlib.sha256(json.dumps(v, sort_keys=True).encode('utf-8')).hexdigest()
+
+
+def decide_seam(adapter, keys_text, prod, slot, strings, swap, planned=None):
+    """Pure. -> (outcome, why). `prod`/`slot`: the target's settings as az lists them (App Service
+    appsettings with slotSetting; Container Apps env entries), None when unreadable. `strings`:
+    (production, slot) connection strings, None when unreadable. `swap`: a swap will follow."""
+    import re
+    raw = [k for k in re.split(r'[,\s]+', keys_text or '') if k]
+    if any(not re.match(SETTING_NAME, k) for k in raw) or re.search(r'[^A-Za-z0-9_.:,\s-]', keys_text or ''):
+        return SEAM_NOT_ESTABLISHED, ('KIT_SETTING_KEYS is not a list of setting names, so which keys the kit '
+                                      'owns cannot be read')
+    kit = set(raw) | {KIT_STAMP_KEY}
+    writes = KIT_PLANNED_SETTING_WRITES.get(adapter, []) if planned is None else planned
+    stray = [k for k in writes if k not in kit]
+    if stray:
+        return SEAM_CONFLICT, ('this deploy would write %s, which the hand-off does not assign to the kit; an '
+                               'unassigned key is the landing zone\'s' % _named(stray))
+    if prod is None:
+        return SEAM_NOT_ESTABLISHED, 'the target\'s settings could not be read'
+    both = []
+    for e in list(prod) + list(slot or []):
+        name = (e or {}).get('name')
+        if name in raw and ((e or {}).get('slotSetting') is True or (e or {}).get('secretRef')):
+            both.append(name)
+    if both:
+        return SEAM_CONFLICT, ('KIT_SETTING_KEYS assigns %s to the kit, and the landing zone also claims it (a '
+                               'slot-sticky setting or a secret-backed key is the landing zone\'s)' % _named(set(both)))
+    if not swap:
+        return SEAM_HELD, 'no key outside the kit\'s is written'
+    if slot is None or strings is None:
+        return SEAM_NOT_ESTABLISHED, 'the slot\'s settings or the connection strings could not be read before the swap'
+    moving = []
+    for a_list, b_list in ((prod, slot), (strings[0] or [], strings[1] or [])):
+        sticky = set(e.get('name') for e in list(a_list) + list(b_list) if (e or {}).get('slotSetting') is True)
+        av = dict((e.get('name'), _digest(e.get('value'))) for e in a_list if e.get('name'))
+        bv = dict((e.get('name'), _digest(e.get('value'))) for e in b_list if e.get('name'))
+        for k in sorted(set(av) | set(bv)):
+            if k in kit or k in sticky:
+                continue
+            if av.get(k) != bv.get(k):
+                moving.append(k)
+    if moving:
+        return SEAM_SWAP, ('the swap would carry %s -- non-sticky landing-zone setting(s) that differ between the '
+                           'slot and production -- into production. The landing zone makes each sticky or equal '
+                           'across slots (KDEC-030); the kit does not swap them' % _named(set(moving)))
+    return SEAM_HELD, 'no key outside the kit\'s is written, and the swap moves no landing-zone setting'
+
+
+def cmd_seam(a):
+    """The `seam` step (OF-5 K-6): read the target's settings and decide, before the first mutation."""
+    if not os.environ.get('KIT_TARGET_LEASE_ACCOUNT'):
+        output(seam_ownership=SEAM_NOT_IN_FORCE)
+        print('The seam is not in force for this environment (no KIT_TARGET_LEASE_ACCOUNT): nothing decided.')
+        return 0
+    app, rg, slot = env('webapp_name') or env('containerapp_name'), env('resource_group'), env('slot')
+    prod = slot_list = strings = None
+    swap = False
+    if a.adapter == 'containerapp':
+        ok, shown, _err = az('containerapp', 'show', '-n', app, '-g', rg)
+        if ok and isinstance(shown, dict):
+            cs = (((shown.get('properties') or {}).get('template') or {}).get('containers') or [{}])
+            prod = list((cs[0] or {}).get('env') or [])
+    else:
+        ok, got, _err = az('webapp', 'config', 'appsettings', 'list', '-n', app, '-g', rg)
+        prod = got if ok and isinstance(got, list) else None
+        swap = bool(slot) and env('swap_on_healthy') == 'true'
+        if swap:
+            ok, got, _err = az('webapp', 'config', 'appsettings', 'list', '-n', app, '-g', rg, '--slot', slot)
+            slot_list = got if ok and isinstance(got, list) else None
+            ok1, p_cs, _e1 = az('webapp', 'config', 'connection-string', 'list', '-n', app, '-g', rg)
+            ok2, s_cs, _e2 = az('webapp', 'config', 'connection-string', 'list', '-n', app, '-g', rg, '--slot', slot)
+            strings = (p_cs, s_cs) if ok1 and ok2 and isinstance(p_cs, list) and isinstance(s_cs, list) else None
+    outcome, why = decide_seam(a.adapter, env('kit_setting_keys'), prod, slot_list, strings, swap)
+    write_evidence('seam.json', {'seam_ownership': outcome, 'why': why, 'swap_checked': swap,
+                                 'kit_setting_keys': [k for k in (env('kit_setting_keys') or '').replace(',', ' ').split() if k]})
+    output(seam_ownership=outcome)
+    summary('### Field ownership at the seam (KDEC-030 R3, before the first mutation)\n\n`%s`: %s' % (outcome, why))
+    if outcome != SEAM_HELD:
+        print('::error title=Deploy refused before the first mutation (%s)::%s. Nothing was changed.' % (outcome, why))
+        return 1
+    print('seam ownership %s: %s' % (outcome, why))
+    return 0
+
+
+# ----------------------------------------------------------------------------- edge purge (D-4, OF-5 K-7)
+# KDEC-030 D-4 (decided 2026-10-26): after a VERIFIED release the kit purges the edge cache of the app's
+# OWN Front Door endpoint, the one the landing zone names in KIT_EDGE_ENDPOINT (one endpoint per
+# user-facing app, purge-only role at that endpoint). The kit purges no other endpoint: the vended one
+# is the only one it is ever handed. Without one it is not applicable, recorded, never a pass. A failed
+# purge leaves a healthy release serving behind a stale cache: an advisory, never a failed release.
+# tests/prove_handoff_extended.py.
+EDGE_PURGED = 'EDGE_PURGED'
+EDGE_PURGE_NOT_APPLICABLE = 'EDGE_PURGE_NOT_APPLICABLE'
+EDGE_PURGE_REFUSED = 'EDGE_PURGE_REFUSED'
+EDGE_PURGE_FAILED = 'EDGE_PURGE_FAILED'
+EDGE_ENDPOINT_ID = (r'^/subscriptions/([0-9A-Fa-f-]{36})/resourceGroups/([A-Za-z0-9._()-]{1,90})/providers/'
+                    r'Microsoft\.Cdn/profiles/([A-Za-z0-9-]{1,260})/afdEndpoints/([A-Za-z0-9-]{1,46})$')
+EDGE_PURGE_PATHS = ['/*']   # the app's own endpoint only; versioned asset names make this cheap (D-4)
+
+
+def cmd_purge(a):
+    import re
+    value = env('kit_edge_endpoint').strip()
+    record = {'endpoint_vended': bool(value), 'paths': EDGE_PURGE_PATHS, 'at': utc_now()}
+
+    def done(outcome, why, rc=0):
+        record.update(edge_purge=outcome, why=why)
+        write_evidence('edge-purge.json', record)
+        output(edge_purge=outcome)
+        summary('Edge purge (D-4): `%s` -- %s' % (outcome, why))
+        print('edge purge %s: %s' % (outcome, why))
+        return rc
+    if not value:
+        return done(EDGE_PURGE_NOT_APPLICABLE, 'this environment vends no edge endpoint (KIT_EDGE_ENDPOINT): '
+                    'not applicable, recorded -- never a pass')
+    if a.adapter == 'appservice' and env('slot') and env('swapped') != 'success':
+        return done(EDGE_PURGE_NOT_APPLICABLE, 'production was not changed (staged in a slot, not swapped), so '
+                    'nothing new is served from the endpoint')
+    m = re.match(EDGE_ENDPOINT_ID, value)
+    if not m:
+        print('::warning title=Edge purge refused::KIT_EDGE_ENDPOINT is not a Front Door endpoint resource id '
+              '(.../Microsoft.Cdn/profiles/<profile>/afdEndpoints/<endpoint>); nothing was purged.')
+        return done(EDGE_PURGE_REFUSED, 'the vended value is not an afdEndpoints resource id', 1)
+    _sub, rg, profile, endpoint = m.groups()
+    record.update(resource_group=rg, profile=profile, endpoint=endpoint)
+    ok, _out, err = az('afd', 'endpoint', 'purge', '--resource-group', rg, '--profile-name', profile,
+                       '--endpoint-name', endpoint, '--content-paths', *EDGE_PURGE_PATHS)
+    if not ok:
+        print('::warning title=Edge purge failed::the release is healthy; the cache of endpoint %s may serve the '
+              'previous content until it expires (%s).' % (endpoint, ' '.join(str(err).split())[:200]))
+        return done(EDGE_PURGE_FAILED, 'the purge of %s/%s did not complete: %s' % (profile, endpoint,
+                                                                                ' '.join(str(err).split())[:200]), 1)
+    return done(EDGE_PURGED, 'purged %s on %s/%s (the app\'s own endpoint)' % (', '.join(EDGE_PURGE_PATHS), profile,
+                                                                             endpoint))
+
+
 # ----------------------------------------------------------------------------- manifest
 def release_id():
     return 'run-%s-%s' % (env('github_run_id') or 'local', env('github_run_attempt') or '1')
@@ -1355,7 +1525,10 @@ PROMOTION_CONDITIONS = ['exact artefact identity established', 'expected artefac
 PASSIVE_OK = ('NOT_APPLICABLE_PASSIVE',)
 
 
-def promotion(outcome):
+def promotion(outcome, content_proven=False):
+    """`content_proven`: the static-site adapter recomputed the released files' content digest before
+    login (CONTENT_DIGEST_PROVEN) -- its equivalent of the registry proof, passed by its own code, never
+    read from a caller input."""
     v = read_evidence('verification.json') or {}
     gate = read_evidence('promotion-gate.json') or {}
     carried = gate.get('carried') or {}
@@ -1364,7 +1537,8 @@ def promotion(outcome):
         identity = env('artifact_identity') or (carried.get('artifact') or {}).get('artifact_identity')
         # P-02: V1 inside the deploy VERIFIED the signed provenance of exactly this digest, and the
         # build proved the registry identity of what it scanned. A held or absent V1 credits nothing.
-        if env('attestation_outcome') == 'ATTESTATION_VERIFIED' and identity == 'REGISTRY_IDENTITY_PROVEN':
+        if env('attestation_outcome') == 'ATTESTATION_VERIFIED' and (identity == 'REGISTRY_IDENTITY_PROVEN' or
+                                                                   content_proven):
             held.append('exact artefact identity established')
         if v.get('runtime_deployed') is True:
             held.append('expected artefact observed running')
@@ -1558,11 +1732,13 @@ def main(argv):
     sub = ap.add_subparsers(dest='cmd', required=True)
     cmds = {'capture': cmd_capture, 'capability': cmd_capability, 'mutate': cmd_mutate, 'swap': cmd_swap,
             'verify': cmd_verify, 'redirect': cmd_redirect, 'serving': cmd_serving,
-            'reverse': cmd_reverse, 'unhealthy': cmd_unhealthy,
+            'reverse': cmd_reverse, 'unhealthy': cmd_unhealthy, 'seam': cmd_seam, 'purge': cmd_purge,
             'provenance': cmd_provenance, 'report': cmd_report}
     for name in cmds:
         p = sub.add_parser(name)
-        p.add_argument('--adapter', choices=('containerapp', 'appservice'), required=True)
+        # staticwebapp: only `purge` (the Static Web Apps reusable's D-4 step); its other steps are
+        # static_site_contract.py's. A static site has no slot, so the purge reads no swap.
+        p.add_argument('--adapter', choices=('containerapp', 'appservice', 'staticwebapp'), required=True)
     sub.add_parser('created-revision')
     a = ap.parse_args(argv)
     if a.cmd == 'created-revision':

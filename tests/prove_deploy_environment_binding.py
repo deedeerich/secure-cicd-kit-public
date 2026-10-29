@@ -57,7 +57,8 @@ POSTURE = 'posture'
 # The job variable the tier travels in. A setting's name, not vocabulary (hence the spelling).
 TIER_VAR = 'environment_tier'.upper()
 WFS = {'appservice': ('.github/workflows/reusable-deploy-appservice.yml', 'webapp_name'),
-       'containerapp': ('.github/workflows/reusable-deploy-containerapp.yml', 'containerapp_name')}
+       'containerapp': ('.github/workflows/reusable-deploy-containerapp.yml', 'containerapp_name'),
+       'staticwebapp': ('.github/workflows/reusable-deploy-staticwebapp.yml', 'site_name')}
 VENDED = ('environment_tier', 'resource_group', 'app_name', 'acr_login_server', 'image_repository',
           'cloud')
 
@@ -108,7 +109,7 @@ def static(bad):
             bad.append('%s: the posture step does not read the bind step outcome' % name)
     if len(set(bodies.values())) > 1:
         bad.append('the two reusables carry DIFFERENT bind step bodies; one would drift')
-    return len(bodies) == 2
+    return len(bodies) == len(WFS)
 
 
 def main():

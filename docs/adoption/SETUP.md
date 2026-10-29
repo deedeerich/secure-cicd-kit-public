@@ -134,6 +134,14 @@ JSON
 The run pauses as *Waiting* until approved. Note that **you cannot approve your own deployment** in
 organization-owned repos, though you can in a personal one.
 
+**At `uat` and `prod` they are not optional.** The deploy reads the environment's reviewers back and
+refuses without one (self-review prevented). It also reads the run's own approval (OF-5 K-1): the
+approver may be neither the person who started the run nor the author of the commit being released,
+and the approval **comment must quote the digest** being released (the full `sha256:...`, or at least
+its first 12 hex characters, as shown in the run summary) -- otherwise `RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST`.
+Outside a landing zone, also set the environment variable `KIT_ZONE_READINESS` to `READY` on `uat`
+and `prod` once you have decided the zone is ready: unset is refused there (`RELEASE_REFUSED_ZONE_NOT_READY`).
+
 ---
 
 ## 1.5 · Let other repositories consume the kit

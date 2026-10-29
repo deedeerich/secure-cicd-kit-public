@@ -38,7 +38,10 @@ SCOPE = ['.github/workflows/reusable-nvd-cve.yml', '.github/workflows/validate-s
          ('.github/workflows/reusable-security.yml', {'sbom', 'sast-dotnet', 'sast-java', 'sast-mobile'}),
          # The one pin list the kit's own proofs run with (normalizer-drift and the tree-clean job
          # both install from it; tests/prove_tree_clean_job.py J4 holds it in this scope).
-         '.github/actions/selftest-tools/action.yml']
+         '.github/actions/selftest-tools/action.yml',
+         # OF-5 K-8: the Static Web Apps deploy (Trivy for the promotion re-scan) and its packaging
+         # composite (Syft for the site's SBOM).
+         '.github/workflows/reusable-deploy-staticwebapp.yml', '.github/actions/static-site-package/action.yml']
 # KDEC-028: every overlay's composite actions install tools too (a scanner CLI by version and
 # sha256, an image by digest). DISCOVERED, never named: the neutral core names no overlay. A
 # neutral copy has no overlays/, so this adds nothing there.

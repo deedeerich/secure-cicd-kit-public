@@ -682,6 +682,9 @@ jobs:
           # release the sast-semgrep job's image is (lane L-SG): prove_semgrep_strict P4,
           # prove_semgrep_php S6 and prove_tree_clean_job J3 hold them equal.
           python3 tests/prove_sast_dotnet_detects.py
+          # The six-language fixture's C# compiles (CodeQL reads C# it cannot compile as a failed
+          # run: hosted 40808064559, CS1069 on System.Data.SqlClient), and keeps only its seeded vulns.
+          python3 tests/prove_fixture_dotnet_compiles.py
           python3 tests/prove_semgrep_rulesets.py
           # An unparseable file is exit 3 under --strict, and COLLECTION_FAILED -- never a zero.
           python3 tests/prove_semgrep_strict.py
@@ -992,6 +995,9 @@ jobs:
           python3 scripts/policy_registration.py --self-test
           python3 tests/prove_rung_ladder.py
           python3 tests/prove_policy_registration.py
+          # OF-5 K-9: one approver list -- the register names it once (inline or a shared source file the
+          # landing zone reads too) and every tier's deploy approval resolves from it.
+          python3 tests/prove_approver_list_source.py
           # The register is wired into the gate (wiring/gate-rung.patch.md) and enforced: with no
           # register only secrets block; a registered tightening or softening changes exactly what
           # it says; a refused or unreadable policy is never the default.
@@ -1487,6 +1493,11 @@ jobs:
           # or cannot be read.
           python3 scripts/environment_protection.py --self-test
           python3 tests/prove_deploy_environment_protection.py
+          # OF-5 K-1/K-2/K-3 (KDEC-034 proposed): the landing zone's platform stop and the zone's readiness
+          # reach releases, and the run's own approval is neither the requester's nor the author's and
+          # quotes the digest -- each refused before login.
+          python3 scripts/release_gates.py --self-test
+          python3 tests/prove_release_gates.py
           python3 tests/prove_deploy_attestation.py
           python3 tests/prove_deploy_now_serving.py
           python3 tests/prove_deploy_ownership_stamp.py
@@ -1526,6 +1537,24 @@ jobs:
           # its live REST adapter against a local Blob-service emulation; plus the opt-in wiring of
           # both deploy reusables, checked statically.
           python3 tests/prove_target_lease_crossrepo.py
+          # OF-5 K-4 (KDEC-034 proposed): every deploy that took the lease keeps its release record in the
+          # target's releases/ folder, create-only, where the landing zone reads it durably.
+          python3 tests/prove_release_record_store.py
+          # OF-5 K-6 (KDEC-030 R3): under the seam a deploy writes no setting the landing zone owns and never
+          # swaps a non-sticky landing-zone setting into production -- refused before the first mutation.
+          python3 tests/prove_seam_setting_ownership.py
+          # OF-5 K-7 (KDEC-030 items 5 and 8, D-4): the extended hand-off set is read and recorded by name,
+          # documented with its roles, and the app's own edge endpoint is purged after a verified release.
+          python3 tests/prove_handoff_extended.py
+
+      - name: A static site is released by content digest, read back and reversed (OF-5 K-8)
+        run: |
+          set -euo pipefail
+          # The Static Web Apps adapter (KDEC-034 proposed): packaged with a tree digest, staged in a preview
+          # environment, verified on the marker it serves, reversed to the prior artefact, refused before
+          # login on a mismatched artefact or a stopped platform. STUBBED: the live run is owed.
+          python3 scripts/static_site_contract.py --self-test
+          python3 tests/prove_deploy_staticwebapp.py
 
       - name: App Service slot '' may not touch a production tier, and says so when unhealthy
         run: |
@@ -1564,6 +1593,10 @@ jobs:
           python3 scripts/rollback_dependencies.py --self-test
           python3 scripts/rollback_hold.py --self-test
           python3 tests/prove_rollback_dependencies.py
+          # OF-5 K-5 (KDEC-030 R4): with the seam in force an application rollback never reverses a
+          # landing-zone entry (ROLLBACK_REFUSED_PLATFORM_OWNED) nor takes landing-zone evidence for a kit
+          # deploy's (ROLLBACK_REFUSED_FOREIGN_EVIDENCE); without it nothing changes.
+          python3 tests/prove_seam_app_rollback_refuses_shared_entry.py
 
       - name: Build once, promote the same digest; every promotion refusal names its reason
         run: |
@@ -1575,6 +1608,9 @@ jobs:
           # hosted promotion on the owner's personal tenant is owed.
           python3 scripts/promotion.py self-test
           python3 tests/prove_promotion.py
+          # OF-5 K-10: the daily deployed scan reports in the landing zone's drift vocabulary too (dimension,
+          # class, not_attempted), so one view serves both.
+          python3 tests/prove_deployed_scan_lz_vocabulary.py
 
       - name: Harness teardown only behind PRE and POST zero-count assertions
         run: |

@@ -183,6 +183,8 @@ add("dotnet/Fixture.csproj", """
         <!-- Known-vulnerable versions with published advisories -->
         <PackageReference Include="Newtonsoft.Json" Version="9.0.1" />
         <PackageReference Include="System.Text.Encodings.Web" Version="4.5.0" />
+        <!-- Not vulnerable: Vuln.cs needs it to compile, and CodeQL reads C# it cannot compile as a failed run -->
+        <PackageReference Include="System.Data.SqlClient" Version="4.9.0" />
       </ItemGroup>
     </Project>
     """, "deps:dotnet-vulnerable")
@@ -197,6 +199,10 @@ add("dotnet/Vuln.cs", """
             using var cmd = new SqlCommand(sql, conn);
             cmd.ExecuteNonQuery();
         }
+    }
+    // An entry point: CodeQL's buildless C# extraction compiles this project as an executable.
+    public static class Program {
+        public static void Main() { }
     }
     """, "sast:dotnet-semgrep")
 

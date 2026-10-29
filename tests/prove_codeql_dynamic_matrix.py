@@ -26,6 +26,17 @@ WHAT MUST NOT CHANGE (the proposal's invariants)
 FAILED-FIRST: before the change there is no `codeql_matrix` output and the matrix is static, so
 this proof reports the matrix as not data-driven and exits 1.
 
+EACH LEG CARRIES ITS BUILD MODE (integrate/r8, 2026-10-28). The cost runs of the six-language
+fixture (cost/after, run 40791360475, public mirror) showed the c-cpp, csharp and java-kotlin legs
+reaching COMPLETE in the Actions UI and writing no SARIF: `autobuild` found no build system at the
+checkout root (the fixture is a monorepo; its pom.xml and .csproj sit in subdirectories), the
+database held no code, `database finalize` exited 32, and analyze failed under continue-on-error.
+The legs now name their build mode: `none` (buildless extraction, every source file, no build
+system needed -- the mode GitHub's default setup uses) for python, javascript-typescript, csharp,
+java and c-cpp; `autobuild` for go (no buildless mode) and for java-kotlin when Kotlin is
+discovered (Kotlin is not extracted buildless). Checked here for all 128 combinations, and a
+mutant that sends c-cpp back to autobuild must be caught.
+
 EXIT  0 all hold   1 a violation   2 could not be checked (no bash)
 """
 import io
@@ -60,6 +71,15 @@ LEGACY = (
 
 def legacy_legs(f):
     return [lang for lang, on in LEGACY if on(f)]
+
+
+def build_mode(lang, f):
+    """The build mode each leg must carry (see the docstring)."""
+    if lang == 'go':
+        return 'autobuild'
+    if lang == 'java-kotlin':
+        return 'autobuild' if f['kotlin'] else 'none'
+    return 'none'
 
 
 def legacy_job_runs(f):
@@ -123,6 +143,10 @@ def check_combinations(bash, step, step_ids):
             bad.append('%s: legs %s, the static table ran %s' % (f, langs, legacy_legs(f)))
         if any(x.get('gate') != 'true' for x in legs):
             bad.append('%s: a leg without gate "true": %r' % (f, legs))
+        for x in legs:
+            if x.get('build_mode') != build_mode(x.get('lang'), f):
+                bad.append('%s: leg %s carries build_mode %r, want %r'
+                           % (f, x.get('lang'), x.get('build_mode'), build_mode(x.get('lang'), f)))
         if (len(legs) > 0) != legacy_job_runs(f):
             bad.append('%s: job would %s, the static job-level if said %s'
                        % (f, 'run' if legs else 'not run', legacy_job_runs(f)))
@@ -187,6 +211,23 @@ def main():
             bad.append('mutation self-check: the Kotlin clause was not found to remove')
         elif not check_combinations(bash, mutant, sorted(sids)):
             bad.append('mutation self-check: dropping Kotlin went UNDETECTED; this proof is blind')
+        # A mutant that sends c-cpp back to autobuild (the defect run 40791360475 showed).
+        mutant = dict(pstep)
+        mutant['run'] = re.sub(r'leg c-cpp none', 'leg c-cpp autobuild', str(pstep.get('run') or ''))
+        if mutant['run'] == pstep.get('run'):
+            bad.append('mutation self-check: no "leg c-cpp none" to send back to autobuild')
+        elif not check_combinations(bash, mutant, sorted(sids)):
+            bad.append('mutation self-check: c-cpp on autobuild went UNDETECTED; this proof is blind')
+
+    # The legs' build mode reaches init, and autobuild runs only on an autobuild leg.
+    cqs = {s.get('id'): s for s in cq.get('steps') or []}
+    init_with = (cqs.get('cq_init') or {}).get('with') or {}
+    if str(init_with.get('build-mode', '')).strip() != '${{ matrix.build_mode }}':
+        bad.append('CodeQL init does not take build-mode from the leg (got %r)'
+                   % init_with.get('build-mode'))
+    if "matrix.build_mode == 'autobuild'" not in str((cqs.get('cq_build') or {}).get('if', '')):
+        bad.append('the autobuild step is not confined to autobuild legs (if: %r)'
+                   % (cqs.get('cq_build') or {}).get('if'))
 
     # The report rows are per language and built from discovery, never from legs.
     text = io.open(os.path.join(ROOT, WF), encoding='utf-8').read()
@@ -199,8 +240,9 @@ def main():
     if bad:
         print('FAIL: %d violation(s)' % len(bad))
         return 1
-    print('PASS: CodeQL legs = discovered languages, for all %d discovery combinations; job runs '
-          'iff the static if did; mutation (Kotlin dropped) detected' % 2 ** len(FLAGS))
+    print('PASS: CodeQL legs = discovered languages, each with its build mode, for all %d discovery '
+          'combinations; job runs iff the static if did; mutations (Kotlin dropped, c-cpp on '
+          'autobuild) detected' % 2 ** len(FLAGS))
     return 0
 
 

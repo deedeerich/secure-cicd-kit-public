@@ -518,7 +518,8 @@ namespaces:
       Whether the artefact a control inspected is provably the artefact that was published. Emitted
       by the build workflow beside image_digest, because a bare digest reads as proven to every
       consumer that receives it.
-    consumers: [reusable-build-docker.yml, render-version-metadata, tests/check_artifact_identity.py]
+    consumers: [reusable-build-docker.yml, render-version-metadata, tests/check_artifact_identity.py,
+                scripts/static_site_contract.py, reusable-deploy-staticwebapp.yml]
     rule: >-
       THREE ANSWERS, NEVER A BOOLEAN. Proven, nothing-was-pushed and could-not-establish are
       different facts, and collapsing them is how an unverified digest inherits a verified reading.
@@ -537,6 +538,20 @@ namespaces:
       NOT_ESTABLISHED:
         definition: The question was not reached at all — no artefact, or the run never got there.
         rule: Distinct from IDENTITY_UNVERIFIED, which means it was asked and failed.
+      # OF-5 K-8 (KDEC-034 PROPOSED): a static site has no registry, so its identity is its CONTENT --
+      # the tree digest over every file but the kit-release.json marker (scripts/static_site_contract.py).
+      CONTENT_DIGEST_PROVEN:
+        definition: >-
+          The static-site artefact about to be released was fetched and every file re-hashed before login:
+          its tree digest equals site_digest and the digest its marker carries. The static site's
+          counterpart of REGISTRY_IDENTITY_PROVEN, and the identity basis its promotion record names.
+        rule: Read from the files released, never from the marker alone (a marker is text anyone can write).
+      SITE_DIGEST_MISMATCH:
+        definition: >-
+          The fetched artefact's files do not hash to site_digest, or its marker names another digest:
+          the site about to be released is not the one the verdict was given for. Refused before login,
+          nothing deployed.
+        rule: Never "close enough" -- one changed byte, an added or a renamed file is a different artefact.
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Registered 2026-10-14 when the mechanism landed (ledger L89), from the lowercase candidates
@@ -2742,7 +2757,8 @@ namespaces:
       What the dependency review of one release decided, from a fresh live read of every node it
       changed (marks: unchanged, changed-by-this-release, changed-by-other, unknown, not-judged) and
       the graph of who depends on what. Exactly one value per reviewed step.
-    consumers: [scripts/rollback_dependencies.py, scripts/rollback_sequence.py, tests/prove_rollback_dependencies.py]
+    consumers: [scripts/rollback_dependencies.py, scripts/rollback_sequence.py, tests/prove_rollback_dependencies.py,
+                tests/prove_seam_app_rollback_refuses_shared_entry.py, schemas/rollback-sequence.schema.json]
     rule: >-
       THE UNIT OF CONFLICT IS THE MUTATION, AND ITS DEPENDENCIES. A node another actor changed (or that
       cannot be read) is never reversed, and neither is any node that depends on it, that it depends on,
@@ -2765,14 +2781,20 @@ namespaces:
           Every node the release changed is cross-edited or tied to one that is: nothing is reversed.
       ROLLBACK_REFUSED_PLATFORM_OWNED:
         definition: >-
-          CANDIDATE (KDEC-030 draft). A node whose type the landing zone owns (a shared entry: Front Door,
-          DNS, WAF, NSG, firewall, route; or a platform resource) is never reversed by an application
-          rollback, whatever its mark; its reverser is the landing zone's recovery. Everything tied to it
-          is held as for a cross-edit. ROLLBACK_REQUIRES_HUMAN_DECISION.
+          With the seam in force (OF-5 K-5; rollback_sequence.py --seam-ownership, passed when the environment
+          opts into the KDEC-030 lease): a node whose type's entry_owner is landing-zone (a shared entry:
+          Front Door, DNS, WAF, NSG, firewall, route; or a platform resource), or a release target
+          (kit-release-fields) offered for a whole-body ARM PUT, is never read for reversal and never written
+          by an application rollback; its reverser is the landing zone's recovery. Everything tied to it is
+          held as for a cross-edit; independent release-owned nodes are still reversed.
+          ROLLBACK_REQUIRES_HUMAN_DECISION. Outranks PARTIAL and REFUSED.
       ROLLBACK_REFUSED_FOREIGN_EVIDENCE:
         definition: >-
-          CANDIDATE (KDEC-030 draft). The step's resources.json is not the evidence of a kit deploy of the
-          locked target (for example a landing-zone apply's); refused before anything is read live.
+          With the seam in force: the step's resources.json is not the evidence of a kit deploy of the
+          locked target (its release_id is not run-<id>-<attempt>, its producer is the landing zone, or it
+          names another target -- for example a landing-zone apply's); the whole sequence is refused before
+          anything is read live. Emitted as rollback_refusal by rollback_sequence.py.
+        rule: Never a step's dependency_review outcome; a refusal of the INPUT (ROLLBACK_SEQUENCE_REFUSED_INPUT).
 
   rollback_dependency_check:
     description: >-
@@ -2807,10 +2829,11 @@ namespaces:
   # KDEC-030 DRAFT (PROPOSED, lane L-SEAM, 2026-10-26; docs/architecture/LZ_KIT_SEAM_CONTRACT.md).
   # target_lease is emitted by scripts/target_lease.py (the model and, since lane L-SEAM2 2026-10-27,
   # its CLI through the target-lease composite), proven by tests/prove_target_lease.py and
-  # tests/prove_target_lease_crossrepo.py; the deploy reusables emit it only when opted in. The other two namespaces and the two
-  # rollback_dependency_outcome values below are CANDIDATES from the same contract, registered with
-  # their design so the wiring cannot invent a second spelling; nothing emits them until the owner
-  # approves KDEC-030 and the wiring lands.
+  # tests/prove_target_lease_crossrepo.py; the deploy reusables emit it only when opted in. Since OF-5
+  # (2026-10-28, KDEC-034 proposed) the kit side of the rest is wired, opt-in with the lease:
+  # seam_ownership_refusal and seam_ownership_check by the deploy reusables' `seam` step (K-6), the two
+  # rollback_dependency_outcome values by the ARM rollback (K-5). seam_field_drift stays a CANDIDATE: its
+  # emitter is the landing zone's seam detector.
   target_lease:
     description: >-
       What the cross-repository target lease decided for one acquisition, fence or mutation. One
@@ -2886,6 +2909,104 @@ namespaces:
           The mutating call itself failed under the lease; the metadata stays "mutating" so nobody
           takes the target over automatically, and the run ends ROLLBACK_REQUIRES_HUMAN_DECISION.
 
+  edge_purge:
+    description: >-
+      What a deploy did, after a verified release, about the edge cache of the app's own Front Door endpoint
+      (KDEC-030 D-4, decided 2026-10-26; OF-5 K-7): the endpoint the landing zone vends in KIT_EDGE_ENDPOINT,
+      and no other. Emitted by scripts/deploy_contract.py purge.
+    consumers: [scripts/deploy_contract.py, reusable-deploy-appservice.yml, reusable-deploy-containerapp.yml,
+                tests/prove_handoff_extended.py]
+    rule: >-
+      NOT APPLICABLE IS NEVER A PASS, AND A STALE CACHE IS NEVER A FAILED RELEASE. Only the vended endpoint is
+      purged; a failed or refused purge leaves the release's outcome as the report step established it and
+      routes the posture PROCEED_WITH_ADVISORY.
+    values:
+      EDGE_PURGED:
+        definition: The app's own endpoint was purged (all of its paths), once, after the release was verified and stamped.
+      EDGE_PURGE_NOT_APPLICABLE:
+        definition: >-
+          The environment vends no edge endpoint, or production did not change (App Service staged without a
+          swap). Recorded; not a purge.
+      EDGE_PURGE_REFUSED:
+        definition: The vended value is not a Front Door afdEndpoints resource id; nothing was purged.
+      EDGE_PURGE_FAILED:
+        definition: >-
+          The purge call did not complete; the endpoint may serve previous content until its cache expires.
+          An advisory (PROCEED_WITH_ADVISORY), never a failed release.
+
+  handoff_write_refusal:
+    description: >-
+      The landing zone's own refusals in its hand-off write (its BUILD-12), cited by the kit's hand-off
+      contract so one spelling serves both. The kit emits none of them.
+    consumers: ["(the landing zone) its hand-off write", docs/architecture/LZ_KIT_HANDOFF_CONTRACT.md]
+    rule: One approver list (OF-5 P6); the landing zone reads the kit's and never keeps a second.
+    values:
+      HANDOFF_APPROVER_LIST_MISMATCH:
+        definition: >-
+          The landing zone's worksheet names approver groups that differ from the kit policy register's
+          deploy_approval list; the hand-off write refuses before any call and tells the platform admins.
+
+  # OF-5 K-10 (the LZ-vs-kit review's P13, 2026-10-28; KDEC-034 proposed). The landing zone's drift
+  # vocabulary, carried by every finding of the kit's daily deployed scan (scripts/promotion.py LZ_DRIFT,
+  # SARIF properties lz_drift_dimension / lz_drift_class, and the scan's drift_view), so one view serves
+  # both. The values are the landing zone's (its event envelope's drift.dimension and drift.class, plus
+  # `release` from its seam detector); lower-case, as the landing zone spells them.
+  lz_drift_dimension:
+    description: Which kind of divergence a drift finding is, in the landing zone's terms (its brief §3.7, §6.9).
+    consumers: [scripts/promotion.py, tests/prove_deployed_scan_lz_vocabulary.py, "(the landing zone) drift.detected events"]
+    rule: >-
+      IaC state can be fully green while the security posture has diverged: a dimension is never collapsed
+      into "iac". The kit's own rules stay the kit's; the dimension is a second label, never a replacement.
+    values:
+      iac: {definition: The declared infrastructure differs from what is deployed.}
+      identity: {definition: An identity, its assignment or its federation differs from what was declared.}
+      authentication: {definition: How callers authenticate to the resource changed.}
+      authorisation: {definition: Who may do what on the resource changed.}
+      network_exposure: {definition: "The resource's reachability changed (public access, plain-text traffic, isolation)."}
+      security_control: {definition: "A security control's setting or result changed (TLS floor, remote debugging, a vulnerable or known-exploited component serving)."}
+      monitoring: {definition: Diagnostics, logging or alerting of the resource changed.}
+      release:
+        definition: >-
+          What serves, or the evidence of how it got there, differs from the kit's release record (the
+          landing zone's seam detector; the kit's KIT-ARTIFACT-DRIFT, break-glass testing owed).
+  lz_drift_class:
+    description: How severe a drift finding is, in the landing zone's terms, and what it calls for.
+    consumers: [scripts/promotion.py, tests/prove_deployed_scan_lz_vocabulary.py, "(the landing zone) drift.detected events"]
+    rule: >-
+      A RUN THAT COULD NOT FINISH IS not_attempted, NEVER "NO DRIFT". Phase 1 is visibility-first: detect,
+      report, flag; nothing here rolls back a healthy production (KDEC-029 item 8; the landing zone's own rule).
+    values:
+      benign: {definition: Reported only (tags, a SKU change, debug settings).}
+      operational: {definition: "Surfaced and flagged: an unsupported pattern, a bypassed pipeline, a weakened control."}
+      critical:
+        definition: >-
+          Public exposure, plain-text traffic, a known-exploited or critical component serving, or a digest
+          no kit run verified serving -- escalated at once.
+      not_attempted: {definition: "The check could not be completed (unreadable, not re-scannable); never read as no drift."}
+
+  release_record:
+    description: >-
+      Whether a deploy kept its release record durably in the target's lease store (the `releases/`
+      folder of the target's container, KDEC-030), where the landing zone reads it: OF-5 K-4.
+      Emitted by scripts/target_lease.py `record`, only when the run took the target lease.
+    consumers: [scripts/target_lease.py, reusable-deploy-appservice.yml, reusable-deploy-containerapp.yml,
+                reusable-deploy-staticwebapp.yml, tests/prove_release_record_store.py,
+                "(the landing zone) its seam detector, destroy evidence and status.json citation"]
+    rule: >-
+      CREATE-ONLY, NEVER OVERWRITTEN, AND NEVER SILENTLY MISSING. A record that could not be kept fails
+      the step; the GitHub artifact (30 days) is not the durable copy. Retention is the store's (the
+      landing zone's immutability policy on the container), read and recorded, never assumed.
+    values:
+      RELEASE_RECORD_KEPT:
+        definition: >-
+          The record was written as releases/<environment>/<UTC time>-<run>-<attempt>.json in the
+          target's container, with the fields the landing zone reads and the full promotion record; the
+          container's retention policy (present | absent | unreadable) is in it.
+      RELEASE_RECORD_NOT_KEPT:
+        definition: >-
+          No record was written: none to keep, a record of that name already exists (never overwritten),
+          the container was never vended, or the store could not be reached. The step fails.
+
   seam_field_drift:
     description: >-
       CANDIDATE (KDEC-030 draft). What the landing zone's seam detector found when it compared a
@@ -2909,19 +3030,42 @@ namespaces:
 
   seam_ownership_refusal:
     description: >-
-      CANDIDATE (KDEC-030 draft). A write refused because it would change configuration the writer
-      does not own, decided before the write by the landing-zone plan or the kit's deploy.
-    consumers: ["(owed) the kit deploy reusables", "(owed) the landing-zone plan"]
+      A write refused because it would change configuration the writer does not own, decided before the
+      write by the landing-zone plan or the kit's deploy (OF-5 K-6: the deploy reusables' `seam` step,
+      scripts/deploy_contract.py decide_seam, opt-in with the KDEC-030 lease).
+    consumers: [scripts/deploy_contract.py, reusable-deploy-appservice.yml, reusable-deploy-containerapp.yml,
+                tests/prove_seam_setting_ownership.py, "(the landing zone) its plan"]
     rule: Every app-setting or environment key has exactly one owner; a write by the other side, or a key claimed by both, is refused.
     values:
       SEAM_SETTING_OWNERSHIP_CONFLICT:
         definition: >-
           A key the writer does not own, or a key both sides claim. Refused before anything is
-          written, naming the key and its owner.
+          written, naming the key and its owner. On the kit side: a key a deploy would write outside
+          release_ownership_stamp and KIT_SETTING_KEYS, or a KIT_SETTING_KEYS key the landing zone also
+          claims (slot-sticky, or secret-backed).
       SEAM_SWAP_MOVES_LZ_SETTING:
         definition: >-
           An App Service slot swap would carry a non-sticky landing-zone-owned setting from one slot
           to the other. The kit refuses the swap; the landing zone makes the key sticky or equal.
+
+  seam_ownership_check:
+    description: >-
+      What the deploy's `seam` step established, when it did not refuse (the refusals are
+      seam_ownership_refusal): OF-5 K-6, before the first mutation.
+    consumers: [scripts/deploy_contract.py, reusable-deploy-appservice.yml, reusable-deploy-containerapp.yml,
+                tests/prove_seam_setting_ownership.py]
+    rule: A setting nobody could read is not a setting nobody owns.
+    values:
+      SEAM_OWNERSHIP_HELD:
+        definition: >-
+          The settings were read; the deploy writes no key outside the kit's, no kit key is also claimed
+          by the landing zone, and (App Service) the swap moves no non-sticky landing-zone setting.
+      SEAM_OWNERSHIP_NOT_IN_FORCE:
+        definition: The environment has not opted into the seam (no KIT_TARGET_LEASE_ACCOUNT); nothing is decided.
+      SEAM_OWNERSHIP_NOT_ESTABLISHED:
+        definition: >-
+          The target's settings, the slot's or the connection strings could not be read, or KIT_SETTING_KEYS
+          is not a list of names. A refusal: unknown ownership is not clear ownership.
 
   # ─────────────────────────────────────────────────────────────────────────
   evidence_confidence:
@@ -3972,6 +4116,114 @@ namespaces:
           a registered one.
         rule: Refused at uat and prod. Unknown is not protected.
 
+  # ─────────────────────────────────────────────────────────────────────────
+  # OF-5 (the LZ-vs-kit deployment review, 2026-10-28; KDEC-034 PROPOSED). The landing zone's stronger
+  # release preconditions, held by the kit before login: scripts/release_gates.py, the deploy reusables'
+  # `zone` and `approval` steps, tests/prove_release_gates.py. Checked first: environment_protection says
+  # what the environment's reviewer SETTING is; no existing namespace says what the PLATFORM's stop, the
+  # ZONE's readiness or the RUN's own approval established.
+  release_block:
+    description: >-
+      What a deploy read, before login, of the landing zone's platform stop for its workload
+      (KIT_RELEASE_BLOCK in the GitHub environment, written by the vend on every halt and apply_block
+      change: none | platform_halted | ttl_expired | budget_cap_reached).
+    consumers: [scripts/release_gates.py, reusable-deploy-appservice.yml, reusable-deploy-containerapp.yml,
+                reusable-deploy-staticwebapp.yml, tests/prove_release_gates.py]
+    rule: >-
+      ANYTHING BUT `none` REFUSES, AT EVERY TIER. A halted, TTL-expired or budget-capped platform takes no
+      release; an unregistered value is never read as a clearance. Unset is recorded, not a refusal: no
+      landing zone writes it there.
+    values:
+      RELEASE_NOT_BLOCKED:
+        definition: The environment carries KIT_RELEASE_BLOCK = none; the landing zone reports no stop.
+      RELEASE_BLOCK_NOT_VENDED:
+        definition: >-
+          The environment carries no KIT_RELEASE_BLOCK (no landing zone writes one there); no platform stop
+          is in force, recorded in the posture record.
+      RELEASE_BLOCKED_BY_PLATFORM:
+        definition: >-
+          KIT_RELEASE_BLOCK is anything but none (platform_halted, ttl_expired, budget_cap_reached, or an
+          unregistered value). Refused before login, nothing deployed; releases resume when the platform
+          writes none.
+
+  zone_readiness:
+    description: >-
+      The landing zone's readiness for the zone a release targets, as the vend writes it into the GitHub
+      environment (KIT_ZONE_READINESS), from the zone's eight behavioural readiness gates. The landing
+      zone's vocabulary, consumed by the kit.
+    consumers: [scripts/release_gates.py, "(the landing zone) its readiness register and hand-off write"]
+    rule: UNKNOWN IS NEVER A PASS, and there is no overall READY without the gates behind it (the landing zone's rule).
+    values:
+      READY:
+        definition: Every readiness gate of the zone passed.
+      READY_WITH_EXCEPTIONS:
+        definition: >-
+          The zone is ready with recorded, attributed exceptions (the landing zone's record). A release at
+          uat or prod proceeds with a warning.
+      NOT_READY:
+        definition: A readiness gate failed; the zone may take nothing beyond dev.
+      UNKNOWN:
+        definition: >-
+          The readiness was not established -- unset, the landing zone's own UNKNOWN, or a value that is
+          not one of these four.
+
+  zone_readiness_gate:
+    description: What a deploy decided, before login, from the zone's readiness and its own tier.
+    consumers: [scripts/release_gates.py, reusable-deploy-appservice.yml, reusable-deploy-containerapp.yml,
+                reusable-deploy-staticwebapp.yml, tests/prove_release_gates.py]
+    rule: >-
+      AT uat AND prod ONLY READY OR READY_WITH_EXCEPTIONS RELEASES. Below uat the readiness is recorded,
+      never refused; a tier that is not registered cannot be shown to be below production.
+    values:
+      ZONE_READINESS_PERMITTED:
+        definition: A uat or prod release into a zone that is READY or READY_WITH_EXCEPTIONS.
+      ZONE_READINESS_NOT_REQUIRED:
+        definition: Below uat; the readiness is recorded in the posture record and not consulted.
+      RELEASE_REFUSED_ZONE_NOT_READY:
+        definition: >-
+          A uat or prod release into a zone that is NOT_READY or UNKNOWN (unset included), or a release at an
+          unregistered tier. Refused before login.
+
+  release_approval:
+    description: >-
+      What a deploy read, before login, of its OWN run's environment approvals (GET
+      /repos/{owner}/{repo}/actions/runs/{run_id}/approvals) and the released commit's authors: whether
+      consent to this release was given by someone other than the requester and the author, and bound to
+      the digest being released. The approving reviewer who quotes the digest is the confirmer.
+    consumers: [scripts/release_gates.py, reusable-deploy-appservice.yml, reusable-deploy-containerapp.yml,
+                reusable-deploy-staticwebapp.yml, tests/prove_release_gates.py]
+    rule: >-
+      THE APPROVER IS NEITHER THE REQUESTER NOR THE AUTHOR, AND APPROVES THE BYTES. GitHub's self-review
+      prevention excludes only the run's trigger; this holds the landing zone's rule (approver, confirmer and
+      requester distinct; the plan digest confirmed) for releases. At uat and prod only VERIFIED proceeds;
+      below uat it is recorded unless the policy demands the digest (deploy_approval.confirm_digest), which
+      can only tighten. Anything that cannot be read is NOT_ESTABLISHED, a refusal.
+    values:
+      RELEASE_APPROVAL_VERIFIED:
+        definition: >-
+          An approval of this run's environment exists, no approving reviewer is the requester or the
+          release's author, and (where demanded) an independent approval's comment quotes the digest (the
+          full digest, or at least its first 12 hex characters).
+      RELEASE_APPROVAL_NOT_REQUIRED:
+        definition: Below uat with no digest confirmation demanded; the API is not read.
+      RELEASE_APPROVAL_ABSENT:
+        definition: >-
+          No reviewer approved this run's deployment to its environment: an administrator bypass, or an
+          environment without required reviewers, leaves no approval. Refused at uat and prod.
+      SELF_DEPLOYMENT_APPROVAL:
+        definition: >-
+          An approving reviewer is the requester (the run's triggering actor or actor) or the release's
+          author (the released commit's author, or a merge commit's second parent's). The landing zone's own
+          name for the same refusal (its item 52), so one view serves both. Refused before login.
+      RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST:
+        definition: >-
+          The approval is independent but no approval comment quotes the digest being released, so the
+          consent is not shown to be for these bytes. Refused where the confirmation is demanded.
+      RELEASE_APPROVAL_NOT_ESTABLISHED:
+        definition: >-
+          The approvals, the requester, the released commit's author (an author email not linked to an
+          account included) or the demand could not be read, or the tier is not registered. Refused.
+
   policy_source:
     description: >-
       Where this run's enforcement policy came from: a registered decision, or the kit's documented
@@ -4214,6 +4466,18 @@ namespaces:
           The kit writes no build file; it reads the build the repository already has, or says
           PARTIAL. Read by the gate as scanner_state.PARTIAL (COVERAGE_PARTIAL), never PASS
           (KDEC-026).
+      CODEQL_BUILD_PARTIAL:
+        definition: >-
+          A CodeQL leg that runs autobuild (Go, and Java/Kotlin when Kotlin is discovered) analysed
+          the database its build produced, and that build did not succeed: some of the code may
+          never have been compiled into the database, so the analysis covers an unknown part of it.
+          The leg's findings are kept; the leg names itself in the row builder's codeql_partial and
+          its row's PASS is capped at PARTIAL.
+        rule: >-
+          Never COMPLETE and never PASS. Distinct from a leg that initialised and could not analyse
+          at all, which is COLLECTION_FAILED and fails its job; and from a buildless leg
+          (build_mode none), which needs no build and is not partial for the want of one. Read by
+          the gate as scanner_state.PARTIAL (COVERAGE_PARTIAL).
 
   scan_examination:
     description: >-

@@ -509,6 +509,10 @@ def wiring_cases():
                            "Reverse this run's changes", 'Stamp provenance (after health and a live read)']),
                          ('reusable-deploy-appservice.yml',
                           ['Set container image (digest-pinned) and restart', 'Swap slot into production',
+                           "Reverse this run's changes", 'Stamp provenance (after health and a live read)']),
+                         # OF-5 K-8: the static-site deploy (its SWA CLI call is fenced again in the script).
+                         ('reusable-deploy-staticwebapp.yml',
+                          ['Stage in the preview environment', 'Release to production',
                            "Reverse this run's changes", 'Stamp provenance (after health and a live read)'])):
         text = open(os.path.join(ROOT, '.github', 'workflows', wf), encoding='utf-8').read()
         steps = re.split(r'\n      - name: ', text)
@@ -550,14 +554,15 @@ def wiring_cases():
         expect(len(rel) == 1 and rel[0] > prov and any(op_of(i) == 'end' for i in lease_idx if prov < i < rel[0]),
                'W6 %s: end then release after the last mutating step' % wf)
     # W7: the runner is an input (the lease store is private: D-2), default unchanged.
-    for wf in ('reusable-deploy-containerapp.yml', 'reusable-deploy-appservice.yml', 'reusable-rollback-sequence.yml'):
+    for wf in ('reusable-deploy-containerapp.yml', 'reusable-deploy-appservice.yml', 'reusable-deploy-staticwebapp.yml',
+               'reusable-rollback-sequence.yml'):
         text = open(os.path.join(ROOT, '.github', 'workflows', wf), encoding='utf-8').read()
         m = re.search(r'\n      runner_label:\n(?:        .*\n)+?        default: "?ubuntu-latest"?\n', text)
         expect(bool(m) and 'runs-on: ${{ inputs.runner_label }}' in text and 'runs-on: ubuntu-latest' not in text
                and re.search(r'posture runner_label\s+NOT_A_CONTROL_SURFACE', text) is not None,
                'W7 %s: runs-on is the runner_label input (default ubuntu-latest), recorded in the posture' % wf)
     # W8: the deploys hold the lease through the e2e test period, then release.
-    for wf in ('reusable-deploy-containerapp.yml', 'reusable-deploy-appservice.yml'):
+    for wf in ('reusable-deploy-containerapp.yml', 'reusable-deploy-appservice.yml', 'reusable-deploy-staticwebapp.yml'):
         text = open(os.path.join(ROOT, '.github', 'workflows', wf), encoding='utf-8').read()
         steps = re.split(r'\n      - name: ', text)
         names = [s_.split('\n', 1)[0].strip() for s_ in steps]
@@ -585,7 +590,7 @@ def wiring_cases():
     # W10: the deploys carry target_lease.py with the contract they inline (the az fence imports it).
     gen = open(os.path.join(ROOT, 'scripts', 'inline_deploy_scripts.py'), encoding='utf-8').read()
     ok = "'target_lease.py'" in gen
-    for wf in ('reusable-deploy-containerapp.yml', 'reusable-deploy-appservice.yml'):
+    for wf in ('reusable-deploy-containerapp.yml', 'reusable-deploy-appservice.yml', 'reusable-deploy-staticwebapp.yml'):
         ok = ok and 'kit-deploy/target_lease.py' in open(os.path.join(ROOT, '.github', 'workflows', wf),
                                                           encoding='utf-8').read()
     expect(ok, 'W10 target_lease.py is materialised beside deploy_contract.py in both deploys')
