@@ -139,8 +139,12 @@ refuses without one (self-review prevented). It also reads the run's own approva
 approver may be neither the person who started the run nor the author of the commit being released,
 and the approval **comment must quote the digest** being released (the full `sha256:...`, or at least
 its first 12 hex characters, as shown in the run summary) -- otherwise `RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST`.
-Outside a landing zone, also set the environment variable `KIT_ZONE_READINESS` to `READY` on `uat`
-and `prod` once you have decided the zone is ready: unset is refused there (`RELEASE_REFUSED_ZONE_NOT_READY`).
+Unset `KIT_ZONE_READINESS` is refused at `uat` and `prod` (`RELEASE_REFUSED_ZONE_NOT_READY`). Outside a
+landing zone, setting it to `READY` on those environments yourself is a **TEST FIXTURE ONLY**: in
+production that lets the deploy side certify the platform's readiness to itself. The value is issued by
+the landing zone when the app is in a connected one; otherwise AppSec issues it manually, as a recorded
+attestation (owner ruling 2026-11-03, refining O-34a). The app or deploy team never sets it for itself
+(`docs/security-review/STOP-AND-ASK.md`, S7).
 
 ---
 
@@ -186,6 +190,32 @@ This is a GitHub boundary, not a limitation of the kit. A private repository's r
 
 > A **public** consumer *can* call a **private** kit within the same account, but not the reverse:
 > the constraint is on where the *workflow* lives, not the caller.
+
+### The host's pre-flight: run the consumer path test once, before wiring any repository
+
+A copy exported for a kit host (a profile with `INCLUDE_PATH .github/workflows/consumer-path-test.yml`;
+the neutral export withholds it) carries **Consumer path test**. Run it by hand on the host repository
+right after the import (Actions → Consumer path test → Run workflow, on the import branch), before any
+consumer repository is wired. It calls the kit by `./` against the shipped fixtures and proves, on *your*
+GitHub host, runners and licence: the clean fixture passes; inapplicable scanners skip visibly; a seeded
+negative run (it dispatches **Consumer path — negative**, which ends red at the gate by design) blocks
+the caller at the gate; and every seeded signal is detected by the open-source scanner that owns it.
+
+- **Green** means the scan-and-gate chain works on this host. It does not prove deployment, rollback,
+  tickets or any external service.
+- **Without GitHub Advanced Security** (a private repository with no GHAS licence) it still runs and
+  still asserts everything above. Security-tab publication and CodeQL are written as
+  `UNAVAILABLE` rows under "GHAS-dependent rows (recorded, never graded)"; they are never a pass and
+  never fail the test, and CodeQL's findings are never counted as detection (`--not-graded codeql`).
+- **It is dispatch-only by default.** Its weekly schedule starts no job unless the repository variable
+  `KIT_CONSUMER_PATH_SCHEDULE` is `true`. Once it is green, disable the workflow (Actions → … → Disable
+  workflow); re-enable it to troubleshoot, or after each kit import.
+- **A red names its cause:** a `JOB_TOKEN_REJECTED` (or other) preflight row before any API call;
+  `Job absent` / `Wrong outcome` for a job that did not behave as documented; `Gate did not block` if
+  the negative run succeeded; `Seeded signals NOT detected` with each file named.
+
+`tests/prove_consumer_path_preflight.py` runs its assertion jobs on a simulated GHE.com host with GHAS
+off; `docs/KNOWN_DEFECTS.md` D-12 has the history.
 
 ---
 
@@ -629,6 +659,8 @@ Azure side to the first verified refresh: [`FEED_MIRRORS.md`](FEED_MIRRORS.md).
 | App registration not in member picker | Searching by object ID — search by **display name** |
 | Secret set but empty at runtime | Set as a **Variable**, or at the wrong scope (repo vs environment) |
 | NVD job runs 30+ min | `nvd_datafeed_url` set to `""` and no `NVD_API_KEY`, or the runner cannot reach the public datafeed (§9) |
+| `HTTP 401: Bad credentials` on every API step | Read the **Job token preflight** row in the discover job's summary: it names `JOB_TOKEN_REJECTED`, `ORG_IP_ALLOW_LIST_BLOCKS_RUNNER`, `ORG_SSO_BLOCKS_TOKEN`, `RATE_LIMITED` or `API_UNREACHABLE` with its owner. On a `<tenant>.ghe.com` host an error URL naming `api.github.com` means a kit revision older than KDEC-027 is running (`operations/FAILURE_MODES.md` §4) |
+| Dependabot Updates fail `dependency_file_not_found` | A `dependabot.yml` entry names a directory with no manifest of its ecosystem; the kit lists only where a manifest is (`tests/check_action_pins.py` P7) |
 
 ## 11 · Minimum setup
 

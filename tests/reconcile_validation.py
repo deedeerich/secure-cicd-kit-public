@@ -186,6 +186,21 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # MEASUREMENT OF WHAT A SCANNER CAN READ, not an assurance claim about code -- the same rule as
     # action:resolve, which consumes the ranges. Proven locally by tests/prove_iac_corpus.py.
     "probe-scanner-corpora.yml": [],
+    # KDEC-035 PROPOSED (2026-11-03): THE KIT'S API -- another program calls the kit through a GitHub
+    # dispatch; the run validates, refuses by name, and carries the call out through the kit's own
+    # reconciler, evidence and release pipeline. One capability for the workflow and its composite.
+    # Proven locally (tests/prove_kit_api_client.py, _server.py, _workflow.py, all run by
+    # self-test) and on every self-test run by the hosted control `kit-api-refuses-by-name`; an
+    # armed call against a real tracker and a real release is the live half, owed.
+    "reusable-kit-api.yml": ["kit-api"],
+    "action:kit-api": ["kit-api"],
+    # KDEC-036 PROPOSED (2026-11-03): what a security reviewer could not see -- the weakening
+    # authority and expiry, the verdict's provenance (refused before login), the tier and readiness
+    # source, the watermark, the durable release record, deploy coverage. One capability; proven
+    # locally (tests/prove_reviewer_signals.py, the composite's own step under bash, the posture step
+    # and the App Service deploy against the stub cloud); the Deployments API on a GHE.com tenant and
+    # a real cross-run record read are the live half, owed.
+    "action:reviewer-signals": ["reviewer-signals"],
 }
 
 # What is actually proven, and how. States:
@@ -497,6 +512,17 @@ VALIDATION_REGISTRY: dict[str, dict] = {
     # dispatch, where it must answer NOT ASSESSED; a pull-request run on a consumer is the end-to-end.
     "ticket-reference": {"probe": "tests/prove_ticket_reference_gate.py", "state": "observed",
                          "level": "tool"},
+    # OBSERVED 2026-11-03, locally: the contract, the client against a simulated GHE.com API host,
+    # the run side against stateful Jira and Azure DevOps stand-ins (one ticket per finding across
+    # the API and the pipeline, both orders), and the wiring, including the composite's own step
+    # under bash (tests/prove_kit_api_client.py K1..K9, _server.py S1..S8, _workflow.py W1..W8).
+    # Level `tool`: the self-test's hosted control proves the workflow starts and refuses by name;
+    # an armed call on the owner's personal Jira and Azure DevOps is owed.
+    "kit-api": {"probe": "tests/prove_kit_api_server.py", "state": "observed", "level": "tool"},
+    # OBSERVED 2026-11-03, locally (KDEC-036): every refusal, its valid counterpart, the missing-evidence
+    # case and the recovery, through the composite step as shipped against a recorded API and an HTTP
+    # stand-in for the Deployments API. Level `tool`: no hosted run has read a real record cross-run.
+    "reviewer-signals": {"probe": "tests/prove_reviewer_signals.py", "state": "observed", "level": "tool"},
     # OBSERVED 2026-10-22, locally, by running the workflow's OWN evidence, decision and action steps
     # extracted from .github/workflows/reusable-dependabot-triage.yml under bash with a gh shim:
     # tests/prove_dependabot_triage.py (D1..D8, 42 decisions). Level `tool`: nothing here has run on

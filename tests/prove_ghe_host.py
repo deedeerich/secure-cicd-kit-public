@@ -37,6 +37,15 @@ GITHUB_API_URL=https://api.example.ghe.com
     H7  every GHAS-dependent step (codeql-action init/analyze/upload-sarif, dependency review) is
         continue-on-error, so a tenant without the feature degrades visibly instead of failing.
 
+    H8  no gh repository argument is hostless (2026-11-02, the owner's GHE.com tenant): every
+        `GH_REPO` and every `-R` / `--repo` naming this run's repository (GITHUB_REPOSITORY,
+        github.repository, REPO, inputs.repository) carries the host -- `${GH_HOST}/OWNER/REPO` or
+        github.server_url -- or, for `gh attestation verify`, whose --repo takes OWNER/REPO only,
+        the command passes `--hostname`. gh documents GH_REPO and -R as `[HOST/]OWNER/REPO`; the
+        host is written, never left to a default.
+    H9  DYNAMIC: each step that sets GH_REPO or passes a host-qualified -R, run under bash up to
+        its first gh call on the simulated host, yields `example.ghe.com/OWNER/REPO`.
+
     KIT_PROOF_RESOLVE=<file> points H6 at another revision of the resolve composite, so the proof
     can be shown FAILING on the revision that carried the defect.
 
@@ -179,6 +188,76 @@ def h5():
 GHAS_STEP = re.compile(r'github/codeql-action/|actions/dependency-review-action')
 
 
+# This run's repository, as a step names it. A developer tool's own --repo argument is not one.
+REPO_VALUE = re.compile(r'^(?:\$\{?GITHUB_REPOSITORY\}?|\$\{\{\s*github\.repository\s*\}\}|\$\{?REPO\}?|'
+                        r'\$\{\{\s*inputs\.repository\s*\}\}|env\([\'"]github_repository[\'"]\))$')
+HOSTED = re.compile(r'GH_HOST\}?/|server_url|SERVER_URL')
+# `-R X`, `--repo X`, `--repo=X`, and the Python list form `'--repo', X`.
+REPO_FLAG = re.compile(r'''(?:-R|--repo)['"]?(?:=|\s+|,\s*)(env\([^)]*\)|"[^"]*"|'[^']*'|[^\s,)]+)''')
+GH_REPO_SET = re.compile(r'\bGH_REPO\s*[:=]\s*(\S.*)$')
+
+
+def h8():
+    bad = []
+    for f in files(SHIPPED_CODE):
+        lines = io.open(f, encoding='utf-8', errors='replace').read().split('\n')
+        for i, line in enumerate(lines):
+            if line.lstrip().startswith('#'):
+                continue
+            code = line.split(' # ', 1)[0]
+            m = GH_REPO_SET.search(code)
+            if m and not HOSTED.search(m.group(1)):
+                bad.append('%s:%d: hostless GH_REPO: %s' % (rel(f), i + 1, line.strip()[:110]))
+            for m in REPO_FLAG.finditer(code):
+                val = m.group(1).strip('"\'')
+                if not REPO_VALUE.match(val) and not HOSTED.search(val):
+                    continue
+                if HOSTED.search(val):
+                    continue
+                window = ' '.join(lines[max(0, i - 2):i + 3])
+                if 'attestation' in window and '--hostname' in window:
+                    continue
+                bad.append('%s:%d: hostless -R/--repo: %s' % (rel(f), i + 1, line.strip()[:110]))
+    check(not bad, 'H8 no gh repository argument is hostless (%d)' % len(bad), bad)
+
+
+def h9():
+    import prove_bootstrap_failure as pbf
+    bash, _why = pbf.usable_bash()
+    if not bash:
+        print('  ???? H9 UNKNOWN: no usable bash')
+        return 2
+    probes = []
+    for f in files(SHIPPED_YAML):
+        for _env, st in steps_of(f):
+            run = st.get('run')
+            if not isinstance(run, str):
+                continue
+            vals = re.findall(r'(?:-R|--repo) ("\$\{GH_HOST\}/[^"]*")', run)
+            if 'GH_REPO=' in run:
+                vals.insert(0, '"${GH_REPO:-}"')
+            if not vals:
+                continue
+            head = '\n'.join(ln for ln in run.split('\n')
+                             if not ln.lstrip().startswith('#') and re.search(r'\bGH_(HOST|REPO)=', ln)
+                             and not GH_CALL.search(ln))
+            probes.append((rel(f), st.get('name') or '?', head, vals))
+    bad = []
+    for where, name, head, vals in probes:
+        script = head + '\n' + '\n'.join('printf "%%s\\n" %s' % v for v in vals)
+        env = dict(os.environ, GITHUB_SERVER_URL=SERVER, GITHUB_REPOSITORY='tenant-org/app',
+                   REPO='tenant-org/app')
+        env.pop('GH_HOST', None)
+        env.pop('GH_REPO', None)
+        p = subprocess.run([bash, '-c', script], env=env, capture_output=True, text=True, timeout=60)
+        got = [x for x in p.stdout.split('\n') if x]
+        if not got or not all(x == 'example.ghe.com/tenant-org/app' for x in got):
+            bad.append('%s: step "%s" -> %r %s' % (where, name, got, p.stderr.strip()[-120:]))
+    check(bool(probes) and not bad, 'H9 every GH_REPO / -R value names the simulated host (%d step(s))'
+          % len(probes), bad)
+    return 0
+
+
 def h7():
     """A tenant without GHAS refuses code scanning and CodeQL. Such a step must degrade (and the
     kit states PUBLICATION=DEGRADED / UNAVAILABLE beside it), never fail the consumer path."""
@@ -293,6 +372,8 @@ def main():
     h4()
     h5()
     h7()
+    h8()
+    h9()
     unknown = h6()
     print()
     if FAILS:

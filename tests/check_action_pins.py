@@ -25,13 +25,23 @@ WHAT IT REQUIRES, over `.github/workflows/*`, `.github/actions/**/action.y*ml` a
       P4  `--online`: every pin is checked against github.com -- the tag the comment names, peeled
           through annotated tags, is that commit. By `git ls-remote` (no token); the REST API only
           as a fallback with a token api.github.com issued, never a ghe.com run's (KDEC-027).
-          Rate limit or no network is UNKNOWN (2).
+          Rate limit or no network is UNKNOWN (2), and the UNKNOWN names its cause (D-11).
       P5  .github/dependabot.yml's github-actions entry reads `/` and every composite directory
           (so the pins stay current everywhere they are), and still excludes
           tests/consumer-fixture/**. On 2cd078e it read `/` only: every composite unread.
           And it does NOT read `overlays/`: an overlay's workflows ship to that consumer's own copy
           (scripts/export-profiles) and are maintained there, with the consumer's own Dependabot.
           A kit-side bump PR against an overlay would change a file whose owner is not here.
+      P6  every manifest directory under tests/consumer-fixture/ has its own dependabot.yml entry
+          (its ecosystem, that exact `directory`) that ignores every dependency (`dependency-name:
+          "*"`) and opens no version-update PR (`open-pull-requests-limit: 0`). `exclude-paths`
+          (P5) binds version updates only: an ALERT-DRIVEN security update ignores it, and opened
+          #2, #4, #7 (pip) and #9 (log4j-core 2.14.1 -> 2.25.4 in full/java) against the
+          fixture. Security updates do apply the `ignore` of the entry matching their ecosystem
+          and directory, so the fixture's pins stay the hand-kept acceptance signals.
+      P7  every other dependabot.yml entry names a directory holding a manifest of its ecosystem.
+          An entry at `/` for an ecosystem the kit's root does not have fails Dependabot's own
+          update job (`dependency_file_not_found`) every week (2026-11-02, the owner's work copy).
 
     OVERLAYS ARE IN SCOPE for P1-P4 (`overlays/*/workflows/*`): they ship, by the consumer export
     profile, into a consumer's repository, and a tag there is the same repointable code with that
@@ -254,6 +264,145 @@ def dependabot_problems(root):
     return out
 
 
+# Manifest file name -> Dependabot ecosystem (P6). Only names the fixture tree uses or plausibly
+# will; an unmapped manifest is not silently fine -- FIXTURE_UNMAPPED below refuses it.
+FIXTURE_MANIFESTS = {
+    'requirements.txt': 'pip', 'pyproject.toml': 'pip', 'Pipfile': 'pip',
+    'package.json': 'npm', 'pom.xml': 'maven', 'go.mod': 'gomod', 'composer.json': 'composer',
+    'Dockerfile': 'docker', 'Gemfile': 'bundler', 'Cargo.toml': 'cargo',
+    'build.gradle': 'gradle', 'build.gradle.kts': 'gradle',
+}
+FIXTURE_UNMAPPED = ('packages.config', 'Package.swift', 'pubspec.yaml', 'mix.exs')
+
+
+def fixture_problems(root):
+    """P6: no Dependabot update -- version or alert-driven security -- may "fix" the deliberately
+    vulnerable consumer fixture."""
+    import yaml
+    p = os.path.join(root, '.github', 'dependabot.yml')
+    if not os.path.isfile(p):
+        return []  # P5 already refuses a missing file
+    doc = yaml.safe_load(io.open(p, encoding='utf-8')) or {}
+    entries = doc.get('updates') or []
+    fx = os.path.join(root, 'tests', 'consumer-fixture')
+    want = set()
+    out = []
+    for d, _, names in os.walk(fx):
+        rel = '/' + os.path.relpath(d, root).replace(os.sep, '/')
+        for n in names:
+            eco = FIXTURE_MANIFESTS.get(n)
+            if n.endswith('.csproj') or n.endswith('.fsproj'):
+                eco = 'nuget'
+            elif n.endswith('.tf'):
+                eco = 'terraform'
+            elif n in FIXTURE_UNMAPPED:
+                out.append('fixture manifest %s/%s has no P6 ecosystem mapping (P6)' % (rel, n))
+            if eco:
+                want.add((eco, rel))
+    for eco, rel in sorted(want):
+        hit = [u for u in entries if u.get('package-ecosystem') == eco and u.get('directory') == rel]
+        if not hit:
+            out.append('dependabot.yml has no %s entry for the fixture directory %s: an alert-driven '
+                       'security update would bump its deliberately vulnerable pins (P6)' % (eco, rel))
+            continue
+        u = hit[0]
+        names = [str((i or {}).get('dependency-name')) for i in (u.get('ignore') or [])]
+        if '*' not in names:
+            out.append('dependabot %s %s does not ignore every dependency (`dependency-name: "*"`) (P6)'
+                       % (eco, rel))
+        if u.get('open-pull-requests-limit') != 0:
+            out.append('dependabot %s %s may open version-update PRs (open-pull-requests-limit is not 0) (P6)'
+                       % (eco, rel))
+    if not want and os.path.isdir(fx):
+        out.append('no manifest found under tests/consumer-fixture: P6 read nothing (P6)')
+    return out
+
+
+def _ecosystems_in(directory):
+    """The Dependabot ecosystems whose manifest sits IN this directory (not below it)."""
+    found = set()
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return found
+    for n in names:
+        if not os.path.isfile(os.path.join(directory, n)):
+            continue
+        eco = FIXTURE_MANIFESTS.get(n)
+        if n.endswith('.csproj') or n.endswith('.fsproj') or n in ('packages.config', 'Directory.Packages.props'):
+            eco = 'nuget'
+        elif n.endswith('.tf') or n.endswith('.tf.json'):
+            eco = 'terraform'
+        elif n.startswith('Dockerfile') or n.endswith('.Dockerfile'):
+            eco = 'docker'
+        elif n in ('requirements.in', 'setup.py', 'setup.cfg') or (n.startswith('requirements') and n.endswith('.txt')):
+            eco = 'pip'
+        if eco:
+            found.add(eco)
+    return found
+
+
+def entry_manifest_problems(root):
+    """P7: every dependabot.yml entry (github-actions aside) names a directory that holds a manifest
+    of its ecosystem. Dependabot does not skip an empty directory: it fails the update job with
+    `dependency_file_not_found` ("No Dockerfiles nor Kubernetes YAML found", file-path /Dockerfile),
+    every week, on every copy of the kit -- the owner's work copy's Dependabot Updates were red on
+    pip, npm, nuget, gomod, maven, docker and terraform for exactly this (2026-11-02)."""
+    import yaml
+    p = os.path.join(root, '.github', 'dependabot.yml')
+    if not os.path.isfile(p):
+        return []
+    doc = yaml.safe_load(io.open(p, encoding='utf-8')) or {}
+    out = []
+    for u in doc.get('updates') or []:
+        eco = u.get('package-ecosystem')
+        if eco == 'github-actions':
+            continue
+        dirs = list(u.get('directories') or []) + ([u['directory']] if u.get('directory') else [])
+        for d in dirs:
+            if any(c in str(d) for c in '*?['):
+                continue  # a glob is matched by Dependabot itself; nothing to stat here
+            full = os.path.join(root, *[x for x in str(d).split('/') if x])
+            if eco not in _ecosystems_in(full):
+                out.append('dependabot %s entry reads %s, where there is no %s manifest: Dependabot fails '
+                           'that update job with dependency_file_not_found (P7)' % (eco, d, eco))
+    return out
+
+
+def _fixture_self_test(work):
+    """-> None, or what got past P6."""
+    import yaml
+    root = os.path.join(work, 'p6')
+    os.makedirs(os.path.join(root, '.github'))
+    os.makedirs(os.path.join(root, 'tests', 'consumer-fixture', 'full', 'java'))
+    io.open(os.path.join(root, 'tests', 'consumer-fixture', 'full', 'java', 'pom.xml'), 'w').write('<project/>')
+    dep = os.path.join(root, '.github', 'dependabot.yml')
+    base = {'package-ecosystem': 'maven', 'directory': '/', 'exclude-paths': ['tests/consumer-fixture/**']}
+    good = {'package-ecosystem': 'maven', 'directory': '/tests/consumer-fixture/full/java',
+            'open-pull-requests-limit': 0, 'ignore': [{'dependency-name': '*'}]}
+    for label, entries in (('exclude-paths alone (the #9 shape)', [base]),
+                           ('an entry with no ignore', [base, dict(good, ignore=[])]),
+                           ('an entry still opening version PRs', [base, dict(good, **{'open-pull-requests-limit': 5})])):
+        io.open(dep, 'w').write(yaml.safe_dump({'version': 2, 'updates': entries}))
+        if not fixture_problems(root):
+            return 'P6 did not refuse %s' % label
+    io.open(dep, 'w').write(yaml.safe_dump({'version': 2, 'updates': [base, good]}))
+    got = fixture_problems(root)
+    if got:
+        return 'P6 refused its control: %s' % got
+    # P7: a root entry with no root manifest (the work copy's `docker` at `/`) is refused; the same
+    # entry beside a real Dockerfile, and a fixture entry beside its pom.xml, pass.
+    root_docker = {'package-ecosystem': 'docker', 'directory': '/'}
+    io.open(dep, 'w').write(yaml.safe_dump({'version': 2, 'updates': [good, root_docker]}))
+    if not any('(P7)' in x and 'docker' in x for x in entry_manifest_problems(root)):
+        return 'P7 did not refuse a docker entry at / with no Dockerfile there'
+    io.open(os.path.join(root, 'Dockerfile'), 'w').write('FROM scratch\n')
+    got = entry_manifest_problems(root)
+    if got:
+        return 'P7 refused its control: %s' % got
+    return None
+
+
 def _github(path, timeout=15):
     """REST, secondary: only with a token api.github.com issued (KDEC-027), else (None, None)."""
     return _github_refs.api_get(path, 'secure-cicd-kit-action-pins', timeout)
@@ -299,7 +448,7 @@ def online(pins):
             cache[key] = tag_commit(repo, version)
         got = cache[key]
         if got is None:
-            unknown.append('%s: %s@%s could not be resolved (rate limit or network)' % (at, repo, version))
+            unknown.append('%s: %s@%s could not be resolved' % (at, repo, version))
         elif got is False:
             problems.append('%s: %s has no tag %s (P4)' % (at, repo, version))
         elif got != sha:
@@ -362,6 +511,9 @@ def self_test():
                 os.makedirs(os.path.dirname(p), exist_ok=True)
                 io.open(p, 'w', encoding='utf-8', newline='\n').write(text)
             return root
+        err = _fixture_self_test(work)
+        if err:
+            return err
         problems, pins, files = scan(tree('control', control))
         if problems or files != 4 or len(pins) != 4:
             return 'the control tree was refused or under-read: %s (files=%d pins=%d)' % (
@@ -386,12 +538,15 @@ def main(argv):
         print('SELF-TEST FAILED: %s' % err)
         return 1
     print('self-test ok: 13 seeded defects across workflow, job-level, composite, template and '
-          'overlay locations refused; the control passes')
+          'overlay locations refused, 3 fixture-ignore defects (P6) and a manifest-less entry (P7); '
+          'the controls pass')
     problems, pins, files = scan(ROOT)
     if not files:
         print('UNKNOWN: no file in scope was found; nothing read is not nothing wrong.')
         return 2
     problems += dependabot_problems(ROOT)
+    problems += fixture_problems(ROOT)
+    problems += entry_manifest_problems(ROOT)
     unknown = []
     if '--online' in argv and not problems:
         p, unknown = online(pins)
@@ -403,12 +558,16 @@ def main(argv):
           % (files, len(pins), len(distinct), len(problems)))
     if problems:
         unpinned = sum(1 for p in problems if '(P1)' in p)
+        fixture = sum(1 for p in problems if '(P6)' in p or '(P7)' in p)
         print('FAIL: %d reference(s) are not pinned by a commit SHA, %d pinned but unnamed or '
-              'misnamed.' % (unpinned, len(problems) - unpinned))
+              'misnamed; %d Dependabot entry gap(s) (P6/P7).'
+              % (unpinned, len(problems) - unpinned - fixture, fixture))
         return 1
     if unknown:
         for u in unknown:
             print('UNKNOWN ' + u)
+        # The cause, named (D-11): a 401 is not a rate limit, and no token is neither.
+        print('Cause: %s.' % _github_refs.explain())
         print('Reported as UNKNOWN. Failure to observe is not an observation.')
         return 2
     unrecorded = [(r, s, v) for r, s, v in distinct if s not in RECORDED.get(r, {})]

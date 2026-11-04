@@ -242,6 +242,15 @@ the kit honours may carry **`renews`** — its PRIOR grants, one object each:
   (`DECISION_REQUIRED`), the version-gap deploy is `VERSION_GAP_REFUSED`. The deploy takes the
   gate's `max_exception_renewals` output and holds the stronger of it and the kit default.
 - A history the kit cannot read is not "no history": the exception is refused as unattributed.
+- **A caller's weakening record is approved, or it is not (KDEC-036, owner rulings 2026-11-03).** It needs
+  `weakening_exception_ref` (evidence), `weakening_reason`, `weakening_authority` (the named owner),
+  `weakening_expires` within `numbers.weakening_expiry_ceiling_days` (central register only, 1..365,
+  default 90) and `weakening_approver`, a name on `approver_lists` (a list name, a group, or a group's
+  last segment) who is not the requester. Missing any: `WEAKENING_NOT_APPROVED` (recorded at crawl,
+  refused by a uat/prod deploy). The requester, actor or release author as owner or approver:
+  `WEAKENING_SELF_APPROVED`, blocked everywhere. The AppSec approver list (`approver_lists.appsec`, or
+  the name `numbers.appsec_approver_list` gives) holds GitHub logins: it approves the zone readiness
+  attestation and manual review verdicts.
 - **The count comes from git, not from the register's say-so** (KDEC-022 item 2, option D, "B plus
   C"). The resolver walks `git log --follow` of the protected register file on the default branch
   and collects every distinct (ticket, expiry) each exception ever had — secret and known-exploited

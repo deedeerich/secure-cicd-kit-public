@@ -86,7 +86,7 @@ runs:
           outcome=ATTESTATION_NOT_ESTABLISHABLE
         else
           set +e
-          out="$(gh attestation verify "oci://$SUBJECT@$DIGEST" --repo "$REPO" \
+          out="$(gh attestation verify "oci://$SUBJECT@$DIGEST" --repo "$REPO" --hostname "$GH_HOST" \
                    --signer-workflow "$SIGNER" --deny-self-hosted-runners --format json 2>err.txt)"
           rc=$?
           set -e

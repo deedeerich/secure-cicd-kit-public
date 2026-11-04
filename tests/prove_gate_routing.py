@@ -64,7 +64,7 @@ DEFAULTS = {
     'semgrep_config': 'p/default p/owasp-top-ten p/xss', 'fail_on_severity': 'CRITICAL,HIGH',
     'enable_sbom': 'true', 'enable_malicious_pkg_scan': 'true', 'advisory_mode': 'false',
     'scan_git_history': 'false', 'soft_fail_sast': 'true', 'enforce_lint': 'false',
-    'weakening_reason': '', 'weakening_authority': '', 'weakening_exception_ref': '',
+    'weakening_reason': '', 'weakening_authority': '', 'weakening_approver': '', 'weakening_exception_ref': '',
     'weakening_expires': '', 'environment': '', 'target_environment': '',
 }
 BASELINE = dict(DEFAULTS, language='multi', soft_fail_sast='false')
@@ -215,6 +215,10 @@ KIT_DEFAULT_POLICY = {
     'policy_divergences': '[]', 'policy_weakenings': '[]', 'policy_chain': '', 'policy_refusals': '',
     'policy_unvalidated_human_workflow_paths': '', 'policy_stops_on_evidence_untrusted': 'true',
     'policy_deploy_approval': '{}', 'policy_job_minimums': '', 'policy_registration_ref': '',
+    # KDEC-036 G2/G3: the scenarios' attributed authority ('security lead') stands for a name on a
+    # registered approver list, with an expiry inside the ceiling -- so an attributed scenario routes as
+    # before. tests/prove_reviewer_signals.py R2 runs the unverified, no-expiry and unanswered checks.
+    'policy_weakening_check': '{"state":"WEAKENING_ATTRIBUTED","findings":["WEAKENING_ATTRIBUTED"],"why":[]}',
 }
 
 

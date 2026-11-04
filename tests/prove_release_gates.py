@@ -201,8 +201,14 @@ def shipped(bodies, bash):
                     ('prod, zone NOT_READY', 'prod', '', 'NOT_READY', False, 'RELEASE_REFUSED_ZONE_NOT_READY'),
                     ('prod, zone READY', 'prod', 'none', 'READY', True, 'ZONE_READINESS_PERMITTED'),
                     ('uat, zone READY_WITH_EXCEPTIONS', 'uat', '', 'READY_WITH_EXCEPTIONS', True, 'ZONE_READINESS_PERMITTED'),
-                    ('dev, zone NOT_READY (recorded)', 'dev', '', 'NOT_READY', True, 'ZONE_READINESS_NOT_REQUIRED')):
-                r = run(zone, {'environment_tier': tier, 'kit_release_block': block, 'kit_zone_readiness': ready})
+                    ('dev, zone NOT_READY (recorded)', 'dev', '', 'NOT_READY', True, 'ZONE_READINESS_NOT_REQUIRED'),
+                    # KDEC-036 G1 (owner ruling 2026-11-03): a value the repository set for itself, with no
+                    # landing-zone marker and no AppSec attestation, is refused at uat/prod.
+                    ('prod, zone READY self-set', 'prod', 'none', 'READY*', False, 'RELEASE_REFUSED_ZONE_NOT_READY')):
+                # The landing zone vends these values, with its hand-off marker (KDEC-036 G1).
+                marker = '' if ready.endswith('*') else 'landing-zone'
+                r = run(zone, {'environment_tier': tier, 'kit_release_block': block, 'kit_zone_readiness': ready.rstrip('*'),
+                               'kit_handoff_issuer': marker})
                 o = r['outputs']
                 expect((r['rc'] == 0) == ok and o.get('zone_readiness_gate') == gate and o.get('release_block'),
                        '3 %s zone step: %s -> %s, %s (exit %d, %s)' % (short, label, 'proceeds' if ok else 'refused',

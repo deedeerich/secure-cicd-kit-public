@@ -21,7 +21,15 @@ SECONDARY PATH: THE REST API, ONLY WITH A TOKEN IT ISSUED
     developer's own github.com token. It is never sent to any other host. Without such a token the
     REST path is not used at all (unauthenticated is 60 requests an hour per IP).
 
-Unknown stays unknown (None), and None is never a pass.
+Unknown stays unknown (None), and None is never a pass -- and an UNKNOWN NAMES ITS CAUSE
+(2026-11-02, KNOWN_DEFECTS D-11): every failed git or REST lookup is recorded, classified the way
+scripts/api_token_cause.sh classifies it (JOB_TOKEN_REJECTED, ORG_IP_ALLOW_LIST_BLOCKS_RUNNER,
+ORG_SSO_BLOCKS_TOKEN, RATE_LIMITED, API_UNREACHABLE, TOKEN_PREFLIGHT_UNCLASSIFIED), and explain()
+says which, so a 401 is never reported as "rate-limited". tests/prove_job_token_named.py T2/T7.
+
+PIN_CHECK_GITHUB_COM_TOKEN, when set, is a token github.com issued (a separate secret, optional):
+it is sent to api.github.com only, and used instead of the run's token on a run whose own token
+another host issued. Never required: the git path needs no token.
 """
 import json
 import os
@@ -61,8 +69,11 @@ def _host(url):
 
 
 def api_token(env=None):
-    """The run's token, if and only if api.github.com issued it; else None."""
+    """The run's token, if and only if api.github.com issued it; else None. A separate
+    PIN_CHECK_GITHUB_COM_TOKEN (github.com-issued by definition) wins when set."""
     env = os.environ if env is None else env
+    if env.get('PIN_CHECK_GITHUB_COM_TOKEN'):
+        return env.get('PIN_CHECK_GITHUB_COM_TOKEN')
     token = env.get('GITHUB_TOKEN') or env.get('GH_TOKEN')
     if not token:
         return None
@@ -77,11 +88,74 @@ def valid(repo, ref):
     return bool(REPO_RE.match(repo or '')) and bool(REF_RE.match(ref or '')) and '..' not in ref
 
 
+# What failed, for explain(): {'git': [cause, ...], 'api': [(cause, status), ...], 'no_token': bool}
+_SEEN = {'git': [], 'api': [], 'no_token': False}
+
+_ADVICE = {
+    'JOB_TOKEN_REJECTED': 'organisation owner, then workflow maintainer: GitHub answered 401 Bad '
+                          'credentials. Check that GITHUB_API_URL is api.github.com (a ghe.com '
+                          "run's token is never sent there, KDEC-027), the organisation IP allow "
+                          'list, Actions workflow permissions, and a proxy stripping Authorization',
+    'ORG_IP_ALLOW_LIST_BLOCKS_RUNNER': "organisation owner: the IP allow list refuses this runner's address",
+    'ORG_SSO_BLOCKS_TOKEN': 'organisation owner: SAML single sign-on refuses the token; authorise it for SSO',
+    'RATE_LIMITED': 'workflow maintainer: the REST rate limit is spent; re-run after the reset',
+    'API_UNREACHABLE': "runner administrator: no answer from github.com; check the runner's egress, proxy and DNS",
+    'TOKEN_PREFLIGHT_UNCLASSIFIED': 'workflow maintainer: refused for a reason the kit does not classify',
+}
+
+
+def api_cause(status, text):
+    """The word scripts/api_token_cause.sh (kit_api_cause) gives the same answer. `status` is the
+    HTTP status, or None when there was no HTTP answer."""
+    t = (('http %d ' % status) if status else '') + (text or '')
+    t = t.lower()
+    if 'ip allow list' in t or 'ip allowlist' in t:
+        return 'ORG_IP_ALLOW_LIST_BLOCKS_RUNNER'
+    if 'saml' in t or 'single sign-on' in t:
+        return 'ORG_SSO_BLOCKS_TOKEN'
+    if 'rate limit' in t or 'http 429' in t:
+        return 'RATE_LIMITED'
+    if 'bad credentials' in t or 'http 401' in t or 'requires authentication' in t:
+        return 'JOB_TOKEN_REJECTED'
+    if re.search(r'http [45][0-9][0-9]', t):
+        return 'TOKEN_PREFLIGHT_UNCLASSIFIED'
+    if any(w in t for w in ('could not resolve', 'no such host', 'name resolution', 'getaddrinfo',
+                            'connection refused', 'timed out', 'timeout', 'error connecting',
+                            'dial tcp', 'network is unreachable', 'connection reset',
+                            'failed to connect', 'proxyconnect', 'urlopen error')):
+        return 'API_UNREACHABLE'
+    return 'TOKEN_PREFLIGHT_UNCLASSIFIED'
+
+
+def reset():
+    _SEEN['git'], _SEEN['api'], _SEEN['no_token'] = [], [], False
+
+
+def explain():
+    """One line: why lookups were UNKNOWN. Cause words, statuses and fixed text only -- nothing a
+    server sent is repeated."""
+    parts = []
+    if _SEEN['git']:
+        parts.append('git to github.com: %s' % ', '.join(sorted(set(_SEEN['git']))))
+    if _SEEN['api']:
+        seen = sorted(set(_SEEN['api']), key=lambda x: (x[0], x[1] or 0))
+        parts.append('REST api.github.com: %s' % ', '.join(
+            '%s (%s)' % (c, 'HTTP %d' % s if s else 'no HTTP answer') for c, s in seen))
+        for c in sorted({c for c, _ in seen}):
+            parts.append('%s -- %s' % (c, _ADVICE.get(c, _ADVICE['TOKEN_PREFLIGHT_UNCLASSIFIED'])))
+    elif _SEEN['no_token']:
+        parts.append('REST not used: no token api.github.com issued (GITHUB_API_URL=%s; a run token is '
+                     'never sent to another host, KDEC-027; set PIN_CHECK_GITHUB_COM_TOKEN for a '
+                     'github.com fallback)' % (os.environ.get('GITHUB_API_URL') or 'unset'))
+    return '; '.join(parts) or 'no failed lookup was recorded'
+
+
 def api_get(path, user_agent, timeout=15):
     """-> (status, json-or-None). (None, None) when there is no token api.github.com issued: the
-    REST path is then not taken at all."""
+    REST path is then not taken at all. A failure is recorded with its cause for explain()."""
     token = api_token()
     if not token:
+        _SEEN['no_token'] = True
         return None, None
     headers = {'User-Agent': user_agent, 'Accept': 'application/vnd.github+json',
                'Authorization': 'Bearer ' + token}
@@ -90,8 +164,15 @@ def api_get(path, user_agent, timeout=15):
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.getcode(), json.load(r)
     except urllib.error.HTTPError as e:
+        if e.code != 404:
+            try:
+                body = e.read().decode('utf-8', 'replace')[:2000]
+            except Exception:  # noqa: BLE001
+                body = ''
+            _SEEN['api'].append((api_cause(e.code, body), e.code))
         return e.code, None
-    except Exception:  # noqa: BLE001 - network trouble is a status of None, never a verdict
+    except Exception as e:  # noqa: BLE001 - network trouble is a status of None, never a verdict
+        _SEEN['api'].append((api_cause(None, str(e)), None))
         return None, None
 
 
@@ -128,6 +209,7 @@ def ls_remote(repo, ref, timeout=GIT_TIMEOUT):
     finally:
         _rmtree(tmp)
     if out is None or out[0] != 0:
+        _SEEN['git'].append('API_UNREACHABLE' if out is None else api_cause(None, out[2]))
         return None
     refs = {}
     for line in out[1].splitlines():
@@ -168,9 +250,11 @@ def commit_exists(repo, sha, timeout=GIT_TIMEOUT):
     finally:
         _rmtree(tmp)
     if out is None:
+        _SEEN['git'].append('API_UNREACHABLE')
         return None
     if out[0] == 0:
         return True
     if any(m in out[2].lower() for m in MISSING_OBJECT):
         return False
+    _SEEN['git'].append(api_cause(None, out[2]))
     return None

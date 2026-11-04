@@ -38,7 +38,8 @@ and not built. Part 09 says exactly which.
 | 07 | `07-BUILD-PROVENANCE-DEPLOY-ROLLBACK.md` | build once, provenance, deploy gated on the verdict, rollback | deploy is the stage with the most design and the least build |
 | 08 | `08-HOW-THE-KIT-PROVES-ITSELF.md` | the proofs, validation debt, deferrals, and what "proven" means | "it compiles" and "a test exists" are not proof here |
 | 09 | `09-STATUS-BUILT-VS-DESIGNED.md` | what is built and proven, what is designed only, what needs a hosted run | building on a designed-only part as if it ran is the failure this kit exists to stop |
-| 10 | `10-CHANGE-LOG.md` | what changed since the last version you read (v1.11 onward) | read this first on every later delivery |
+| 10 | `10-CHANGE-LOG.md` | what changed since the last version you read (entries after 2026-10-23) | read this first on every later delivery |
+| 10a | `10a-CHANGE-LOG-OCTOBER.md` | the change log for v1.11, v1.12 and the entries to 2026-10-23 | history only |
 | 10b | `10b-CHANGE-LOG-EARLIER.md` | the change log for v1.10 back to v1 | history only; read it to trace why a rule exists |
 | 11 | `11-INTEGRATING-WITH-THE-KIT.md` | **wiring another product to the kit**: who deploys what, what the landing zone hands over, the workflow shape, reading the verdict | it is the only part written for integration rather than understanding |
 | 12 | `12-CHANGES-SINCE-A907DC8.md` | every behavioural change since explainer v1.10 (`a907dc8`), grouped by what an integrator must do differently | a builder working from v1.10 is otherwise wiring against outdated behaviour |

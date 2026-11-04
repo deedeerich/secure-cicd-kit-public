@@ -143,6 +143,17 @@ on:
         type: string
         required: false
         default: ""
+      weakening_approver:
+        description: >-
+          WHO APPROVED the weakening (owner rulings 2026-11-03, KDEC-036): a name on an approver list the
+          central register names (K-9), never the requester, the actor or the released commit's author.
+          With weakening_reason, weakening_authority (the named owner), weakening_exception_ref (the
+          evidence) and an unexpired weakening_expires within the ceiling, the weakening is approved;
+          missing any is WEAKENING_NOT_APPROVED (recorded at crawl, refused at uat and prod), and naming
+          the requester is WEAKENING_SELF_APPROVED (refused everywhere).
+        type: string
+        required: false
+        default: ""
       weakening_exception_ref:
         description: >-
           Where the exception or deferral is recorded -- a ticket, a disposition id, a register
@@ -287,6 +298,34 @@ on:
         type: string
         required: false
         default: "ubuntu-latest"
+      manual_review_by:
+        description: >-
+          KDEC-036 G8 (owner ruling 2026-11-03): when routing_result is typed rather than the gate's own,
+          the AppSec reviewer who reviewed manually -- a login on the central register's AppSec approver
+          list, not the requester or the author. With manual_review_ref and manual_review_date the verdict
+          is a MANUAL_REVIEW_VERDICT, recorded as such; without them a typed verdict is TYPED_VERDICT.
+        type: string
+        required: false
+        default: ""
+      manual_review_ref:
+        description: "KDEC-036 G8: the manual review's evidence or review reference."
+        type: string
+        required: false
+        default: ""
+      manual_review_date:
+        description: "KDEC-036 G8: the manual review's date, YYYY-MM-DD (at most 30 days old)."
+        type: string
+        required: false
+        default: ""
+      security_run_id:
+        description: >-
+          KDEC-036 G8: the run whose security gate produced routing_result, when it is neither this run
+          nor the promotion source. Before login the deploy reads that run's kit-security-record: a
+          verdict more permissive than the gate's own, or one dropping its causes, is refused at every
+          tier (VERDICT_CONTRADICTED); no record is TYPED_VERDICT, refused at uat and prod.
+        type: string
+        required: false
+        default: ""
     secrets:
       AZURE_TENANT_ID:
         description: "Entra tenant ID for OIDC federated login. Not a secret value in the cryptographic sense, but org-identifying — keep it in secrets."
@@ -372,6 +411,48 @@ on:
       release_block:
         description: "K-3 (OF-5): RELEASE_NOT_BLOCKED | RELEASE_BLOCK_NOT_VENDED | RELEASE_BLOCKED_BY_PLATFORM."
         value: ${{ jobs.deploy.outputs.release_block }}
+      release_approval_by:
+        description: "K-1: the approving reviewers read before login, comma-separated."
+        value: ${{ jobs.deploy.outputs.release_approval_by }}
+      verdict_provenance:
+        description: "KDEC-036 G8: VERDICT_FROM_GATE | MANUAL_REVIEW_VERDICT | TYPED_VERDICT | VERDICT_CONTRADICTED | VERDICT_RECORD_UNREADABLE."
+        value: ${{ jobs.deploy.outputs.verdict_provenance }}
+      weakening_check:
+        description: "KDEC-036 G2/G3: the weakening record checked (WEAKENING_ATTRIBUTED, WEAKENING_NOT_APPROVED, WEAKENING_SELF_APPROVED, ...)."
+        value: ${{ jobs.deploy.outputs.weakening_check }}
+      tier_source:
+        description: "KDEC-036 G4: TIER_VENDED (the landing zone hand-off) | TIER_SELF_DECLARED."
+        value: ${{ jobs.deploy.outputs.tier_source }}
+      readiness_source:
+        description: "KDEC-036 G1: READINESS_SOURCE_LZ_HANDOFF | READINESS_SOURCE_APPSEC_ATTESTATION | READINESS_SOURCE_SELF_SET_REFUSED | READINESS_SOURCE_TEST_FIXTURE | READINESS_ATTESTATION_REFUSED | READINESS_NOT_SET."
+        value: ${{ jobs.deploy.outputs.readiness_source }}
+      hosting_kind:
+        description: "KDEC-036 G10: the hosting kind released, or NO_KIT_ADAPTER:<kind> (refused)."
+        value: ${{ jobs.deploy.outputs.hosting_kind }}
+      kit_watermark:
+        description: "KDEC-036 G9: WATERMARK_BOUND | WATERMARK_DIRTY | WATERMARK_ABSENT | WATERMARK_UNREADABLE."
+        value: ${{ jobs.deploy.outputs.kit_watermark }}
+      kit_source_commit:
+        description: "KDEC-036 G9: the kit source commit the called kit copy received (watermark), empty when absent."
+        value: ${{ jobs.deploy.outputs.kit_source_commit }}
+      tier_reality:
+        description: "KDEC-036 G4: TIER_CONSISTENT | TIER_MISMATCH_SUSPECTED | TIER_REALITY_UNREAD (warn only)."
+        value: ${{ jobs.deploy.outputs.tier_reality }}
+      release_record:
+        description: "KDEC-036 G6: RELEASE_RECORD_KEPT_DEPLOYMENT | RELEASE_RECORD_KEPT | RELEASE_RECORD_NOT_KEPT."
+        value: ${{ jobs.deploy.outputs.release_record }}
+      release_record_ref:
+        description: "KDEC-036 G6: the GitHub deployment id holding the durable release record."
+        value: ${{ jobs.deploy.outputs.release_record_ref }}
+      lease_state:
+        description: "KDEC-036 G5: the target lease (target_lease), or LEASE_NOT_IN_FORCE."
+        value: ${{ jobs.deploy.outputs.lease_state }}
+      seam_state:
+        description: "KDEC-036 G5: the seam (seam_ownership), or SEAM_OWNERSHIP_NOT_IN_FORCE."
+        value: ${{ jobs.deploy.outputs.seam_state }}
+      review_signals:
+        description: "KDEC-036 G5: review-signals.json (also in the deploy evidence), compact."
+        value: ${{ jobs.deploy.outputs.review_signals }}
 
 # Concurrency for a CHANGE workflow is the opposite of concurrency for a validation
 # workflow. Validation cancels the superseded run — the answer is stale, killing it costs
@@ -397,6 +478,8 @@ permissions:
   id-token: write   # OIDC
   attestations: read   # V1 reads the digest's signed build provenance (P-02); nothing here writes one
   actions: read        # KDEC-023: read the rollback marker artifact of this target
+  deployments: write   # KDEC-036 G6: the durable release record (a deployment and its status)
+  pull-requests: read  # KDEC-036 G1: the readiness attestation's approving review
 
 jobs:
   deploy:
@@ -422,6 +505,21 @@ jobs:
       release_approval: ${{ steps.approval.outputs.release_approval }}
       zone_readiness: ${{ steps.zone.outputs.zone_readiness }}
       release_block: ${{ steps.zone.outputs.release_block }}
+      # KDEC-036 (G5): the reviewer's signals as outputs.
+      release_approval_by: ${{ steps.approval.outputs.release_approval_by }}
+      verdict_provenance: ${{ steps.review_pre.outputs.verdict_provenance }}
+      weakening_check: ${{ steps.review_pre.outputs.weakening_check }}
+      tier_source: ${{ steps.review_pre.outputs.tier_source }}
+      readiness_source: ${{ steps.zone.outputs.readiness_source }}
+      hosting_kind: ${{ steps.review_pre.outputs.hosting_kind }}
+      kit_watermark: ${{ steps.review_pre.outputs.kit_watermark }}
+      kit_source_commit: ${{ steps.review_pre.outputs.kit_source_commit }}
+      tier_reality: ${{ steps.review_post.outputs.tier_reality }}
+      release_record: ${{ steps.review_post.outputs.release_record }}
+      release_record_ref: ${{ steps.review_post.outputs.release_record_ref }}
+      lease_state: ${{ steps.review_post.outputs.lease_state }}
+      seam_state: ${{ steps.review_post.outputs.seam_state }}
+      review_signals: ${{ steps.review_post.outputs.review_signals }}
     # SAFE_ENV_TRANSPORT (L100/L38). Every caller input reaches the scripts below as DATA in the
     # environment, never as text substituted into a script body. The digest guard used to read
     # `d='${{ inputs.image_digest }}'` -- validation that ran after bash had already parsed the
@@ -489,6 +587,17 @@ jobs:
       E2E_TIMEOUT_MINUTES: ${{ inputs.e2e_timeout_minutes }}
       DAST_COMMAND: ${{ inputs.dast_command }}
       ATTESTATION_SIGNER_WORKFLOW: ${{ inputs.attestation_signer_workflow }}
+      # KDEC-036: the verdict's run (G8), the landing zone's hand-off marker and hosting kind (G1, G4,
+      # G10), the evidence retention (G6).
+      SECURITY_RUN_ID: ${{ inputs.security_run_id }}
+      WEAKENING_APPROVER: ${{ inputs.weakening_approver }}
+      MANUAL_REVIEW_BY: ${{ inputs.manual_review_by }}
+      MANUAL_REVIEW_REF: ${{ inputs.manual_review_ref }}
+      MANUAL_REVIEW_DATE: ${{ inputs.manual_review_date }}
+      KIT_ZONE_READINESS_TEST_FIXTURE: ${{ vars.KIT_ZONE_READINESS_TEST_FIXTURE }}
+      KIT_HANDOFF_ISSUER: ${{ vars.KIT_HANDOFF_ISSUER }}
+      KIT_HOSTING_KIND: ${{ vars.KIT_HOSTING_KIND }}
+      KIT_EVIDENCE_RETENTION_DAYS: ${{ vars.KIT_EVIDENCE_RETENTION_DAYS }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
       - name: Materialise the deploy contract scripts
@@ -601,8 +710,20 @@ jobs:
               return ''
 
 
+          def site_args(args):
+              """KDEC-036 G10: a Functions app (SITE_KIND functionapp) is released on the App Service contract
+              through `az functionapp` -- the same Microsoft.Web/sites calls, its own command group and image flag.
+              Connection strings have no functionapp command and stay `az webapp` (a generic site read)."""
+              args = list(args)
+              if args[:1] == ['webapp'] and os.environ.get('SITE_KIND') == 'functionapp' and 'connection-string' not in args:
+                  args[0] = 'functionapp'
+                  args = ['--image' if x == '--container-image-name' else x for x in args]
+              return args
+
+
           def az(*args):
               """-> (ok, parsed JSON or None, error text). A failed read is reported, never blanked."""
+              args = site_args(args)
               refused = lease_fence(args)
               if refused:
                   return False, None, refused
@@ -624,6 +745,7 @@ jobs:
 
           def az_raw(*args):
               """-> (ok, text, error text) for a call whose answer is not JSON (a log file)."""
+              args = site_args(args)
               refused = lease_fence(args)
               if refused:
                   return False, '', refused
@@ -827,6 +949,11 @@ jobs:
               previous = ''
               for t in serving:
                   previous = props.get('latestRevisionName') if t.get('latestRevision') else t.get('revisionName')
+              # KDEC-036 G4: what the target shows of production, read from the answer already in hand.
+              ing, scale = conf.get('ingress') or {}, (props.get('template') or {}).get('scale') or {}
+              snap['reality'] = {'public_ingress': bool(ing.get('external')),
+                                 'custom_domains': [d.get('name') for d in ing.get('customDomains') or [] if isinstance(d, dict)],
+                                 'min_replicas': scale.get('minReplicas') if isinstance(scale.get('minReplicas'), int) else 0}
               snap.update(revision_mode=conf.get('activeRevisionsMode') or 'unknown',
                           latest_revision=props.get('latestRevisionName') or '', traffic=traffic,
                           revisions=revisions, tags=shown.get('tags') or {}, app_id=shown.get('id', ''))
@@ -852,6 +979,29 @@ jobs:
                       return _unknown('The %s slot configuration could not be read.' % s, snap)
                   images[s] = img
               snap['images'] = images
+              # KDEC-036 G10, G4: the site's kind decides the adapter (a code-packaged Functions app has none),
+              # and its host names and network access are the tier's reality signal.
+              ok, site, err = az('webapp', 'show', '-n', env('webapp_name'), '-g', env('resource_group'))
+              if not ok or not isinstance(site, dict):
+                  return _unknown('The site could not be read (%s).' % err, snap)
+              kind = str(site.get('kind') or '').lower()
+              want_fn = env('site_kind') == 'functionapp'
+              why = ''
+              if want_fn and 'functionapp' not in kind:
+                  why = 'site_kind is functionapp and the site is not a function app (kind %r)' % kind
+              elif not want_fn and 'functionapp' in kind:
+                  why = 'the site is a function app (kind %r): pass site_kind functionapp' % kind
+              elif want_fn and 'container' not in kind:
+                  why = ('NO_KIT_ADAPTER:function_app_code: the function app is not a custom container (kind %r); '
+                         'the kit releases Functions by image digest only' % kind)
+              if why:
+                  return _unknown(why, snap)
+              default = str(site.get('defaultHostName') or '').lower()
+              suffix = default.split('.', 1)[1] if '.' in default else ''
+              snap['reality'] = {'kind': kind, 'public_ingress': str(site.get('publicNetworkAccess') or 'Enabled') != 'Disabled',
+                                 'custom_domains': [h for h in site.get('hostNames') or []
+                                                    if suffix and not str(h).lower().endswith(suffix)],
+                                 'min_replicas': 0}
               state = 'EXISTING_DEPLOYMENT' if images[slot or 'production'] else 'EMPTY'
               snap['previous_state'] = state
               write_evidence('snapshot.json', snap)
@@ -5332,6 +5482,14 @@ jobs:
           ZONE_PERMITTED = 'ZONE_READINESS_PERMITTED'
           ZONE_NOT_REQUIRED = 'ZONE_READINESS_NOT_REQUIRED'
           ZONE_REFUSED = 'RELEASE_REFUSED_ZONE_NOT_READY'
+          # readiness_source (KDEC-036 G1, owner ruling 2026-11-03): who issued the readiness value.
+          SRC_LZ = 'READINESS_SOURCE_LZ_HANDOFF'
+          SRC_APPSEC = 'READINESS_SOURCE_APPSEC_ATTESTATION'
+          SRC_SELF = 'READINESS_SOURCE_SELF_SET_REFUSED'
+          SRC_FIXTURE = 'READINESS_SOURCE_TEST_FIXTURE'
+          SRC_ATT_REFUSED = 'READINESS_ATTESTATION_REFUSED'
+          SRC_UNSET = 'READINESS_NOT_SET'
+          SRC_REFUSED_AT_PRODUCTION = (SRC_SELF, SRC_ATT_REFUSED)
 
           # release_approval (K-1)
           APPROVAL_VERIFIED = 'RELEASE_APPROVAL_VERIFIED'
@@ -5413,14 +5571,43 @@ jobs:
                                                       'UNKNOWN is never a pass' % (what, tier))
 
 
+          def readiness_source():
+              """-> (source, the readiness value to judge). The readiness step (reviewer-signals) answers first; when
+              it did not, the source is derived from what this job sees: the landing zone's marker, or a value set
+              without it (self-set). Owner ruling 2026-11-03: the landing zone issues readiness when connected,
+              otherwise AppSec through the attestation file; the app or deploy team never sets it for itself."""
+              src, value = env('readiness_source').strip(), env('kit_zone_readiness').strip()
+              if not src:
+                  marker = env('kit_handoff_issuer').strip().lower().split(':', 1)[0] == 'landing-zone'
+                  src = SRC_LZ if marker else (SRC_SELF if value else SRC_UNSET)
+                  if src == SRC_SELF and env('kit_zone_readiness_test_fixture').strip().lower() == 'true':
+                      src = SRC_FIXTURE
+              if src == SRC_APPSEC:
+                  value = env('attested_readiness').strip()
+              elif src in (SRC_ATT_REFUSED, SRC_UNSET):
+                  value = ''
+              return src, value
+
+
           def cmd_zone(_a):
               tier = env('environment_tier').strip()
               block, block_ok, block_why = decide_block(env('kit_release_block'))
-              readiness, gate, zone_ok, zone_why = decide_zone(tier, env('kit_zone_readiness'))
-              output(release_block=block, zone_readiness=readiness, zone_readiness_gate=gate)
+              source, value = readiness_source()
+              readiness, gate, zone_ok, zone_why = decide_zone(tier, value)
+              if tier in PRODUCTION_TIERS and source in SRC_REFUSED_AT_PRODUCTION:
+                  gate, zone_ok = ZONE_REFUSED, False
+                  zone_why = ('%s: at %s readiness is issued by the landing zone (KIT_HANDOFF_ISSUER) or by AppSec '
+                              '(.kit/zone-readiness.json, approved by the AppSec list), never set by the app or deploy team '
+                              'for itself (owner ruling 2026-11-03)' % (source, tier))
+              output(release_block=block, zone_readiness=readiness, zone_readiness_gate=gate, readiness_source=source)
               summary('### Platform stop and zone readiness (before login)\n\n| check | outcome | why |\n|---|---|---|\n'
-                      '| release block (K-3) | `%s` | %s |\n| zone readiness (K-2) | `%s` / `%s` | %s |'
-                      % (block, block_why, readiness, gate, zone_why))
+                      '| release block (K-3) | `%s` | %s |\n| zone readiness (K-2) | `%s` / `%s` | %s |\n'
+                      '| readiness source (G1) | `%s` | %s |'
+                      % (block, block_why, readiness, gate, zone_why, source,
+                         'a TEST FIXTURE: KIT_ZONE_READINESS_TEST_FIXTURE is true' if source == SRC_FIXTURE else '-'))
+              if source == SRC_FIXTURE:
+                  print('::warning title=Zone readiness is a TEST FIXTURE::KIT_ZONE_READINESS was set by the repository and '
+                        'labelled a test fixture; it is not an issued readiness.')
               refused = []
               if not block_ok:
                   refused.append('%s: %s' % (BLOCKED, block_why))
@@ -5586,7 +5773,8 @@ jobs:
               if notes:
                   why = '%s (%s)' % (why, '; '.join(notes))
               refused = outcome not in APPROVAL_PERMITS
-              output(release_approval=outcome, release_approval_by=','.join(who))
+              by = ','.join(who)
+              output(release_approval=outcome, release_approval_by=by)
               summary('### Release approval (K-1, before login)\n\n`%s` at tier `%s`: %s' % (outcome, tier or 'none', why))
               if refused:
                   print('::error title=Release refused before login (approval)::%s: %s. Nothing was deployed.' % (outcome, why))
@@ -5728,6 +5916,18 @@ jobs:
           echo "handoff_vended=${vended}" >> "$GITHUB_OUTPUT"
           echo "Extended hand-off set vended here: ${vended:-none}."
 
+      - name: Zone readiness source -- the landing zone's hand-off, or AppSec's attestation (KDEC-036 G1)
+        # Owner ruling 2026-11-03: readiness is issued by the landing zone when connected, otherwise by AppSec
+        # through .kit/zone-readiness.json, changed on the default branch only by a pull request an AppSec
+        # approver (not its author) approved; a value the repository set for itself is self-set, refused at
+        # uat/prod unless labelled a test fixture. Never refuses here: the zone step below decides.
+        id: readiness
+        uses: $/.github/actions/reviewer-signals
+        with:
+          mode: readiness
+          adapter: containerapp
+          token: ${{ github.token }}
+
       - name: Platform stop and zone readiness (refuse before login)
         id: zone
         # OF-5 K-3: the landing zone's halt, TTL and budget-cap block reach releases -- KIT_RELEASE_BLOCK
@@ -5736,6 +5936,9 @@ jobs:
         # NOT_READY, UNKNOWN or unset refuses (RELEASE_REFUSED_ZONE_NOT_READY); below uat it is recorded.
         # After the bind step (the tier is the vended one). The body is identical in both deploy
         # reusables. scripts/release_gates.py; tests/prove_release_gates.py.
+        env:
+          READINESS_SOURCE: ${{ steps.readiness.outputs.readiness_source }}
+          ATTESTED_READINESS: ${{ steps.readiness.outputs.attested_readiness }}
         run: python3 "$RUNNER_TEMP/kit-deploy/release_gates.py" zone
 
       - name: Verify the environment's deployment protection (refuse before login)
@@ -5819,6 +6022,8 @@ jobs:
                 VERSION_GAP) gap=1 ;;
                 VERSION_GAP_UNVERIFIED) unverified=1 ;;
                 COVERAGE_PARTIAL|WEAKENING_ATTRIBUTED|FINDINGS_NOT_BLOCKED|SECRET_EXCEPTION_ATTRIBUTED|KNOWN_EXPLOITED_EXCEPTION_ATTRIBUTED|KEV_UNAVAILABLE) ;;
+                # KDEC-036: registered here; the reviewer-signals step refuses them at uat/prod by name.
+                WEAKENING_NOT_APPROVED) ;;
                 *) unknown=1 ;;
               esac
             done
@@ -5834,7 +6039,7 @@ jobs:
             esac
             if [ "$unknown" = "1" ]; then
               ruling ADVISORY_CAUSE_UNKNOWN
-              refuse "KDEC-014: the gate verdict is PROCEED_WITH_ADVISORY at ${ENVIRONMENT_TIER}, and its advisory cause is absent or not a registered advisory_cause value (VERSION_GAP, VERSION_GAP_UNVERIFIED, COVERAGE_PARTIAL, WEAKENING_ATTRIBUTED, FINDINGS_NOT_BLOCKED, SECRET_EXCEPTION_ATTRIBUTED). It cannot be shown not to be a version gap. Pass the security gate's advisory_causes output."
+              refuse "KDEC-014: the gate verdict is PROCEED_WITH_ADVISORY at ${ENVIRONMENT_TIER}, and its advisory cause is absent or not a registered advisory_cause value (VERSION_GAP, VERSION_GAP_UNVERIFIED, COVERAGE_PARTIAL, WEAKENING_ATTRIBUTED, WEAKENING_NOT_APPROVED, FINDINGS_NOT_BLOCKED, SECRET_EXCEPTION_ATTRIBUTED). It cannot be shown not to be a version gap. Pass the security gate's advisory_causes output."
             fi
             if [ "$gap" != "1" ]; then
               if [ "$unverified" = "1" ]; then
@@ -5974,7 +6179,7 @@ jobs:
             outcome=ATTESTATION_NOT_ESTABLISHABLE
           else
             set +e
-            out="$(gh attestation verify "oci://$SUBJECT@$DIGEST" --repo "$REPO" \
+            out="$(gh attestation verify "oci://$SUBJECT@$DIGEST" --repo "$REPO" --hostname "$GH_HOST" \
                      --signer-workflow "$SIGNER" --deny-self-hosted-runners --format json 2>err.txt)"
             rc=$?
             set -e
@@ -6149,6 +6354,20 @@ jobs:
             "$RUNNER_TEMP/deploy-evidence/promotion-gate.json" 2>/dev/null || true)"
           python3 "$RUNNER_TEMP/kit-deploy/release_gates.py" approval --digest "${IMAGE_DIGEST:-}" \
             --source-commit "$source_commit"
+
+      - name: Reviewer signals -- verdict provenance, weakening authority, tier and readiness source (refuse before login)
+        # KDEC-036 G8: the kit-security-record of the run the verdict came from (this run, the promotion
+        # source, or security_run_id); a verdict more permissive than its gate's, or dropping a cause, is
+        # VERDICT_CONTRADICTED (refused at every tier); no record is TYPED_VERDICT (refused at uat/prod,
+        # warned below). G2/G3: an unverified weakening authority, or an expiry missing or past the
+        # ceiling, refused at uat/prod. G4/G1/G9/G10: the tier's and readiness's source, the kit copy's
+        # watermark, the hosting kind. tests/prove_reviewer_signals.py.
+        id: review_pre
+        uses: $/.github/actions/reviewer-signals
+        with:
+          mode: deploy-pre
+          adapter: containerapp
+          token: ${{ github.token }}
 
       - name: Azure login (OIDC)
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
@@ -6426,6 +6645,10 @@ jobs:
           W_HEALTH_INTERVAL_SECONDS: ${{ inputs.health_interval_seconds }}
           W_WEAKENING_REASON: ${{ inputs.weakening_reason }}
           W_WEAKENING_AUTHORITY: ${{ inputs.weakening_authority }}
+          W_WEAKENING_APPROVER: ${{ inputs.weakening_approver }}
+          W_MANUAL_REVIEW_BY: ${{ inputs.manual_review_by }}
+          W_MANUAL_REVIEW_REF: ${{ inputs.manual_review_ref }}
+          W_MANUAL_REVIEW_DATE: ${{ inputs.manual_review_date }}
           W_WEAKENING_EXCEPTION_REF: ${{ inputs.weakening_exception_ref }}
           W_WEAKENING_EXPIRES: ${{ inputs.weakening_expires }}
           W_WEAKENING_RENEWS: ${{ inputs.weakening_renews }}
@@ -6468,6 +6691,8 @@ jobs:
           ROLLBACK_CAPABILITY: ${{ steps.capability.outputs.rollback_capability }}
           REPORT_OUTCOME: ${{ steps.report.outcome }}
           DEPLOYMENT_OUTCOME: ${{ steps.report.outputs.deployment_outcome }}
+          REVIEW_PRE_OUTCOME: ${{ steps.review_pre.outcome }}
+          REVIEW_WEAKENING: ${{ steps.review_pre.outputs.weakening_check }}
         run: |
           set -u
           req=""; exe=""; skp=""; red=""; wk=""; dead=""; inforce=0; badclass=0
@@ -6545,6 +6770,11 @@ jobs:
           # Where the job runs. The lease (KDEC-030) needs a runner that reaches its private store;
           # the label changes no control, and an unreachable store refuses rather than skips.
           posture runner_label             NOT_A_CONTROL_SURFACE - -
+          posture security_run_id          NOT_A_CONTROL_SURFACE - -
+          posture weakening_approver       EXCEPTION_ATTRIBUTION - -
+          posture manual_review_by         EXCEPTION_ATTRIBUTION - -
+          posture manual_review_ref        EXCEPTION_ATTRIBUTION - -
+          posture manual_review_date       EXCEPTION_ATTRIBUTION - -
           # What the probe is pointed at. A path that answers 200 for anything proves nothing.
           posture health_path             SCOPE_NARROWED        "/health"       health-probe       "$W_HEALTH_PATH"
           # The threshold at which the deploy is declared failed. More attempts, or a longer wait
@@ -6610,6 +6840,7 @@ jobs:
           ran e2e-test-period "${TEST_PERIOD_OUTCOME:-}"
           ran dast "${DAST_OUTCOME:-}"
           ran security-settings "${TARGET_POSTURE_OUTCOME:-}"
+          ran reviewer-signals "${REVIEW_PRE_OUTCOME:-}"
 
           # UNAVAILABLE IS NOT CLEAN. Reversal was REQUIRED (the caller did not switch it off)
           # and the capability step established it could not be provided -- no prior state, or a
@@ -6653,6 +6884,14 @@ jobs:
             fi
           fi
 
+          # KDEC-036 G2, G3: an attributed weakening whose authority or expiry did not verify says so.
+          case "${REVIEW_WEAKENING:-}" in
+            '') ;;   # no weakening record declared, or the step never ran (REVIEW_PRE_OUTCOME routes that)
+            WEAKENING_SELF_APPROVED) auth=WEAKENING_SELF_APPROVED ;;   # refused before login, every tier
+            WEAKENING_NOT_APPROVED|WEAKENING_UNATTRIBUTED|WEAKENING_EXCEPTION_EXPIRED)
+              if [ "$auth" = WEAKENING_ATTRIBUTED ]; then auth=WEAKENING_NOT_APPROVED; fi ;;
+          esac
+
           # ROUTING, by the registered precedence:
           #   BLOCKED > EVIDENCE_UNTRUSTED > DECISION_REQUIRED > PROCEED_WITH_ADVISORY > PROCEED
           # NEVER WEAKER THAN THE GATE VERDICT: a deploy refused on BLOCKED, DECISION_REQUIRED or
@@ -6678,7 +6917,8 @@ jobs:
             esac
           elif [ "${ATTEST_OUTCOME:-}" = "success" ] && [ -z "${ATTEST_ROUTE:-}" ]; then
             route=EVIDENCE_UNTRUSTED   # V1 ran and answered nothing: not a verification
-          elif [ "${BIND_OUTCOME:-}" = "failure" ] || [ "${TIER_OUTCOME:-}" = "failure" ] ||
+          elif [ "${REVIEW_PRE_OUTCOME:-}" = "failure" ] ||
+               [ "${BIND_OUTCOME:-}" = "failure" ] || [ "${TIER_OUTCOME:-}" = "failure" ] ||
                [ "${ZONE_OUTCOME:-}" = "failure" ] || [ "${APPROVAL_OUTCOME:-}" = "failure" ] ||
                [ "${SEAM_OUTCOME:-}" = "failure" ] ||
                [ "${CAPABILITY_OUTCOME:-}" = "failure" ] || [ "${ROLLBACK_CHECK_OUTCOME:-}" = "failure" ]; then
@@ -6715,7 +6955,7 @@ jobs:
           emit controls_skipped "$SKP"
           emit weakenings "[${wk#,}]"
           emit weakening_attribution "$auth"
-          emit weakening_record "{\"reason\":\"$W_WEAKENING_REASON\",\"authority\":\"$W_WEAKENING_AUTHORITY\",\"exception_ref\":\"$W_WEAKENING_EXCEPTION_REF\",\"expires\":\"$W_WEAKENING_EXPIRES\"}"
+          emit weakening_record "{\"reason\":\"$W_WEAKENING_REASON\",\"authority\":\"$W_WEAKENING_AUTHORITY\",\"approver\":\"${W_WEAKENING_APPROVER:-}\",\"exception_ref\":\"$W_WEAKENING_EXCEPTION_REF\",\"expires\":\"$W_WEAKENING_EXPIRES\"}"
 
           {
             echo "### Control posture — deploy (Container Apps)"
@@ -6729,6 +6969,8 @@ jobs:
             echo "| controls skipped | \`${SKP:-none}\` |"
             echo "| reason | ${W_WEAKENING_REASON:-_(none recorded)_} |"
             echo "| authority | ${W_WEAKENING_AUTHORITY:-_(none recorded)_} |"
+            echo "| approver | ${W_WEAKENING_APPROVER:-_(none recorded)_} |"
+            echo "| manual review (KDEC-036 G8) | ${W_MANUAL_REVIEW_BY:-_(none)_} ${W_MANUAL_REVIEW_REF:-} ${W_MANUAL_REVIEW_DATE:-} |"
             echo "| exception / deferral id | ${W_WEAKENING_EXCEPTION_REF:-_(none recorded)_} |"
             echo "| expiry | ${W_WEAKENING_EXPIRES:-_(no expiry set)_} |"
             echo "| attribution | \`$auth\` |"
@@ -6807,7 +7049,7 @@ jobs:
           path: ${{ runner.temp }}/promotion/record/promotion-record.json
           if-no-files-found: warn
           overwrite: true
-          retention-days: 30
+          retention-days: ${{ steps.review_pre.outputs.retention_days || 90 }}
 
       - name: Keep the release record in the target's lease store (OF-5 K-4, opt-in with the lease)
         # The artifact above lives 30 days; the landing zone's evidence lives in Git. With the lease on
@@ -6833,6 +7075,29 @@ jobs:
             --record-file "$RUNNER_TEMP/promotion/record/promotion-record.json" \
             --environment "${DEPLOY_ENVIRONMENT:-}" --routing-result "$routing"
 
+      - name: Reviewer signals after the release -- the tier's reality and the durable release record
+        # KDEC-036 G4: a custom domain, or public ingress at production-like scale, under a dev/test tier
+        # is TIER_MISMATCH_SUSPECTED (warn only). G6: with the lease off the release record is kept in the
+        # GitHub Deployments API (deployments: write; durable on every plan, no licence); with it on, in
+        # the lease store. G5: review-signals.json joins the deploy evidence kept below.
+        id: review_post
+        if: always()
+        uses: $/.github/actions/reviewer-signals
+        with:
+          mode: deploy-post
+          adapter: containerapp
+          token: ${{ github.token }}
+          routing-result: ${{ steps.posture.outputs.routing_result }}
+          deployment-outcome: ${{ steps.report.outputs.deployment_outcome }}
+          release-approval: ${{ steps.approval.outputs.release_approval }}
+          release-approval-by: ${{ steps.approval.outputs.release_approval_by }}
+          zone-readiness: ${{ steps.zone.outputs.zone_readiness }}
+          release-block: ${{ steps.zone.outputs.release_block }}
+          lease-state: ${{ steps.lease_acquire.outputs.target_lease }}
+          seam-ownership: ${{ steps.seam.outputs.seam_ownership }}
+          app-url: ${{ steps.serving.outputs.app_url }}
+          readiness-source: ${{ steps.zone.outputs.readiness_source }}
+
       - name: Keep the run record (deploy evidence)
         # The snapshot, change manifest, capability, verification, reversal and outcome files are
         # the record a later recovery reads (ROLLBACK_CONTRACT.md: "the run record is the thing a
@@ -6844,4 +7109,4 @@ jobs:
           name: deploy-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/deploy-evidence
           if-no-files-found: warn
-          retention-days: 30
+          retention-days: ${{ steps.review_pre.outputs.retention_days || 90 }}

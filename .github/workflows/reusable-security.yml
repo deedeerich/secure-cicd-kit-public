@@ -218,6 +218,17 @@ on:
         type: string
         required: false
         default: ""
+      weakening_approver:
+        description: >-
+          WHO APPROVED the weakening (owner rulings 2026-11-03, KDEC-036): a name on an approver list the
+          central register names (K-9), never the requester, the actor or the released commit's author.
+          With weakening_reason, weakening_authority (the named owner), weakening_exception_ref (the
+          evidence) and an unexpired weakening_expires within the ceiling, the weakening is approved;
+          missing any is WEAKENING_NOT_APPROVED (recorded at crawl, refused at uat and prod), and naming
+          the requester is WEAKENING_SELF_APPROVED (refused everywhere).
+        type: string
+        required: false
+        default: ""
       weakening_exception_ref:
         description: >-
           Where the exception or deferral is recorded -- a ticket, a disposition id, a register
@@ -343,7 +354,8 @@ on:
       advisory_causes:
         description: >-
           Comma list, set only when routing_result is PROCEED_WITH_ADVISORY: VERSION_GAP |
-          VERSION_GAP_UNVERIFIED | COVERAGE_PARTIAL | WEAKENING_ATTRIBUTED | FINDINGS_NOT_BLOCKED |
+          VERSION_GAP_UNVERIFIED | COVERAGE_PARTIAL | WEAKENING_ATTRIBUTED | WEAKENING_NOT_APPROVED |
+          FINDINGS_NOT_BLOCKED |
           SECRET_EXCEPTION_ATTRIBUTED | KNOWN_EXPLOITED_EXCEPTION_ATTRIBUTED | KEV_UNAVAILABLE
           (assurance-taxonomy.yaml advisory_cause). Pass it to the deploy reusables beside
           routing_result: at uat and prod they refuse a VERSION_GAP without an attributed
@@ -368,7 +380,7 @@ on:
         description: "JSON array, one object per input that governs a control: input, class, control, baseline, value and state."
         value: ${{ jobs.security-gate.outputs.weakenings }}
       weakening_attribution:
-        description: "WEAKENING_AT_BASELINE | WEAKENING_ATTRIBUTED | WEAKENING_UNATTRIBUTED | WEAKENING_EXCEPTION_EXPIRED."
+        description: "WEAKENING_AT_BASELINE | WEAKENING_ATTRIBUTED (approved) | WEAKENING_NOT_APPROVED | WEAKENING_SELF_APPROVED | WEAKENING_UNATTRIBUTED | WEAKENING_EXCEPTION_EXPIRED."
         value: ${{ jobs.security-gate.outputs.weakening_attribution }}
       weakening_record:
         description: "Reason, authority, exception reference and expiry as one JSON object."
@@ -380,6 +392,28 @@ on:
       leak_gate_weakenings:
         description: "JSON array, one control_weakening row (CONTROL_DISABLED, WEAKENING_IN_FORCE, WEAKENING_UNATTRIBUTED) per leak gate that is OFF."
         value: ${{ jobs.security-gate.outputs.leak_gate_weakenings }}
+      leak_gate_alarm:
+        description: "NO_LEAK_GATE_SHOWN when none of push protection, a push ruleset or the local rails is shown ON; empty otherwise."
+        value: ${{ jobs.security-gate.outputs.leak_gate_alarm }}
+      # REVIEWER SIGNALS (KDEC-036): what was summary text, readable by a program.
+      capability_floor:
+        description: "HELD | GAP_DECIDED | BREACHED (capability_floor_state); empty means the floor step did not answer, read as BREACHED."
+        value: ${{ jobs.security-gate.outputs.capability_floor }}
+      token_preflight:
+        description: "TOKEN_ACCEPTED, or the cause GitHub refused this run's token (api_token_preflight)."
+        value: ${{ jobs.security-gate.outputs.token_preflight }}
+      policy_notices:
+        description: "JSON list of policy notices (policy_notice, e.g. ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR)."
+        value: ${{ jobs.security-gate.outputs.policy_notices }}
+      no_kit_adapter:
+        description: "Comma list of NO_KIT_ADAPTER:<kind> (aks, vm, function_app_code): deployments found here the kit has no adapter for."
+        value: ${{ jobs.security-gate.outputs.no_kit_adapter }}
+      kit_watermark:
+        description: "JSON: the called kit copy's .neutral-export-watermark.json as read (state, source_commit, profile, kit_ref)."
+        value: ${{ jobs.security-gate.outputs.kit_watermark }}
+      security_record:
+        description: "kit-security-record.json, compact: every reviewer signal; also the artifact kit-security-record-<attempt> a deploy reads (G8)."
+        value: ${{ jobs.security-gate.outputs.security_record }}
       # THE POLICY THE VERDICT WAS REACHED UNDER (stage 1; scripts/policy_registration.py).
       policy_resolution:
         description: "POLICY_RESOLVED, or the refusal by name (assurance-taxonomy.yaml policy_resolution)."
@@ -604,6 +638,12 @@ jobs:
       push_ruleset: ${{ steps.platform.outputs.push_ruleset }}
       branch_gate: ${{ steps.platform.outputs.branch_gate }}
       local_baseline: ${{ steps.platform.outputs.local_baseline }}
+      # The job token preflight's cause, named once (KNOWN_DEFECTS D-11).
+      token_preflight: ${{ steps.platform.outputs.token_preflight }}
+      # KDEC-036: deploy targets with no kit adapter (G10) and the evidence retention, floored (G6).
+      no_kit_adapter: ${{ steps.d.outputs.no_kit_adapter }}
+      deploy_targets: ${{ steps.d.outputs.deploy_targets }}
+      evidence_retention_days: ${{ steps.d.outputs.evidence_retention_days }}
       # One CodeQL leg per DISCOVERED language, as a JSON matrix (cost redesign step 1, W1/L35):
       # a static six-leg matrix billed a minute for every absent language. [] = no leg, no job.
       codeql_matrix: ${{ steps.cqm.outputs.codeql_matrix }}
@@ -1931,6 +1971,7 @@ jobs:
           language: ${{ inputs.language }}
           iac-mode: ${{ inputs.iac_mode }}
           enable-iac: ${{ inputs.enable_iac }}
+          evidence-retention-days: ${{ vars.KIT_EVIDENCE_RETENTION_DAYS }}
       # Platform applicability: a different axis from language applicability. UNKNOWN is not
       # false -- the composite says why at length.
       - name: Establish platform capability
@@ -4795,7 +4836,8 @@ jobs:
             sbom.cyclonedx.json
             sbom.spdx.json
             licences.json
-          retention-days: 90
+          # KDEC-036 G6: the evidence retention (KIT_EVIDENCE_RETENTION_DAYS), never below the audit floor.
+          retention-days: ${{ needs.plan.outputs.evidence_retention_days || 90 }}
 
   # ─────────────────────────────────────────────────────────────────────────
   # REPORT — the run's work surface, for security and engineering at once
@@ -4943,6 +4985,13 @@ jobs:
       leak_gates: ${{ steps.leakgates.outputs.leak_gates }}
       leak_gate_weakenings: ${{ steps.leakgates.outputs.leak_gate_weakenings }}
       leak_gate_alarm: ${{ steps.leakgates.outputs.leak_gate_alarm }}
+      # KDEC-036 G5, G9, G10: the reviewer's signals as outputs, and the record itself.
+      capability_floor: ${{ steps.floor.outputs.floor_state }}
+      token_preflight: ${{ needs.plan.outputs.token_preflight }}
+      policy_notices: ${{ steps.policy.outputs.policy_notices }}
+      no_kit_adapter: ${{ needs.plan.outputs.no_kit_adapter }}
+      kit_watermark: ${{ steps.reviewer.outputs.kit_watermark }}
+      security_record: ${{ steps.reviewer.outputs.security_record }}
       policy_resolution: ${{ steps.posture.outputs.policy_resolution }}
       policy_source: ${{ steps.posture.outputs.policy_source }}
       policy_chain: ${{ steps.posture.outputs.policy_chain }}
@@ -5444,7 +5493,7 @@ jobs:
         with:
           name: security-report-${{ github.run_attempt }}
           path: _states
-          retention-days: 30
+          retention-days: ${{ needs.plan.outputs.evidence_retention_days || 90 }}
           if-no-files-found: warn
       # THE REPORT PART'S RESULT: the job status after the report's steps, which is exactly what the
       # separate report job's result was. The verdict reads it as itself (REPORT_RESULT below).
@@ -6570,6 +6619,7 @@ jobs:
           W_SOFT_FAIL_SAST: ${{ inputs.soft_fail_sast }}
           W_WEAKENING_REASON: ${{ inputs.weakening_reason }}
           W_WEAKENING_AUTHORITY: ${{ inputs.weakening_authority }}
+          W_WEAKENING_APPROVER: ${{ inputs.weakening_approver }}
           W_WEAKENING_EXCEPTION_REF: ${{ inputs.weakening_exception_ref }}
           W_WEAKENING_EXPIRES: ${{ inputs.weakening_expires }}
           # What the gate established, as data.
@@ -6604,6 +6654,7 @@ jobs:
           P_REFUSALS: ${{ steps.policy.outputs.policy_refusals }}
           P_DEPLOY_APPROVAL: ${{ steps.policy.outputs.policy_deploy_approval }}
           P_NOTICES: ${{ steps.policy.outputs.policy_notices }}
+          P_WEAKENING_CHECK: ${{ steps.policy.outputs.policy_weakening_check }}
         run: |
           set -u
           req=""; exe=""; skp=""; red=""; wk=""; dead=""; inforce=0; badclass=0
@@ -6705,6 +6756,7 @@ jobs:
           posture environment               TARGET_NOT_SUPPLIED   NONEMPTY            baseline-ledger    "$W_ENVIRONMENT"
           posture weakening_reason          EXCEPTION_ATTRIBUTION - -
           posture weakening_authority       EXCEPTION_ATTRIBUTION - -
+          posture weakening_approver        EXCEPTION_ATTRIBUTION - -
           posture weakening_exception_ref   EXCEPTION_ATTRIBUTION - -
           posture weakening_expires         EXCEPTION_ATTRIBUTION - -
 
@@ -6769,6 +6821,22 @@ jobs:
             fi
           fi
 
+          # KDEC-036 G2, G3 (OWNER RULINGS 2026-11-03): AN EXCEPTION IS APPROVED ONLY WITH AN EVIDENCE REFERENCE,
+          # A REASON, A NAMED OWNER, AN EXPIRY WITHIN THE CEILING AND AN APPROVER ON A REGISTERED LIST WHO IS
+          # NOT THE REQUESTER (resolve-policy checks; the missing fields are named). Missing any: not approved --
+          # the run proceeds at crawl with the control still counted weakened, a uat/prod deploy refuses it.
+          # The requester, the actor or the release's author as owner or approver: self-approved, never
+          # approved, BLOCKED here in every mode. A check that did not answer is not an approval.
+          wstate=""
+          if [ "$inforce" -gt 0 ]; then
+            wstate="$(printf '%s' "${P_WEAKENING_CHECK:-}" | jq -r '.state // ""' 2>/dev/null)"
+            case "$wstate" in
+              WEAKENING_SELF_APPROVED) auth=WEAKENING_SELF_APPROVED ;;
+              WEAKENING_ATTRIBUTED) ;;
+              *) if [ "$auth" = WEAKENING_ATTRIBUTED ]; then auth=WEAKENING_NOT_APPROVED; fi ;;
+            esac
+          fi
+
           # KDEC-010: A VERSION GAP IS WARN-CLASS. scanner_state.PARTIAL "warns; does not block",
           # so an assurance PARTIAL whose EVERY unestablished entry is a (PARTIAL) -- a capability
           # no carried scanner could read, run and annotated -- is advisory, not missing evidence.
@@ -6789,7 +6857,7 @@ jobs:
           # EVIDENCE_UNTRUSTED -- deploy refuses both, and the difference tells a person which
           # problem they have.
           route=PROCEED
-          if [ "${G_SECRET_GATE:-}" = "FAIL" ] ||
+          if [ "${G_SECRET_GATE:-}" = "FAIL" ] || [ "$auth" = WEAKENING_SELF_APPROVED ] ||
              { [ "${G_ENFORCEMENT:-}" = "BLOCKED" ] && [ "${G_ASSURANCE:-}" = "FINDINGS" ]; }; then
             route=BLOCKED
           elif [ "$badclass" = "1" ] || [ -z "${G_ASSURANCE:-}" ] ||
@@ -6839,6 +6907,7 @@ jobs:
               done
             fi
             [ "$inforce" -gt 0 ] && causes="$causes,WEAKENING_ATTRIBUTED"
+            [ "$auth" = WEAKENING_NOT_APPROVED ] && causes="$causes,WEAKENING_NOT_APPROVED"
             # A secret found and excepted -- by fingerprint, ticket, named approver, unexpired
             # (owner ruling 2026-10-22). Its own cause, so no reader takes it for a clean secret scan.
             [ "${G_SECRET_GATE:-}" = "EXCEPTED" ] && causes="$causes,SECRET_EXCEPTION_ATTRIBUTED"
@@ -6863,7 +6932,7 @@ jobs:
           emit controls_skipped "$SKP"
           emit weakenings "[${wk#,}]"
           emit weakening_attribution "$auth"
-          emit weakening_record "{\"reason\":\"$W_WEAKENING_REASON\",\"authority\":\"$W_WEAKENING_AUTHORITY\",\"exception_ref\":\"$W_WEAKENING_EXCEPTION_REF\",\"expires\":\"$W_WEAKENING_EXPIRES\"}"
+          emit weakening_record "{\"reason\":\"$W_WEAKENING_REASON\",\"authority\":\"$W_WEAKENING_AUTHORITY\",\"approver\":\"${W_WEAKENING_APPROVER:-}\",\"exception_ref\":\"$W_WEAKENING_EXCEPTION_REF\",\"expires\":\"$W_WEAKENING_EXPIRES\"}"
           # The policy the verdict was reached under (ETFB 2.2: a rung label with no emitted
           # effective set is soft_fail_sast again).
           emit policy_resolution "${P_RESOLUTION:-}"
@@ -6892,6 +6961,7 @@ jobs:
             echo "| controls skipped | \`${SKP:-none}\` |"
             echo "| reason | ${W_WEAKENING_REASON:-_(none recorded)_} |"
             echo "| authority | ${W_WEAKENING_AUTHORITY:-_(none recorded)_} |"
+            echo "| approver | ${W_WEAKENING_APPROVER:-_(none recorded)_} |"
             echo "| exception / deferral id | ${W_WEAKENING_EXCEPTION_REF:-_(none recorded)_} |"
             echo "| expiry | ${W_WEAKENING_EXPIRES:-_(no expiry set)_} |"
             echo "| attribution | \`$auth\` |"
@@ -7033,6 +7103,36 @@ jobs:
           # its history (KDEC-018 item 4); and every register softening in force, with its history.
           secret-exceptions: ${{ steps.gate.outputs.secret_exceptions_applied }}
           policy-exceptions: ${{ steps.policy.outputs.policy_weakenings }}
+
+      # KDEC-036 (G2-G5, G9, G10): what a reviewer could not see -- the weakening authority and expiry,
+      # the floor, the token preflight, the leak-gate alarm, the policy notices, the deploy coverage and
+      # the kit copy's watermark -- as outputs and kit-security-record-<attempt>, the record a deploy
+      # reads to tell this verdict from a typed one (G8). Records; never decides.
+      - name: Reviewer signals and the security record
+        id: reviewer
+        if: always()
+        uses: $/.github/actions/reviewer-signals
+        with:
+          mode: security
+          routing-result: ${{ steps.posture.outputs.routing_result }}
+          advisory-causes: ${{ steps.posture.outputs.advisory_causes }}
+          weakening-attribution: ${{ steps.posture.outputs.weakening_attribution }}
+          weakening-check: ${{ steps.policy.outputs.policy_weakening_check }}
+          floor-state: ${{ steps.floor.outputs.floor_state }}
+          floor-missing: ${{ steps.floor.outputs.floor_missing }}
+          token-preflight: ${{ needs.plan.outputs.token_preflight }}
+          leak-gates: ${{ steps.leakgates.outputs.leak_gates }}
+          leak-gate-alarm: ${{ steps.leakgates.outputs.leak_gate_alarm }}
+          policy-source: ${{ steps.posture.outputs.policy_source }}
+          policy-resolution: ${{ steps.posture.outputs.policy_resolution }}
+          rung-effective: ${{ steps.posture.outputs.rung_effective }}
+          environment-tier: ${{ steps.posture.outputs.environment_tier }}
+          policy-notices: ${{ steps.policy.outputs.policy_notices }}
+          no-kit-adapter: ${{ needs.plan.outputs.no_kit_adapter }}
+          deploy-targets: ${{ needs.plan.outputs.deploy_targets }}
+          evidence-artifact: ${{ steps.gate.outputs.evidence_artifact }}
+          assurance-result: ${{ steps.record.outputs.assurance_result }}
+          retention-days: ${{ needs.plan.outputs.evidence_retention_days }}
 
       - name: Exit on the verdict
         id: verdict

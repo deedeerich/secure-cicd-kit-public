@@ -36,6 +36,10 @@ inputs:
     description: The caller's deprecated `enable_iac`, as text. Read only to say out loud that it is ignored. Survey only.
     required: false
     default: ''
+  evidence-retention-days:
+    description: vars.KIT_EVIDENCE_RETENTION_DAYS, verbatim; never below the audit floor (KDEC-036 G6). Survey only.
+    required: false
+    default: ''
 
 outputs:
   # The job maps each of these to a job output of the same name, from the invocation that
@@ -137,6 +141,18 @@ outputs:
   local_baseline:
     description: ON / OFF / UNKNOWN -- the checkout's .gitignore ignores .env and keys and a gitleaks pre-commit hook is configured (leak gate 1).
     value: ${{ steps.platform.outputs.local_baseline }}
+  no_kit_adapter:
+    description: Comma list of NO_KIT_ADAPTER:<kind> for AKS, VM or code-packaged Functions deployments found here (KDEC-036 G10); empty = none found.
+    value: ${{ steps.rs.outputs.no_kit_adapter }}
+  deploy_targets:
+    description: 'JSON {kind: [evidence path, ...]} behind no_kit_adapter.'
+    value: ${{ steps.rs.outputs.deploy_targets }}
+  evidence_retention_days:
+    description: The evidence artifacts' retention in days, never below the audit floor (KDEC-036 G6).
+    value: ${{ steps.rs.outputs.evidence_retention_days }}
+  token_preflight:
+    description: The job token preflight's cause -- TOKEN_ACCEPTED, JOB_TOKEN_REJECTED, ORG_IP_ALLOW_LIST_BLOCKS_RUNNER, ORG_SSO_BLOCKS_TOKEN, RATE_LIMITED, API_UNREACHABLE or TOKEN_PREFLIGHT_UNCLASSIFIED (D-11).
+    value: ${{ steps.platform.outputs.token_preflight }}
 
 runs:
   using: composite
@@ -717,6 +733,20 @@ runs:
         echo "state=$state" >> "$GITHUB_OUTPUT"
         echo "discovery state: $state"
 
+    # KDEC-036 G10, G6: deploy targets the kit has no adapter for (AKS, VMs, code-packaged Functions),
+    # named NO_KIT_ADAPTER:<kind> rather than left to silence; and the evidence retention, floored.
+    - name: Deploy coverage and evidence retention
+      id: rs
+      if: inputs.part == 'survey'
+      shell: bash
+      env:
+        RS_RETENTION: ${{ inputs.evidence-retention-days }}
+      run: |
+        set -uo pipefail
+        kit_root="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)"
+        KIT_EVIDENCE_RETENTION_DAYS="${RS_RETENTION:-}" python3 "${kit_root}/scripts/reviewer_signals.py" \
+          discover --root "${GITHUB_WORKSPACE:-.}" ||
+          echo "no_kit_adapter=NO_KIT_ADAPTER:UNDETERMINED" >> "$GITHUB_OUTPUT"
     # ─────────────────────────────────────────────────────────────────────
     # PLATFORM APPLICABILITY — a different axis from language applicability
     # ─────────────────────────────────────────────────────────────────────
@@ -756,7 +786,93 @@ runs:
         push=unknown; dep=unknown; depupd=unknown; vis=unknown
         how="none"
 
-        if repo_json=$(gh api "repos/${GITHUB_REPOSITORY}" 2>/dev/null); then
+        # THE JOB TOKEN PREFLIGHT (KNOWN_DEFECTS D-11). The repository GET this probe always made is
+        # also the cheapest question "does GitHub accept this job's own token, on this run's host?".
+        # A refusal is named ONCE, here, with an owner role and a checklist (JOB_TOKEN_REJECTED,
+        # ORG_IP_ALLOW_LIST_BLOCKS_RUNNER, ORG_SSO_BLOCKS_TOKEN, RATE_LIMITED, API_UNREACHABLE), and
+        # leaves every value below UNKNOWN, as before. tests/prove_job_token_named.py T4.
+        # >>> kit api token cause
+        # kit_api_cause TEXT -> one word for what gh/curl/git said when a call failed (taxonomy: api_token_preflight).
+        kit_api_cause() {
+          local t="${1,,}"
+          case "$t" in
+            *"ip allow list"*|*"ip allowlist"*) echo ORG_IP_ALLOW_LIST_BLOCKS_RUNNER ;;
+            *"saml"*|*"single sign-on"*) echo ORG_SSO_BLOCKS_TOKEN ;;
+            *"rate limit"*|*"http 429"*) echo RATE_LIMITED ;;
+            *"bad credentials"*|*"http 401"*|*"requires authentication"*) echo JOB_TOKEN_REJECTED ;;
+            *"http 4"[0-9][0-9]*|*"http 5"[0-9][0-9]*) echo TOKEN_PREFLIGHT_UNCLASSIFIED ;;
+            *"could not resolve"*|*"no such host"*|*"name resolution"*|*"getaddrinfo"*|*"connection refused"*|\
+            *"timed out"*|*"timeout"*|*"error connecting"*|*"dial tcp"*|*"network is unreachable"*|\
+            *"connection reset"*|*"failed to connect"*|*"proxyconnect"*|*"urlopen error"*) echo API_UNREACHABLE ;;
+            *) echo TOKEN_PREFLIGHT_UNCLASSIFIED ;;
+          esac
+        }
+        # kit_api_cause_advice CAUSE -> sets KIT_CAUSE_ROLE and KIT_CAUSE_CHECK (fixed text, one line each).
+        kit_api_cause_advice() {
+          case "$1" in
+            TOKEN_ACCEPTED) KIT_CAUSE_ROLE="-"; KIT_CAUSE_CHECK="nothing to do" ;;
+            JOB_TOKEN_REJECTED) KIT_CAUSE_ROLE="organisation owner, then workflow maintainer"
+              KIT_CAUSE_CHECK="GitHub answered 401 Bad credentials to this job's own github.token. Check: (1) GITHUB_SERVER_URL and the API host gh used are the same deployment -- a <tenant>.ghe.com job token is refused by the github.com API (KDEC-027); (2) organisation settings, IP allow list: if enabled it must admit this runner's egress address, and GitHub-hosted runners have no fixed address unless they are larger runners with static IPs; (3) Settings, Actions, General, Workflow permissions, and that Actions is allowed for this repository; (4) a self-hosted runner's proxy or TLS inspection must not strip or replace the Authorization header; (5) no step overrides GH_TOKEN or GITHUB_TOKEN with an expired secret." ;;
+            ORG_IP_ALLOW_LIST_BLOCKS_RUNNER) KIT_CAUSE_ROLE="organisation owner"
+              KIT_CAUSE_CHECK="The organisation's IP allow list refuses this runner's address. Add the runner's static egress range (self-hosted runners, or larger GitHub-hosted runners with static IPs), or review the allow-list setting for installed GitHub Apps. GITHUB_SERVER_URL and the API host gh used must also be the same deployment (KDEC-027)." ;;
+            ORG_SSO_BLOCKS_TOKEN) KIT_CAUSE_ROLE="organisation owner"
+              KIT_CAUSE_CHECK="The organisation's SAML single sign-on refuses this token. The job's own github.token is exempt from SSO, so a step put a personal or app token in GH_TOKEN/GITHUB_TOKEN: authorise that token for SSO, or use github.token." ;;
+            RATE_LIMITED) KIT_CAUSE_ROLE="workflow maintainer"
+              KIT_CAUSE_CHECK="The API rate limit for this token is spent. Not a token fault: re-run after the reset, or reduce concurrent runs that share the installation's limit." ;;
+            API_UNREACHABLE) KIT_CAUSE_ROLE="runner administrator"
+              KIT_CAUSE_CHECK="No HTTP answer from the API host (DNS, connect, TLS or timeout). Check the runner's egress to GITHUB_API_URL, its proxy and its DNS." ;;
+            *) KIT_CAUSE_ROLE="workflow maintainer"
+              KIT_CAUSE_CHECK="The API refused this call for a reason the kit does not classify; read the step log above the annotation. GITHUB_SERVER_URL and the API host gh used must be the same deployment (KDEC-027)." ;;
+          esac
+        }
+        # kit_token_preflight -> GET /repos/{owner}/{repo} once with this job's token, on this run's host.
+        # Sets KIT_TOKEN_CAUSE, KIT_TOKEN_HTTP and, on success, KIT_TOKEN_BODY (the repository JSON).
+        # Writes one summary block and, when refused, one annotation titled with the cause. Returns 1 unless
+        # TOKEN_ACCEPTED. Never fails on its own account: callers decide (`|| true` or `|| exit 1`).
+        kit_token_preflight() {
+          local host ans err errf rc=0
+          host="${GITHUB_SERVER_URL:-https://github.com}"; host="${host#*://}"; host="${host%%/*}"
+          errf="$(mktemp)"
+          ans="$(GH_HOST="$host" gh api "repos/${GITHUB_REPOSITORY}" 2>"$errf")" || rc=$?
+          err="$(cat "$errf" 2>/dev/null || true)"; rm -f "$errf"
+          KIT_TOKEN_BODY=""; KIT_TOKEN_HTTP="no HTTP answer"
+          if [ "$rc" = 0 ]; then
+            KIT_TOKEN_CAUSE=TOKEN_ACCEPTED; KIT_TOKEN_HTTP="HTTP 200"; KIT_TOKEN_BODY="$ans"
+          else
+            KIT_TOKEN_CAUSE="$(kit_api_cause "$ans $err")"
+            if [[ "$err $ans" =~ HTTP\ ([0-9][0-9][0-9]) ]]; then KIT_TOKEN_HTTP="HTTP ${BASH_REMATCH[1]}"; fi
+          fi
+          kit_api_cause_advice "$KIT_TOKEN_CAUSE"
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo ""
+              echo "#### Job token preflight"
+              echo ""
+              echo "| call | answer | cause | owner role |"
+              echo "|---|---|---|---|"
+              echo "| GET /repos/{owner}/{repo} on ${host}, with this job's github.token | ${KIT_TOKEN_HTTP} | **${KIT_TOKEN_CAUSE}** | ${KIT_CAUSE_ROLE} |"
+              echo ""
+              if [ "$KIT_TOKEN_CAUSE" != TOKEN_ACCEPTED ]; then
+                echo "${KIT_CAUSE_CHECK}"
+                echo ""
+                echo "Every later step that calls the API reports this same cause. None of their failures is a separate defect, and none of them is a scan result."
+              fi
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          case "$KIT_TOKEN_CAUSE" in
+            TOKEN_ACCEPTED) echo "job token preflight: TOKEN_ACCEPTED on ${host}"; return 0 ;;
+            RATE_LIMITED|API_UNREACHABLE)
+              echo "::warning title=${KIT_TOKEN_CAUSE}: the GitHub API did not answer this job::${KIT_TOKEN_HTTP} on ${host}. Owner: ${KIT_CAUSE_ROLE}. ${KIT_CAUSE_CHECK}" ;;
+            *)
+              echo "::error title=${KIT_TOKEN_CAUSE}: GitHub refused this job's own token::${KIT_TOKEN_HTTP} on ${host} (GITHUB_SERVER_URL=${GITHUB_SERVER_URL:-unset}). Owner: ${KIT_CAUSE_ROLE}. ${KIT_CAUSE_CHECK}" ;;
+          esac
+          return 1
+        }
+        # <<< kit api token cause
+        KIT_TOKEN_CAUSE=TOKEN_PREFLIGHT_UNCLASSIFIED; KIT_TOKEN_BODY=""
+        kit_token_preflight || true
+        if [ "$KIT_TOKEN_CAUSE" = TOKEN_ACCEPTED ]; then
+          repo_json="$KIT_TOKEN_BODY"
           vis=$(printf '%s' "$repo_json" | jq -r '.visibility // "unknown"')
           sa=$(printf '%s' "$repo_json" | jq -r '.security_and_analysis // empty')
           if [ -n "$sa" ]; then
@@ -899,6 +1015,7 @@ runs:
           echo "push_ruleset=$prs"
           echo "branch_gate=$bgate"
           echo "local_baseline=$lrails"
+          echo "token_preflight=$KIT_TOKEN_CAUSE"
         } >> "$GITHUB_OUTPUT"
 
         {

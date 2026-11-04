@@ -14,9 +14,9 @@ templates to this rule.
 | `reusable-nvd-cve.yml` | Trivy + OWASP Dependency-Check; NVD data from the Dependency-Check project's public datafeed by default (a third-party host the runner must reach; no organisation-hosted mirror unless the optional Release 4 organisation mirror is configured -- KDEC-032, proven locally only); re-scan of an SBOM or image | none (`NVD_API_KEY` only if `nvd_datafeed_url` is emptied) | `contents: read`, `security-events: write` |
 | `workflow-policy-check.yml` | Governance gate over the calling repo's own workflows | none | `contents: read` |
 | `reusable-build-docker.yml` | Build once → Trivy gate **before** push → Syft SPDX SBOM → push those bytes → digest read back → attest | OIDC | `contents: read`, `id-token: write`, `attestations: write` |
-| `reusable-deploy-containerapp.yml` | Container Apps deploy by digest, verdict-gated, revision probed before traffic, reversible | OIDC | `contents: read`, `id-token: write` |
-| `reusable-deploy-appservice.yml` | App Service deploy by digest, verdict-gated, slot-staged (or direct below uat), reversible | OIDC | `contents: read`, `id-token: write` |
-| `reusable-deploy-staticwebapp.yml` | Static Web Apps deploy by content digest (OF-5 K-8, KDEC-034 proposed): verdict-gated, staged in a preview environment, verified on the marker the site serves, reversible to the prior artefact. Stub-proven; a live run is owed | OIDC | `contents: read`, `id-token: write`, `attestations: read`, `actions: read` |
+| `reusable-deploy-containerapp.yml` | Container Apps deploy by digest, verdict-gated, revision probed before traffic, reversible | OIDC | `contents: read`, `id-token: write`, `attestations: read`, `actions: read`, `deployments: write`, `pull-requests: read` |
+| `reusable-deploy-appservice.yml` | App Service deploy by digest, verdict-gated, slot-staged (or direct below uat), reversible; with `site_kind: functionapp`, an Azure Functions app hosted as a Linux custom container (KDEC-036) | OIDC | `contents: read`, `id-token: write`, `attestations: read`, `actions: read`, `deployments: write`, `pull-requests: read` |
+| `reusable-deploy-staticwebapp.yml` | Static Web Apps deploy by content digest (OF-5 K-8, KDEC-034 proposed): verdict-gated, staged in a preview environment, verified on the marker the site serves, reversible to the prior artefact. Stub-proven; a live run is owed | OIDC | `contents: read`, `id-token: write`, `attestations: read`, `actions: read`, `deployments: write`, `pull-requests: read` |
 | `reusable-propose-ledger.yml` | Proposes baseline-ledger changes as a pull request (protected default branch only) | none | `contents: write`, `pull-requests: write` |
 | `reusable-ticket-reconcile.yml` | Findings → Jira or Azure DevOps tickets, post-merge or scheduled | tracker | `contents: read` |
 | `reusable-dependabot-triage.yml` | Dependabot PRs: `--auto --squash` only when nothing can change behaviour (FUTURE_WORK §6); otherwise label, comment why and ask a human; excluded fixture paths closed. Call from `pull_request_target` ([DEPENDABOT_TRIAGE.md](DEPENDABOT_TRIAGE.md)) | none (optional `METADATA_TOKEN`) | `contents: write`, `pull-requests: write`, `issues: write` |
@@ -124,7 +124,7 @@ taken on each side. The deploy reusables now also hold, before Azure login:
 | Check | What refuses | Where it comes from |
 |---|---|---|
 | platform stop | `KIT_RELEASE_BLOCK` set to anything but `none` (`platform_halted`, `ttl_expired`, `budget_cap_reached`), at **every** tier: `RELEASE_BLOCKED_BY_PLATFORM` | the landing zone writes it into each environment on every halt, TTL or budget-cap change |
-| zone readiness | at `uat`/`prod`, `KIT_ZONE_READINESS` not `READY` or `READY_WITH_EXCEPTIONS` -- `NOT_READY`, `UNKNOWN` or **unset**: `RELEASE_REFUSED_ZONE_NOT_READY` | the landing zone's readiness gates. **Outside a landing zone, set `KIT_ZONE_READINESS: READY` on your uat and prod environments yourself** once you have decided the zone is ready; unknown is never a pass |
+| zone readiness | at `uat`/`prod`, `KIT_ZONE_READINESS` not `READY` or `READY_WITH_EXCEPTIONS` -- `NOT_READY`, `UNKNOWN` or **unset**: `RELEASE_REFUSED_ZONE_NOT_READY` | the landing zone's readiness gates. **Outside a landing zone, setting `KIT_ZONE_READINESS: READY` on your own uat and prod environments is a TEST FIXTURE ONLY** -- in production it lets the deploy side certify the platform's readiness to itself, so the value must be issued by the landing zone when the app is in a connected one, and otherwise by AppSec, manually, as a recorded attestation (owner ruling 2026-11-03, refining O-34a); the app or deploy team never sets it for itself, and the kit records the value, not who wrote it; unknown is never a pass |
 | release approval | at `uat`/`prod`: no approval of this run's environment (an admin bypass leaves none), an approval by the requester or by the released commit's author, or no independent approval comment that **quotes the digest** (full `sha256:...` or its first 12 hex characters): `RELEASE_APPROVAL_ABSENT`, `SELF_DEPLOYMENT_APPROVAL`, `RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST` | GitHub's own self-review prevention excludes only the run's trigger. **Reviewers: approve with the digest in the comment.** `deploy_approval.confirm_digest: required` in the policy register demands it below uat too |
 
 With the KDEC-030 seam opted in (`KIT_TARGET_LEASE_ACCOUNT` vended), before the first mutation the
@@ -400,3 +400,15 @@ manifest gives the run id or proof, what it asserted, and its scope.
 | **Ticketing** | reconciler proven live on a personal Jira; the armed workflow has no hosted run; Azure DevOps against stubs only |
 
 **Validate on one repo before rolling out**, on the kit commit you pinned.
+
+## Security review of an app that uses the kit
+
+A security reviewer brought in on an app, or asked to approve a CAB change or the adoption of an
+internally built app, starts at [`docs/security-review/README.md`](../security-review/README.md): the
+checklist in review order, when to stop and ask, when to escalate, how to read the run summary, the
+approval matrix and the sign-off rules. The security review of a change going to CAB (cloud or app)
+is [`CAB-CHANGE-SAFETY-STEPS.md`](../security-review/CAB-CHANGE-SAFETY-STEPS.md) with its checklist
+[`CAB-CHANGE-REVIEW-CHECKLIST.md`](../security-review/CAB-CHANGE-REVIEW-CHECKLIST.md) (understanding
+gate, boundary triage, app and read-only Azure, AWS and GitHub checks, rollback, the verdict pasted onto
+the existing CAB ticket); pulled in before the CAB presentation,
+[`EARLY-REVIEW-REQUESTS.md`](../security-review/EARLY-REVIEW-REQUESTS.md). Authored, not field-tested.

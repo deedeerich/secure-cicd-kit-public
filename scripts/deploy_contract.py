@@ -101,8 +101,20 @@ def lease_fence(args):
     return ''
 
 
+def site_args(args):
+    """KDEC-036 G10: a Functions app (SITE_KIND functionapp) is released on the App Service contract
+    through `az functionapp` -- the same Microsoft.Web/sites calls, its own command group and image flag.
+    Connection strings have no functionapp command and stay `az webapp` (a generic site read)."""
+    args = list(args)
+    if args[:1] == ['webapp'] and os.environ.get('SITE_KIND') == 'functionapp' and 'connection-string' not in args:
+        args[0] = 'functionapp'
+        args = ['--image' if x == '--container-image-name' else x for x in args]
+    return args
+
+
 def az(*args):
     """-> (ok, parsed JSON or None, error text). A failed read is reported, never blanked."""
+    args = site_args(args)
     refused = lease_fence(args)
     if refused:
         return False, None, refused
@@ -124,6 +136,7 @@ def az(*args):
 
 def az_raw(*args):
     """-> (ok, text, error text) for a call whose answer is not JSON (a log file)."""
+    args = site_args(args)
     refused = lease_fence(args)
     if refused:
         return False, '', refused
@@ -327,6 +340,11 @@ def capture_containerapp():
     previous = ''
     for t in serving:
         previous = props.get('latestRevisionName') if t.get('latestRevision') else t.get('revisionName')
+    # KDEC-036 G4: what the target shows of production, read from the answer already in hand.
+    ing, scale = conf.get('ingress') or {}, (props.get('template') or {}).get('scale') or {}
+    snap['reality'] = {'public_ingress': bool(ing.get('external')),
+                       'custom_domains': [d.get('name') for d in ing.get('customDomains') or [] if isinstance(d, dict)],
+                       'min_replicas': scale.get('minReplicas') if isinstance(scale.get('minReplicas'), int) else 0}
     snap.update(revision_mode=conf.get('activeRevisionsMode') or 'unknown',
                 latest_revision=props.get('latestRevisionName') or '', traffic=traffic,
                 revisions=revisions, tags=shown.get('tags') or {}, app_id=shown.get('id', ''))
@@ -352,6 +370,29 @@ def capture_appservice():
             return _unknown('The %s slot configuration could not be read.' % s, snap)
         images[s] = img
     snap['images'] = images
+    # KDEC-036 G10, G4: the site's kind decides the adapter (a code-packaged Functions app has none),
+    # and its host names and network access are the tier's reality signal.
+    ok, site, err = az('webapp', 'show', '-n', env('webapp_name'), '-g', env('resource_group'))
+    if not ok or not isinstance(site, dict):
+        return _unknown('The site could not be read (%s).' % err, snap)
+    kind = str(site.get('kind') or '').lower()
+    want_fn = env('site_kind') == 'functionapp'
+    why = ''
+    if want_fn and 'functionapp' not in kind:
+        why = 'site_kind is functionapp and the site is not a function app (kind %r)' % kind
+    elif not want_fn and 'functionapp' in kind:
+        why = 'the site is a function app (kind %r): pass site_kind functionapp' % kind
+    elif want_fn and 'container' not in kind:
+        why = ('NO_KIT_ADAPTER:function_app_code: the function app is not a custom container (kind %r); '
+               'the kit releases Functions by image digest only' % kind)
+    if why:
+        return _unknown(why, snap)
+    default = str(site.get('defaultHostName') or '').lower()
+    suffix = default.split('.', 1)[1] if '.' in default else ''
+    snap['reality'] = {'kind': kind, 'public_ingress': str(site.get('publicNetworkAccess') or 'Enabled') != 'Disabled',
+                       'custom_domains': [h for h in site.get('hostNames') or []
+                                          if suffix and not str(h).lower().endswith(suffix)],
+                       'min_replicas': 0}
     state = 'EXISTING_DEPLOYMENT' if images[slot or 'production'] else 'EMPTY'
     snap['previous_state'] = state
     write_evidence('snapshot.json', snap)

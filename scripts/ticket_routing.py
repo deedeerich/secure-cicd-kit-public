@@ -33,6 +33,13 @@ THE SHAPE (on a policy register entry, beside rung/controls; the entry still car
         severity        critical | high | medium | low | ...   (the cluster's effective severity)
         min_severity    one severity: that one or worse
         repository      owner/name globs (fnmatch, case-insensitive)
+        template        a ticket template (KDEC-037): finding, false-positive, accepted-risk,
+                        mitigation, exemption, nofix-recheck (a finding of the kit's own scan has
+                        none, so a rule naming one never matches it)
+        source_type     an external finding's source type (scan-app, project, subscription,
+                        account, resource, pentest, review, audit, usr, cloud-tool, other-tool)
+        environment     environment / tenant / account label globs (fnmatch, case-insensitive),
+                        e.g. azure-government-*
 
 PRECEDENCE: repository > org+team+product > org+product > org+team > org > enterprise > kit default
 
@@ -75,7 +82,11 @@ ROUTING_KEYS = ('inherit', 'rules', 'default', 'notes')
 TARGET_KEYS = ('project', 'issue_type', 'epic', 'components', 'labels')
 RULE_KEYS = ('id', 'match', 'notes') + TARGET_KEYS
 MATCH_KEYS = ('class', 'scanner_family', 'scanner', 'category', 'severity', 'min_severity',
-              'repository')
+              'repository', 'template', 'source_type', 'environment')
+# KDEC-037: the templates and source types a rule may name (scripts/ticket_templates.py's own lists).
+TEMPLATES = ('finding', 'false-positive', 'accepted-risk', 'mitigation', 'exemption', 'nofix-recheck')
+SOURCE_TYPES = ('scan-app', 'project', 'subscription', 'account', 'resource', 'pentest', 'review', 'audit',
+                'usr', 'cloud-tool', 'other-tool')
 # A Jira project key: an upper-case letter, then upper-case letters, digits or underscores.
 PROJECT_RE = re.compile(r'^[A-Z][A-Z0-9_]{1,254}$')
 LABEL_RE = re.compile(r'^\S+$')
@@ -152,6 +163,10 @@ def check_routing(obj, where, unreadable_code):
                 bad('%s match.category %r is not a finding_subject' % (w, v))
             elif k in ('severity', 'min_severity') and any(x.lower() not in SEVERITY_ORDER for x in vals):
                 bad('%s match.%s %r is not a severity' % (w, k, v))
+            elif k == 'template' and any(x not in TEMPLATES for x in vals):
+                bad('%s match.template %r: the templates are %s' % (w, v, ', '.join(TEMPLATES)))
+            elif k == 'source_type' and any(x not in SOURCE_TYPES for x in vals):
+                bad('%s match.source_type %r: the source types are %s' % (w, v, ', '.join(SOURCE_TYPES)))
             elif k == 'min_severity' and len(vals) != 1:
                 bad('%s match.min_severity is one severity' % w)
         # THE FLOOR: a rule that names a floor class may not send it to none.
@@ -256,6 +271,13 @@ def matches(match, facts):
         elif k == 'repository':
             repo = str(facts.get('repository') or '').lower()
             if not any(fnmatch.fnmatchcase(repo, x.lower()) for x in vals):
+                return False
+        elif k in ('template', 'source_type'):
+            if str(facts.get(k) or '') not in vals:
+                return False
+        elif k == 'environment':
+            env = str(facts.get('environment') or '').lower()
+            if not env or not any(fnmatch.fnmatchcase(env, x.lower()) for x in vals):
                 return False
         else:
             return False

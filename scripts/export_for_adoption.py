@@ -89,7 +89,7 @@ def exportable(rel: str) -> bool:
         return False
     if os.path.basename(rel) == WATERMARK:
         return False
-    if rel in EXCLUDE_PATHS:
+    if path_excluded(rel):
         return False
     return True
 
@@ -183,7 +183,8 @@ NEVER_LIFT_MARKER = "!"
 
 
 def load_profile(script_dir: str, name: str, deny: list[tuple[str, str]]):
-    """-> (overlays to include, deny list with the profile's lifts removed, lift notes).
+    """-> (overlays to include, deny list with the profile's lifts removed, lift notes,
+          EXCLUDE_PATHS entries this recipient receives).
 
     Raises ValueError with an operator-readable reason rather than returning a partial result.
     Every failure here is a case where proceeding would produce a copy whose contents do not
@@ -198,7 +199,7 @@ def load_profile(script_dir: str, name: str, deny: list[tuple[str, str]]):
         raise ValueError(f"no profile {name!r} in {PROFILE_DIR}/. "
                          + (f"Available: {', '.join(avail)}" if avail else "There are none yet."))
 
-    overlays, lifts = [], []
+    overlays, lifts, paths = [], [], []
     for ln, raw in enumerate(open(path, encoding="utf-8"), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -214,9 +215,25 @@ def load_profile(script_dir: str, name: str, deny: list[tuple[str, str]]):
                 raise ValueError(f"{name}.txt line {ln}: LIFT with no reason after '||'. "
                                  "A lift without a stated reason cannot be reviewed later.")
             lifts.append((pat, why, ln))
+        elif verb == "INCLUDE_PATH":
+            # A PATH THE NEUTRAL EXPORT WITHHOLDS, SENT TO THIS RECIPIENT. Only an EXCLUDE_PATHS
+            # entry can be named: anything else already ships (or is withheld for a reason a
+            # profile may not override -- the deny list, .context, another overlay), so naming it
+            # is a stale or mistaken line, refused like a LIFT that matches nothing.
+            rel, _, why = rest.partition("||")
+            rel, why = rel.strip(), why.strip()
+            if not why:
+                raise ValueError(f"{name}.txt line {ln}: INCLUDE_PATH with no reason after '||'. "
+                                 "A path sent to one recipient without a stated reason cannot be "
+                                 "reviewed later.")
+            if rel not in EXCLUDE_PATHS:
+                raise ValueError(f"{name}.txt line {ln}: INCLUDE_PATH {rel!r} is not a path the "
+                                 "export withholds (EXCLUDE_PATHS), so including it means nothing; "
+                                 "fix the profile.")
+            paths.append(rel)
         else:
             raise ValueError(f"{name}.txt line {ln}: unknown directive {verb!r}. "
-                             "Expected INCLUDE_OVERLAY or LIFT.")
+                             "Expected INCLUDE_OVERLAY, INCLUDE_PATH or LIFT.")
 
     known = {p: never for p, _w, never in deny}
     for pat, _why, ln in lifts:
@@ -233,14 +250,14 @@ def load_profile(script_dir: str, name: str, deny: list[tuple[str, str]]):
 
     lifted = {p for p, _w, _l in lifts}
     kept = [(p, w, n) for p, w, n in deny if p not in lifted]
-    return overlays, kept, [(p, w) for p, w, _l in lifts]
+    return overlays, kept, [(p, w) for p, w, _l in lifts], paths
 
 
 # Never exported. .git is the important one — history outlives any file edit; it, __pycache__
 # and .pytest_cache are pruned by name wherever they occur (exportable, scan, and the copy).
 EXCLUDE_NAMES = {".DS_Store", "export-deny.txt"}
 
-# EXACT PATHS, from the source root, that never ship.
+# EXACT PATHS, from the source root, that a NEUTRAL export never ships.
 #
 # This used to be a set named for directories that held this path beside .git and the cache names,
 # and nothing ever read it: from the day it was written (2026-08-16) the file it names shipped in
@@ -249,7 +266,26 @@ EXCLUDE_NAMES = {".DS_Store", "export-deny.txt"}
 # repository's fixtures on a weekly schedule. It tests the kit where it is developed; in a
 # recipient's copy it is a scheduled job billing their minutes to re-test our fixtures, not part
 # of what they adopt. tests/prove_export_scope.py E2 and E6.
+#
+# A KIT HOST IS NOT A MERE RECIPIENT (owner ruling, 2026-11-03). A copy that an organisation runs as
+# ITS kit host -- the repository its other repositories call -- needs exactly this harness: it is
+# the pre-flight that proves the whole chain on that host's platform before any real pipeline runs,
+# and leaving it out left their old copy failing with 401s and nothing to replace it. So a profile
+# may name a path here with INCLUDE_PATH (consumer-am does), and the copy then ships, incrementally
+# updates and zips it like any other file. The workflow is dispatch-only by default there (its
+# schedule starts no job unless vars.KIT_CONSUMER_PATH_SCHEDULE is 'true'), so the minutes reason
+# no longer applies to it. The NEUTRAL export keeps withholding it: a neutral copy has no named
+# recipient whose platform it is a pre-flight for, and the public mirror runs the kit's own
+# self-test. tests/prove_export_scope.py E6 and E11.
 EXCLUDE_PATHS = {".github/workflows/consumer-path-test.yml"}
+
+# The EXCLUDE_PATHS entries the current profile sends (INCLUDE_PATH). Empty for a neutral export.
+_INCLUDED_PATHS: set = set()
+
+
+def path_excluded(rel: str) -> bool:
+    """Is this exact path withheld from the copy being made?"""
+    return rel in EXCLUDE_PATHS and rel not in _INCLUDED_PATHS
 
 # NEITHER THE DENY LIST NOR THE PROFILES TRAVEL.
 #
@@ -407,6 +443,10 @@ def write_watermark(src: str, dest: str, head: str, branch: str, shipped: dict,
                     unresolved: dict | None = None, dirty_flag: bool = False,
                     profile: str | None = None) -> None:
     data = {
+        # The withheld paths this copy's profile sent (INCLUDE_PATH). A copy's checks read it to
+        # tell "the kit's copy of a withheld file, which must be checked" from "a file at that path
+        # the kit never sent". tests/prove_job_token_named.py T9.
+        "included_paths": sorted(_INCLUDED_PATHS),
         # WHO THIS COPY IS FOR. The rules a copy was taken under (which overlays it carries, which
         # names it may hold) are a fact about the destination, like the files it received, so they
         # are recorded here and every later incremental is refused unless it runs under the same
@@ -518,6 +558,13 @@ def incremental(src: str, a, deny: list, hit_count: int) -> int:
     carried = (wm or {}).get("unresolved_conflicts", {})
     for rel in carried:
         if rel not in changed and exportable(rel) and os.path.isfile(
+                os.path.join(src, rel.replace("/", os.sep))):
+            changed.append(rel)
+    # A path the profile includes that this copy has never received (it was withheld when the copy
+    # was taken, before the profile named it) is not in any diff since then: add it, so it arrives
+    # as a NEW file -- or, where the destination already holds something at that path, a CONFLICT.
+    for rel in sorted(_INCLUDED_PATHS):
+        if rel not in recorded and rel not in changed and os.path.isfile(
                 os.path.join(src, rel.replace("/", os.sep))):
             changed.append(rel)
     changed = sorted(set(changed))
@@ -732,7 +779,7 @@ ZIP_REFUSE_DIRS = {".git", "__pycache__", ".pytest_cache", ".claude", ".context"
 ZIP_REFUSE_SUFFIXES = (".pyc", ".pyo")
 
 
-def zip_refusals(tree: str, allowed_overlays: set) -> list[str]:
+def zip_refusals(tree: str, allowed_overlays: set, allowed_paths: set = frozenset()) -> list[str]:
     """-> every path in `tree` that must not be packed, relative and with forward slashes."""
     bad = []
     for dirpath, dirnames, filenames in os.walk(tree):
@@ -747,12 +794,14 @@ def zip_refusals(tree: str, allowed_overlays: set) -> list[str]:
                        and not (rel_dir == "overlays/" and d not in allowed_overlays)]
         for fn in sorted(filenames):
             rel = rel_dir + fn
-            if fn.endswith(ZIP_REFUSE_SUFFIXES) or fn in EXCLUDE_NAMES or rel in EXCLUDE_PATHS:
+            if fn.endswith(ZIP_REFUSE_SUFFIXES) or fn in EXCLUDE_NAMES or (
+                    rel in EXCLUDE_PATHS and rel not in allowed_paths):
                 bad.append(rel)
     return bad
 
 
-def zip_tree(tree: str, zip_path: str, allowed_overlays: set) -> int:
+def zip_tree(tree: str, zip_path: str, allowed_overlays: set,
+             allowed_paths: set = frozenset()) -> int:
     """Pack `tree` into `zip_path` under one top folder, or refuse and write nothing."""
     import zipfile
     tree = os.path.abspath(tree)
@@ -765,7 +814,7 @@ def zip_tree(tree: str, zip_path: str, allowed_overlays: set) -> int:
     if os.path.exists(zip_path):
         print(f"REFUSED: {zip_path} already exists. A zip is never overwritten; move it aside.")
         return 1
-    bad = zip_refusals(tree, allowed_overlays)
+    bad = zip_refusals(tree, allowed_overlays, allowed_paths)
     if bad:
         print(f"REFUSED: the tree holds {len(bad)} path(s) that must not be packed:")
         for b in bad[:40]:
@@ -879,17 +928,18 @@ def main() -> int:
             return 1
         wm = read_watermark(a.zip_tree) or {}
         prof = wm.get("profile")
-        allowed = set()
+        allowed, allowed_paths = set(), set()
         if prof and prof != NEUTRAL_PROFILE:
             here = os.path.dirname(os.path.abspath(__file__))
             listed = load_deny(here) or []
             try:
-                allowed = set(load_profile(here, prof, listed)[0])
+                got = load_profile(here, prof, listed)
+                allowed, allowed_paths = set(got[0]), set(got[3])
             except ValueError as e:
                 print(f"REFUSED: the tree was exported under profile {prof!r}, which cannot be "
                       f"read here: {e}")
                 return 1
-        return zip_tree(a.zip_tree, a.zip, allowed)
+        return zip_tree(a.zip_tree, a.zip, allowed, allowed_paths)
     if a.zip and a.into:
         print("--zip packs a FULL export (--out) or an existing tree (--zip-tree), not --into.")
         return 1
@@ -958,7 +1008,7 @@ def main() -> int:
         return 1
     if a.profile:
         try:
-            include_overlays, deny, lifts = load_profile(here, a.profile, deny)
+            include_overlays, deny, lifts, include_paths = load_profile(here, a.profile, deny)
         except ValueError as e:
             print(f"profile refused: {e}")
             return 1
@@ -969,6 +1019,7 @@ def main() -> int:
                   f"{', '.join(missing_ov)}")
             return 1
         _INCLUDED_OVERLAYS.update(include_overlays)
+        _INCLUDED_PATHS.update(include_paths)
 
     print(f"source : {src}")
     print(f"export : {a.out or a.into}")
@@ -1020,7 +1071,7 @@ def main() -> int:
         rel_here = os.path.relpath(dirpath, src).replace("\\", "/")
         drop |= {n for n in names if n in EXCLUDE_TOP}
         drop |= {n for n in names
-                 if (n if rel_here == "." else rel_here + "/" + n) in EXCLUDE_PATHS}
+                 if path_excluded(n if rel_here == "." else rel_here + "/" + n)}
         if rel_here == ".":
             # overlays/ as a whole: withheld entirely unless the profile named something in it
             drop |= {n for n in names if n in EXCLUDE_TREES and not _INCLUDED_OVERLAYS}
@@ -1093,7 +1144,7 @@ Re-run the gate before any onward distribution. It is cheap and it fails closed.
     print(f"exported {n} files")
     print("history: NOT included (fresh tree)")
     if a.zip:
-        rc = zip_tree(a.out, a.zip, set(_INCLUDED_OVERLAYS))
+        rc = zip_tree(a.out, a.zip, set(_INCLUDED_OVERLAYS), set(_INCLUDED_PATHS))
         if rc:
             return rc
         print("Run the copy's checks on an UNZIPPED COPY, never on the tree that was zipped.")

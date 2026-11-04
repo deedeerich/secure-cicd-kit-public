@@ -178,6 +178,7 @@ import io
 import json
 import os
 import random
+import re
 import sys
 import time
 
@@ -218,6 +219,10 @@ FALSE_POSITIVE_REQUEST = 'FALSE_POSITIVE_REQUEST'
 ACCEPTED_RISK_REQUEST = 'ACCEPTED_RISK_REQUEST'
 MITIGATED_REQUEST = 'MITIGATED_REQUEST'
 GRANDFATHER_TRACK_ITEM = 'GRANDFATHER_TRACK_ITEM'
+# KDEC-037 (owner, 2026-11-04): each its own request type, with its own schema and rules.
+EXCEPTION_REQUEST = 'EXCEPTION_REQUEST'
+EXEMPTION_REQUEST = 'EXEMPTION_REQUEST'
+COMPLIANCE_EXCEPTION_REQUEST = 'COMPLIANCE_EXCEPTION_REQUEST'
 
 # A finding observed by a scanner, with nobody asking for anything, is work. It is the only class
 # this program opens UNATTENDED: the other four are REQUESTS, and a request is a disposition
@@ -244,7 +249,11 @@ DEFAULT_CLASS = REMEDIATION_WORK_ITEM
 # downgraded to ordinary remediation work: that would turn "we are asking you to accept this
 # risk" into "somebody please fix this", and the asking would disappear.
 DISPOSITION_REQUESTS = {
-    'exception': ('disposition.exception', FALSE_POSITIVE_REQUEST),
+    # FIXED 2026-11-04 (owner): an exception is NOT a false positive. It was mapped to
+    # FALSE_POSITIVE_REQUEST, which read 'the scanner is wrong' for 'we accept it, scoped, for a time'.
+    'exception': ('disposition.exception', EXCEPTION_REQUEST),
+    'exemption': ('disposition.exemption', EXEMPTION_REQUEST),
+    'compliance_exception': ('disposition.compliance_exception', COMPLIANCE_EXCEPTION_REQUEST),
     'exclusion': ('disposition.exclusion', GRANDFATHER_TRACK_ITEM),
     'false_positive': ('disposition.false_positive', FALSE_POSITIVE_REQUEST),
     'risk_acceptance': ('disposition.risk_acceptance', ACCEPTED_RISK_REQUEST),
@@ -448,6 +457,10 @@ def build_clusters(records):
             # What a PERSON has asked for on these findings, if anything. Carried through to
             # `reconcile`, which gates it as a disposition.
             'requested_dispositions': _requested(members),
+            # KDEC-037: a template's own rows for the machine-owned block, and its tagging labels
+            # (scripts/ticket_templates.py). Absent for the kit's own scan findings.
+            'template_facts': _template_facts(members),
+            'template_labels': sorted(set(x for m in members for x in m.get('template_labels') or [])),
         })
         print('  ... built cluster %d/%d (%d member(s), %d scanner(s))'
               % (n, len(acting), len(members), len(scanners)), file=sys.stderr)
@@ -457,6 +470,19 @@ def build_clusters(records):
 
 _SEV_ORDER = ('critical', 'high', 'medium', 'moderate', 'low', 'info', 'informational', 'note',
               'none', '')
+
+
+def _template_facts(members):
+    """The first member's template rows, then every OTHER source's line, so one ticket for a finding
+    two tools reported names both (KDEC-037)."""
+    rows = [tuple(r) for r in (members[0].get('template_facts') or [])] if members else []
+    seen = set(v for k, v in rows if k == 'source')
+    for m in members[1:]:
+        for k, v in m.get('template_facts') or []:
+            if k == 'source' and v not in seen:
+                rows.append(('also reported by', v))
+                seen.add(v)
+    return rows
 
 
 def _worst(members):
@@ -827,15 +853,29 @@ class GitHubIssues(HttpBackend):
         doc, status, err = self._req('POST', '/repos/%s/issues' % self.repo,
                                      {'title': title, 'body': body,
                                       'labels': [self.stamp_label]
-                                      + list(cluster.get('extra_labels') or [])})
+                                      + [fit_label(x) for x in cluster.get('extra_labels') or []]})
         if err or not doc:
             return None, 'create failed (status %s)' % status
         return str(doc.get('number')), 'created issue %s' % doc.get('number')
+
+    def create_instance(self, parent_ref, member, body, title):
+        # KDEC-037: a duplicate record (or an instance) -- a plain issue that names its parent and carries
+        # NO stamp line and no umbrella label, so the sweep never reads it as a second stamped ticket.
+        doc, status, err = self._req('POST', '/repos/%s/issues' % self.repo, {'title': title, 'body': body})
+        if err or not doc:
+            return None, 'instance create failed (status %s)' % status
+        return str(doc.get('number')), 'created issue %s under #%s' % (doc.get('number'), parent_ref)
 
     def comment(self, ref, text):
         doc, status, err = self._req('POST', '/repos/%s/issues/%s/comments' % (self.repo, ref),
                                      {'body': text})
         return (doc is not None), 'comment status %s' % status
+
+    def labels_of(self, ref):
+        doc, status, err = self._req('GET', '/repos/%s/issues/%s' % (self.repo, ref))
+        if err or not isinstance(doc, dict):
+            return [], False, 'the labels of %s could not be read (status %s)' % (ref, status)
+        return [(lb.get('name') if isinstance(lb, dict) else lb) for lb in doc.get('labels') or []], True, 'read'
 
     def read_description(self, ref):
         doc, status, err = self._req('GET', '/repos/%s/issues/%s' % (self.repo, ref))
@@ -872,7 +912,7 @@ class GitHubIssues(HttpBackend):
         if not labels:
             return True, 'nothing to change', applied
         doc, status, err = self._req('POST', '/repos/%s/issues/%s/labels' % (self.repo, ref),
-                                     {'labels': list(labels)})
+                                     {'labels': [fit_label(x) for x in labels]})
         return (doc is not None and err is None), 'label status %s' % status, applied
 
 
@@ -883,6 +923,17 @@ DEFAULT_STAMP_LABEL = 'secure-cicd-kit'
 # registered finding_subject. A subject with no row gets NO family label rather than a guess.
 FAMILY_BY_SUBJECT = {'SOURCE_DEPENDENCY': 'sca', 'DEPENDENCY': 'sca', 'SOURCE': 'sast',
                      'IAC_PLAN': 'iac', 'RESOURCE': 'iac', 'POLICY': 'iac', 'IMAGE': 'container'}
+
+
+GITHUB_LABEL_MAX = 50
+
+
+def fit_label(name, limit=GITHUB_LABEL_MAX):
+    """A GitHub label is at most 50 characters (the API answers 422 past it). The kit's longer labels -- the
+    correlation key's `<stamp>-ck-<32 hex>` is 51 with the default stamp -- are cut DETERMINISTICALLY to the limit,
+    and every comparison fits both sides the same way (ticket_intake.match, GitHubIntake), so an exact match
+    stays exact. Jira (255) and Azure DevOps tags are never cut."""
+    return str(name)[:limit]
 
 
 def _project_of_key(key):
@@ -921,10 +972,13 @@ def routing_facts(cluster, repository=''):
                 break
     if not fam and cluster.get('subject') == 'RUNTIME_OBSERVATION':
         fam = 'dast'
+    # KDEC-037: an external finding's template, source type and environment route it too.
+    m0 = members[0] if members else {}
     return {'class': cls, 'floor': cls != 'finding', 'scanner_family': fam,
             'scanners': list(cluster.get('scanners') or []),
             'category': cluster.get('subject') or '', 'severity': cluster.get('severity') or '',
-            'repository': repository or ''}
+            'repository': repository or '', 'template': m0.get('template') or '',
+            'source_type': m0.get('source_type') or '', 'environment': m0.get('environment') or ''}
 
 
 def family_of(cluster):
@@ -1548,6 +1602,14 @@ class Jira(HttpBackend):
         ok_w = err is None and status in (200, 204)
         return ok_w, 'escalation write status %s' % status, applied
 
+    def labels_of(self, ref):
+        """-> (labels, ok, detail). KDEC-037: a ticket's labels are its durable record (extensions,
+        links, the no-fix state), read before a template acts on it."""
+        doc, status, err = self._req('GET', '/rest/api/3/issue/%s?fields=priority,labels' % ref)
+        if err or not isinstance(doc, dict):
+            return [], False, 'the labels of %s could not be read (status %s)' % (ref, status)
+        return list((doc.get('fields') or {}).get('labels') or []), True, 'read'
+
     def read_description(self, ref):
         """The CURRENT description, as Jira holds it: an ADF document, or null when empty."""
         doc, status, err = self._req('GET', '/rest/api/3/issue/%s?fields=description' % ref)
@@ -1836,6 +1898,12 @@ class AzureDevOps(HttpBackend):
                                      api='7.1-preview.4')
         return (doc is not None), 'comment status %s' % status
 
+    def labels_of(self, ref):
+        doc, status, err = self._req('GET', '/_apis/wit/workitems/%s?fields=System.Tags' % ref)
+        if err or not isinstance(doc, dict):
+            return [], False, 'the tags of %s could not be read (status %s)' % (ref, status)
+        return self._tags(doc), True, 'read'
+
     def read_description(self, ref):
         """The CURRENT System.Description (HTML) and the work item's revision."""
         doc, status, err = self._req('GET', '/_apis/wit/workitems/%s?fields=System.Description'
@@ -2024,6 +2092,13 @@ class RecordingBackend(TicketBackend):
                     return True, 'closed'
         return False, 'no such ticket'
 
+    def labels_of(self, ref):
+        for recs in self.store.values():
+            for r in recs:
+                if r['ref'] == str(ref):
+                    return list(r.get('labels') or []), True, 'read'
+        return [], False, 'no such ticket'
+
     def mark(self, ref, labels=(), bump_priority=False):
         self.marks.append((str(ref), list(labels), bool(bump_priority)))
         for recs in self.store.values():
@@ -2038,6 +2113,15 @@ class RecordingBackend(TicketBackend):
 # ═════════════════════════════════════════════════════════════════════════════════════
 
 STAMP_PREFIX = 'secure-cicd-kit-cluster:'
+
+
+def duplicate_body(original, cluster_key, what_added):
+    """The body of a DUPLICATE record (owner, 2026-11-04: an exact match is linked as a duplicate and closed). It
+    names the original and what the duplicate added, and carries NO stamp line: a duplicate must never be found
+    as a second ticket for the original's key."""
+    return '\n'.join(['Duplicate of %s (secure-cicd-kit; correlation key `%s`).' % (original, cluster_key), '',
+                       'What this submission added to the original:', '', what_added, '',
+                       'Closed as a duplicate: the original tracks the finding. Nothing was deleted.'])
 
 
 def stamp_from_body(body):
@@ -2086,6 +2170,8 @@ def render_body(cluster, existing='', ticket=None, tasks=None):
         '| contributing scanners | %s |' % ', '.join(cluster['scanners'] or ['none named']),
         '| members | %d |' % len(cluster['members']),
     ]
+    for k, v in cluster.get('template_facts') or []:
+        lines.append('| %s | %s |' % (k, ' '.join(str(v).replace('|', '/').split())))
     # KDEC-024. What raised it, where it came from, what it is linked to, when it is due, and
     # whether the scanners agree -- all from evidence, all inside the machine-owned block.
     if cluster.get('raised_as'):
@@ -2230,7 +2316,8 @@ def block_facts(text):
     from text the run already holds; never asked of a text index (TC 3.3). Lists come back
     sorted; a fact the block does not state comes back empty, which reads as a change."""
     facts = {'severity': None, 'scanners': [], 'stopped': [], 'absent': [], 'sla_due': None,
-             'confidence': None, 'exceptions': []}
+             'confidence': None, 'exceptions': [], 'recheck_due': None, 'nofix_since': None,
+             'recheck_every': None}
     in_absent = False
 
     def cell(line):
@@ -2261,6 +2348,14 @@ def block_facts(text):
             facts['confidence'] = (cell(s).replace('*', '').split() or [None])[0]
         elif s.startswith('| exception |'):
             facts['exceptions'].append(cell(s))
+        elif s.startswith('| no-fix since |'):
+            first = (cell(s).split() or [None])[0]
+            facts['nofix_since'] = first if tm.iso_date(first) else None
+        elif s.startswith('| re-check due |'):
+            first = (cell(s).split() or [None])[0]
+            facts['recheck_due'] = first if tm.iso_date(first) else None
+            m = re.search(r'every (\d+) days', cell(s))
+            facts['recheck_every'] = int(m.group(1)) if m else None
     return dict((k, sorted(v) if isinstance(v, list) else v) for k, v in facts.items())
 
 
@@ -2346,6 +2441,9 @@ def render_title(cluster):
     scanner-supplied partial fingerprint.
     """
     m = cluster['members'][0]
+    if m.get('template') and m.get('title'):
+        # KDEC-037: an external finding's title is the submitter's, after its identifier.
+        return bounded_title('[%s] %s: %s' % (cluster['severity'], m.get('rule') or 'finding', m['title']))
     return bounded_title('[%s] %s in %s' % (cluster['severity'],
                                             m.get('rule') or 'finding',
                                             m.get('uri') or cluster['subject']
@@ -3499,8 +3597,8 @@ def _reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None
             cluster['raised_as'] = TRIGGER_NEW
             cluster['raised_run'], cluster['raised_commit'] = run_url, commit
             cluster['sla'] = sla_for(cluster.get('severity'), numbers, today, None, today)
-            if cluster.get('contested_by'):
-                cluster['extra_labels'] = [_label(backend, 'disagreement')]
+            cluster['extra_labels'] = sorted(set(cluster.get('template_labels') or []) | (
+                set([_label(backend, 'disagreement')]) if cluster.get('contested_by') else set()))
             ticket, tasks = tm.build_ticket(
                 cluster, 'ticket-%s' % cluster['cluster_key'][:12],
                 channel_degraded=not sweep_complete)
@@ -5877,7 +5975,126 @@ def _resurface(ledger, backend, apply_changes, today, numbers=None, approval=Non
                                        today, None, today)
             escalate_overdue(result, backend, key, entry, ref, today, apply_changes, approval,
                              hit_labels=hit.get('labels') or ())
+    recheck_pass(result, backend, sweep_map, today, apply_changes, approval, numbers)
+    verification_pass(result, backend, sweep_map, today, apply_changes, approval, numbers)
+    try:
+        import ticket_submit as tsub
+        tsub.dedupe_pending_pass(result, backend, sweep_map, today, apply_changes)
+    except ImportError:
+        result['notes'].append('the pending-dedupe pass is not available in this copy of the kit')
     return finish_claim(result, backend_note, backend)
+
+
+def clock_settings(numbers):
+    """The clock's numbers: the register's `numbers` over scripts/ticket_templates.py's defaults."""
+    import ticket_templates as tt
+    s = tt.settings_from({})[0]
+    for k in ('verification_reminder_days',):
+        if isinstance((numbers or {}).get(k), int):
+            s[k] = numbers[k]
+    return s
+
+
+def _clock_mark(result, backend, ref, text, labels, bump=False, kind='clock'):
+    ok_c, d_c = backend.comment(ref, text)
+    ok_m, d_m, _ap = backend.mark(ref, labels=list(labels), bump_priority=bump)
+    if not (ok_c and ok_m):
+        result['update_failed'] = result.get('update_failed', 0) + 1
+        result['notes'].append('the %s note on %s could not be written: %s; %s' % (kind, ref, d_c, d_m))
+    return bool(ok_c and ok_m)
+
+
+def recheck_pass(result, backend, sweep_map, today, apply_changes, approval, numbers=None):
+    """KDEC-037 (O-37d, owner 2026-11-04): THE NO-FIX CLOCK. For every open ticket with the kit's no-fix label:
+    a vendor RE-CHECK every 30 days (`-recheck-<k>`), a no-fix REVIEW every 90 days (`-nofix-review-<k>`), and
+    at the severity's advisory day (critical/high 90 and escalated, medium 180, low none) the ADVISORY "this
+    has become something like a permanent risk acceptance; look for an alternative" (`-nofix-advisory`), each
+    ONCE -- the tracker's labels are the record. Nothing is closed, reopened or exempted further. The cycle
+    raised is the CURRENT one; a cycle the clock did not run for is named, not back-filled."""
+    import ticket_templates as tt
+    settings = clock_settings(numbers)
+    nofix = _label(backend, 'nofix')
+    for key in sorted(sweep_map or {}):
+        for hit in sweep_map[key]:
+            labels = set(hit.get('labels') or [])
+            if nofix not in labels or hit.get('state') == 'closed' or not hit.get('ref'):
+                continue
+            desc, ok, d_read = backend.read_description(hit['ref'])
+            if not ok:
+                result['notes'].append('the no-fix ticket %s could not be read (%s): its clock is not judged'
+                                       % (hit['ref'], d_read))
+                result['update_unestablished'] = result.get('update_unestablished', 0) + 1
+                continue
+            facts = block_facts(backend.description_text(desc))
+            st = tt.nofix_state(facts.get('nofix_since'), today, facts.get('severity'), numbers, settings,
+                                recheck_every=facts.get('recheck_every'))
+            rec = {'cluster_key': key, 'ref': hit['ref'], 'days': st['days'], 'planned': not apply_changes}
+            gate = tm.authorise('ticket.recheck_due', approval)
+            k = st['recheck']
+            if k >= 1 and _label(backend, 'recheck-%d' % k) not in labels:
+                skipped = [n for n in range(1, k) if _label(backend, 'recheck-%d' % n) not in labels]
+                rec['recheck'] = k
+                if apply_changes and not gate:
+                    _clock_mark(result, backend, hit['ref'], (
+                        'RE-CHECK DUE (secure-cicd-kit, run date %s): re-check %d. This finding had NO fix upstream %d '
+                        'day(s) ago; check with the vendor again. If a fix exists, submit the finding with fix_status '
+                        'FIX_AVAILABLE and this ticket reopens as remediation.%s'
+                        % (today, k, st['days'], (' (Cycle(s) %s were not raised: the clock did not run then.)'
+                                                  % ', '.join(map(str, skipped))) if skipped else '')),
+                        [_label(backend, 'recheck-%d' % k)], kind='re-check')
+            r = st['review']
+            if r >= 1 and _label(backend, 'nofix-review-%d' % r) not in labels:
+                rec['review'] = r
+                if apply_changes and not gate:
+                    _clock_mark(result, backend, hit['ref'], (
+                        'NO-FIX REVIEW DUE (secure-cicd-kit, run date %s): review %d, %d day(s) with no fix. A person '
+                        'reviews whether the exemption still stands.' % (today, r, st['days'])),
+                        [_label(backend, 'nofix-review-%d' % r)], kind='review')
+            if st['advisory'] and _label(backend, 'nofix-advisory') not in labels:
+                rec['advisory'] = True
+                if apply_changes and not gate:
+                    _clock_mark(result, backend, hit['ref'], (
+                        'NO-FIX ADVISORY (secure-cicd-kit, run date %s): %d day(s) with no fix -- this has become '
+                        'something like a permanent risk acceptance; look for an alternative.%s'
+                        % (today, st['days'], ' Escalated: the priority is raised one step.' if st['escalate'] else '')),
+                        [_label(backend, 'nofix-advisory')], bump=st['escalate'], kind='advisory')
+            if len(rec) > 4:
+                result.setdefault('rechecks', []).append(rec)
+
+
+def verification_pass(result, backend, sweep_map, today, apply_changes, approval, numbers=None):
+    """KDEC-037 (owner, 2026-11-04): A FIXER'S CLOSE IS PENDING, AND SOMEONE ELSE MUST COME BEHIND. Every open
+    ticket in resolved-pending-verification is REMINDED once after N days (default 7) and ESCALATED once after
+    2N (the priority raised), per pending cycle (`-pending-since-<date>`); a rejection after it ends the cycle."""
+    import ticket_templates as tt
+    n = clock_settings(numbers)['verification_reminder_days']
+    p = getattr(backend, 'stamp_label', '') or DEFAULT_STAMP_LABEL
+    for key in sorted(sweep_map or {}):
+        for hit in sweep_map[key]:
+            labels = set(hit.get('labels') or [])
+            if _label(backend, 'pending-verification') not in labels or hit.get('state') == 'closed' or                     _label(backend, 'verified') in labels or not hit.get('ref'):
+                continue
+            pend = tt.label_dates(labels, p, 'pending-since')
+            rej = tt.label_dates(labels, p, 'rejected')
+            if not pend or (rej and rej[-1] >= pend[-1]):
+                continue
+            days = (tm.iso_date(today) - tm.iso_date(pend[-1])).days if tm.iso_date(today) else 0
+            cyc = pend[-1].replace('-', '')
+            gate = tm.authorise('ticket.verify_reminder', approval)
+            if days >= 2 * n and _label(backend, 'verify-escalated-%s' % cyc) not in labels:
+                result.setdefault('verifications', []).append({'ref': hit['ref'], 'escalated': days})
+                if apply_changes and not gate:
+                    _clock_mark(result, backend, hit['ref'], (
+                        'VERIFICATION ESCALATED (secure-cicd-kit, run date %s): resolved %d day(s) ago (%s) and still '
+                        'not verified. Someone other than the fixer verifies it, or rejects it.' % (today, days, pend[-1])),
+                        [_label(backend, 'verify-escalated-%s' % cyc)], bump=True, kind='verification escalation')
+            elif days >= n and _label(backend, 'verify-reminder-%s' % cyc) not in labels:
+                result.setdefault('verifications', []).append({'ref': hit['ref'], 'reminded': days})
+                if apply_changes and not gate:
+                    _clock_mark(result, backend, hit['ref'], (
+                        'VERIFICATION REMINDER (secure-cicd-kit, run date %s): ready to close since %s -- please verify '
+                        '(the approver list; not the fixer).' % (today, pend[-1])),
+                        [_label(backend, 'verify-reminder-%s' % cyc)], kind='verification reminder')
 
 
 def resurface_cli(args):

@@ -414,7 +414,10 @@ def run_world(path, inputs, state, cancel_after=None, environment_answer=PROTECT
         # record this world never wrote, refused at uat/prod as unreadable, and prove_deploy_direct_to_
         # production passed locally and failed on the runner (self-test 40821569397, 2026-10-29). The
         # world names one commit and writes its record below; a proof may still pass its own.
-        landing = {'KIT_ZONE_READINESS': 'READY', 'KIT_RELEASE_BLOCK': 'none', 'GITHUB_RUN_ID': '4242',
+        # KDEC-036 G1: the world's readiness is the landing zone's (its hand-off marker beside the value); a
+        # proof about the self-set and AppSec paths passes its own values (tests/prove_reviewer_signals.py R9).
+        landing = {'KIT_ZONE_READINESS': 'READY', 'KIT_HANDOFF_ISSUER': 'landing-zone',
+                   'KIT_RELEASE_BLOCK': 'none', 'GITHUB_RUN_ID': '4242',
                    'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_TRIGGERING_ACTOR': 'release-requester',
                    'GITHUB_ACTOR': 'release-requester', 'GITHUB_SHA': '5' * 40}
         env_extra = dict(landing, **(env_extra or {}))

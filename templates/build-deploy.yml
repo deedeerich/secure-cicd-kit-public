@@ -64,6 +64,57 @@ on:
         description: "break-glass / rollback: who accepted it (a role or a named approver)"
         type: string
         default: ""
+      exception_approver:
+        description: "break-glass / rollback: who approved it -- on a registered approver list, never the requester (KDEC-036)"
+        type: string
+        default: ""
+      exception_ref:
+        description: "break-glass / rollback: the ticket or exception id"
+        type: string
+        default: ""
+      exception_expires:
+        description: "break-glass / rollback: YYYY-MM-DD, at most 7 days out for break-glass"
+        type: string
+        default: ""
+  # THE KIT'S API ASKS FOR A RELEASE BY CALLING THIS WORKFLOW (KDEC-035; templates/kit-api.yml). Called,
+  # not re-dispatched: the release runs through exactly these jobs and gates, and the API's caller is
+  # the run's actor -- the requester the approval check (K-1) refuses as an approver. The inputs are the
+  # dispatch's, name for name (tests/prove_kit_api_workflow.py W3); the API never sends break-glass
+  # or rollback (a person dispatches those, with the exception record).
+  workflow_call:
+    inputs:
+      deploy:
+        description: "Deploy the build produced by this run"
+        type: boolean
+        default: false
+      environment:
+        description: "GitHub Environment to deploy into (one per deployment environment, vended by the landing zone)"
+        type: string
+        default: "dev"
+      promote_from_run_id:
+        description: "PROMOTE (no build): the run whose deploy into promote_from_environment verified the digest"
+        type: string
+        default: ""
+      promote_from_environment:
+        description: "PROMOTE: the predecessor environment whose record is promoted"
+        type: string
+        default: "test"
+      release_path:
+        description: "normal | hotfix | rollback | break-glass"
+        type: string
+        default: "normal"
+      exception_reason:
+        description: "break-glass / rollback: why (the weakening record)"
+        type: string
+        default: ""
+      exception_authority:
+        description: "break-glass / rollback: who accepted it (a role or a named approver)"
+        type: string
+        default: ""
+      exception_approver:
+        description: "break-glass / rollback: who approved it -- on a registered approver list, never the requester (KDEC-036)"
+        type: string
+        default: ""
       exception_ref:
         description: "break-glass / rollback: the ticket or exception id"
         type: string
@@ -289,6 +340,8 @@ jobs:
       contents: read
       id-token: write
       attestations: read   # the deploy runs V1 itself, before login (P-02)
+      deployments: write   # the deploy keeps its durable release record (KDEC-036 G6)
+      pull-requests: read  # the readiness attestation's approving review (KDEC-036 G1)
       actions: read        # the deploy reads its target's rollback marker, before login (KDEC-023)
     with:
       github_environment: ${{ inputs.environment }}       # approvals live on the Environment
@@ -343,6 +396,8 @@ jobs:
       contents: read
       id-token: write
       attestations: read
+      deployments: write   # the deploy keeps its durable release record (KDEC-036 G6)
+      pull-requests: read  # the readiness attestation's approving review (KDEC-036 G1)
       actions: read
     with:
       github_environment: dev
@@ -379,6 +434,8 @@ jobs:
       contents: read
       id-token: write
       attestations: read
+      deployments: write   # the deploy keeps its durable release record (KDEC-036 G6)
+      pull-requests: read  # the readiness attestation's approving review (KDEC-036 G1)
       actions: read
     with:
       github_environment: test
@@ -437,7 +494,7 @@ jobs:
           # KDEC-027: gh's token goes to this run's host only (gh run download defaults to github.com).
           GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
           name="kit-promotion-record-$(printf '%s' "$SRC" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-40)"
-          gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n "$name" -D rec
+          gh run download "$RUN" -R "${GH_HOST}/${GITHUB_REPOSITORY}" -n "$name" -D rec
           r=rec/promotion-record.json
           {
             echo "image_digest=$(jq -r '.artifact.digest // ""' "$r")"
@@ -463,6 +520,8 @@ jobs:
       contents: read
       id-token: write
       attestations: read
+      deployments: write   # the deploy keeps its durable release record (KDEC-036 G6)
+      pull-requests: read  # the readiness attestation's approving review (KDEC-036 G1)
       actions: read
     with:
       github_environment: ${{ inputs.environment }}      # uat or prod; approvals live on the Environment
@@ -473,6 +532,7 @@ jobs:
       release_path: ${{ inputs.release_path || 'normal' }}
       weakening_reason: ${{ inputs.exception_reason }}
       weakening_authority: ${{ inputs.exception_authority }}
+      weakening_approver: ${{ inputs.exception_approver }}
       weakening_exception_ref: ${{ inputs.exception_ref }}
       weakening_expires: ${{ inputs.exception_expires }}
       attestation_signer_workflow: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-build-docker.yml

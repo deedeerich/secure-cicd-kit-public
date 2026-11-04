@@ -224,6 +224,8 @@ def wa(s, args):
     sl = w['slots'][slot]
     if sub == 'show':
         return emit({'name': w['name'], 'id': sl['id'], 'defaultHostName': sl['host'],
+                     'kind': w.get('kind', 'app,linux,container'),
+                     'hostNames': [sl['host']] + list(w.get('custom_domains') or []),
                      'tags': sl.get('tags', {}), 'state': 'Running',
                      'httpsOnly': sl.get('httpsOnly', True)})
     if sub == 'restart':
@@ -578,6 +580,12 @@ def main():
             ca(s, args)
         elif args[0] == 'webapp':
             wa(s, args)
+        elif args[0] == 'functionapp':
+            # KDEC-036 G10: `az functionapp` refuses a site that is not a function app, like the CLI.
+            if 'functionapp' not in str(s['webapp'].get('kind', '')):
+                fail('%s is not a function app' % s['webapp']['name'])
+            s.setdefault('groups', []).append('functionapp')
+            wa(s, ['webapp'] + ['--container-image-name' if x == '--image' else x for x in args[1:]])
         elif args[0] == 'tag':
             tag(s, args)
         elif args[0] == 'rest':

@@ -350,6 +350,66 @@ MUTATION_CLASS = {
         ROUTINE_RECONCILIATION,
         'labelling a ticket whose finding a peer scanner of the same class covered and did not '
         'report (CONTESTED_ANCHORED). It routes the question to a person and suppresses nothing'),
+    # KDEC-037 (ticket templates). Each evidenced; none a judgement the machine makes.
+    'ticket.link_existing': (
+        ROUTINE_RECONCILIATION,
+        "linking a finding to a ticket that already exists -- by its exact correlation key, or after a "
+        "PERSON confirmed a candidate in a finalized review -- with one comment and the kit's labels. "
+        "It creates nothing, accepts nothing, and stops a second ticket being opened"),
+    'ticket.recheck_due': (
+        ROUTINE_RECONCILIATION,
+        "announcing that a no-fix finding's vendor re-check is due: one comment and a kit label. It "
+        "exempts nothing further and makes the obligation MORE visible"),
+    'ticket.reopen_as_remediation': (
+        ROUTINE_RECONCILIATION,
+        "reopening a no-fix ticket because a fix became available -- new evidence, submitted under a "
+        "finalized review. It makes the work visible again and accepts nothing"),
+    'ticket.duplicate_close': (
+        ROUTINE_RECONCILIATION,
+        "recording an EXACT duplicate as a closed record under its original (owner, 2026-11-04), and telling the "
+        "original what it added. Evidence-matched by key; it accepts nothing and loses nothing"),
+    'ticket.possible_duplicate_flag': (
+        ROUTINE_RECONCILIATION,
+        "flagging a NEAR match as a possible duplicate and queueing it for a person's triage: it is created, "
+        "never merged and never lost"),
+    'ticket.dedupe_pending': (
+        ROUTINE_RECONCILIATION,
+        "creating a ticket whose dedupe could not complete, in triage, and re-running its dedupe on the next "
+        "run: \"we must have the ticket\""),
+    'ticket.pending_verification': (
+        ROUTINE_RECONCILIATION,
+        "the FIXER moving their own ticket to resolved-pending-verification and tapping the approver list. It "
+        "closes nothing; someone else verifies"),
+    'ticket.fix_observed': (
+        ROUTINE_RECONCILIATION,
+        "recording that a clean scan on a branch not mapped to the ticket's environment observed the fix. It "
+        "closes nothing"),
+    'ticket.regression_reopen': (
+        ROUTINE_RECONCILIATION,
+        "reopening a closed ticket whose finding is newly observed (a REGRESSION, not a duplicate). It makes the "
+        "estate more visible"),
+    'ticket.verify_reminder': (
+        ROUTINE_RECONCILIATION,
+        "reminding, then escalating, a pending verification nobody has done. It decides nothing"),
+    'ticket.verification_reject': (
+        GOVERNANCE_DISPOSITION,
+        "a verifier rejecting a fixer's resolution: a judgement on someone else's work, approved by the review's "
+        "concurrence, that reopens the ticket"),
+    'ticket.triage_merge': (
+        GOVERNANCE_DISPOSITION,
+        "a person's decision that a possible duplicate is the same finding (merge) or not (separate), approved by "
+        "a concurrer who is not the triager"),
+    'disposition.exemption': (
+        GOVERNANCE_DISPOSITION,
+        'an exemption: the accepted-risk family, there to stay, with a review cadence (owner, 2026-11-04)'),
+    'disposition.compliance_exception': (
+        GOVERNANCE_DISPOSITION,
+        'an exception against a named framework control, with a named approving authority (owner, 2026-11-04)'),
+    'ticket.close.reviewer_confirmed': (
+        GOVERNANCE_DISPOSITION,
+        "marking a ticket REMEDIATED because an approved reviewer -- never the requester, never the "
+        "fixer -- confirmed the fix on its evidence. No scan verified it, so it is a judgement and a "
+        "person approves it: the finalized review's concurrence"),
 
     # ── DISPOSITION. A person approves it, by role, with a reason. ──────────────────
     'ticket.close.' + AUTHORITY_OVERRIDE: (

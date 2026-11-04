@@ -194,6 +194,65 @@ def correlate(observations):
                         'proposals': len(proposals)}}
 
 
+# ── THE CORROBORATION SCORE (KDEC-037; Tines' reading of release 3: "no confidence score rising as
+#    more scanners agree") ──────────────────────────────────────────────────────────────────────
+#
+# A NUMBER WITH ITS DERIVATION, NEVER A SUBSTITUTE FOR THE TIER. The tier (anchored / proposed /
+# singleton) decides what acts; this score only says how much independent evidence stands behind a
+# cluster, so a dashboard can sort by it. It is not exploitability, not severity and not priority, and
+# it changes no gate input and no ticket's existence. Deterministic, integers only, 0..100:
+#
+#     base        anchored 40 | singleton 20 | no durable identity: NOT ESTABLISHED (None), never 0
+#     sources     +15 for each INDEPENDENT source beyond the first, at most +30. A source is a scanner
+#                 name for the kit's own scan, and source_type/tool for an external finding: two
+#                 tools of one source type are independent, one tool twice is not
+#     anchor      +10 when the anchor is an exact external identifier (a CVE, a GHSA, a rule or
+#                 control id the members share), not only the identity hash
+#     evidence    +10 when a member carries an evidence reference with a sha256; +10 when a member is
+#                 a row the kit's own scan ESTABLISHED (at most +20)
+#     contested   -20 when a peer of the same detection class covered the file and did not report it
+#                 (CONTESTED_ANCHORED, KDEC-024 item 6)
+#     clamp       0..100
+#
+# The basis string names every term, so the number can always be recomputed by hand.
+
+SCORE_BASE = {ANCHORED: 40, SINGLETON: 20}
+
+
+def corroboration_score(cluster, observations, contested=False):
+    """-> (score or None, basis). `cluster` is one entry of correlate()['clusters'] (or a cluster
+    with 'tier', 'members' as indices, 'anchor', 'identity_established'); `observations` the list
+    it indexes."""
+    if not cluster.get('identity_established', True) or cluster.get('tier') not in SCORE_BASE:
+        return None, 'no durable identity, or a tier that does not act: the score is NOT ESTABLISHED, never 0'
+    members = [observations[i] for i in cluster.get('members') or [] if 0 <= i < len(observations)]
+    sources = set()
+    for o in members:
+        if not isinstance(o, dict):
+            continue
+        if _s(o.get('job')) == 'external' or _s(o.get('source_type')):
+            sources.add('%s/%s' % (_s(o.get('source_type')) or 'external', _s(o.get('tool') or o.get('scanner'))))
+        else:
+            sources.add(_s(o.get('scanner')))
+    sources.discard('')
+    base = SCORE_BASE[cluster['tier']]
+    extra = min(30, 15 * max(0, len(sources) - 1))
+    anchor = _s(str(cluster.get('anchor') or '')).lower()
+    exact_anchor = bool(anchor) and anchor not in set(_s(str(o.get('identity') or '')).lower()
+                                                       for o in members if isinstance(o, dict))
+    ev = 10 if any(isinstance(o, dict) and _s(str((o.get('provenance') or {}).get('evidence_sha256') or ''))
+                   for o in members) else 0
+    est = 10 if any(isinstance(o, dict) and o.get('row_established') is True for o in members) else 0
+    score = base + extra + (10 if exact_anchor else 0) + ev + est - (20 if contested else 0)
+    score = max(0, min(100, score))
+    basis = ('%s %d; %d independent source(s) (%s) +%d; exact identifier anchor %s +%d; evidence hash +%d; '
+             'kit-established row +%d%s = %d'
+             % (cluster['tier'], base, len(sources), ', '.join(sorted(sources)) or 'none named', extra,
+                anchor or '(none)', 10 if exact_anchor else 0, ev, est, '; contested -20' if contested else '',
+                score))
+    return score, basis
+
+
 def _selftest():
     fails = []
 
@@ -213,6 +272,13 @@ def _selftest():
     r = correlate([o('', [], state='UNFINGERPRINTABLE'), None])
     if sorted(i for c in r['clusters'] for i in c['members']) != [0, 1]:
         fails.append('unidentified or malformed observations were dropped')
+    one = correlate([o('i1', ['CVE-1'], scanner='a')])
+    two = correlate([o('i1', ['CVE-1'], scanner='a'), o('i1', ['CVE-1'], scanner='b')])
+    s1 = corroboration_score(one['clusters'][0], [o('i1', ['CVE-1'], scanner='a')])[0]
+    s2 = corroboration_score(two['clusters'][0], [o('i1', ['CVE-1'], scanner='a'), o('i1', ['CVE-1'],
+                                                                                   scanner='b')])[0]
+    if not (s1 is not None and s2 is not None and s2 > s1):
+        fails.append('the corroboration score did not rise with a second agreeing source: %r -> %r' % (s1, s2))
     if fails:
         for f in fails:
             sys.stderr.write('FAIL: %s\n' % f)

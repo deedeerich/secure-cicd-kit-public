@@ -134,6 +134,9 @@ If one of them refuses bearer, use basic with the service account's own address 
 | `severity` | a list of severities |
 | `min_severity` | one severity: that one or worse |
 | `repository` | `owner/name` globs |
+| `template` | a ticket template (KDEC-037): `finding`, `false-positive`, `accepted-risk`, `mitigation`, `exemption`, `nofix-recheck` |
+| `source_type` | an external finding's source type: `scan-app`, `project`, `subscription`, `account`, `resource`, `pentest`, `review`, `audit`, `usr`, `cloud-tool`, `other-tool` |
+| `environment` | environment / tenant / account label globs, e.g. `azure-government-*` |
 
 **Targets.** Each rule names a `project`. It may also set:
 

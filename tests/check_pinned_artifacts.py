@@ -202,8 +202,9 @@ def self_test():
     abad = action_resolves(*SELF_TEST_ACTION_BAD)
     agood = action_resolves(*SELF_TEST_ACTION_GOOD)
     if abad is None or agood is None:
-        print('SELF-TEST UNKNOWN: github.com unreachable by git, and the REST API unusable (no '
-              'token api.github.com issued, or rate-limited). Reporting UNKNOWN, not PASS.')
+        # The cause, named (D-11): a 401 is not a rate limit, and no token is neither.
+        print('SELF-TEST UNKNOWN: the action resolver could not observe github.com. Cause: %s. '
+              'Reporting UNKNOWN, not PASS.' % _github_refs.explain())
         return 2
     if abad is not False or agood is not True:
         print('SELF-TEST FAILED: action resolver said bad=%r good=%r (expected False / True).'
@@ -277,6 +278,7 @@ def main():
             sep = '' if tag.startswith('@') else ':'
             print('UNKNOWN: %s%s%s could not be checked (other registry, rate limit or network).'
                   % (repo, sep, tag))
+        print('Action-ref lookups: %s.' % _github_refs.explain())
         print('Reported as UNKNOWN. Failure to observe is not an observation.')
         return 2
     print('PASS: every pinned image and every action ref resolves; documentation agrees with the '

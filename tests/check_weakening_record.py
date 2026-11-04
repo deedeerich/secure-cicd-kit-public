@@ -300,6 +300,37 @@ INERT_ONLY: dict[str, dict] = {
                                   'It selects which file joins the reviewed pull request; a malformed '
                                   'proposal refuses, and nothing merges without review',
     },
+    # KDEC-035 PROPOSED (the kit's API, 2026-11-03). The API weakens nothing by construction: it
+    # carries out a call through the kit's own reconciler, its own evidence or the repository's own
+    # release pipeline, every gate of which still applies, and a refusal here can only ADD a no.
+    # Each input names the call, where its data lives, or which operations and environments a
+    # repository serves -- a narrower list refuses more calls by name, never fewer checks.
+    'reusable-kit-api.yml': {
+        'phase': 'selects the run phase (intake and the operation, or the report of a scan or release '
+                 'the caller ran); it decides nothing about a control',
+        'correlation_id': 'names the call; a mismatch with the request is refused by name',
+        'idempotency_key': 'names the write; a repeat is refused by name, so it can only refuse more',
+        'request': 'the call itself, validated against the v1 schema before anything is done',
+        'default_branch': 'names the protected branch; ticket and release calls elsewhere are refused',
+        'operations': 'names the operations served; an operation not named is refused by name',
+        'ticketing_environment': 'names the protected environment holding the tracker credential, the '
+                                 'one the reconciliation of the pipeline uses',
+        'ticket_backend': 'names the tracker the reconciler talks to; one backend per repository',
+        'security_workflow': 'names where the security evidence is read from; a run that is not a '
+                             'completed default-branch run with evidence is refused',
+        'deploy_environments': 'names environments a release may be requested for; each still needs '
+                               'a human approver and every release gate',
+        'build_deploy_environments': 'names environments a build-and-deploy may target; promotion is '
+                                     'the only way to the others',
+        'ledger_path': 'names where the ticket ledger is read; the API never writes it',
+        'intake': 'carries the record of the run phase to the report phase',
+        'job_result': 'carries the result of the caller scan or release job into the report; a skipped or '
+                      'failed job is reported as such',
+        'routing_result': 'carries the verdict word of the scan into the report, unchanged',
+        'assurance_state': 'carries the assurance word of the scan into the report, unchanged',
+        'advisory_causes': 'carries the causes the scan emitted into the report, unchanged',
+        'evidence_artifact': 'names the evidence artifact of the scan for the report',
+    },
 }
 
 

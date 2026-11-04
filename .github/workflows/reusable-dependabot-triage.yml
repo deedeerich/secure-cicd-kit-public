@@ -833,7 +833,7 @@ jobs:
             if ! gh api "repos/${REPO}/labels/${l}" > /dev/null 2>&1; then
               color=fbca04
               case "$l" in urgent*) color=b60205 ;; esac
-              gh label create "$l" --repo "$REPO" --color "$color" \
+              gh label create "$l" --repo "${GH_HOST}/${REPO}" --color "$color" \
                 --description "Dependabot triage: a human must review this update" || fail=1
             fi
             gh pr edit "$PR_URL" --add-label "$l" || fail=1

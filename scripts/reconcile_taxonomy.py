@@ -109,6 +109,10 @@ NOT_VOCABULARY = {
     # constant to turn a gate green is the same move as relaxing a scanner to get a clean run.
     "NEVER_LIFT_MARKER", "NEVER_LIFT", "EXCLUDE_TOP", "INCLUDE_OVERLAY",
     "EXCLUDE_TREES",
+    # D-12 (2026-11-03): the profile directive verb that sends a withheld path to a kit host's copy
+    # (the same class as INCLUDE_OVERLAY), and the repository VARIABLE that opts the consumer path
+    # test's weekly schedule in (a setting, the same class as KIT_DAST_COMMAND). Neither is a state.
+    "INCLUDE_PATH", "KIT_CONSUMER_PATH_SCHEDULE",
     # A Python constant in scripts/reconcile_tickets.py that POINTS AT a registered value rather
     # than being one: `UNCLASSIFIED_DEFAULT = BINDING_UNESTABLISHED`. It exists so that a future
     # branch which forgets to classify its lookup outcome lands on the safe value by construction
@@ -285,6 +289,15 @@ NOT_VOCABULARY = {
     # one.
     "KIT_ACR_LOGIN_SERVER", "KIT_APP_NAME", "KIT_CLOUD", "KIT_ENVIRONMENT_TIER",
     "KIT_IMAGE_REPOSITORY", "KIT_RESOURCE_GROUP",
+    # KDEC-036: three more hand-off and repository variables (the landing zone's hand-off marker, the
+    # hosting kind it vended, the evidence retention in days) and the deploy's site kind setting.
+    # Settings whose VALUES are registered (readiness_source, deploy_coverage, evidence_retention);
+    # their NAMES are not states.
+    "KIT_HANDOFF_ISSUER", "KIT_HOSTING_KIND", "KIT_EVIDENCE_RETENTION_DAYS", "SITE_KIND",
+    "KIT_ZONE_READINESS_TEST_FIXTURE",
+    # The platform's own names for the repository and ref a composite action was fetched from
+    # (resolve-policy and reviewer-signals read them): identifiers, never states.
+    "GITHUB_ACTION_REPOSITORY", "GITHUB_ACTION_REF",
     # A SETTING, never a state: where the consumer census writes its record
     # (scripts/inventory_consumers.py, W4K-114).
     "CONSUMER_COVERAGE_OUT",
@@ -365,6 +378,15 @@ NOT_VOCABULARY = {
     # the token-host pin the pin checker reads, both set to local stand-ins by the ghe.com proofs.
     # The same class as PIN_ACTIONS' GITHUB_API_URL and SEARCH_PATHS above.
     "PIN_ACTIONS_API", "PIN_CHECK_TOKEN_HOST",
+    # D-11 (2026-11-02): SETTINGS and names, never states. gh's repository selector (GH_REPO, written
+    # HOST/OWNER/REPO by every step that sets it), the optional github.com-issued token the pin
+    # checkers may use for their REST fallback, and two Python constant names the proofs read
+    # (check_pinned_artifacts' SELF_TEST_GOOD pair, prove_ghe_host's simulated SERVER_URL).
+    "GH_REPO", "PIN_CHECK_GITHUB_COM_TOKEN", "SELF_TEST_GOOD", "SERVER_URL",
+    # prove_job_token_named.py's switch pointing it at another revision's tree (like KIT_PROOF_RESOLVE).
+    "KIT_PROOF_ROOT",
+    # The exporter's constant the proof reads to know a file is left out of every export by design.
+    "EXCLUDE_PATHS",
     # KDEC-029 (lane L-PROMO): SETTINGS and names, never states. The environment the promotion steps
     # read (the KEV composite's outputs passed in, the e2e command's PROMOTION_* context, the clock
     # override KIT_PROMOTION_NOW, the template's repository variable KIT_DAST_COMMAND, the runner's
@@ -429,6 +451,58 @@ NOT_VOCABULARY = {
     # SWA CLI reads its deployment token from SWA_CLI_DEPLOYMENT_TOKEN (its own setting, never ours). And
     # a constant of tests/_workflow_runner.py referenced as an attribute. None is a state.
     "ACR_LOGIN_SERVER", "IMAGE_REPOSITORY", "ARTIFACT_IDENTITY", "SWA_CLI_DEPLOYMENT_TOKEN", "PROMOTION_SIGNER",
+    # KDEC-035 (the kit's API, 2026-11-03): ENVIRONMENT-VARIABLE NAMES the API's client and server read
+    # -- where the API host is (KIT_API_URL), how the credential is presented (KIT_API_AUTH, a value of
+    # `proxy` or nothing), the token, the schema directory, and every value the reusable workflow hands
+    # the server phase as data (docs/api/README.md lists them). Each names a SETTING or carries a
+    # value; nothing branches on a name. The API's states are kit_api_state and kit_api_refusal.
+    "KIT_API_URL", "KIT_API_AUTH", "KIT_API_TOKEN", "KIT_API_SCHEMAS", "KIT_API_OPERATIONS",
+    "KIT_API_TICKET_BACKEND",
+    "KIT_API_REQUEST", "KIT_API_CORRELATION_ID", "KIT_API_IDEMPOTENCY_KEY", "KIT_API_DEFAULT_BRANCH",
+    "KIT_API_DEPLOY_ENVIRONMENTS", "KIT_API_BUILD_DEPLOY_ENVIRONMENTS", "KIT_API_INTAKE", "KIT_API_LEDGER",
+    "KIT_API_SECURITY_WORKFLOW", "KIT_API_REGISTRATION", "KIT_API_CENTRAL_REGISTRATION",
+    "KIT_API_GH_TICKET_TOKEN", "KIT_API_KEV_FEED_FILE", "KIT_API_KEV_SHA256", "KIT_API_KEV_UNAVAILABLE",
+    "KIT_API_KEV_URL", "KIT_API_TODAY", "KIT_API_OP_RESULT", "KIT_API_JOB_RESULT", "KIT_API_ROUTING_RESULT",
+    "KIT_API_ASSURANCE_STATE", "KIT_API_ADVISORY_CAUSES", "KIT_API_EVIDENCE_ARTIFACT", "KIT_API_CHECK_RUN_ID",
+    # And PYTHON CONSTANT NAMES of the API's modules, referenced as attributes from another module (so
+    # the structural assignment rule cannot see them): the state list, the write and default-enabled
+    # operation lists, the per-phase env table, two size limits, the correlation-id pattern, the KEV
+    # feed URL constant of scripts/known_exploited.py, the GitHub stand-in's host and URL constants
+    # (tests/_github_api_stub.py), and the Azure DevOps placeholder configuration of
+    # tests/prove_ticket_backends.py (the same class as JIRA_ENV). Containers, limits and URLs; never states.
+    "API_STATES", "WRITE_OPERATIONS", "DEFAULT_ENABLED", "ENV_BY_PHASE", "REQUEST_MAX", "RESULT_TEXT_MAX",
+    "CORRELATION_RE", "KEV_URL", "API_HOST", "API_URL", "BLOB_HOST", "AZDO_ENV",
+    # The CAB change-safety sheets (docs/security-review/CLOUD-CHECKS-AWS.md, 2026-11-03): AWS's own enum
+    # values, quoted exactly because a read-only review command takes them or prints them -- the policy
+    # type IAM Access Analyzer's validate-policy requires, the finding type it returns, and the Lambda
+    # function-URL auth type. Somebody else's identifiers, the same class as the TRIVY_* above; nothing
+    # in the kit emits or branches on them.
+    "IDENTITY_POLICY", "SECURITY_WARNING", "AWS_IAM",
+    # KDEC-037 (ticket templates, 2026-11-03): the ENVIRONMENT-VARIABLE NAMES of the owner's template
+    # settings and the review records' directory and approver list the reusable workflow hands the
+    # server (each names a setting; scripts/ticket_templates.py SETTING_DEFAULTS states its default),
+    # and PYTHON CONSTANT NAMES of the template modules referenced as attributes from another module:
+    # the template lists, the settings table, the default approver list name, the umbrella stamp's
+    # default and the stamp line's prefix of scripts/reconcile_tickets.py. Containers and names; the
+    # states are ticket_template_refusal, ticket_template_outcome, review_finalize_state and
+    # ticket_intake_state.
+    "KIT_API_EXTENSION_MAX", "KIT_API_EXTENSION_CEILING_DAYS", "KIT_API_NOFIX_EXEMPTION_DAYS",
+    "KIT_API_NOFIX_EXEMPTION_CEILING_DAYS", "KIT_API_NOFIX_RECHECK_DAYS", "KIT_API_REVIEW_MAX_AGE_DAYS",
+    "KIT_API_FUZZY_TITLE_PERCENT", "KIT_API_REVIEWS_DIR", "KIT_API_REVIEW_APPROVER_LIST",
+    "WRITE_TEMPLATES", "FINDING_BEARING", "SETTING_DEFAULTS", "DEFAULT_REVIEW_APPROVER_LIST",
+    "DEFAULT_STAMP_LABEL", "STAMP_PREFIX", "TEMPLATE_SETTING_ENV", "COMPLIANCE_TEMPLATES",
+    # KDEC-037 v2 (owner, 2026-11-04): more setting and wiring ENVIRONMENT-VARIABLE NAMES (the approver
+    # source, the team-read token, the branch-environment map, the approved tools and evidence stores),
+    # and PYTHON CONSTANT NAMES referenced across modules: scripts/ticket_submit.py's three answer
+    # states (they carry the registered API_* states), the Azure DevOps batch size, the default approver
+    # source, the disposition-request table and the set of terminal outcomes. Containers and names;
+    # the states are ticket_template_outcome and ticket_template_refusal.
+    "KIT_API_EXTENSION_DEFAULT_DAYS", "KIT_API_VENDOR_ADVISORY_EXTENSIONS", "KIT_API_VENDOR_ADVISORY_DAYS",
+    "KIT_API_NOFIX_REVIEW_DAYS", "KIT_API_EXCEPTION_MAX_DAYS", "KIT_API_VERIFICATION_REMINDER_DAYS",
+    "KIT_API_REVIEW_APPROVER_SOURCE", "KIT_API_TEAM_READ_TOKEN", "KIT_API_BRANCH_ENVIRONMENTS",
+    "KIT_API_APPROVED_TOOLS", "KIT_API_EVIDENCE_STORES", "ANSWER_COMPLETED", "ANSWER_FAILED",
+    "ANSWER_REFUSED", "AZDO_BATCH_MAX", "DEFAULT_APPROVER_SOURCE", "DISPOSITION_REQUESTS",
+    "TERMINAL_OUTCOMES",
 }
 
 TOKEN = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")

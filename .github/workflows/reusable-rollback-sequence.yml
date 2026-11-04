@@ -267,7 +267,7 @@ jobs:
           fi
           while read -r run_id attempt; do
             name="deploy-evidence-${run_id}-${attempt}"
-            if ! gh run download "$run_id" -R "$GITHUB_REPOSITORY" -n "$name" -D "$root/$name"; then
+            if ! gh run download "$run_id" -R "${GH_HOST}/${GITHUB_REPOSITORY}" -n "$name" -D "$root/$name"; then
               echo "::error title=Evidence not fetched::${name} could not be downloaded; the sequence step refuses the sequence"
             fi
           done < "$RUNNER_TEMP/rollback-runs.txt"
@@ -340,7 +340,7 @@ jobs:
           rc=0
           # A kit deployment that lands mid-sequence is fetched the same way as the listed ones.
           # shellcheck disable=SC2016
-          fetch='gh run download "$ROLLBACK_FETCH_RUN_ID" -R "$GITHUB_REPOSITORY" -n "deploy-evidence-${ROLLBACK_FETCH_RUN_ID}-${ROLLBACK_FETCH_RUN_ATTEMPT}" -D "$ROLLBACK_FETCH_DIR"'
+          fetch='gh run download "$ROLLBACK_FETCH_RUN_ID" -R "${GH_HOST}/${GITHUB_REPOSITORY}" -n "deploy-evidence-${ROLLBACK_FETCH_RUN_ID}-${ROLLBACK_FETCH_RUN_ATTEMPT}" -D "$ROLLBACK_FETCH_DIR"'
           hold=()
           if [ -n "${KIT_TARGET_LEASE_ACCOUNT:-}" ]; then
             # KDEC-030: the whole sequence runs HOLDING the target lease, renewed every 180 s through

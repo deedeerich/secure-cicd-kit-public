@@ -61,7 +61,8 @@ TOOL_MARKS = [
     ('semgrep', re.compile(r'pip3? install[^\n]*semgrep')),
     ('bandit', re.compile(r'pip3? install[^\n]*bandit')),
     ('detect-secrets', re.compile(r'pip3? install[^\n]*detect-secrets')),
-    ('trivy', re.compile(r'aquasecurity/trivy/[^\n]*install\.sh')),
+    # The pinned release binary since D-11 (2026-11-02); the release's install.sh before.
+    ('trivy', re.compile(r'aquasecurity/trivy/releases/download|aquasecurity/trivy/[^\n]*install\.sh')),
     ('osv-scanner', re.compile(r'google/osv-scanner/releases')),
     ('gosec', re.compile(r'securego/gosec/releases')),
     ('syft', re.compile(r'anchore/syft/releases')),

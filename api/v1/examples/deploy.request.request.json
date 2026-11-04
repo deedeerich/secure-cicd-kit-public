@@ -1,0 +1,17 @@
+{
+  "api_version": "v1",
+  "client": {
+    "name": "tines-3b-step",
+    "version": "1.0.0"
+  },
+  "correlation_id": "kapi-20261103T101500Z-000000000007",
+  "idempotency_key": "release:app:2026-11-03:prod",
+  "operation": "deploy.request",
+  "params": {
+    "environment": "prod",
+    "mode": "promote",
+    "promote_from_environment": "test",
+    "promote_from_run_id": 40812345678,
+    "release_path": "normal"
+  }
+}

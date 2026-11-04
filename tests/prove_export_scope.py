@@ -54,6 +54,18 @@ WHAT IT PROVES
         .git, .context, .claude, export profiles, the deny list or an overlay the copy's profile
         did not include. A clean export zips (the positive control), `--out ... --zip` packs the
         copy it has just written, and an existing zip is never overwritten.
+    E11 A KIT HOST'S PROFILE RECEIVES THE PRE-FLIGHT (owner ruling, 2026-11-03). A profile that
+        names the withheld consumer-path workflow with INCLUDE_PATH gets it in the full export, in
+        its zip (packed and re-packed by --zip-tree), recorded in the watermark (files and
+        included_paths), and in an incremental into a copy taken before the profile named it (a
+        NEW file there; a CONFLICT, left alone, where the destination already holds a different
+        file at that path). The neutral export still withholds it (E2, E6). Refused: INCLUDE_PATH
+        of a path the export does not withhold, and INCLUDE_PATH with no reason.
+    E12 THE REAL consumer-am COPY CARRIES THE PRE-FLIGHT AND WHAT IT NEEDS: consumer-path-test.yml,
+        consumer-path-negative.yml, every tracked file under tests/consumer-fixture/,
+        tests/make_fixture.py and tests/verify_expected_signals.py; and in that copy
+        tests/prove_job_token_named.py CHECKS the shipped workflow (no SOURCE-ONLY line for it)
+        and passes. Runs where the profile and its overlay exist (the source repository).
 
 USAGE  python3 tests/prove_export_scope.py
 EXIT   0 scope holds, 1 it does not, 2 the export could not be run
@@ -83,6 +95,10 @@ DENY_TEXT = ('# synthetic deny list for the proof\n'
              + '!zzqownername     || the synthetic owner identity, never liftable\n')
 PROFILE_TEXT = ('INCLUDE_OVERLAY ' + RECIPIENT + '\n'
                 'LIFT ' + RECIPIENT_TOKEN + '   || this copy is for them\n')
+# A kit host: the same recipient, plus the withheld pre-flight (E11).
+HOST = 'host-y'
+HOST_PROFILE_TEXT = (PROFILE_TEXT + 'INCLUDE_PATH ' + INTERNAL_WORKFLOW
+                     + '  || this copy is a kit host; the consumer path test is its pre-flight\n')
 
 
 def _git(args, cwd):
@@ -105,6 +121,7 @@ def make_source(work, deny_text):
     if deny_text is not None:
         _write(os.path.join(src, 'scripts', 'export-deny.txt'), deny_text)
     _write(os.path.join(src, 'scripts', 'export-profiles', RECIPIENT + '.txt'), PROFILE_TEXT)
+    _write(os.path.join(src, 'scripts', 'export-profiles', HOST + '.txt'), HOST_PROFILE_TEXT)
     _write(os.path.join(src, 'README.md'), 'a kit\n')
     _write(os.path.join(src, INTERNAL_WORKFLOW.replace('/', os.sep)), 'name: internal\n')
     _write(os.path.join(src, 'overlays', RECIPIENT, 'notes.md'), 'for ' + RECIPIENT_TOKEN + '\n')
@@ -222,6 +239,121 @@ def prove_excluded_path(fails):
             fails.append('E6 the incremental export shipped %s' % INTERNAL_WORKFLOW)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+def prove_host_profile_ships_preflight(fails):
+    """E11: INCLUDE_PATH sends the withheld workflow to a kit host's copy, and only there."""
+    work = tempfile.mkdtemp(prefix='export-host-')
+    wf = INTERNAL_WORKFLOW.replace('/', os.sep)
+    try:
+        src = make_source(work, DENY_TEXT)
+        dest = os.path.join(work, 'copy')
+        zp = os.path.join(work, 'copy.zip')
+        p = run_export(src, '--out', dest, '--profile', HOST, '--zip', zp)
+        if p.returncode != 0:
+            fails.append('E11 the kit-host full export failed: %s' % (p.stdout + p.stderr)[-600:])
+            return
+        if not os.path.isfile(os.path.join(dest, wf)):
+            fails.append('E11 the kit-host full export did not ship %s' % INTERNAL_WORKFLOW)
+        wm = json.load(open(os.path.join(dest, WATERMARK), encoding='utf-8'))
+        if INTERNAL_WORKFLOW not in wm.get('files', {}):
+            fails.append('E11 the kit-host watermark does not record %s as shipped' % INTERNAL_WORKFLOW)
+        if wm.get('included_paths') != [INTERNAL_WORKFLOW]:
+            fails.append('E11 the kit-host watermark does not name the included path (got %r)'
+                         % wm.get('included_paths'))
+        if not os.path.isfile(zp) or 'copy/' + INTERNAL_WORKFLOW not in _zip_names(zp):
+            fails.append('E11 the kit-host zip does not carry %s: %s' % (INTERNAL_WORKFLOW, (p.stdout + p.stderr)[-300:]))
+        again = os.path.join(work, 'again.zip')
+        q = run_export(src, '--zip-tree', dest, '--zip', again)
+        if q.returncode != 0 or 'copy/' + INTERNAL_WORKFLOW not in (_zip_names(again) if os.path.isfile(again) else []):
+            fails.append('E11 --zip-tree refused or dropped the included path in a kit-host copy: %s'
+                         % (q.stdout + q.stderr)[-300:])
+        # The neutral copy beside it still withholds the file, and its watermark names nothing.
+        neutral = os.path.join(work, 'neutral')
+        r = run_export(src, '--out', neutral)
+        if r.returncode != 0 or os.path.exists(os.path.join(neutral, wf)):
+            fails.append('E11 the neutral export beside a kit-host profile shipped %s (exit %d)'
+                         % (INTERNAL_WORKFLOW, r.returncode))
+        elif json.load(open(os.path.join(neutral, WATERMARK), encoding='utf-8')).get('included_paths') != []:
+            fails.append('E11 a neutral watermark names an included path')
+        # A copy taken under the host profile BEFORE it named the path: no file, no record.
+        old = os.path.join(work, 'old')
+        r = run_export(src, '--out', old, '--profile', HOST)
+        os.remove(os.path.join(old, wf))
+        wp = os.path.join(old, WATERMARK)
+        wmo = json.load(open(wp, encoding='utf-8'))
+        wmo['files'].pop(INTERNAL_WORKFLOW, None)
+        wmo['included_paths'] = []
+        with open(wp, 'w', encoding='utf-8') as f:
+            json.dump(wmo, f)
+        clash = os.path.join(work, 'clash')
+        shutil.copytree(old, clash)
+        _write(os.path.join(clash, wf), 'name: an older harness the destination holds\n')
+        _write(os.path.join(src, 'README.md'), 'a kit, moved on\n')
+        _git(['commit', '-qam', 'move on'], src)
+        r = run_export(src, '--into', old, '--profile', HOST, '--apply')
+        if r.returncode != 0 or not os.path.isfile(os.path.join(old, wf)):
+            fails.append('E11 an incremental into a kit-host copy taken before the profile named the '
+                         'path did not deliver it as new: %s' % (r.stdout + r.stderr)[-400:])
+        r = run_export(src, '--into', clash, '--profile', HOST, '--apply')
+        said = r.stdout + r.stderr
+        held = open(os.path.join(clash, wf), encoding='utf-8').read()
+        if 'CONFLICT' not in said or INTERNAL_WORKFLOW not in said or 'older harness' not in held:
+            fails.append('E11 an incremental over an older file at the included path did not report a '
+                         'CONFLICT and leave it alone: %s' % said[-400:])
+        # Refusals.
+        for label, line in (('a path the export does not withhold', 'INCLUDE_PATH README.md || why\n'),
+                            ('no reason', 'INCLUDE_PATH ' + INTERNAL_WORKFLOW + '\n'),
+                            ('the deny list', 'INCLUDE_PATH scripts/export-deny.txt || why\n')):
+            _write(os.path.join(src, 'scripts', 'export-profiles', 'bad.txt'), line)
+            out = os.path.join(work, 'bad-' + str(abs(hash(label))))
+            r = run_export(src, '--out', out, '--profile', 'bad', '--allow-dirty')
+            if r.returncode == 0 or os.path.exists(out):
+                fails.append('E11 INCLUDE_PATH with %s was not refused' % label)
+            elif 'INCLUDE_PATH' not in r.stdout + r.stderr:
+                fails.append('E11 the refusal of INCLUDE_PATH with %s does not name the directive: %s'
+                             % (label, (r.stdout + r.stderr)[-200:]))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+PREFLIGHT_NEEDS = ('.github/workflows/consumer-path-test.yml', '.github/workflows/consumer-path-negative.yml',
+                   'tests/make_fixture.py', 'tests/verify_expected_signals.py')
+
+
+def prove_real_host_copy(fails, env):
+    """E12: the real consumer-am copy carries the pre-flight and checks it."""
+    prof = os.path.join(ROOT, 'scripts', 'export-profiles', 'consumer-am.txt')
+    if not os.path.isfile(prof):
+        print('E12 not applicable: no consumer-am profile in this tree')
+        return
+    work = tempfile.mkdtemp(prefix='export-am-')
+    try:
+        out = os.path.join(work, 'copy')
+        p = subprocess.run([sys.executable, EXPORT, '--out', out, '--profile', 'consumer-am', '--allow-dirty'],
+                           cwd=ROOT, capture_output=True, text=True, encoding='utf-8', errors='replace', env=env)
+        if p.returncode != 0:
+            fails.append('E12 the consumer-am export failed: %s' % (p.stdout + p.stderr)[-600:])
+            return
+        for rel in PREFLIGHT_NEEDS:
+            if not os.path.isfile(os.path.join(out, rel.replace('/', os.sep))):
+                fails.append('E12 the consumer-am copy lacks %s' % rel)
+        q = subprocess.run(['git', '-C', ROOT, 'ls-files', '-z', '--', 'tests/consumer-fixture'],
+                           capture_output=True)
+        fixture = [n for n in q.stdout.decode('utf-8', 'replace').split('\0') if n]
+        lack = [n for n in fixture if not os.path.isfile(os.path.join(out, n.replace('/', os.sep)))]
+        if not fixture or lack:
+            fails.append('E12 the consumer-am copy lacks %d of %d fixture file(s): %s'
+                         % (len(lack), len(fixture), lack[:5]))
+        r = subprocess.run([sys.executable, os.path.join(out, 'tests', 'prove_job_token_named.py')], cwd=out,
+                           capture_output=True, text=True, encoding='utf-8', errors='replace',
+                           env=dict(env, PYTHONDONTWRITEBYTECODE='1'))
+        said = r.stdout + r.stderr
+        if r.returncode != 0 or 'SOURCE-ONLY ' + INTERNAL_WORKFLOW in said:
+            fails.append('E12 in the consumer-am copy prove_job_token_named.py did not CHECK the shipped %s and '
+                         'pass (exit %d): %s' % (INTERNAL_WORKFLOW, r.returncode, said.strip()[-300:]))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def prove_untracked_not_kit(fails):
     """E8: a file git does not track is not the kit, ignored or not.
 
@@ -398,6 +530,8 @@ def main():
             prove_excluded_path(fails)
             prove_untracked_not_kit(fails)
             prove_zip_refuses_leftovers(fails)
+            prove_host_profile_ships_preflight(fails)
+            prove_real_host_copy(fails, env)
         except RuntimeError as e:
             print('UNKNOWN: the synthetic source could not be built: %s' % e)
             return 2
@@ -409,7 +543,9 @@ def main():
             return 1
         print('PASS: the neutral export completes, ships the kit, and ships no continuity record,')
         print('      no overlay, no export profile, no deny list and no internal test workflow;')
-        print('      no deny list is a refusal; the profile is bound to the destination.')
+        print('      no deny list is a refusal; the profile is bound to the destination; a kit host')
+        print('      profile receives the consumer-path pre-flight (INCLUDE_PATH), and only it.')
+        print('      (E11, E12)')
         return 0
     finally:
         shutil.rmtree(work, ignore_errors=True)

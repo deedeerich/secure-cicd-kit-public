@@ -61,10 +61,17 @@ BASE_OUTPUTS = dict(
     [(k, "${{ steps.platform.outputs.%s }}" % k) for k in
      ("ghas_available", "code_scanning", "secret_scanning", "push_protection",
       "dependabot_alerts", "dependabot_updates", "dependabot_config", "visibility",
-      "platform_source", "push_ruleset", "branch_gate", "local_baseline")] +
+      "platform_source", "push_ruleset", "branch_gate", "local_baseline",
+      # The job token preflight's cause (KNOWN_DEFECTS D-11).
+      "token_preflight")] +
     # `codeql_matrix` is the next (cost redesign step 1, KDEC-033): one CodeQL leg per discovered
     # language, built in the job from the survey's own outputs (tests/prove_codeql_dynamic_matrix.py).
-    [("codeql_matrix", "${{ steps.cqm.outputs.codeql_matrix }}")])
+    [("codeql_matrix", "${{ steps.cqm.outputs.codeql_matrix }}")] +
+    # KDEC-036 G10/G6: deploy coverage and the evidence retention, from the survey part's own second
+    # step (`rs`, gated on the survey part); tests/prove_reviewer_signals.py R7 runs it as shipped.
+    [(k, "${{ steps.d.outputs.%s }}" % k) for k in ("no_kit_adapter", "deploy_targets", "evidence_retention_days")])
+# Survey outputs written by the survey part's `rs` step rather than its `d` step.
+SURVEY_RS = ("no_kit_adapter", "deploy_targets", "evidence_retention_days")
 
 
 def load_job_and_composite():
@@ -131,7 +138,7 @@ def wiring_checks():
         if sid not in PARTS:
             continue    # computed in the job from the parts' outputs (codeql_matrix), not by the composite
         part, inner = PARTS[sid]
-        want = "${{ steps.%s.outputs.%s }}" % (inner, k)
+        want = "${{ steps.%s.outputs.%s }}" % ("rs" if k in SURVEY_RS else inner, k)
         if str((cout.get(k) or {}).get("value", "")).strip() != want:
             bad.append("%s: composite value %r, want %r" % (k, (cout.get(k) or {}).get("value"), want))
     # That each step really WRITES its outputs is asserted by running it: see emitted_checks.
@@ -329,7 +336,7 @@ def main():
     # steps as shipped, not by reading their text (the survey writes most of its answers in a loop).
     surveyed = run_case(shell, ["app/main.py", "ops/deploy.sh"])
     for sid, got in (("d", surveyed), ("platform", plat)):
-        want = sorted(k for k, v in BASE_OUTPUTS.items() if "steps.%s." % sid in v)
+        want = sorted(k for k, v in BASE_OUTPUTS.items() if "steps.%s." % sid in v and k not in SURVEY_RS)
         missing = [k for k in want if k not in got]
         ok &= check_bool("step %s writes all %d of its outputs" % (sid, len(want)), not missing,
                          "never written: %s" % missing)

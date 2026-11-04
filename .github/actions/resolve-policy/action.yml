@@ -57,6 +57,7 @@ outputs:
   policy_known_exploited_exception_refusals: {description: JSON known-exploited exceptions refused by name, value: "${{ steps.r.outputs.policy_known_exploited_exception_refusals }}"}
   policy_history_state: {description: JSON per register - VERIFIED from git or UNVERIFIED (KDEC-022), value: "${{ steps.r.outputs.policy_history_state }}"}
   policy_max_exception_renewals: {description: the authority's exception renewal cap (KDEC-018), value: "${{ steps.r.outputs.policy_max_exception_renewals }}"}
+  policy_weakening_check: {description: "JSON weakening_authority_check of the caller's weakening record: approved only with evidence, reason, owner, an expiry within the ceiling and a listed approver who is not the requester (KDEC-036 G2, G3, owner rulings 2026-11-03)", value: "${{ steps.w.outputs.weakening_check }}"}
   policy_notices: {description: JSON visible notices that are not refusals (policy_notice; e.g. ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR), value: "${{ steps.r.outputs.policy_notices }}"}
 runs:
   using: composite
@@ -148,3 +149,18 @@ runs:
             echo "policy_stops_on_evidence_untrusted=true"; } >> "$GITHUB_OUTPUT"
         fi
         exit 0
+    # KDEC-036 G2, G3: the caller's weakening authority against the central register's approver lists
+    # (K-9), and its expiry against the ceiling. The posture step applies it to a weakening in force.
+    - name: Check the weakening record's authority and expiry
+      id: w
+      shell: bash
+      env:
+        W_SUPPLIED: ${{ inputs.supplied-inputs }}
+        # The released commit's author is read (contents read) so it can never approve its own exception.
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        set -uo pipefail
+        kit_root="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)"
+        python3 "${kit_root}/scripts/reviewer_signals.py" weakening \
+          --central "${kit_root}/policy/policy-registration.json" ||
+          echo "weakening_check={\"state\":\"\",\"why\":[\"the check could not run\"]}" >> "$GITHUB_OUTPUT"

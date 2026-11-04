@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/params/tickets.submit.schema.json",
+  "title": "params of tickets.submit",
+  "description": "Write tickets from a FINALIZED, human-concurred review, through templates (api/v1/tickets/<template>.schema.json), through the kit's reconciler. One template per call. Every item is validated against its template before anything is read from the tracker; the review record must be finalized with a human concurrence bound to this exact evidence set (API_REVIEW_NOT_FINALIZED otherwise); every ticket in the tracker -- manual ones included -- is searched before anything is created, and a candidate match is surfaced for a person, never merged unless exact. KDEC-037 (amending KDEC-035 O-35f and O-35g).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "template",
+    "template_version",
+    "items"
+  ],
+  "properties": {
+    "template": {
+      "type": "string",
+      "enum": [
+        "finding",
+        "false-positive",
+        "exception",
+        "exemption",
+        "accepted-risk",
+        "compliance-exception",
+        "mitigation",
+        "extension",
+        "nofix-recheck",
+        "closure",
+        "triage",
+        "vendor-dependency",
+        "remediation-subtask",
+        "review-finding",
+        "pentest-finding",
+        "audit-finding",
+        "cloud-misconfiguration",
+        "exposed-secret",
+        "licence",
+        "end-of-life",
+        "architecture-risk",
+        "access-review-finding",
+        "incident-follow-up",
+        "policy-deviation",
+        "control-gap"
+      ]
+    },
+    "template_version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 99,
+      "description": "2 (version 1 superseded 2026-11-04)."
+    },
+    "review_id": {
+      "description": "The finalized review whose concurrence authorises this write (.security/reviews/<review_id>.json on the default branch). Required for every template except a closure verified by a kit scan.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,79}$"
+    },
+    "items": {
+      "description": "The template payloads, 1 to 50.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "items": {
+        "type": "object"
+      }
+    },
+    "link_decisions": {
+      "description": "A person's decisions on candidate matches a dry run surfaced: link this finding to that existing ticket, or open a new one. Part of the evidence set the review concurred with.",
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "correlation_key",
+          "decision"
+        ],
+        "properties": {
+          "correlation_key": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "link",
+              "new"
+            ]
+          },
+          "ref": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}-[0-9]{1,12}$|^[0-9]{1,12}$"
+          }
+        }
+      }
+    }
+  }
+}

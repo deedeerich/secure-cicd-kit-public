@@ -24,15 +24,21 @@ runs:
         python3 -m pip install --quiet "bandit[sarif]==1.9.4"
         python3 -m pip install --quiet detect-secrets==1.5.0
 
-    - name: Trivy v0.71.2 (the release's own install script, from its tag)
+    - name: Trivy v0.71.2 (pinned release binary, sha256-verified)
       shell: bash
       run: |
         set -euo pipefail
-        # The install script from the RELEASE TAG, installing the SAME release. Never `main` and
-        # never `latest` (L84): a probe that installs whatever is current proves something about a
-        # tool nobody chose.
-        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/v0.71.2/contrib/install.sh \
-          | sudo sh -s -- -b /usr/local/bin v0.71.2
+        # The SAME release and digest every scan job installs (ledger L84, KDEC-027): a release
+        # asset from github.com, no token, verified here. It replaced the release's install.sh, a
+        # script the kit did not pin, run as root (D-11, 2026-11-02).
+        t=trivy_0.71.2_Linux-64bit.tar.gz
+        d="$RUNNER_TEMP/trivy-dl"; mkdir -p "$d"
+        curl -sSfL --retry 3 -o "$d/$t" "https://github.com/aquasecurity/trivy/releases/download/v0.71.2/$t"
+        echo "0510e71e2fd39bf863856d499c8dc19feb4e7336546394c502a8f5cc7ab27460  $d/$t" | sha256sum -c -
+        tar -xzf "$d/$t" -C "$d" trivy
+        sudo install -m 0755 "$d/trivy" /usr/local/bin/trivy
+        rm -rf "$d"
+        trivy --version | head -n 1
 
     - name: osv-scanner v2.6.0, gosec 2.24.6, syft 1.52.0, gitleaks 8.21.2 (release assets, checksummed)
       shell: bash

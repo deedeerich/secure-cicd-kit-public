@@ -1,0 +1,32 @@
+{
+  "api_state": "API_REFUSED",
+  "api_version": "v1",
+  "correlation_id": "kapi-20261103T101500Z-000000000010",
+  "data": {
+    "backend": "jira",
+    "dry_run": false,
+    "evidence_set_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "items": [],
+    "review": {
+      "approvers_source": "the review approvers file: approver_lists[review-concurrence]",
+      "concurred_by": "",
+      "facts": {},
+      "reasons": [
+        "R1: no record .security/reviews/USR-2026-11-03-001.json on the default branch"
+      ],
+      "review_id": "USR-2026-11-03-001",
+      "state": "REVIEW_NOT_FINALIZED"
+    },
+    "template": "finding",
+    "template_version": 1
+  },
+  "notes": [],
+  "operation": "tickets.submit",
+  "refusal": {
+    "code": "API_REVIEW_NOT_FINALIZED",
+    "detail": "REVIEW_NOT_FINALIZED: R1: no record .security/reviews/USR-2026-11-03-001.json on the default branch"
+  },
+  "repository": "example-org/payments-api",
+  "routing_result": "",
+  "transport": "workflow_dispatch"
+}

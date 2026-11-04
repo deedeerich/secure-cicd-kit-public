@@ -74,6 +74,14 @@ READINESS_PERMITS = ('READY', 'READY_WITH_EXCEPTIONS')
 ZONE_PERMITTED = 'ZONE_READINESS_PERMITTED'
 ZONE_NOT_REQUIRED = 'ZONE_READINESS_NOT_REQUIRED'
 ZONE_REFUSED = 'RELEASE_REFUSED_ZONE_NOT_READY'
+# readiness_source (KDEC-036 G1, owner ruling 2026-11-03): who issued the readiness value.
+SRC_LZ = 'READINESS_SOURCE_LZ_HANDOFF'
+SRC_APPSEC = 'READINESS_SOURCE_APPSEC_ATTESTATION'
+SRC_SELF = 'READINESS_SOURCE_SELF_SET_REFUSED'
+SRC_FIXTURE = 'READINESS_SOURCE_TEST_FIXTURE'
+SRC_ATT_REFUSED = 'READINESS_ATTESTATION_REFUSED'
+SRC_UNSET = 'READINESS_NOT_SET'
+SRC_REFUSED_AT_PRODUCTION = (SRC_SELF, SRC_ATT_REFUSED)
 
 # release_approval (K-1)
 APPROVAL_VERIFIED = 'RELEASE_APPROVAL_VERIFIED'
@@ -155,14 +163,43 @@ def decide_zone(tier, value):
                                             'UNKNOWN is never a pass' % (what, tier))
 
 
+def readiness_source():
+    """-> (source, the readiness value to judge). The readiness step (reviewer-signals) answers first; when
+    it did not, the source is derived from what this job sees: the landing zone's marker, or a value set
+    without it (self-set). Owner ruling 2026-11-03: the landing zone issues readiness when connected,
+    otherwise AppSec through the attestation file; the app or deploy team never sets it for itself."""
+    src, value = env('readiness_source').strip(), env('kit_zone_readiness').strip()
+    if not src:
+        marker = env('kit_handoff_issuer').strip().lower().split(':', 1)[0] == 'landing-zone'
+        src = SRC_LZ if marker else (SRC_SELF if value else SRC_UNSET)
+        if src == SRC_SELF and env('kit_zone_readiness_test_fixture').strip().lower() == 'true':
+            src = SRC_FIXTURE
+    if src == SRC_APPSEC:
+        value = env('attested_readiness').strip()
+    elif src in (SRC_ATT_REFUSED, SRC_UNSET):
+        value = ''
+    return src, value
+
+
 def cmd_zone(_a):
     tier = env('environment_tier').strip()
     block, block_ok, block_why = decide_block(env('kit_release_block'))
-    readiness, gate, zone_ok, zone_why = decide_zone(tier, env('kit_zone_readiness'))
-    output(release_block=block, zone_readiness=readiness, zone_readiness_gate=gate)
+    source, value = readiness_source()
+    readiness, gate, zone_ok, zone_why = decide_zone(tier, value)
+    if tier in PRODUCTION_TIERS and source in SRC_REFUSED_AT_PRODUCTION:
+        gate, zone_ok = ZONE_REFUSED, False
+        zone_why = ('%s: at %s readiness is issued by the landing zone (KIT_HANDOFF_ISSUER) or by AppSec '
+                    '(.kit/zone-readiness.json, approved by the AppSec list), never set by the app or deploy team '
+                    'for itself (owner ruling 2026-11-03)' % (source, tier))
+    output(release_block=block, zone_readiness=readiness, zone_readiness_gate=gate, readiness_source=source)
     summary('### Platform stop and zone readiness (before login)\n\n| check | outcome | why |\n|---|---|---|\n'
-            '| release block (K-3) | `%s` | %s |\n| zone readiness (K-2) | `%s` / `%s` | %s |'
-            % (block, block_why, readiness, gate, zone_why))
+            '| release block (K-3) | `%s` | %s |\n| zone readiness (K-2) | `%s` / `%s` | %s |\n'
+            '| readiness source (G1) | `%s` | %s |'
+            % (block, block_why, readiness, gate, zone_why, source,
+               'a TEST FIXTURE: KIT_ZONE_READINESS_TEST_FIXTURE is true' if source == SRC_FIXTURE else '-'))
+    if source == SRC_FIXTURE:
+        print('::warning title=Zone readiness is a TEST FIXTURE::KIT_ZONE_READINESS was set by the repository and '
+              'labelled a test fixture; it is not an issued readiness.')
     refused = []
     if not block_ok:
         refused.append('%s: %s' % (BLOCKED, block_why))
@@ -328,7 +365,8 @@ def cmd_approval(a):
     if notes:
         why = '%s (%s)' % (why, '; '.join(notes))
     refused = outcome not in APPROVAL_PERMITS
-    output(release_approval=outcome, release_approval_by=','.join(who))
+    by = ','.join(who)
+    output(release_approval=outcome, release_approval_by=by)
     summary('### Release approval (K-1, before login)\n\n`%s` at tier `%s`: %s' % (outcome, tier or 'none', why))
     if refused:
         print('::error title=Release refused before login (approval)::%s: %s. Nothing was deployed.' % (outcome, why))

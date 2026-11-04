@@ -234,6 +234,13 @@ def cmd_verify_artifact(a):
 
 
 # ----------------------------------------------------------------------------- V1
+def gh_host():
+    """This run's host for gh (KDEC-027): GH_HOST, else GITHUB_SERVER_URL's host, else github.com.
+    `gh attestation verify --repo` takes OWNER/REPO only, so the host goes in --hostname."""
+    h = os.environ.get('GH_HOST') or os.environ.get('GITHUB_SERVER_URL') or 'github.com'
+    return h.split('://', 1)[-1].split('/', 1)[0]
+
+
 def cmd_attestation(a):
     """V1 for a static site: the build's attestation of the marker file, verified before login. The
     same five outcomes and rung routing as the image V1 (PROVENANCE_AND_ATTESTATION.md 6.3)."""
@@ -250,6 +257,7 @@ def cmd_attestation(a):
     else:
         want = hashlib.sha256(io.open(marker, 'rb').read()).hexdigest()
         p = subprocess.run([shutil.which('gh'), 'attestation', 'verify', marker, '--repo', env('github_repository'),
+                            '--hostname', gh_host(),
                             '--signer-workflow', env('signer_workflow'), '--deny-self-hosted-runners',
                             '--format', 'json'], capture_output=True, text=True, encoding='utf-8', errors='replace')
         err = p.stderr or ''
@@ -359,7 +367,10 @@ def cmd_capture(a):
     if envs is None:
         return _unknown('The static site\'s environments could not be read.', snap)
     snap.update(resource_id=g(shown, 'id'), host=g(shown, 'defaultHostname'), tags=g(shown, 'tags') or {},
-                environments=sorted(envs))
+                environments=sorted(envs),
+                # KDEC-036 G4: a custom domain under a dev/test tier is the tier's reality signal.
+                reality={'public_ingress': True, 'min_replicas': 0,
+                         'custom_domains': [str(d) for d in (g(shown, 'customDomains') or [])]})
     prod = envs.get(PRODUCTION_BUILD)
     if not prod or str(prod.get('status') or '').lower() not in ('ready',):
         # MEASURED: both reads succeeded and production holds no build.

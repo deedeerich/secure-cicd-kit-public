@@ -266,6 +266,15 @@ jobs:
       github.event_name == 'workflow_dispatch') &&
       github.ref == format('refs/heads/{0}', inputs.default_branch)
     runs-on: ubuntu-latest
+    # ONE TICKET WRITER AT A TIME PER REPOSITORY (KDEC-035): the kit's API writes tickets through this
+    # same reconciler (reusable-kit-api.yml `tickets`), and a lookup-before-create is only a guarantee
+    # while no other writer creates between the lookup and the create. Both join this group: a running
+    # writer is never cancelled and a second one waits. GitHub keeps ONE waiting job per group, so a
+    # third arrival replaces the waiting one, which ends `cancelled` -- visible, never a silent pass;
+    # the next scheduled or merged run reconciles what it would have. tests/prove_kit_api_workflow.py W5.
+    concurrency:
+      group: kit-ticket-writes-${{ github.repository }}
+      cancel-in-progress: false
     environment: ${{ inputs.environment }}
     permissions:
       contents: read
@@ -383,6 +392,15 @@ jobs:
     # the default branch (TC 7.2). KDEC-028: a TEST run (any other branch, the guard decides from
     # the ref) uses the sandbox environment instead -- never the real one.
     environment: ${{ needs.guard.outputs.ticketing_mode == 'test' && inputs.test_environment || inputs.environment }}
+    # ONE TICKET WRITER AT A TIME PER REPOSITORY (KDEC-035): the kit's API writes tickets through this
+    # same reconciler (reusable-kit-api.yml `tickets`), and a lookup-before-create is only a guarantee
+    # while no other writer creates between the lookup and the create. Both join this group: a running
+    # writer is never cancelled and a second one waits. GitHub keeps ONE waiting job per group, so a
+    # third arrival replaces the waiting one, which ends `cancelled` -- visible, never a silent pass;
+    # the next scheduled or merged run reconciles what it would have. tests/prove_kit_api_workflow.py W5.
+    concurrency:
+      group: kit-ticket-writes-${{ github.repository }}
+      cancel-in-progress: false
     permissions:
       contents: read
     timeout-minutes: ${{ inputs.timeout_minutes }}

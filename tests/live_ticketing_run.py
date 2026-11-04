@@ -25,6 +25,23 @@ WHAT IT DOES
     R-3  the LIFECYCLE (KDEC-024) on ONE synthetic ticket: NEW, SLA escalation (comment, priority,
          label), closure on a verified clearance, RECURRED reopen, and closure again -- so the
          ticket ends closed. The reference date is advanced per step instead of waiting.
+    R-4  KDEC-037, the TRACKER half of ticket templates (Jira only): a ticket the runner files by hand
+         (no stamp) is surfaced as a CANDIDATE, a person's link decision labels it, the next submission
+         finds it EXACT, a new finding is created through the reconciler, extended once and closed by a
+         reviewer-verified closure, and the tracker intake reads the manual ticket back. The GitHub half
+         (the review record and its pull request approval) is the LOCAL stand-in: no GitHub host is
+         contacted, and no review here is a real person's concurrence. (Version 2 since 2026-11-04: a
+         link decision records a CLOSED DUPLICATE under the manual ticket.)
+    R-5  KDEC-037 version 2 (the owner's rulings, 2026-11-04), on Jira OR GitHub Issues: a finding is
+         CREATED with its trust and confidence on the ticket; the same finding from another tool with
+         new evidence is a CLOSED DUPLICATE (a sub-task / issue closed under the original) and the
+         original says what it added; a ticket the runner files by hand naming another finding's asset
+         and identifier makes that finding a POSSIBLE DUPLICATE, created in triage, then merged by a
+         person's triage; a search the RUNNER withholds for one call creates the ticket DEDUPE PENDING
+         and the next submission re-runs it; the fixer's resolve is PENDING VERIFICATION, then a
+         verifier who is not the fixer closes it.
+    INTAKE  read only (every write blocked by the runner): the search-first intake adapter pages
+         through every ticket of the project (Azure DevOps, Jira or GitHub Issues).
 
 SAFETY
 
@@ -42,6 +59,9 @@ USAGE
     python tests/live_ticketing_run.py --backend azdo --env-file .env --confirm-live --phase r2
     python tests/live_ticketing_run.py --backend jira --env-file .env --confirm-live \
         --phase r2-after-human --run-dir <dir printed by the r2 run>
+    GH_TOKEN=... TICKET_REPO=owner/repo TICKET_STAMP_LABEL=secure-cicd-kit TICKET_CALIBRATION_REF=<n> \
+        python tests/live_ticketing_run.py --backend github --env-file .env --confirm-live --phase r5
+      (github values may come from the process environment: a token is never written to a file)
 
 EXIT  0 every check held   1 a check failed   2 refused to start (missing value, no
       --confirm-live, misuse)
@@ -63,7 +83,8 @@ sys.path.insert(0, os.path.join(ROOT, 'scripts'))
 SECRET_MARKERS = ('TOKEN', 'PAT', 'EMAIL', 'PASSWORD', 'SECRET')
 SHARED = ('TICKET_BACKEND', 'TICKET_STAMP_LABEL', 'TICKET_CREATE_CEILING', 'TICKET_RETRY_CEILING',
           'TICKET_INSTANCE_THRESHOLD', 'TICKET_DEGRADED_RUN_THRESHOLD')
-PREFIX = {'jira': 'JIRA_', 'azdo': 'AZDO_'}
+PREFIX = {'jira': 'JIRA_', 'azdo': 'AZDO_', 'github': 'GH_'}
+GITHUB_KEYS = ('GH_TOKEN', 'TICKET_REPO', 'TICKET_STAMP_LABEL', 'TICKET_CALIBRATION_REF')
 
 
 class Transcript(object):
@@ -109,7 +130,7 @@ class WriteBlocker(object):
 
 def backend_env(values, backend):
     env = dict((k, v) for k, v in values.items()
-               if k.startswith(PREFIX[backend]) or k in SHARED)
+               if k.startswith(PREFIX[backend]) or k in SHARED or (backend == 'github' and k in GITHUB_KEYS))
     if backend == 'azdo' and not env.get('AZDO_ORG_URL') and values.get('AZDO_ORG'):
         env['AZDO_ORG_URL'] = values['AZDO_ORG']
     env['TICKET_BACKEND'] = backend
@@ -351,11 +372,409 @@ def r3(rt, env, tr, run_dir):
     return ok
 
 
+def _await_search(rt, env, tr, text, ck_label, want_ref, seconds=120):
+    """Jira's enhanced search is eventually consistent: wait (bounded) until `want_ref` is found."""
+    import ticket_intake as ti
+    deadline = time.time() + seconds
+    while True:
+        b, _n = rt.choose_backend(env)
+        b.set_routing(None, '', [])
+        tickets, state, _d = ti.JiraIntake(b).search_all(text=text, ck_label=ck_label)
+        if any(t['ref'] == str(want_ref) for t in tickets):
+            return True
+        if time.time() > deadline:
+            tr.say('       the search did not show ticket %s within %d s (state %s)' % (want_ref, seconds, state))
+            return False
+        time.sleep(10)
+
+
+def r4(rt, env, tr, run_dir):
+    """KDEC-037 live, the TRACKER half: templates, dedupe against a MANUAL ticket, a confirmed link, an exact
+    re-find, a created ticket, an extension and a reviewer-verified closure, and the tracker intake -- on the
+    owner's PERSONAL Jira. The GitHub half (the review record and the approval of its pull request) is the
+    local GitHub stand-in: no GitHub host is contacted, and no review here is a real person's concurrence."""
+    import kit_api as ka
+    import kit_api_server as ks
+    import prove_kit_api_server as ps
+    import ticket_templates as tt
+    marker = time.strftime('%Y%m%d%H%M%S')
+    io.open(os.path.join(run_dir, 'marker'), 'w').write(marker)
+    ident = 'LIVE-R4-%s' % marker
+    rid = '/subscriptions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/resourceGroups/kit-live/providers/' \
+          'Microsoft.Storage/storageAccounts/live%s' % marker
+    f = tt.example_finding(identifier=ident, title='kit live r4 %s storage allows TLS 1.0' % marker,
+                           asset=dict(tt.example_finding()['asset'], resource_id=rid))
+    ok = True
+    b, note = rt.choose_backend(env)
+    if b is None:
+        tr.say('R-4 refused: %s' % note)
+        return False
+    good, detail = b.validate()
+    if not good:
+        tr.say('R-4 refused at run start: %s' % detail)
+        return False
+    # A PERSON'S TICKET: made by the runner, standing in for a person, with no stamp and no kit label.
+    doc, status, err = b._req('POST', '/rest/api/3/issue', {'fields': {
+        'project': {'key': env['JIRA_PROJECT']}, 'summary': 'kit live r4 %s TLS 1.0 still on' % marker,
+        'issuetype': {'name': b.type_cluster},
+        'description': rt.adf_from_text('Filed by hand (kit live test r4): %s allows TLS 1.0 (%s).' % (rid, ident))}})
+    manual = str((doc or {}).get('id') or '')
+    tr.say('R-4  the runner, standing in for a person, filed ticket %s (%s) with no stamp: %s'
+           % (manual, (doc or {}).get('key'), err or status))
+    if not manual:
+        return False
+    ok = _await_search(rt, env, tr, ident, '', manual) and ok
+    w = ps.World(ka, env, run_dir, [])
+    w.env.update({'KIT_API_OPERATIONS': w.env['KIT_API_OPERATIONS'] + ',tickets.submit',
+                  'KIT_API_TODAY': time.strftime('%Y-%m-%d'), 'KIT_API_REVIEWS_DIR': os.path.join(run_dir, 'reviews')})
+    os.makedirs(w.env['KIT_API_REVIEWS_DIR'], exist_ok=True)
+    io.open(os.path.join(w.env['KIT_API_REVIEWS_DIR'], 'approvers.json'), 'w', encoding='utf-8').write(
+        json.dumps({'approver_lists': {'review-concurrence': ['live-r4-reviewer']}}))
+    n = [0]
+
+    def submit(params, dry=False):
+        n[0] += 1
+        review = 'LIVE-R4-%s-%02d' % (marker, n[0])
+        p = dict(params, review_id=review)
+        rec = {'schema': 'kit-review-record/2', 'review_id': review, 'status': 'FINALIZED', 'decision': 'AGREE',
+               'submitted_by': 'tines-kit-app[bot]', 'concurred_by': 'live-r4-reviewer',
+               'concurred_on': time.strftime('%Y-%m-%d'), 'evidence_set_sha256': tt.evidence_set_sha256(p),
+               'statement': 'live r4: a stand-in concurrence (local GitHub stand-in)'}
+        io.open(os.path.join(w.env['KIT_API_REVIEWS_DIR'], '%s.json' % review), 'w', encoding='utf-8').write(
+            json.dumps(rec))
+        w.stub.merge_review_record('.security/reviews/%s.json' % review, '%040x' % (900 + n[0]), 900 + n[0],
+                                   'tines-kit-app[bot]', ['live-r4-reviewer'])
+        res, _seen, _i = w.call(ks, 'tickets.submit', p, key='live-r4-%s-%02d' % (marker, n[0]), dry_run=dry)
+        return res
+
+    def items(res):
+        return (res.get('data') or {}).get('items') or []
+
+    base = {'template': 'finding', 'template_version': 2, 'items': [f]}
+    ck = tt.normalize('finding', f, {})['correlation_key']
+    res = submit(base, dry=True)
+    it = (items(res) or [{}])[0]
+    held = manual in [c['ref'] for c in it.get('candidates') or []]
+    tr.say('R-4  dry run: the manual ticket is a CANDIDATE, nothing written: %s  (%s)'
+           % ('HELD' if held else 'FAILED', json.dumps(it, sort_keys=True)[:300]))
+    ok = ok and held
+    res = submit(dict(base, link_decisions=[{'correlation_key': ck, 'decision': 'link', 'ref': manual}]))
+    it = (items(res) or [{}])[0]
+    labels, _o, _d = rt.choose_backend(env)[0].labels_of(manual)
+    held = it.get('outcome') == tt.TEMPLATE_CLOSED_DUPLICATE and ('secure-cicd-kit-ck-%s' % ck) in labels
+    tr.say('R-4  a person\'s link decision: a closed duplicate under the manual ticket, which is labelled: %s  (labels %s)'
+           % ('HELD' if held else 'FAILED', labels))
+    ok = ok and held
+    ok = _await_search(rt, env, tr, ident, 'secure-cicd-kit-ck-%s' % ck, manual) and ok
+    res = submit(base)
+    it = (items(res) or [{}])[0]
+    held = it.get('outcome') == tt.TEMPLATE_LINKED_EXACT and it.get('ref') == manual
+    tr.say('R-4  the next submission finds it EXACT: %s  (%s, basis %s)' % ('HELD' if held else 'FAILED',
+                                                                              it.get('outcome'), it.get('basis')))
+    ok = ok and held
+    g = tt.example_finding(identifier=ident + '-NEW', title='kit live r4 %s a second finding' % marker,
+                           asset=dict(tt.example_finding()['asset'], resource_id=rid + '-b'))
+    res = submit({'template': 'finding', 'template_version': 2, 'items': [g]})
+    it = (items(res) or [{}])[0]
+    created = it.get('ref')
+    held = it.get('outcome') == tt.TEMPLATE_TICKET_CREATED and bool(created)
+    tr.say('R-4  a finding no ticket tracks is CREATED through the reconciler: %s  (ticket %s %s)'
+           % ('HELD' if held else 'FAILED', created, it.get('key')))
+    ok = ok and held
+    if created:
+        exp = time.strftime('%Y-%m-%d', time.localtime(time.time() + 30 * 86400))
+        res = submit({'template': 'extension', 'template_version': 2, 'items': [{
+            'ref': created, 'new_expiry': exp, 'reason': 'kit live r4: the vendor moved the date by a month',
+            'extensions_used': 0, 'requested_by': 'app-team', 'evidence': f['evidence'], 'waiting_on': 'fix'}]})
+        labels, _o, _d = rt.choose_backend(env)[0].labels_of(created)
+        held = res.get('api_state') == 'API_COMPLETED' and 'secure-cicd-kit-extension-1' in labels
+        tr.say('R-4  extension 1 of 2 recorded on the ticket: %s' % ('HELD' if held else 'FAILED'))
+        ok = ok and held
+        res = submit({'template': 'closure', 'template_version': 2, 'items': [{
+            'ref': created, 'action': 'verify', 'requested_by': 'app-team', 'fixed_by': 'dev-one',
+            'evidence': f['evidence'],
+            'verification': {'kind': 'reviewer'}}]})
+        held = res.get('api_state') == 'API_COMPLETED' and (items(res) or [{}])[0].get('outcome') == \
+            tt.TEMPLATE_TICKET_CLOSED
+        tr.say('R-4  reviewer-verified closure closed it: %s  (%s)' % ('HELD' if held else 'FAILED',
+                                                                     res.get('notes')[-2:]))
+        ok = ok and held
+    res, _s, _i = w.call(ks, 'tickets.search', {'tracker_query': {'jql': 'text ~ "\\"%s\\""' % ident,
+                                                                 'max_results': 10}})
+    got = [t['ref'] for t in (res.get('data') or {}).get('tickets') or []]
+    held = res.get('api_state') == 'API_COMPLETED' and manual in got
+    tr.say('R-4  tracker intake reads the manual ticket back with its link: %s  (%s)' % (
+        'HELD' if held else 'FAILED', got))
+    ok = ok and held
+    tr.say('R-4  tickets for a PERSON to clean up (the bridge has no delete): %s %s'
+           % (manual, created or ''))
+    return ok
+
+
+def _file_manual(b, env, summary, text):
+    """The RUNNER, standing in for a person, files a ticket with no stamp and no kit label."""
+    import reconcile_tickets as rt
+    if b.name == 'github':
+        doc, status, err = b._req('POST', '/repos/%s/issues' % b.repo, {'title': summary, 'body': text})
+        return str((doc or {}).get('number') or ''), (doc or {}).get('number'), err or status
+    if b.name == 'azdo':
+        ref, detail = b._create(b.type_cluster, summary, [], text, None)
+        return ref or '', ref, detail
+    doc, status, err = b._req('POST', '/rest/api/3/issue', {'fields': {
+        'project': {'key': env['JIRA_PROJECT']}, 'summary': summary, 'issuetype': {'name': b.type_cluster},
+        'description': rt.adf_from_text(text)}})
+    return str((doc or {}).get('id') or ''), (doc or {}).get('key'), err or status
+
+
+def _await_any(rt, env, tr, text, want_ref, seconds=120):
+    """Search is eventually consistent (Jira, the GitHub search API): wait, bounded, for `want_ref`."""
+    import ticket_intake as ti
+    deadline = time.time() + seconds
+    while True:
+        b, _n = rt.choose_backend(env)
+        if hasattr(b, 'set_routing'):
+            b.set_routing(None, '', [])
+        tickets, state, _d = ti.adapter_for(b).search_all(text=text)
+        if any(str(t['ref']) == str(want_ref) for t in tickets):
+            return True
+        if time.time() > deadline:
+            tr.say('       the search did not show ticket %s within %d s (state %s)' % (want_ref, seconds, state))
+            return False
+        time.sleep(10)
+
+
+def _status(b, ref):
+    if b.name == 'github':
+        doc, _s, _e = b._req('GET', '/repos/%s/issues/%s' % (b.repo, ref))
+        return (doc or {}).get('state') or ''
+    if b.name == 'azdo':
+        doc, _s, _e = b._req('GET', '/_apis/wit/workitems/%s?fields=System.State' % ref)
+        st = ((doc or {}).get('fields') or {}).get('System.State') or ''
+        return 'done' if st == b.state_done else st
+    doc, _s, _e = b._req('GET', '/rest/api/3/issue/%s?fields=status' % ref)
+    return ((((doc or {}).get('fields') or {}).get('status') or {}).get('statusCategory') or {}).get('key') or ''
+
+
+def _body(b, ref):
+    desc, ok, _d = b.read_description(ref)
+    return b.description_text(desc) if ok else ''
+
+
+def r5(rt, env, tr, run_dir, backend):
+    """KDEC-037 version 2 on the owner's PERSONAL tracker (Jira project or a GitHub test repository)."""
+    import kit_api as ka
+    import kit_api_server as ks
+    import prove_kit_api_server as ps
+    import ticket_intake as ti
+    import ticket_templates as tt
+    marker = time.strftime('%Y%m%d%H%M%S')
+    io.open(os.path.join(run_dir, 'marker'), 'w').write(marker)
+    ident = 'LIVE-R5-%s' % marker
+    rid = '/subscriptions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/resourceGroups/kit-live/providers/' \
+          'Microsoft.Storage/storageAccounts/r5%s' % marker
+    asset = dict(tt.example_finding()['asset'], resource_id=rid)
+    ok = True
+    b, note = rt.choose_backend(env)
+    if b is None:
+        tr.say('R-5 refused: %s' % note)
+        return False
+    good, detail = b.validate() if hasattr(b, 'validate') else b.probe()
+    if not good:
+        tr.say('R-5 refused at run start: %s' % detail)
+        return False
+    stamp = getattr(b, 'stamp_label', '') or 'secure-cicd-kit'
+    w = ps.World(ka, env, run_dir, [])
+    w.env.update({'KIT_API_OPERATIONS': w.env['KIT_API_OPERATIONS'] + ',tickets.submit',
+                  'KIT_API_TODAY': time.strftime('%Y-%m-%d'), 'KIT_API_REVIEWS_DIR': os.path.join(run_dir, 'reviews'),
+                  'TICKET_BACKEND': backend})
+    if backend == 'github':
+        w.env['KIT_API_GH_TICKET_TOKEN'] = env['GH_TOKEN']
+        # The kit API's own GitHub calls go to the local stand-in; the TRACKER is the real GitHub
+        # Issues of the personal test repository (a runner-only split: in a workflow both are the run host).
+        orig = ks.tracker_env
+        ks.tracker_env = lambda e: dict(orig(e), GITHUB_API_URL='https://api.github.com')
+    os.makedirs(w.env['KIT_API_REVIEWS_DIR'], exist_ok=True)
+    io.open(os.path.join(w.env['KIT_API_REVIEWS_DIR'], 'approvers.json'), 'w', encoding='utf-8').write(
+        json.dumps({'approver_lists': {'review-concurrence': ['live-r5-reviewer']}}))
+    n = [0]
+    made = []
+
+    def submit(params, review=True):
+        n[0] += 1
+        p = dict(params)
+        if review:
+            rid_ = 'LIVE-R5-%s-%02d' % (marker, n[0])
+            p['review_id'] = rid_
+            rec = {'schema': 'kit-review-record/2', 'review_id': rid_, 'status': 'FINALIZED', 'decision': 'AGREE',
+                   'submitted_by': 'tines-kit-app[bot]', 'concurred_by': 'live-r5-reviewer',
+                   'concurred_on': time.strftime('%Y-%m-%d'), 'evidence_set_sha256': tt.evidence_set_sha256(p),
+                   'statement': 'live r5: a stand-in concurrence (local GitHub stand-in)'}
+            io.open(os.path.join(w.env['KIT_API_REVIEWS_DIR'], '%s.json' % rid_), 'w', encoding='utf-8').write(
+                json.dumps(rec))
+            w.stub.merge_review_record('.security/reviews/%s.json' % rid_, '%040x' % (950 + n[0]), 950 + n[0],
+                                       'tines-kit-app[bot]', ['live-r5-reviewer'])
+        res, _seen, _i = w.call(ks, 'tickets.submit', p, key='live-r5-%s-%02d' % (marker, n[0]))
+        for i in (res.get('data') or {}).get('items') or []:
+            for r_ in (i.get('ref'), i.get('duplicate_ref')):
+                if r_ and r_ not in made:
+                    made.append(r_)
+        return res
+
+    def first(res):
+        return (((res.get('data') or {}).get('items')) or [{}])[0]
+
+    def say(label, held, extra):
+        tr.say('R-5  %s: %s  (%s)' % (label, 'HELD' if held else 'FAILED', extra))
+        return held
+
+    def fresh():
+        return rt.choose_backend(env)[0]
+
+    # 1. CREATED, with trust and confidence on the ticket and in the answer.
+    f = tt.example_finding(identifier=ident, title='kit live r5 %s storage allows TLS 1.0' % marker, asset=asset,
+                           source_tool='defender')
+    res = submit({'template': 'finding', 'template_version': 2, 'items': [f]})
+    it = first(res)
+    orig_ref = it.get('ref')
+    body = _body(fresh(), orig_ref) if orig_ref else ''
+    ok = say('a finding is CREATED with trust and confidence on the ticket and in the answer',
+             it.get('outcome') == tt.TEMPLATE_TICKET_CREATED and isinstance(it.get('trust'), int) and
+             isinstance(it.get('confidence'), int) and '| trust score |' in body and '| confidence score |' in body,
+             'ticket %s, trust %s [%s], confidence %s' % (orig_ref, it.get('trust'), it.get('trust_basis'),
+                                                        it.get('confidence'))) and ok
+    if not orig_ref:
+        return False
+    # 2. EXACT: the same finding from another tool, new evidence, a severity change -> a closed duplicate.
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        smap, _c, _d = fresh().sweep()
+        if any(str(h.get('ref')) == str(orig_ref) for hits in smap.values() for h in hits):
+            break
+        time.sleep(10)
+    g = dict(f, source_tool='prowler', source_type='usr', severity='critical',
+             evidence={'ref': 'usr/live-r5/2', 'sha256': '7' * 64})
+    res = submit({'template': 'finding', 'template_version': 2, 'items': [g]})
+    it = first(res)
+    ok = say('the same finding from another tool is a CLOSED DUPLICATE under the original',
+             it.get('outcome') == tt.TEMPLATE_CLOSED_DUPLICATE and it.get('original_ref') == orig_ref,
+             'outcome %s, original %s, duplicate record %s' % (it.get('outcome'), it.get('original_ref'),
+                                                               it.get('duplicate_ref'))) and ok
+    # 3. NEAR: a person's ticket names the asset and identifier of a NEW finding -> created, flagged, triage.
+    ident2 = ident + '-NEAR'
+    manual, mkey, mstat = _file_manual(fresh(), env, 'kit live r5 %s TLS on r5b' % marker,
+                                       'Filed by hand (kit live r5): %s-b allows TLS 1.0 (%s).' % (rid, ident2))
+    tr.say('R-5  the runner, standing in for a person, filed ticket %s (%s) with no stamp: %s' % (manual, mkey, mstat))
+    if manual:
+        made.append(manual)
+        ok = _await_any(rt, env, tr, ident2, manual) and ok
+    h = tt.example_finding(identifier=ident2, title='kit live r5 %s near' % marker,
+                           asset=dict(asset, resource_id=rid + '-b'))
+    res = submit({'template': 'finding', 'template_version': 2, 'items': [h]})
+    it = first(res)
+    pd = it.get('ref')
+    labels = fresh().labels_of(pd)[0] if pd else []
+    ok = say('a near match is CREATED, flagged possible-duplicate and put in triage',
+             it.get('outcome') == tt.TEMPLATE_POSSIBLE_DUPLICATE and '%s-possible-duplicate' % stamp in labels and
+             '%s-triage' % stamp in labels, 'ticket %s, labels %s, candidates %s' % (
+                 pd, labels, [c.get('ref') for c in it.get('candidates') or []])) and ok
+    if pd and manual:
+        res = submit({'template': 'triage', 'template_version': 2, 'items': [
+            {'ref': pd, 'original_ref': manual, 'decision': 'merge', 'triaged_by': 'live-r5-triager',
+             'reason': 'kit live r5: the hand-filed ticket is the same storage account and rule'}]})
+        it = first(res)
+        ok = say('a person\'s triage MERGE closes it as a duplicate of the hand-filed ticket',
+                 it.get('outcome') == tt.TEMPLATE_CLOSED_DUPLICATE and _status(fresh(), pd) in ('done', 'closed'),
+                 'outcome %s, status %s' % (it.get('outcome'), _status(fresh(), pd))) and ok
+    # 4. PENDING: the runner withholds the search for ONE call -> created in triage, dedupe-pending.
+    real = ti.adapter_for
+    ti.adapter_for = lambda bk, name='': ti.NotConfigured('withheld', 'the live runner withheld the search for '
+                                                                     'this one call (R-5 pending dedupe)')
+    try:
+        k = tt.example_finding(identifier=ident + '-PEND', title='kit live r5 %s pending' % marker,
+                               asset=dict(asset, resource_id=rid + '-c'))
+        res = submit({'template': 'finding', 'template_version': 2, 'items': [k]})
+    finally:
+        ti.adapter_for = real
+    it = first(res)
+    pend = it.get('ref')
+    labels = fresh().labels_of(pend)[0] if pend else []
+    ok = say('a search that did not complete still CREATES the ticket, dedupe-pending, in triage',
+             it.get('outcome') == tt.TEMPLATE_DEDUPE_PENDING and '%s-dedupe-pending' % stamp in labels,
+             'ticket %s, labels %s' % (pend, labels)) and ok
+    # The stamp sweep is a listing that can lag a just-created ticket (GitHub's label listing, Jira's search):
+    # the pending pass runs on the next run THAT SEES IT. Wait, bounded, so this run's next submission does.
+    deadline = time.time() + 120
+    while pend and time.time() < deadline:
+        smap, _c, _d = fresh().sweep()
+        if any(str(h.get('ref')) == str(pend) for hits in smap.values() for h in hits):
+            break
+        time.sleep(10)
+    m = tt.example_finding(identifier=ident + '-NEXT', title='kit live r5 %s next' % marker,
+                           asset=dict(asset, resource_id=rid + '-d'))
+    res = submit({'template': 'finding', 'template_version': 2, 'items': [m]})
+    labels = fresh().labels_of(pend)[0] if pend else []
+    ok = say('the next submission re-runs the pending dedupe',
+             '%s-dedupe-done' % stamp in labels and bool((res.get('data') or {}).get('dedupe_rechecked')),
+             'labels %s, rechecked %s' % (labels, (res.get('data') or {}).get('dedupe_rechecked'))) and ok
+    # 5. CLOSURE: the fixer resolves (pending), then a verifier who is not the fixer closes it.
+    ev = {'ref': 'pull/live-r5', 'sha256': 'd' * 64}
+    res = submit({'template': 'closure', 'template_version': 2, 'items': [{
+        'ref': orig_ref, 'action': 'resolve', 'requested_by': 'live-r5-fixer', 'fixed_by': 'live-r5-fixer',
+        'evidence': ev, 'verification': {'kind': 'reviewer'}}]}, review=False)
+    it = first(res)
+    labels = fresh().labels_of(orig_ref)[0]
+    ok = say('the fixer\'s resolve is PENDING VERIFICATION and the approvers are notified',
+             it.get('outcome') == tt.TEMPLATE_PENDING_VERIFICATION and '%s-pending-verification' % stamp in labels
+             and _status(fresh(), orig_ref) not in ('done', 'closed') and
+             bool((res.get('data') or {}).get('notifications')),
+             'labels %s, notifications %s' % (labels, (res.get('data') or {}).get('notifications'))) and ok
+    res = submit({'template': 'closure', 'template_version': 2, 'items': [{
+        'ref': orig_ref, 'action': 'verify', 'requested_by': 'live-r5-fixer', 'fixed_by': 'live-r5-fixer',
+        'evidence': ev, 'verification': {'kind': 'reviewer'}}]})
+    it = first(res)
+    st = _status(fresh(), orig_ref)
+    ok = say('a verifier who is not the fixer CLOSES it (Closed-Verified)',
+             it.get('outcome') == tt.TEMPLATE_TICKET_CLOSED and st in ('done', 'closed'),
+             'outcome %s, status %s, verified by %s' % (it.get('outcome'), st, it.get('verified_by'))) and ok
+    if backend == 'github':
+        ks.tracker_env = orig
+    tr.say('R-5  tickets for a PERSON to clean up (the bridge has no delete): %s' % ', '.join(str(x) for x in made))
+    io.open(os.path.join(run_dir, 'cleanup.json'), 'w', encoding='utf-8').write(json.dumps(made))
+    return ok
+
+
+def intake_only(rt, env, tr, blocker):
+    """READ ONLY: every write is blocked by the runner. The search-first adapter pages through the project."""
+    import ticket_intake as ti
+    blocker.block_writes = True
+    b, note = rt.choose_backend(env)
+    if b is None and env.get('TICKET_BACKEND') == 'azdo' and not env.get('AZDO_STAMP_FIELD'):
+        # READ ONLY needs no stamp field: the backend refuses to be built without one (it would write), so the
+        # runner builds the reader directly; with no stamp field every work item reads as unstamped.
+        b = rt.AzureDevOps(env.get('AZDO_ORG_URL') or env.get('AZDO_ORG'), env['AZDO_PROJECT'], env['AZDO_PAT'], '')
+        tr.say('INTAKE  no AZDO_STAMP_FIELD: read only, every work item reads as unstamped (%s)' % note[:80])
+    if b is None:
+        tr.say('INTAKE refused: %s' % note)
+        return False
+    if hasattr(b, 'set_routing'):
+        b.set_routing(None, '', [])
+    ad = ti.adapter_for(b)
+    tickets, state, detail = ad.search_all(page_size=50)
+    manual = sum(1 for x in tickets if not x.get('stamp'))
+    tr.say('INTAKE  %s adapter: %s -- %s; %d ticket(s), %d with no kit stamp' % (
+        getattr(ad, 'name', '?'), state, detail, len(tickets), manual))
+    for x in tickets[:5]:
+        tr.say('        %s %s [%s] %s' % (x.get('key'), x.get('state'), ','.join(x.get('labels') or []),
+                                         str(x.get('summary'))[:60]))
+    tr.say('INTAKE  writes attempted and blocked: %d' % len(blocker.blocked))
+    return state == ti.TRACKER_INTAKE_COMPLETE and not blocker.blocked
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description='Live R-1/R-2/R-3 against a PERSONAL tracker.')
-    ap.add_argument('--backend', choices=['jira', 'azdo'], required=True)
+    ap.add_argument('--backend', choices=['jira', 'azdo', 'github'], required=True)
     ap.add_argument('--env-file', default=os.path.join(ROOT, '.env'))
-    ap.add_argument('--phase', choices=['r1', 'r2', 'r2-after-human', 'r3'], default='r1')
+    ap.add_argument('--phase', choices=['r1', 'r2', 'r2-after-human', 'r3', 'r4', 'r5', 'intake'], default='r1')
     ap.add_argument('--run-dir', default='')
     ap.add_argument('--confirm-live', action='store_true',
                     help='required: this contacts the tracker the .env names')
@@ -366,9 +785,19 @@ def main(argv=None):
         print('REFUSED: no env file at %s' % args.env_file)
         return 2
     values = check_env.load(args.env_file)
+    if args.backend == 'github':
+        # A GitHub token comes from the process environment (e.g. the gh CLI), never from a file here.
+        values = dict(values, **dict((k, os.environ[k]) for k in GITHUB_KEYS if os.environ.get(k)))
+        for k in [k for k in values if k.startswith(('JIRA_', 'AZDO_'))]:
+            values.pop(k)
     alias = check_env.ALIASES
-    missing = [k for k in check_env.REQUIRED[args.backend]
-               if not (values.get(k) or values.get(alias.get(k, '')))]
+    need = check_env.REQUIRED[args.backend]
+    if args.phase == 'intake':
+        # Read only: the connection is all an intake needs (no stamp field, epic or calibration).
+        need = dict((k, v) for k, v in need.items() if k in (
+            'AZDO_ORG_URL', 'AZDO_PROJECT', 'AZDO_PAT', 'JIRA_HOST', 'JIRA_EMAIL', 'JIRA_TOKEN', 'JIRA_PROJECT',
+            'GH_TOKEN', 'TICKET_REPO', 'TICKET_STAMP_LABEL'))
+    missing = [k for k in need if not (values.get(k) or values.get(alias.get(k, '')))]
     if missing:
         print('REFUSED: required for %s and missing: %s' % (args.backend, ', '.join(missing)))
         return 2
@@ -397,6 +826,16 @@ def main(argv=None):
             ok = r2(rt, env, tr, run_dir)
         elif args.phase == 'r3':
             ok = r3(rt, env, tr, run_dir)
+        elif args.phase == 'r5':
+            ok = r5(rt, env, tr, run_dir, args.backend)
+        elif args.phase == 'intake':
+            ok = intake_only(rt, env, tr, blocker)
+        elif args.phase == 'r4':
+            if args.backend != 'jira':
+                tr.say('R-4 is Jira only: the tracker intake adapter is Jira (KDEC-017 item 5; KDEC-037 O-37h)')
+                ok = False
+            else:
+                ok = r4(rt, env, tr, run_dir)
         else:
             ok = r2_after_human(rt, env, tr, run_dir)
         tr.say('RESULT: %s' % ('HELD' if ok else 'FAILED'))

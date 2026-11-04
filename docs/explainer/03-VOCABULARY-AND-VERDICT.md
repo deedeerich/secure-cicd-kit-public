@@ -32,10 +32,10 @@ invent synonyms (`risk-accepted` is not `ACCEPTED_RISK`, and a near-miss reads a
 | `discovery_state` | `COMPLETE` · `DISCOVERY_PARTIAL` · `DISCOVERY_UNAVAILABLE` | whether applicability could be established at all |
 | `evidence_artifact` | `security-report-<attempt>` | the artifact the report actually uploaded; it holds the per-scanner state files, the redacted SARIF they name, and `findings.json` |
 | **`routing_result`** | five values below | **the verdict. Deploy reads this.** |
-| `advisory_causes` | comma list of `VERSION_GAP` · `VERSION_GAP_UNVERIFIED` · `COVERAGE_PARTIAL` · `WEAKENING_ATTRIBUTED` · `FINDINGS_NOT_BLOCKED` · `SECRET_EXCEPTION_ATTRIBUTED` | set only when `routing_result` is `PROCEED_WITH_ADVISORY`: WHY it is advisory. Pass it to the deploy beside `routing_result` (KDEC-014) |
+| `advisory_causes` | comma list of `VERSION_GAP` · `VERSION_GAP_UNVERIFIED` · `COVERAGE_PARTIAL` · `WEAKENING_ATTRIBUTED` · `WEAKENING_NOT_APPROVED` · `FINDINGS_NOT_BLOCKED` · `SECRET_EXCEPTION_ATTRIBUTED` | set only when `routing_result` is `PROCEED_WITH_ADVISORY`: WHY it is advisory. Pass it to the deploy beside `routing_result` (KDEC-014) |
 | `controls_required`, `controls_executed`, `controls_unavailable`, `controls_reduced`, `controls_skipped` | comma lists | the control posture |
 | `weakenings` | JSON array | every input that governs a control, with class, baseline, value, state |
-| `weakening_attribution` | `WEAKENING_AT_BASELINE` · `WEAKENING_ATTRIBUTED` · `WEAKENING_UNATTRIBUTED` · `WEAKENING_EXCEPTION_EXPIRED` | whether a person stands behind a weakening |
+| `weakening_attribution` | `WEAKENING_AT_BASELINE` · `WEAKENING_ATTRIBUTED` · `WEAKENING_NOT_APPROVED` · `WEAKENING_SELF_APPROVED` · `WEAKENING_UNATTRIBUTED` · `WEAKENING_EXCEPTION_EXPIRED` | whether a weakening is approved: an evidence reference, a reason, a named owner, an expiry inside the ceiling and an approver on a registered list who is not the requester (KDEC-036, owner rulings 2026-11-03). Not approved: recorded at crawl, refused by a uat/prod deploy; self-approved: BLOCKED everywhere |
 | `weakening_record` | JSON object | reason, authority, exception reference, expiry |
 | `policy_resolution`, `policy_source`, `policy_chain` | `POLICY_RESOLVED` or a refusal by name · `KIT_DEFAULT` / `REGISTER` · entry ids | the policy the verdict was reached under (lane L-A; `docs/adoption/POLICY_REGISTER.md`) |
 | `rung_declared`, `rung_effective`, `policy_mode` | `crawl` · `walk` · `run`; `adoption` · `strict` (derived) | the rung the gate obeyed; no input can set either |

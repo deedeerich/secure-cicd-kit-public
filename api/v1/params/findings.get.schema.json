@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/params/findings.get.schema.json",
+  "title": "params of findings.get",
+  "description": "Read one finding of a security run by its durable identity or its fingerprint. Exactly one of the two.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "run_id": {
+      "description": "A completed run of the repository's security caller on the default branch, by id, or \"latest\" for the newest such run that kept its evidence.",
+      "type": [
+        "integer",
+        "string"
+      ],
+      "minimum": 1,
+      "pattern": "^latest$"
+    },
+    "finding_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16,128}$"
+    },
+    "fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8,128}$"
+    }
+  },
+  "required": [
+    "run_id"
+  ]
+}

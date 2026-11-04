@@ -81,6 +81,14 @@ def check(files, load):
             ov = re.match(r'^(.*[\\/]overlays[\\/][^\\/]+)[\\/]templates[\\/]', f)
             if ov and str(job.get('uses')).startswith('./'):
                 callee_path = os.path.join(ov.group(1), 'workflows', os.path.basename(m.group(1)))
+            # KDEC-035: a STARTER TEMPLATE calls ./.github/workflows/<f>, which in the consumer's
+            # repository is the starter templates/<f> copied beside it (templates/kit-api.yml calls
+            # build-deploy.yml so a release requested through the API runs through its gates).
+            tp = re.match(r'^(.*)[\\/]templates[\\/][^\\/]+$', f)
+            if tp and not ov and str(job.get('uses')).startswith('./'):
+                beside = os.path.join(tp.group(1), 'templates', os.path.basename(m.group(1)))
+                if os.path.isfile(beside):
+                    callee_path = beside
             if not os.path.isfile(callee_path):
                 bad.append('%s job %s: calls %s, which does not exist' % (rel(f), jname, m.group(1)))
                 continue

@@ -439,6 +439,14 @@ def check_document(doc, origin):
         _cap, why = eh.cap_from_numbers(doc['numbers'])
         if why:
             bad(why)
+    ceil = (doc.get('numbers') or {}).get('weakening_expiry_ceiling_days') if isinstance(doc.get('numbers'), dict) else None
+    if ceil is not None:
+        # KDEC-036 G3: how far out a weakening's expiry may lie -- the AUTHORITY's number (default 90).
+        if origin == ORIGIN_REPOSITORY:
+            bad('numbers.weakening_expiry_ceiling_days belongs to the central register: the ceiling is set at '
+                'the authority\'s scope')
+        elif isinstance(ceil, bool) or not isinstance(ceil, int) or not 1 <= ceil <= 365:
+            bad('numbers.weakening_expiry_ceiling_days is %r; it must be an integer from 1 to 365' % (ceil,))
     pols = doc.get('policies')
     if not isinstance(pols, list):
         bad('policies is missing or not a list')

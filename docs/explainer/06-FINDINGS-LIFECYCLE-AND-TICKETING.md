@@ -136,6 +136,35 @@ Azure DevOps and GitHub stand-ins; the Jira half also live, R-3).**
 - **Turning it on**: TICKETING_CONTRACT.md section 13 (environment, secrets, variables, register,
   permissions).
 
+**Findings from outside the scan, and tickets from a finalized review (KDEC-037; VERIFIED locally only:
+`prove_ticket_templates.py`).** USR reviews, cloud tools (any Azure cloud, Azure Government, AWS),
+pentests and audits come in through the API's `tickets.submit` as versioned templates (finding; the
+false-positive, accepted-risk, mitigation and exemption REQUESTS; extension; no-fix re-check;
+closure), normalised into this same finding model with their provenance and an asset identity (repo
+path, Azure resource, AWS ARN, GitHub repository, engagement id). Nothing is written until a person's
+concurrence with the finalized review is on the protected branch (the review record's pull request,
+which she approved), bound to exactly what will be written. Before any create, every ticket in the
+tracker -- manual ones included -- is searched: the kit's stamp or correlation-key label is the ticket;
+the same asset and identifier, or a close title, is a candidate a person confirms, never a merge.
+Closure is verified (a kit scan or the approved reviewer, never the requester or fixer); extensions
+are counted and capped; a no-fix finding gets a short ticket-level exemption and a re-check, and
+reopens as remediation when a fix ships. A **corroboration score** (0..100, its derivation attached)
+sits beside the correlation tier and never replaces it.
+
+**Version 2, the owner's rulings of 2026-11-04 (KDEC-037; VERIFIED locally: `prove_ticket_intake_v2.py`;
+live on her personal Jira and GitHub Issues).** Nobody approves their own work: the submitter, the
+engineer an AI run was for, the triager, the requester and the fixer never concur on it
+(`docs/ticketing/SEPARATION-OF-DUTIES.md`), and a reviewer may DISAGREE with an alternative, which sends
+the item back. Any security-team member (a list in `approver_lists`, or a GitHub team) may concur. The
+fixer's close is pending verification; another person or the kit's rescan on the branch mapped to the
+ticket's environment closes it (`BRANCH-SCAN-AND-CLOSURE-PROPOSAL.md`). An exact match is a closed
+duplicate under the original, which records what it added; a closed original newly seen is a regression;
+a near match is created for a person's triage; a search that did not finish creates the ticket pending;
+an unreachable tracker keeps the item in an outbox. No item disappears. Each ticket shows **trust**
+(how far the source and its custody are trusted) beside the confidence. The requests now follow the
+owner's taxonomy (false positive, exception, exemption, accepted risk, compliance exception, mitigation),
+with her extension and no-fix clocks; Azure DevOps and GitHub Issues are searched as Jira is.
+
 **Exceptions come back onto their tickets** (KDEC-018, lane L-FX; VERIFIED locally:
 `prove_exception_due.py`). A ticket reference is required for a secret exception but never authorises
 it: only the merged register entry does. A weekly workflow (`reusable-exception-due.yml`, called by

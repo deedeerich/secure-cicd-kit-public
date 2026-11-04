@@ -1837,8 +1837,10 @@ namespaces:
   # ─────────────────────────────────────────────────────────────────────────
   ticket_class:
     description: >-
-      WHAT A TICKET IS ASKING FOR. Five classes, and the first of them asks nobody for anything —
-      it is work. The other four are REQUESTS for a disposition, and a request is made by a person.
+      WHAT A TICKET IS ASKING FOR. Eight classes, and the first of them asks nobody for anything —
+      it is work. The others are REQUESTS for a disposition, and a request is made by a person.
+      (EXCEPTION_REQUEST, EXEMPTION_REQUEST and COMPLIANCE_EXCEPTION_REQUEST added 2026-11-04,
+      KDEC-037 O-37f: the owner's taxonomy.)
       Proposed as CANDIDATE in docs/architecture/TICKETING_CONTRACT.md section 9.1 and registered
       here on 2026-10-08 because scripts/reconcile_tickets.py now branches on the distinction.
     consumers: [scripts/reconcile_tickets.py, promotion review, audit]
@@ -1892,6 +1894,29 @@ namespaces:
           reference. Requires a claimable first-seen or an explicit record that the age is
           unestablished — assuming the age is how a finding introduced yesterday joins the
           day-one cohort.
+      EXCEPTION_REQUEST:
+        definition: >-
+          A request to let a real finding stand, ALWAYS time-limited (at most 90 days) and for a
+          SPECIFIC scope (from, to, condition), with a justification and compensating controls.
+        results_in: ACCEPTED_RISK
+        rule: >-
+          Not a false positive (it was mapped to FALSE_POSITIVE_REQUEST until 2026-11-04; fixed). It
+          results in the registered ACCEPTED_RISK with its scope and expiry; the disposition register
+          has no separate EXCEPTION type (open question O-37l).
+      EXEMPTION_REQUEST:
+        definition: >-
+          A request in the accepted-risk family for something "there to stay": it may have a time
+          limit and has a review cadence.
+        results_in: ACCEPTED_RISK
+        rule: >-
+          Reviewed on its cadence; the expiry, when present, is never renewed by silence.
+      COMPLIANCE_EXCEPTION_REQUEST:
+        definition: >-
+          The stricter request: the framework, the control id, the requirement text, the scope,
+          compensating controls, an expiry and a named approving authority.
+        results_in: ACCEPTED_RISK
+        rule: >-
+          The named authority approves it; the security team's concurrence alone does not.
 
   # ─────────────────────────────────────────────────────────────────────────
   ticket_lookup_outcome:
@@ -2873,6 +2898,10 @@ namespaces:
           so this refusal is the protocol's, backed by review and the recorded reason, not by RBAC.
       LEASE_STORE_UNREACHABLE:
         definition: The lease could not be read or written; fail closed, nothing is mutated. A lease that cannot be read is not free.
+      LEASE_NOT_IN_FORCE:
+        definition: >-
+          KIT_TARGET_LEASE_ACCOUNT is unset: no lease was taken, nothing serialises the landing zone and
+          the kit on this target (KDEC-036 G5 records it as an output, beside SEAM_OWNERSHIP_NOT_IN_FORCE).
       LEASE_TARGET_NOT_VENDED:
         definition: >-
           The target's lease container does not exist: the landing zone vends it with the target, and a
@@ -3005,7 +3034,16 @@ namespaces:
       RELEASE_RECORD_NOT_KEPT:
         definition: >-
           No record was written: none to keep, a record of that name already exists (never overwritten),
-          the container was never vended, or the store could not be reached. The step fails.
+          the container was never vended, or the store could not be reached. The step fails. With the
+          lease off (KDEC-036 G6): the Deployments API refused or could not be reached (deployments: write
+          missing, a network fault); the step fails.
+      RELEASE_RECORD_KEPT_DEPLOYMENT:
+        definition: >-
+          KDEC-036 G6, the lease OFF: the record is a GitHub deployment (task kit-release-record) whose
+          payload is the release record, with a status (success when DEPLOY_HEALTHY) -- the cheapest
+          durable store a private repository without GitHub Advanced Security has on GHE.com
+          (deployments: write; no plan, no licence; kept until deleted). Weaker than the lease store: a
+          token holding deployments: write can mark it inactive and delete it.
 
   seam_field_drift:
     description: >-
@@ -3295,6 +3333,25 @@ namespaces:
         rule: >-
           Reverts to owing a decision. Silence NEVER renews a weakening; that is the mechanism,
           exactly as it is for an expired disposition and an expired validation deferral.
+      WEAKENING_NOT_APPROVED:
+        definition: >-
+          A weakening record that is not approved (KDEC-036 G2/G3, owner rulings 2026-11-03): it lacks one
+          of an evidence reference (weakening_exception_ref), a reason, a named owner (weakening_authority),
+          an expiry within the ceiling (central numbers.weakening_expiry_ceiling_days, default 90) or an
+          approver (weakening_approver) on a K-9 approver list; or no list is registered; or the released
+          commit's author could not be read; or the check did not answer. The missing fields are named.
+        rule: >-
+          Not approved. The run proceeds at crawl and the control stays counted as weakened (the advisory
+          cause WEAKENING_NOT_APPROVED); a uat or prod deploy refuses it before login. An exception with no
+          expiry is never approved, in any mode. Team membership is not resolved: the approver is matched
+          by name against the list.
+      WEAKENING_SELF_APPROVED:
+        definition: >-
+          The owner or the approver named in the weakening record is the requester, the actor or the
+          released commit's author (KDEC-036, owner ruling 2026-11-03).
+        rule: >-
+          Never approved, in any mode and at any tier: the security gate routes BLOCKED, and every deploy
+          refuses it before login.
 
   # ─────────────────────────────────────────────────────────────────────────
   routing_result:
@@ -3425,6 +3482,10 @@ namespaces:
         rule: >-
           Never a clean result. Not a version gap, so the deploy records it. Any catalogued CVE not
           excepted and the run is BLOCKED (known_exploited.FINDING_KNOWN_EXPLOITED).
+      WEAKENING_NOT_APPROVED:
+        definition: A weakening in force whose record is not approved (a field missing, named; KDEC-036).
+        reuses: control_weakening.WEAKENING_NOT_APPROVED
+        rule: The deploy registers it, and refuses it before login at uat and prod; below uat it is recorded.
       KEV_UNAVAILABLE:
         definition: >-
           The CISA KEV catalog could not be read on this run (unreachable, malformed, or the check
@@ -4374,6 +4435,51 @@ namespaces:
       DEPTH_REDUCED:
         {definition: "A scanner that ran with a narrower suite or scope than its fullest setting. NOT NOT_APPLICABLE -- 'we looked less hard this time' and 'there was nothing to look at' are different statements about coverage, and collapsing them is how a PR-speed run reads as full assurance."}
 
+  # -------------------------------------------------------------------------
+  # The job token preflight (KNOWN_DEFECTS D-11, 2026-11-02). Not a scanner state and not a finding:
+  # whether GitHub accepted the job's own token on this run's host, and if not, which of five things
+  # refused it.
+  api_token_preflight:
+    description: >-
+      The answer to one GET /repos/{owner}/{repo} with the job's own github.token on this run's host
+      (the discover job's platform step; the consumer path's preflight steps), and the same word for
+      every later API refusal (the resolve platform consumers, the pin checkers' UNKNOWN). Classified
+      by scripts/api_token_cause.sh and, identically, tests/_github_refs.py api_cause.
+    consumers: [discover job (token_preflight output and summary), resolve platform step (dependabot_basis),
+                consumer-path-test.yml preflight steps, tests/check_pinned_artifacts.py,
+                tests/check_action_pins.py, tests/prove_job_token_named.py]
+    rule: >-
+      NAMED ONCE, NEVER A SCAN RESULT. A refusal never becomes PASS, absent or clean: every value the
+      refused call would have established stays UNKNOWN / UNAVAILABLE with this cause beside it. No
+      text the server sent is echoed, written to an output or put in an annotation -- only the word,
+      the HTTP status and fixed text. A refusal is never reported as a rate limit, and a rate limit
+      never as a rejected token.
+    values:
+      TOKEN_ACCEPTED:
+        definition: The API answered 200 to the job's own token on this run's host.
+      JOB_TOKEN_REJECTED:
+        definition: >-
+          401 Bad credentials to the job's own token. Organisation owner, then workflow maintainer:
+          check GITHUB_SERVER_URL against the API host the call went to (a ghe.com token is refused
+          by github.com, KDEC-027), the organisation IP allow list, Actions workflow permissions, a
+          proxy stripping or replacing Authorization, and a step overriding GH_TOKEN/GITHUB_TOKEN.
+        rule: Never RATE_LIMITED and never API_UNREACHABLE; every API-derived value stays UNKNOWN.
+      ORG_IP_ALLOW_LIST_BLOCKS_RUNNER:
+        definition: 403 naming the organisation's IP allow list. Organisation owner.
+        rule: A platform setting, not a token fault and not a kit defect.
+      ORG_SSO_BLOCKS_TOKEN:
+        definition: >-
+          403 naming SAML single sign-on enforcement. Organisation owner. The job's own token is exempt
+          from SSO, so a step put a personal or app token in GH_TOKEN/GITHUB_TOKEN.
+      RATE_LIMITED:
+        definition: 403/429 naming a primary or secondary rate limit. Workflow maintainer; re-run after the reset.
+        rule: Not a rejected token. Lookups it stopped are UNKNOWN, never PASS.
+      API_UNREACHABLE:
+        definition: No HTTP answer (DNS, connect, TLS, timeout) from the API host or, for the pin checkers, from github.com by git. Runner administrator.
+      TOKEN_PREFLIGHT_UNCLASSIFIED:
+        definition: Any other refusal (a 403 for a missing scope, a 404, a 5xx), or no answer the kit could read.
+        rule: Workflow maintainer reads the step log. Never TOKEN_ACCEPTED.
+
   platform_applicability:
     description: >-
       WHETHER A CAPABILITY COULD HAVE RUN AT ALL -- a different axis from whether it did. The
@@ -5120,3 +5226,534 @@ namespaces:
           A floor identity produced no evidence row, a floor entry vanished without a tombstone, a
           tombstone lacks its decision, or a gap decision expired. Also: the floor could not be read.
         rule: The gate fails. Not a finding, so advisory_mode does not soften it.
+  # KDEC-035 (PROPOSED, 2026-11-03): the kit's API -- versioned, schema-defined calls from another
+  # program (Tines 3B first) through GitHub dispatches; scripts/kit_api.py, scripts/kit_api_server.py,
+  # api/v1/, templates/kit-api.yml, .github/workflows/reusable-kit-api.yml, docs/api/README.md.
+  kit_api_state:
+    description: >-
+      Where a call to the kit's API is (KDEC-035). Stated in every API result (api_state) and
+      by the client's status command; a caller branches on it.
+    consumers: [scripts/kit_api.py, scripts/kit_api_server.py, api/v1/result.schema.json,
+                tests/prove_kit_api_client.py, tests/prove_kit_api_server.py]
+    rule: >-
+      ONLY API_COMPLETED IS A FINISHED CALL, and only when a result that validates and names the
+      call's correlation id was read. API_ACCEPTED is "received", never "done"; a finished run
+      without a readable result is API_RESULT_UNREADABLE; a bounded wait that runs out returns the
+      last word it saw. None of these is ever a gate input.
+    values:
+      API_ACCEPTED:
+        definition: >-
+          The dispatch was received by GitHub (the client's answer to submit). Received, never done: no run has read the request yet.
+      API_NOT_FOUND:
+        definition: >-
+          No run carries this correlation id yet. A dispatch can take seconds to appear; not found is not refused and not failed.
+      API_QUEUED:
+        definition: >-
+          The run that answers the call exists and has not started.
+      API_IN_PROGRESS:
+        definition: >-
+          The run is executing the call.
+      API_AWAITING_APPROVAL:
+        definition: >-
+          The run is waiting on a GitHub environment's required reviewers (a release). A person approves; the API never does.
+      API_COMPLETED:
+        definition: >-
+          The call did what it was asked; its data carries the kit's own words for what that was (a routing_result, a ticketing_state, a deployment outcome). Completed is not clean: a completed scan can carry BLOCKED.
+      API_REFUSED:
+        definition: >-
+          The call was refused by name (kit_api_refusal) before anything it asked for was done.
+      API_FAILED:
+        definition: >-
+          The call was accepted and could not be carried out (a tracker unreachable, a release that did not report its outcome, a dispatch GitHub did not take). Never a success.
+      API_CANCELLED:
+        definition: >-
+          The run was cancelled before it wrote a result (for instance a newer pending request with the same idempotency key replaced it). Resubmit with the same key.
+      API_RESULT_UNREADABLE:
+        definition: >-
+          The run finished and no result that validates against api/v1/result.schema.json and names this correlation id could be read. A finished run is not a finished call.
+  kit_api_refusal:
+    description: >-
+      Why the kit's API refused a call, by name (KDEC-035). The same set as api/v1/refusals.json,
+      which carries each one's remedy; tests/prove_kit_api_client.py K2 fails when they differ.
+    consumers: [scripts/kit_api.py, scripts/kit_api_server.py, api/v1/refusals.json,
+                docs/api/README.md, tests/prove_kit_api_server.py]
+    rule: >-
+      A REFUSAL IS MADE BEFORE ANYTHING IT GUARDS IS DONE, and names one cause. The API never
+      bypasses a gate the kit already has: a refusal here can only add a "no", never remove one.
+    values:
+      API_HOST_NOT_NAMED:
+        definition: >-
+          No API host was named (KIT_API_URL, GITHUB_API_URL or GH_HOST). The client never assumes
+          github.com. (refused by: client.) Remedy: Name the host the credential was issued by, e.g.
+          GH_HOST=<tenant>.ghe.com.
+      API_HOST_INSECURE:
+        definition: >-
+          The API URL is not https (plain http is accepted only to a loopback address). (refused by:
+          client.) Remedy: Use the https API URL.
+      API_CREDENTIAL_ABSENT:
+        definition: >-
+          No token in GH_TOKEN, GITHUB_TOKEN or KIT_API_TOKEN, and KIT_API_AUTH is not proxy. (refused
+          by: client.) Remedy: Supply the token, or set KIT_API_AUTH=proxy where a credential proxy
+          adds it (Tines 3B connectors).
+      API_REQUEST_UNPARSEABLE:
+        definition: >-
+          The request is not a JSON object. (refused by: intake.) Remedy: Send the envelope of
+          api/v1/request.schema.json.
+      API_REQUEST_TOO_LARGE:
+        definition: >-
+          The serialised request is over 60000 characters (a dispatch input holds 65535). (refused by:
+          client,intake.) Remedy: Select fewer findings; page a search.
+      API_VERSION_UNSUPPORTED:
+        definition: >-
+          api_version is not one this kit serves (v1). (refused by: client,intake.) Remedy: Send
+          api_version v1.
+      API_OPERATION_UNKNOWN:
+        definition: >-
+          The operation is not in the v1 contract. (refused by: client,intake.) Remedy: Use an
+          operation docs/api/README.md lists.
+      API_OPERATION_NOT_ENABLED:
+        definition: >-
+          The repository has not enabled this operation (vars.KIT_API_OPERATIONS; writes are off until
+          enabled). (refused by: intake.) Remedy: The repository owner enables it, or call another
+          repository.
+      API_SCHEMA_VIOLATION:
+        definition: >-
+          A field breaks the schema; `field` names it. (refused by: client,intake.) Remedy: Correct
+          the named field.
+      API_CORRELATION_MISMATCH:
+        definition: >-
+          The run's correlation_id input and the request's correlation_id differ, or either is
+          malformed. (refused by: intake.) Remedy: Send the same correlation id in both; let the
+          client make it.
+      API_IDEMPOTENCY_KEY_REQUIRED:
+        definition: >-
+          A write (tickets.write, tickets.comment, deploy.request) came without an idempotency key, or
+          the key input and the request's key differ. (refused by: client,intake.) Remedy: Send one
+          key per intended write, the same in both places.
+      API_DUPLICATE_REQUEST:
+        definition: >-
+          This idempotency key was already used; the first call's correlation id is named and nothing
+          was done again. (refused by: intake.) Remedy: Read the first call's result with status.get.
+      API_IDEMPOTENCY_UNVERIFIED:
+        definition: >-
+          Whether the key was used before could not be read, so a write was not risked. (refused by:
+          intake.) Remedy: Retry with the same key; the run says what could not be read.
+      API_REF_NOT_DEFAULT_BRANCH:
+        definition: >-
+          A ticket or deploy operation was dispatched on a ref other than the protected default
+          branch. (refused by: intake.) Remedy: Dispatch on the default branch (the client does unless
+          --ref is given).
+      API_TRANSPORT_NOT_PERMITTED:
+        definition: >-
+          deploy.request arrived by repository_dispatch, whose token class (contents: write) the API
+          does not accept for a release. (refused by: intake.) Remedy: Send it by workflow_dispatch.
+      API_REPOSITORY_NOT_SERVED:
+        definition: >-
+          A filter named another repository; an API instance serves only its own. (refused by:
+          intake.) Remedy: Call that repository's kit-api.
+      API_EVIDENCE_UNAVAILABLE:
+        definition: >-
+          The named security run is not a completed default-branch run of the security caller, or its
+          evidence artifact (findings.json) is absent, expired or unreadable. (refused by: operation.)
+          Remedy: Name a completed default-branch run within the artifact retention, or "latest".
+      API_FINDING_NOT_KIT_ESTABLISHED:
+        definition: >-
+          A selected identity, cluster key or fingerprint is not among the findings that run
+          established; the API tickets only what the kit's own scan found. (refused by: operation.)
+          Remedy: Select from that run's findings (findings.search).
+      API_DISPOSITION_NOT_VIA_API:
+        definition: >-
+          A disposition (exception, false positive, risk acceptance, mitigation) was requested.
+          Dispositions are merged to the protected default branch under CODEOWNERS, never made by an
+          automation. (refused by: intake.) Remedy: Open a pull request to the policy register or the
+          disposition file; a person approves it.
+      API_TICKET_NOT_KIT_STAMPED:
+        definition: >-
+          The ticket does not carry the kit's cluster stamp in this tracker, so the kit does not own
+          it. (refused by: operation.) Remedy: Comment on it in the tracker directly.
+      API_FILTER_NEEDS_FINDINGS_RUN:
+        definition: >-
+          A cve, kev or text filter on tickets.search needs findings_run_id: the ledger alone does not
+          hold them. (refused by: intake.) Remedy: Add findings_run_id (or "latest").
+      API_RELEASE_PATH_NOT_PERMITTED:
+        definition: >-
+          rollback and break-glass are not requested through the API: each needs an attributed
+          exception record a person makes. (refused by: intake.) Remedy: A person dispatches the
+          release workflow with the exception record.
+      API_ENVIRONMENT_NOT_PERMITTED:
+        definition: >-
+          The environment is not in the repository's API deploy list
+          (vars.KIT_API_DEPLOY_ENVIRONMENTS; empty permits none), or build-deploy was asked for uat or
+          prod. (refused by: intake.) Remedy: Use a listed environment; reach uat and prod by
+          promotion.
+      API_PROMOTION_SOURCE_REQUIRED:
+        definition: >-
+          A promotion was requested without the predecessor run and environment. (refused by: intake.)
+          Remedy: Name promote_from_run_id and promote_from_environment.
+      API_DEPLOY_NEEDS_HUMAN_APPROVAL:
+        definition: >-
+          The target environment does not demand a human approver with self-review prevented (read
+          back from GitHub), so an API-requested release could proceed without a person. (refused by:
+          intake.) Remedy: Protect the environment with required reviewers and prevent self-review.
+      API_TEMPLATE_INVALID:
+        definition: >-
+          A tickets.submit item breaks its template or a template rule that needs no tracker
+          (data.template_refusal names it, ticket_template_refusal). (refused by: intake.) Remedy:
+          Correct the named item; nothing was read or written. KDEC-037.
+      API_REVIEW_NOT_FINALIZED:
+        definition: >-
+          The review behind a tickets.submit is not finalized with a recorded human concurrence bound
+          to this evidence set (review_finalize_state REVIEW_NOT_FINALIZED, every reason named).
+          (refused by: operation, before the tracker is read.) Remedy: the concurring reviewer approves
+          the pull request adding .security/reviews/<review_id>.json with this evidence_set_sha256.
+      API_TEMPLATE_RULE_REFUSED:
+        definition: >-
+          A template rule that needs the tracker's state refused an item before anything was written
+          (data.template_refusal: self-approval, a count mismatch, a limit, an unverified closure, a
+          ticket the kit does not own, a link to a non-candidate). (refused by: operation.)
+      API_TRACKER_QUERY_REFUSED:
+        definition: >-
+          A tracker_query named a project outside this repository's ticket projects, or its JQL carried
+          ORDER BY or a statement break (ticket_intake_state TRACKER_QUERY_REFUSED). (refused by:
+          intake, operation.)
+  kit_api_data:
+    description: >-
+      Words the kit's API writes in a result's data where no existing namespace holds the fact
+      (KDEC-035). Everything else in an API result is the kit's own vocabulary, unchanged.
+    consumers: [scripts/kit_api_server.py, tests/prove_kit_api_server.py, docs/api/README.md]
+    rule: >-
+      NEITHER IS A PASS. NOT_REPORTED is never read as "deployed", and NOT_NEEDED is never read as
+      "not exploited".
+    values:
+      NOT_REPORTED:
+        definition: >-
+          deploy.request: the release job ended and this run holds no deploy-evidence outcome.json, so
+          nothing says a release happened. The call is API_FAILED.
+      NOT_NEEDED:
+        definition: >-
+          findings.search / findings.get kev_state: no finding the call looked at names a CVE and no
+          kev filter was asked for, so the KEV catalog was not read. A finding with a CVE always has
+          the catalog read, and an unreadable one is UNAVAILABLE.
+
+  ticket_template_refusal:
+    description: >-
+      Why a ticket template item was refused, by name (KDEC-037; scripts/ticket_templates.py,
+      api/v1/tickets/*.schema.json). The API carries it as data.template_refusal under
+      API_TEMPLATE_INVALID (no tracker read needed) or API_TEMPLATE_RULE_REFUSED (the tracker's own
+      state decided it). Every one is made BEFORE anything is written.
+    consumers: [scripts/ticket_templates.py, scripts/kit_api_server.py, tests/prove_ticket_templates.py,
+                docs/api/README.md]
+    rule: >-
+      A REFUSAL NAMES ONE CAUSE AND ONE ITEM, and nothing in the call is written: a submission is never
+      half-applied. A limit (the extension maximum, a ceiling) is raised only by the owner.
+    values:
+      TEMPLATE_UNKNOWN:
+        definition: >-
+          The template named is not one this kit serves.
+      TEMPLATE_VERSION_UNSUPPORTED:
+        definition: >-
+          The template_version is not one this kit serves (version 2; version 1 is superseded).
+      TEMPLATE_FIELD_INVALID:
+        definition: >-
+          An item breaks its template's schema (a missing required field, a value outside its set), or
+          a field rule the schema cannot state (an expiry already past, a caller correlation key that is
+          not the kit's, a no-fix re-check whose finding has a fix).
+      TEMPLATE_ASSET_IDENTITY_INVALID:
+        definition: >-
+          The asset is not an identity under its scheme: a field the scheme needs is missing, an Azure
+          resource id names another subscription, an AWS ARN names another account or region.
+      NOFIX_EXEMPTION_TOO_LONG:
+        definition: >-
+          A no-fix re-check asked for an automatic exemption past the owner's ceiling. A longer one is an
+          accepted-risk request a person approves.
+      LINK_DECISION_INVALID:
+        definition: >-
+          A link decision names a correlation key no item has, a link with no ticket, or a ticket that
+          is not among the candidates the search surfaced.
+      TICKET_NOT_KIT_LINKED:
+        definition: >-
+          An extension or closure names a ticket that carries neither the kit's stamp nor a link to a
+          kit finding: the kit extends and closes only what it owns or linked.
+      EXTENSION_COUNT_MISMATCH:
+        definition: >-
+          The extensions the request says were used differ from the count the ticket's own labels
+          record. A shorter history than the tracker shows is never accepted.
+      EXTENSION_LIMIT_REACHED:
+        definition: >-
+          The ticket has had the owner's maximum number of extensions; it cannot be extended again.
+      EXTENSION_CEILING_EXCEEDED:
+        definition: >-
+          The new expiry is further away than one extension may reach (the owner's ceiling).
+      CLOSURE_NOT_VERIFIED:
+        definition: >-
+          A scan verification did not establish the fix: the kit's scan never observed the finding,
+          the run still reports it, or its scanners did not cover where it lived.
+
+      SOD_SELF_APPROVAL:
+        definition: >-
+          Separation of duties (owner, 2026-11-04; docs/ticketing/SEPARATION-OF-DUTIES.md): the person
+          approving is the author of what is approved -- the requester of an exception or extension,
+          the triager of a triage decision, the fixer rejecting their own fix. Nobody approves their
+          own work; a bot never approves.
+      EXCEPTION_TOO_LONG:
+        definition: >-
+          An exception asked for longer than the owner's maximum (90 days). An exception is always
+          time-limited and scoped; something there to stay is an exemption or an accepted risk.
+      TEMPLATE_NOT_ENABLED:
+        definition: >-
+          The template is a PROPOSED type (api/v1/tickets/proposed/, docs/ticketing/TICKET-TYPES.md),
+          disabled until the owner enables it.
+  ticket_template_outcome:
+    description: >-
+      What happened to one tickets.submit item (KDEC-037), in data.items[].outcome. The four lookup
+      facts are kept apart: exact, a candidate for a person, nothing found after a complete search,
+      and nothing looked at.
+    consumers: [scripts/kit_api_server.py, tests/prove_ticket_templates.py, docs/api/README.md,
+                docs/api/UI-SPEC.md]
+    rule: >-
+      ONLY AN EXACT MATCH LINKS WITHOUT A PERSON, AND NO ITEM EVER DISAPPEARS. A near match is created
+      and flagged for a person; a search that did not complete creates the ticket dedupe-pending; a
+      tracker that could not be reached keeps the item in the outbox (owner, 2026-11-04).
+    values:
+      TEMPLATE_TICKET_CREATED:
+        definition: >-
+          A new ticket was created through the kit's reconciler (stamped, routed, recorded).
+      TEMPLATE_TICKET_PLANNED:
+        definition: >-
+          A dry run: the ticket that WOULD be created, with its title. Nothing was written.
+      TEMPLATE_TICKET_BOUND:
+        definition: >-
+          The kit's own stamp found the ticket already tracking this finding; nothing new was created.
+      TEMPLATE_LINKED_EXACT:
+        definition: >-
+          An existing ticket (manual ones included) already carries this finding's correlation key -- in
+          a kit label or the body's stamp line -- so it is the ticket; nothing was created.
+      TEMPLATE_TICKET_UPDATED:
+        definition: >-
+          An existing ticket was updated by the template (an extension recorded).
+      TEMPLATE_TICKET_CLOSED:
+        definition: >-
+          A verified closure request marked the ticket remediated and closed it.
+      TEMPLATE_REOPENED_AS_REMEDIATION:
+        definition: >-
+          A no-fix ticket's finding was submitted with a fix available: the ticket was reopened (if
+          closed), commented and labelled as remediation work.
+      TEMPLATE_CLOSED_DUPLICATE:
+        definition: >-
+          An exact match: the duplicate is recorded as a sub-task of the original and closed as a
+          duplicate, and the original is updated with what it added (a new source with the confidence
+          change and its derivation, new evidence, an asset, a severity change, recurrence).
+      TEMPLATE_REGRESSION:
+        definition: >-
+          An exact match on a CLOSED ticket newly observed (new evidence): the ticket is reopened and
+          labelled regression.
+      TEMPLATE_POSSIBLE_DUPLICATE:
+        definition: >-
+          A near match: the ticket was CREATED, flagged possible-duplicate, linked to the candidates and
+          put in a person's triage queue; the person decides merge or separate.
+      TEMPLATE_DEDUPE_PENDING:
+        definition: >-
+          The search did not complete: the ticket was created in triage with dedupe-pending, and the
+          next run re-runs the dedupe on it. Never held back, never lost.
+      TEMPLATE_OUTBOX:
+        definition: >-
+          The tracker could not be reached or written: the item is kept in the durable outbox
+          (artifact and record), a person is alerted, and the next run retries it first.
+      TEMPLATE_SENT_BACK:
+        definition: >-
+          The concurring reviewer DISAGREED with an alternative: nothing was written for the item, and
+          the dissent is recorded.
+      TEMPLATE_PENDING_VERIFICATION:
+        definition: >-
+          The fixer resolved it: resolved -- pending verification. The approvers are notified; a
+          reminder after N days and an escalation after 2N. Never closed by the fixer.
+      TEMPLATE_VERIFICATION_REJECTED:
+        definition: >-
+          A verifier rejected the fix: the ticket is reopened, the reason recorded.
+      TEMPLATE_FIX_OBSERVED:
+        definition: >-
+          A clean kit rescan on a branch that is not mapped to the ticket's environment: "fix observed
+          on <branch>" is recorded; the ticket closes only when the fix reaches the mapped branch.
+      TEMPLATE_TRIAGED_SEPARATE:
+        definition: >-
+          A person decided a possible duplicate is a separate finding: the flag is cleared and recorded.
+  review_finalize_state:
+    description: >-
+      Whether a review's tickets may be written (KDEC-037; scripts/review_finalize.py): a finalized
+      record on the protected default branch, a concurrence by a person on the approver list who is not
+      the automation, bound to the exact evidence set, approved on the pull request that merged it.
+    consumers: [scripts/review_finalize.py, scripts/kit_api_server.py, tests/prove_ticket_templates.py]
+    rule: >-
+      ANYTHING UNREADABLE IS NOT FINALIZED. A history, a list or a record the kit cannot read is never a
+      concurrence.
+    values:
+      REVIEW_FINALIZED:
+        definition: >-
+          Every rule R1..R7 holds; the review's tickets may be written.
+      REVIEW_NOT_FINALIZED:
+        definition: >-
+          At least one rule failed (each named): nothing is read from or written to the tracker, and the
+          caller reads API_REVIEW_NOT_FINALIZED.
+
+  ticket_intake_state:
+    description: >-
+      Whether a read of EVERY ticket in the tracker -- manual ones included -- was established
+      (KDEC-037; scripts/ticket_intake.py). The dedupe before every create and tickets.search
+      tracker_query use it.
+    consumers: [scripts/ticket_intake.py, scripts/kit_api_server.py, tests/prove_ticket_templates.py]
+    rule: >-
+      ONLY A COMPLETE SEARCH ESTABLISHES "NOTHING FOUND". Partial and not configured are "nothing was
+      looked at", and nothing is created from them.
+    values:
+      TRACKER_INTAKE_COMPLETE:
+        definition: >-
+          The search answered, every page within the bound was read.
+      TRACKER_INTAKE_PARTIAL:
+        definition: >-
+          The search did not answer, or ran past its page bound; what was not read is not absent.
+      TRACKER_INTAKE_NOT_CONFIGURED:
+        definition: >-
+          No intake adapter serves this tracker (FreshService is the seam not yet built; Azure DevOps and
+          GitHub Issues have none: work tickets are Jira only, KDEC-017 item 5).
+      TRACKER_QUERY_REFUSED:
+        definition: >-
+          The query named a project outside this repository's ticket projects, or its JQL carried ORDER BY
+          or a statement break.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # KDEC-036 PROPOSED (2026-11-03): what a security reviewer could not see from the kit. Each is
+  # recorded in kit-security-record.json or the deploy evidence's review-signals.json, and as an
+  # output. scripts/reviewer_signals.py; tests/prove_reviewer_signals.py.
+  verdict_provenance:
+    description: >-
+      Whether the routing_result a deploy was handed came from its security gate (G8). The deploy
+      reads the kit-security-record of the run the verdict came from (this run, the promotion
+      source, or security_run_id) before login.
+    consumers: [reusable-deploy-containerapp, reusable-deploy-appservice, reusable-deploy-staticwebapp,
+                docs/security-review]
+    rule: >-
+      A typed verdict is not a verdict. Equal to, or stricter than, the gate's own is from the gate;
+      more permissive, dropping a cause, or for another commit is a contradiction.
+    values:
+      VERDICT_FROM_GATE:
+        definition: The record exists and the handed verdict is the gate's own, or stricter, with every gate cause.
+      MANUAL_REVIEW_VERDICT:
+        definition: >-
+          No gate record, and the typed verdict carries a manual review (owner ruling 2026-11-03): the
+          reviewer (manual_review_by) on the central register's AppSec approver list, neither the requester
+          nor the release's author; a review reference; a date at most 30 days old, not in the future.
+        rule: >-
+          Accepted at every tier and recorded distinctly from a scan-derived verdict, never mistaken for one.
+          It never overrides a gate's own record: a contradicted verdict stays refused.
+      TYPED_VERDICT:
+        definition: No security record exists for the run the verdict names.
+        rule: Refused before login at uat and prod; warned below.
+      VERDICT_CONTRADICTED:
+        definition: >-
+          The record says otherwise: the handed verdict is more permissive than the gate's, drops one of
+          its advisory causes, or the record is for a different commit.
+        rule: Refused before login at every tier.
+      VERDICT_RECORD_UNREADABLE:
+        definition: The record could not be listed, downloaded or read.
+        rule: Never read as "no record". Refused at uat and prod; warned below.
+  tier_source:
+    description: Where the environment tier the deploy obeyed came from (G4).
+    consumers: [reusable-deploy-containerapp, reusable-deploy-appservice, reusable-deploy-staticwebapp]
+    rule: >-
+      The kit cannot see who wrote a GitHub variable. The landing zone's hand-off marker
+      (KIT_HANDOFF_ISSUER = landing-zone[:ref]) is the declared source; the audit log is the proof.
+    values:
+      TIER_VENDED:
+        definition: The tier is bound to KIT_ENVIRONMENT_TIER and the environment carries the landing zone's marker.
+      TIER_SELF_DECLARED:
+        definition: The tier came from the caller's input, or from a variable with no landing-zone marker.
+  tier_reality:
+    description: >-
+      A cheap reality signal read from the target the deploy already reads (G4): a custom domain,
+      or public ingress at production-like scale (two or more minimum replicas).
+    consumers: [reusable-deploy-containerapp, reusable-deploy-appservice, reusable-deploy-staticwebapp]
+    rule: Warn only; the owner may tighten it. Never a refusal.
+    values:
+      TIER_CONSISTENT:
+        definition: The tier is uat or prod, or the target shows no production signal.
+      TIER_MISMATCH_SUSPECTED:
+        definition: The tier is sandbox, dev or test and the target shows a production signal.
+      TIER_REALITY_UNREAD:
+        definition: The capture holds no reality reading (an earlier refusal, or an older capture).
+  readiness_source:
+    description: >-
+      Who issued KIT_ZONE_READINESS, as far as the kit can learn it from the hand-off contract (G1).
+      Owner ruling 2026-11-03: the landing zone issues it when connected, otherwise AppSec manually;
+      the app or deploy team never sets it for itself.
+    consumers: [reusable-deploy-containerapp, reusable-deploy-appservice, reusable-deploy-staticwebapp,
+                docs/security-review]
+    rule: >-
+      The landing zone issues readiness when connected, otherwise AppSec through the attestation file
+      (docs/adoption/ZONE_READINESS_ATTESTATION.md); the app or deploy team never sets it for itself.
+    values:
+      READINESS_SOURCE_LZ_HANDOFF:
+        definition: Readiness is set and the environment carries the landing zone's hand-off marker.
+      READINESS_SOURCE_APPSEC_ATTESTATION:
+        definition: >-
+          No landing zone: .kit/zone-readiness.json on the default branch names this environment, is
+          unexpired, carries its evidence, and its latest change arrived through a merged pull request an
+          AppSec approver (the AppSec approver list) who is not its author approved. Its state decides.
+      READINESS_ATTESTATION_REFUSED:
+        definition: The attestation exists and one of those checks failed (named). Refused at uat and prod.
+      READINESS_SOURCE_SELF_SET_REFUSED:
+        definition: >-
+          KIT_ZONE_READINESS set with no landing-zone marker and no attestation: the deploy side certifying
+          the platform to itself. Refused at uat and prod; recorded below.
+      READINESS_SOURCE_TEST_FIXTURE:
+        definition: >-
+          Self-set and labelled a test fixture (KIT_ZONE_READINESS_TEST_FIXTURE true): permitted, warned,
+          never an issued readiness.
+      READINESS_NOT_SET:
+        definition: KIT_ZONE_READINESS is unset and there is no attestation (refused at uat and prod by K-2).
+  kit_watermark:
+    description: >-
+      The called kit copy's .neutral-export-watermark.json, read from the kit the reusable runs
+      from (G9), so the pinned SHA is tied to the kit source commit it received.
+    consumers: [security-gate, reusable-deploy-containerapp, reusable-deploy-appservice,
+                reusable-deploy-staticwebapp, docs/security-review]
+    rule: An absent watermark is said, never read as "the source".
+    values:
+      WATERMARK_BOUND:
+        definition: Present, a 40-hex source_commit, not dirty, no unresolved conflicts.
+      WATERMARK_DIRTY:
+        definition: Present, and exported from uncommitted changes or carrying unresolved conflicts.
+      WATERMARK_ABSENT:
+        definition: The called kit carries none (the kit's own source repository, or a copy not exported by the tool).
+      WATERMARK_UNREADABLE:
+        definition: Present and not a readable watermark.
+  evidence_retention:
+    description: >-
+      How long the kit's evidence artifacts are kept (G6): KIT_EVIDENCE_RETENTION_DAYS, never below
+      the audit floor (owner decision, default 90 days), at most GitHub's 400.
+    consumers: [security-gate, reusable-deploy-containerapp, reusable-deploy-appservice, reusable-deploy-staticwebapp]
+    rule: A lower or unreadable value is raised to the floor and said; it is never silently shorter.
+    values:
+      EVIDENCE_RETENTION_DEFAULT:
+        definition: Unset; the floor applies.
+      EVIDENCE_RETENTION_SET:
+        definition: Set, at or above the floor.
+      EVIDENCE_RETENTION_RAISED_TO_FLOOR:
+        definition: Set below the floor, or not a number; the floor applies.
+      EVIDENCE_RETENTION_CAPPED:
+        definition: Set above GitHub's 400 days; 400 applies (the repository's own maximum may cap it further).
+  deploy_coverage:
+    description: >-
+      Hosting kinds the kit has no deploy adapter for (G10). Discovery names AKS (Kubernetes
+      manifests, a Helm chart or kustomization, a workflow deploying to AKS), VMs (VM infrastructure,
+      az vm in a workflow) and code-packaged Functions (host.json without a Dockerfile, or the
+      functions action); a deploy whose environment vends a KIT_HOSTING_KIND its adapter does not
+      serve is refused.
+    consumers: [discover, security-gate, reusable-deploy-containerapp, reusable-deploy-appservice,
+                reusable-deploy-staticwebapp, docs/security-review]
+    rule: The kit scans that code; its deploy is outside the kit, and that is said, never left to silence.
+    values:
+      NO_KIT_ADAPTER:
+        definition: >-
+          NO_KIT_ADAPTER:<kind> -- aks, vm, function_app_code, or a vended kind no adapter serves;
+          NO_KIT_ADAPTER:UNDETERMINED when the survey could not run.
+

@@ -1,0 +1,129 @@
+name: reviewer-signals
+description: >-
+  What a security reviewer could not see from the kit (KDEC-036 PROPOSED; docs/security-review/). One
+  composite, three positions. `security` (the security gate, after the run record): the gate's
+  signals -- verdict, weakening authority and expiry, capability floor, job-token preflight, leak-gate
+  alarm, policy notices, deploy coverage, the kit copy's watermark -- as kit-security-record.json,
+  uploaded as kit-security-record-<attempt> for the evidence retention, and as outputs. `deploy-pre`
+  (a deploy, before login): the verdict's provenance against that record, the weakening authority and
+  expiry, the tier's and the readiness's source, the hosting kind; refuses by name at uat/prod (and a
+  contradicted verdict or an unserved hosting kind at every tier). `deploy-post` (a deploy, always):
+  the tier's reality, review-signals.json in the deploy evidence, and with the lease off the durable
+  release record in the GitHub Deployments API. scripts/reviewer_signals.py;
+  tests/prove_reviewer_signals.py.
+inputs:
+  mode: {description: security | readiness | deploy-pre | deploy-post, required: true}
+  adapter: {description: "deploy modes: containerapp | appservice | functionapp | staticwebapp", required: false, default: ''}
+  token: {description: "deploy modes: the job token (reads the security record; writes the release record)", required: false, default: ''}
+  routing-result: {description: "security: the posture's routing_result; deploy-post: the deploy's", required: false, default: ''}
+  advisory-causes: {description: "security: the posture's advisory_causes", required: false, default: ''}
+  weakening-attribution: {description: "security: the posture's weakening_attribution", required: false, default: ''}
+  weakening-check: {description: "security: resolve-policy's policy_weakening_check JSON", required: false, default: ''}
+  floor-state: {description: "security: the capability floor's floor_state", required: false, default: ''}
+  floor-missing: {description: "security: the capability floor's floor_missing", required: false, default: ''}
+  token-preflight: {description: "security: discover's token_preflight", required: false, default: ''}
+  leak-gates: {description: "security: leak_gates JSON", required: false, default: ''}
+  leak-gate-alarm: {description: "security: leak_gate_alarm", required: false, default: ''}
+  policy-source: {description: "security: policy_source", required: false, default: ''}
+  policy-resolution: {description: "security: policy_resolution", required: false, default: ''}
+  rung-effective: {description: "security: rung_effective", required: false, default: ''}
+  environment-tier: {description: "security: the evaluated tier", required: false, default: ''}
+  policy-notices: {description: "security: policy_notices JSON", required: false, default: ''}
+  no-kit-adapter: {description: "security: discover's no_kit_adapter", required: false, default: ''}
+  deploy-targets: {description: "security: discover's deploy_targets JSON", required: false, default: ''}
+  evidence-artifact: {description: "security: the gate's evidence_artifact", required: false, default: ''}
+  assurance-result: {description: "security: the run record JSON", required: false, default: ''}
+  retention-days: {description: "security: KIT_EVIDENCE_RETENTION_DAYS as set (floored at the audit minimum)", required: false, default: ''}
+  deployment-outcome: {description: "deploy-post: the report step's deployment_outcome", required: false, default: ''}
+  release-approval: {description: "deploy-post: release_approval", required: false, default: ''}
+  release-approval-by: {description: "deploy-post: release_approval_by", required: false, default: ''}
+  zone-readiness: {description: "deploy-post: zone_readiness", required: false, default: ''}
+  release-block: {description: "deploy-post: release_block", required: false, default: ''}
+  lease-state: {description: "deploy-post: the lease acquire step's target_lease", required: false, default: ''}
+  seam-ownership: {description: "deploy-post: the seam step's seam_ownership", required: false, default: ''}
+  app-url: {description: "deploy-post: the app's URL", required: false, default: ''}
+  readiness-source: {description: "deploy-post: the zone step's readiness_source", required: false, default: ''}
+outputs:
+  security_record: {description: "security: kit-security-record.json, compact", value: "${{ steps.r.outputs.security_record }}"}
+  kit_watermark: {description: "the kit copy's watermark as read (G9)", value: "${{ steps.r.outputs.kit_watermark }}"}
+  kit_source_commit: {description: "the watermark's source_commit, empty when absent", value: "${{ steps.r.outputs.kit_source_commit }}"}
+  retention_days: {description: "the evidence retention in days (G6)", value: "${{ steps.r.outputs.retention_days }}"}
+  verdict_provenance: {description: "deploy-pre: verdict_provenance (G8)", value: "${{ steps.r.outputs.verdict_provenance }}"}
+  weakening_check: {description: "deploy-pre: weakening_authority_check state (G2, G3)", value: "${{ steps.r.outputs.weakening_check }}"}
+  tier_source: {description: "deploy-pre: tier_source (G4)", value: "${{ steps.r.outputs.tier_source }}"}
+  readiness_source: {description: "readiness: readiness_source (G1)", value: "${{ steps.r.outputs.readiness_source }}"}
+  hosting_kind: {description: "deploy-pre: the hosting kind, or NO_KIT_ADAPTER:<kind> (G10)", value: "${{ steps.r.outputs.hosting_kind }}"}
+  attested_readiness: {description: "readiness: the AppSec attestation's state, when it verified (G1)", value: "${{ steps.r.outputs.attested_readiness }}"}
+  tier_reality: {description: "deploy-post: tier_reality (G4)", value: "${{ steps.r.outputs.tier_reality }}"}
+  release_record: {description: "deploy-post: release_record (G6)", value: "${{ steps.r.outputs.release_record }}"}
+  release_record_ref: {description: "deploy-post: the deployment id holding the record", value: "${{ steps.r.outputs.release_record_ref }}"}
+  lease_state: {description: "deploy-post: the lease state (G5)", value: "${{ steps.r.outputs.lease_state }}"}
+  seam_state: {description: "deploy-post: the seam state (G5)", value: "${{ steps.r.outputs.seam_state }}"}
+  review_signals: {description: "deploy-post: review-signals.json, compact", value: "${{ steps.r.outputs.review_signals }}"}
+runs:
+  using: composite
+  steps:
+    - id: r
+      shell: bash
+      env:
+        # Every value arrives as DATA (tests/lint_injection.py).
+        RS_MODE: ${{ inputs.mode }}
+        RS_ADAPTER: ${{ inputs.adapter }}
+        GH_TOKEN: ${{ inputs.token }}
+        S_ROUTING_RESULT: ${{ inputs.routing-result }}
+        S_ADVISORY_CAUSES: ${{ inputs.advisory-causes }}
+        S_WEAKENING_ATTRIBUTION: ${{ inputs.weakening-attribution }}
+        S_WEAKENING_CHECK: ${{ inputs.weakening-check }}
+        S_FLOOR_STATE: ${{ inputs.floor-state }}
+        S_FLOOR_MISSING: ${{ inputs.floor-missing }}
+        S_TOKEN_PREFLIGHT: ${{ inputs.token-preflight }}
+        S_LEAK_GATES: ${{ inputs.leak-gates }}
+        S_LEAK_GATE_ALARM: ${{ inputs.leak-gate-alarm }}
+        S_POLICY_SOURCE: ${{ inputs.policy-source }}
+        S_POLICY_RESOLUTION: ${{ inputs.policy-resolution }}
+        S_RUNG_EFFECTIVE: ${{ inputs.rung-effective }}
+        S_ENVIRONMENT_TIER: ${{ inputs.environment-tier }}
+        S_POLICY_NOTICES: ${{ inputs.policy-notices }}
+        S_NO_KIT_ADAPTER: ${{ inputs.no-kit-adapter }}
+        S_DEPLOY_TARGETS: ${{ inputs.deploy-targets }}
+        S_EVIDENCE_ARTIFACT: ${{ inputs.evidence-artifact }}
+        S_ASSURANCE_RESULT: ${{ inputs.assurance-result }}
+        S_RETENTION_DAYS: ${{ inputs.retention-days }}
+        D_ROUTING_RESULT: ${{ inputs.routing-result }}
+        D_DEPLOYMENT_OUTCOME: ${{ inputs.deployment-outcome }}
+        D_RELEASE_APPROVAL: ${{ inputs.release-approval }}
+        D_RELEASE_APPROVAL_BY: ${{ inputs.release-approval-by }}
+        D_ZONE_READINESS: ${{ inputs.zone-readiness }}
+        D_RELEASE_BLOCK: ${{ inputs.release-block }}
+        D_LEASE_STATE: ${{ inputs.lease-state }}
+        D_SEAM_OWNERSHIP: ${{ inputs.seam-ownership }}
+        D_APP_URL: ${{ inputs.app-url }}
+        D_READINESS_SOURCE: ${{ inputs.readiness-source }}
+      run: |
+        set -uo pipefail
+        kit_root="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)"
+        script="${kit_root}/scripts/reviewer_signals.py"
+        # A MISSING SCRIPT IS NOT A CLEAN SIGNAL: the step fails, and a deploy reads that as a refusal.
+        if [ ! -s "$script" ]; then
+          echo "::error title=Reviewer signals not computed::scripts/reviewer_signals.py is not in the kit delivered by \$/."
+          exit 1
+        fi
+        case "${RS_MODE:-}" in
+          security)
+            python3 "$script" security --kit-root "$kit_root" \
+              --out "${RUNNER_TEMP:-/tmp}/kit-security-record/kit-security-record.json" ;;
+          readiness|deploy-pre|deploy-post)
+            python3 "$script" "$RS_MODE" --kit-root "$kit_root" --adapter "${RS_ADAPTER:-}" ;;
+          *)
+            echo "::error title=Reviewer signals::the mode is not security, readiness, deploy-pre or deploy-post."
+            exit 2 ;;
+        esac
+    - name: Keep the security record (kit-security-record-<attempt>)
+      if: always() && inputs.mode == 'security' && steps.r.outputs.record_artifact != ''
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ steps.r.outputs.record_artifact }}
+        path: ${{ runner.temp }}/kit-security-record/kit-security-record.json
+        if-no-files-found: error
+        overwrite: true
+        retention-days: ${{ steps.r.outputs.retention_days }}

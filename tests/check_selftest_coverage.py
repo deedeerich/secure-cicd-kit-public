@@ -79,6 +79,26 @@ def triggers(doc):
     return set(on) if isinstance(on, dict) else set()
 
 
+# A SCHEDULE THAT STARTS NOTHING UNLESS OPTED IN IS NOT A SCHEDULE (2026-11-03). consumer-path-test
+# keeps its weekly cron, but every job is conditioned on `github.event_name != 'schedule' ||
+# vars.<NAME> == 'true'`: with the variable unset (the default, and every recipient's copy) a
+# scheduled run starts no job. Counting it as EXERCISED_ON_SCHEDULE would claim a weekly exercise
+# that does not happen; it is dispatch-only unless a repository opts in.
+OPT_IN_RX = re.compile(r"github\.event_name\s*!=\s*'schedule'\s*\|\|\s*vars\.[A-Z0-9_]+\s*==\s*'true'")
+
+
+def schedule_opt_in(doc):
+    jobs = (doc or {}).get('jobs') or {}
+    gated = [j for j in jobs.values() if isinstance(j, dict) and OPT_IN_RX.search(str(j.get('if') or ''))]
+    # Every job is either gated itself or runs only after a gated job (needs, no status function).
+    for j in jobs.values():
+        if not isinstance(j, dict) or j in gated:
+            continue
+        if not j.get('needs') or 'always()' in str(j.get('if') or ''):
+            return False
+    return bool(gated)
+
+
 def deferral_problem(d, today):
     """-> None when `d` is a complete deferral that has not expired on `today`, else why not."""
     if d is None:
@@ -113,12 +133,14 @@ RUNTIME_TOOLS = {
                              '(KDEC-004); never on CI by design. Its offline half is '
                              'prove_live_runner_offline.py, which self-test runs',
     # In the kit, consumer-path-test.yml runs it and the census counts it as run. A neutral export
-    # withholds that workflow, so in a public copy it is a tool a consumer runs against their own
-    # consumer-path results; its behaviour is proven by prove_expected_signals_honest.py.
+    # withholds that workflow (a kit host's profile, consumer-am, ships it), so in a public copy it
+    # is a tool a consumer runs against their own consumer-path results; its behaviour is proven by
+    # prove_expected_signals_honest.py and prove_consumer_path_preflight.py C3.
     'verify_expected_signals.py': 'checks a consumer-path run\'s signals against an expected list; '
-                                  'run by the kit\'s internal consumer-path workflow (withheld from '
-                                  'exports) or by a consumer. prove_expected_signals_honest.py, '
-                                  'which self-test runs, proves its behaviour',
+                                  'run by the consumer-path workflow (withheld from neutral exports, '
+                                  'shipped to a kit host) or by a consumer. '
+                                  'prove_expected_signals_honest.py and prove_consumer_path_preflight.py, '
+                                  'which self-test runs, prove its behaviour',
 }
 UNWIRED = {
     'check_context_current.py': {
@@ -221,7 +243,7 @@ def main():
         parsed[rel] = doc
         tg = triggers(doc)
         auto[rel] = bool(tg & set(PUSH_TRIGGERS))
-        sched[rel] = bool(tg & set(SCHEDULE_TRIGGERS))
+        sched[rel] = bool(tg & set(SCHEDULE_TRIGGERS)) and not schedule_opt_in(doc)
         disp[rel] = bool(tg & set(DISPATCH_TRIGGERS))
 
     # who calls whom

@@ -96,7 +96,7 @@ kit's own callers and templates to this):
 |---|---|
 | the security workflow | `contents: read`, `security-events: write`, `actions: read` |
 | the build workflow | `contents: read`, `id-token: write`, `attestations: write` |
-| a deploy workflow | `contents: read`, `id-token: write`, `attestations: read` (V1 reads the digest's build provenance before login, P-02) |
+| a deploy workflow | `contents: read`, `id-token: write`, `attestations: read` (V1 reads the digest's build provenance before login, P-02), `actions: read` (the rollback marker; the security record of the verdict's run, KDEC-036 G8), `deployments: write` (the durable release record with the lease off, KDEC-036 G6), `pull-requests: read` (the readiness attestation's approving review, KDEC-036 G1) |
 | the rollback sequence (`reusable-rollback-sequence.yml`; `templates/rollback-sequence.yml`) | `contents: read`, `id-token: write`, `actions: read` (it downloads each deploy run's evidence artifact) |
 | the ledger proposal (`reusable-propose-ledger.yml`) | `contents: write`, `pull-requests: write` -- and call it only on the protected default branch, never on a pull request, after the security job. Inputs: `environment`; `establish-approver-role` only to establish a first ledger (needs CODEOWNERS over the ledger path; opens an ESTABLISH pull request); `ticket-ledger-artifact` to carry the ticket ledger in the same pull request. Outputs `status` and `why` |
 | the NVD workflow (`reusable-nvd-cve.yml`) | `contents: read`, `security-events: write` |
@@ -184,6 +184,21 @@ reference (`https://<host>/browse/<KEY>-<number>`), from `tracker_host` and `pro
 (KDEC-013) and applies **no issue-number range** unless the caller passes `min_digits` and `max_digits`
 (both or neither); a consumer that limits its ticket numbers sets them in its own caller. It checks the
 format only: never that the issue exists, and a ticket is never an authorization.
+
+## 5b. Calling the kit from another program (KDEC-035, PROPOSED; KDEC-037)
+
+A program that is not a workflow -- a Tines 3B automation or agent, a findings UI -- calls the kit
+through its API: a `workflow_dispatch` of the repository's `kit-api.yml` (`templates/kit-api.yml`)
+carrying a v1 request, answered in the check run `kit-api/<correlation id>`. It writes, reads and
+searches finding tickets **through the kit's reconciler** (one ticket per finding, whichever side asked
+first), reads and searches a run's findings, requests a scan, and requests a release that **is the
+repository's own `build-deploy.yml`**, called, with every gate and a human approver. It never approves,
+closes, excepts or deploys around a gate. `docs/api/README.md` (the contract), `docs/api/UI-SPEC.md`
+(a UI to build from it); proven locally only. **Since KDEC-037** it also takes findings the kit's scan did
+not produce (USR reviews, cloud tools, pentests, audits) through versioned templates (`tickets.submit`),
+and writes their tickets only after a person's recorded concurrence with the finalized review (the
+review record's pull request, approved by her), having searched every ticket -- manual ones included --
+first; a possible match is a candidate for a person, never merged.
 
 ## 6. What a builder may and must NOT assume (trunk `19b5e1d`)
 

@@ -30,7 +30,9 @@ shipped; the discovery survey as shipped)
         coverage_gaps, counted, warned, with the lock it needs -- never silence
     C5  the seeds stay seeds: .github/dependabot.yml lists composer, and EVERY ecosystem in it
         excludes tests/consumer-fixture/** (a Dependabot PR "fixing" the fixture's pins makes the
-        detection proofs pass for the wrong reason -- the public mirror received such PRs)
+        detection proofs pass for the wrong reason -- the public mirror received such PRs); an
+        entry for a fixture directory itself instead ignores every dependency with a version-PR
+        limit of 0 (tests/check_action_pins.py P6: security updates do not honour exclude-paths)
 
     FAILS ON 75d935c at C4 (no php ecosystem; the unlocked manifest is not declared) and C5 (no
     composer entry). C1-C3 hold there too: Trivy always read composer.lock; what was missing was
@@ -168,8 +170,14 @@ def main():
                                   encoding='utf-8')) or {}
         ups = dep.get('updates') or []
         ecos = [u.get('package-ecosystem') for u in ups]
+        def held(u):
+            # A fixture-directory entry (check_action_pins P6) guards by ignoring every dependency
+            # and opening no version PR -- the only guard an alert-driven security update honours.
+            return (str(u.get('directory', '')).startswith('/tests/consumer-fixture/')
+                    and u.get('open-pull-requests-limit') == 0
+                    and '*' in [str((i or {}).get('dependency-name')) for i in (u.get('ignore') or [])])
         unguarded = [u.get('package-ecosystem') for u in ups
-                     if 'tests/consumer-fixture/**' not in (u.get('exclude-paths') or [])]
+                     if 'tests/consumer-fixture/**' not in (u.get('exclude-paths') or []) and not held(u)]
         print('  C5 dependabot ecosystems: %s; without the fixture exclusion: %s'
               % (', '.join(str(e) for e in ecos), unguarded or 'none'))
         if 'composer' not in ecos:

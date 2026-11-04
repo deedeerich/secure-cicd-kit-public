@@ -394,6 +394,14 @@ jobs:
           # with a token, no github.com/<repo> links, no trivy-action/setup-trivy, and the resolve
           # step degrades on a tenant API error instead of crashing (H6 runs it under bash).
           python3 tests/prove_ghe_host.py
+          # A rejected job token is NAMED once, early, with an owner role (KNOWN_DEFECTS D-11): the
+          # classifier, its inlined copies, the discover/resolve/consumer-path steps under a stub gh
+          # answering 401, the pin checkers' UNKNOWN causes, and Trivy never set up by a checkout.
+          python3 tests/prove_job_token_named.py
+          # The consumer path test is a kit host's PRE-FLIGHT (owner ruling 2026-11-03): dispatch-only
+          # unless vars.KIT_CONSUMER_PATH_SCHEDULE opts in, its token declared, CodeQL never graded,
+          # and its three assertion jobs run as shipped on a simulated GHE.com host with GHAS off.
+          python3 tests/prove_consumer_path_preflight.py
           # A Go scanner image tag that never existed was pinned for two weeks behind a green job
           # (FUTURE_WORK §11); an action ref that never existed shipped the same way (§9). This
           # checker was written for the first and could not see `v`-prefixed tags or `uses:` refs
@@ -1120,6 +1128,31 @@ jobs:
           python3 -m pip install --quiet PyYAML
           python3 tests/prove_jira_auth_and_routing.py
 
+      - name: The kit's API -- contract, client, run side and wiring (KDEC-035)
+        run: |
+          set -euo pipefail
+          # No network: a simulated GHE.com API host and the stateful tracker stand-ins. The contract
+          # refuses by name before anything is sent; the host is never assumed and the token stays on
+          # it; one ticket per finding across the API and the pipeline (Jira and Azure DevOps, both
+          # orders) and a subset closes nothing; a release requested through the API is the
+          # repository's own pipeline, called, meeting every gate; the shipped composite step answers.
+          python3 -m pip install --quiet PyYAML
+          python3 tests/prove_kit_api_client.py
+          python3 tests/prove_kit_api_server.py
+          python3 tests/prove_kit_api_workflow.py
+          # KDEC-037: ticket templates and external findings; nothing written without a finalized,
+          # human-concurred review; every ticket (manual ones too) searched before a create; closure
+          # never self-verified; extensions counted and capped; the no-fix re-check; tracker intake.
+          python3 scripts/ticket_templates.py --self-test
+          python3 tests/prove_ticket_templates.py
+          # KDEC-037 v2 (owner, 2026-11-04): separation of duties (nobody approves their own work;
+          # AGREE or DISAGREE with an alternative); the security list or team; a fixer's close is
+          # pending until another person or the kit's rescan on the mapped branch; exact = a closed
+          # duplicate, near = triage, pending and outbox lose nothing; trust beside confidence; the
+          # taxonomy, extensions and the no-fix clock; proposed types disabled; AzDO and GitHub intake.
+          python3 scripts/separation_of_duties.py --self-test
+          python3 tests/prove_ticket_intake_v2.py
+
       - name: The live R-1/R-2 runner is safe before anyone runs it live
         run: |
           set -euo pipefail
@@ -1418,6 +1451,11 @@ jobs:
           # and a passing line for each claim first, so a matcher that stopped matching is caught.
           python3 tests/check_doc_currency.py --self-test
           python3 tests/check_doc_currency.py
+          # No tracked .md / .yml carries an authoring tool's call markup: every security-review
+          # sheet once ended in two stray tags and two carried a pasted shell command (9b3c66e).
+          # The self-test seeds one mutant per fragment and a clean file first.
+          python3 tests/prove_docs_no_tool_markup.py --self-test
+          python3 tests/prove_docs_no_tool_markup.py
           # B-11: the architecture and assurance documents, the roadmap and the continuity record are
           # in scope; claims are code predicates; a known-stale entry holds only until its date.
           python3 tests/prove_doc_currency_scope.py
@@ -1498,6 +1536,11 @@ jobs:
           # quotes the digest -- each refused before login.
           python3 scripts/release_gates.py --self-test
           python3 tests/prove_release_gates.py
+          # KDEC-036: what a reviewer could not see -- the weakening authority and expiry, the verdict's
+          # provenance, the tier and readiness source, the watermark, the durable release record, deploy
+          # coverage and the Functions adapter -- recorded, and refused where the policy says.
+          python3 scripts/reviewer_signals.py --self-test
+          python3 tests/prove_reviewer_signals.py
           python3 tests/prove_deploy_attestation.py
           python3 tests/prove_deploy_now_serving.py
           python3 tests/prove_deploy_ownership_stamp.py
@@ -2176,6 +2219,43 @@ jobs:
     with:
       environment: ledger-never-proposed-from-a-pull-request
 
+  kit-api-refuses-by-name:
+    name: Kit API refuses an unserved version by name (hosted control)
+    # KDEC-035. On every event the API's reusable workflow must START (the startup_failure class:
+    # a permission ceiling, an expression GitHub will not load) and its intake must refuse a v0
+    # request API_VERSION_UNSUPPORTED before anything is read or written. The answer is written to
+    # the call's check run where the token may write checks (a fork's pull request may not: the
+    # run says so and the refusal still reaches the outputs). The job below asserts the word.
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+      pull-requests: read   # the tickets job reads review records' pull requests (KDEC-037)
+    uses: ./.github/workflows/reusable-kit-api.yml
+    with:
+      correlation_id: kapi-20261103T000000Z-5e1f7e570000
+      request: '{"api_version":"v0","operation":"findings.search","correlation_id":"kapi-20261103T000000Z-5e1f7e570000","params":{"run_id":"latest"}}'
+      default_branch: main
+
+  kit-api-refusal-asserted:
+    name: Kit API's refusal is API_VERSION_UNSUPPORTED
+    needs: kit-api-refuses-by-name
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Assert the refusal, not only the colour
+        env:
+          ACCEPTED: ${{ needs.kit-api-refuses-by-name.outputs.accepted }}
+          REFUSAL: ${{ needs.kit-api-refuses-by-name.outputs.refusal }}
+          STATE: ${{ needs.kit-api-refuses-by-name.outputs.api_state }}
+        run: |
+          set -euo pipefail
+          if [ "$ACCEPTED" != "false" ] || [ "$REFUSAL" != "API_VERSION_UNSUPPORTED" ] || [ "$STATE" != "API_REFUSED" ]; then
+            echo "::error title=Kit API did not refuse by name::accepted '$ACCEPTED', refusal '$REFUSAL', api_state '$STATE'"
+            exit 1
+          fi
+          echo "refused API_VERSION_UNSUPPORTED before anything was read or written"
+
   dogfood-policy:
     name: Policy gate (dogfood)
     # The kit runs its own governance gate against itself, AT BASELINE: pinning enforced, the
@@ -2193,7 +2273,7 @@ jobs:
   # tests/prove_selftest_required.py S2 fails if one is added and not listed here.
   required:
     name: Self-test required
-    needs: [contract, yaml-lint, actionlint, contract-check, profile-schema, normalizer-drift, tree-clean, platform-scanners, validation-coverage, ticket-reconcile-refuses-pr, ticket-reference-not-assessed-off-pr, exception-due-lists-on-push, ticket-reference-outcome-asserted, ledger-proposal-refuses-pr, dogfood-policy]
+    needs: [contract, yaml-lint, actionlint, contract-check, profile-schema, normalizer-drift, tree-clean, platform-scanners, validation-coverage, ticket-reconcile-refuses-pr, ticket-reference-not-assessed-off-pr, exception-due-lists-on-push, ticket-reference-outcome-asserted, ledger-proposal-refuses-pr, kit-api-refuses-by-name, kit-api-refusal-asserted, dogfood-policy]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
