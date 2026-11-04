@@ -524,6 +524,17 @@ def main():
             if q.returncode != 0 or 'SOURCE-ONLY CONTROL' not in said:
                 fails.append('E9 in the exported copy tests/%s exited %d without naming itself a '
                              'source-only control: %s' % (tool, q.returncode, said.strip()[-200:]))
+        # The proofs that READ the withheld consumer-path workflow must still pass in the copy
+        # (each says SOURCE-ONLY for the part it cannot check). prove_job_token_named.py T9 copied
+        # the kit's file from the tree under proof and crashed in the exported copy: the Release 4
+        # candidate's "Normalizer drift" (public run 41885418827) went red on it.
+        for tool in ('prove_job_token_named.py', 'prove_consumer_path_preflight.py'):
+            q = subprocess.run([sys.executable, os.path.join(out, 'tests', tool)], cwd=out,
+                               capture_output=True, text=True, encoding='utf-8', errors='replace',
+                               env=env)
+            if q.returncode == 1 or 'Traceback' in (q.stdout + q.stderr):
+                fails.append('E9 in the exported copy tests/%s exited %d: %s'
+                             % (tool, q.returncode, (q.stdout + q.stderr).strip()[-300:]))
         try:
             prove_no_deny_list_refuses(fails)
             prove_profile_bound(fails)

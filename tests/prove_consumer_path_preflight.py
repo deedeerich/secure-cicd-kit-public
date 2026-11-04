@@ -92,6 +92,18 @@ def posix(p):
     return p.replace('\\', '/')
 
 
+def copy_lacks_cpt(label):
+    """An exported copy whose exporter withholds the workflow (the neutral export) has no kit copy of
+    it: SOURCE-ONLY, by name, the way prove_job_token_named.py T3/T6 and prove_export_scope.py E9 do
+    it. A copy that was sent the file, or a tree without the watermark, is checked. (Public run
+    41885418827: C1..C4 failed in the Release 4 candidate's exported tree.)"""
+    import prove_job_token_named as pjt
+    if pjt.source_only(CPT, TREE):
+        print('  SOURCE-ONLY %s: nothing was checked here for %s, and nothing passed.' % (label, CPT))
+        return True
+    return False
+
+
 def load_cpt(tree=None):
     import yaml
     f = os.path.join(tree or TREE, CPT)
@@ -176,6 +188,8 @@ def eval_if(expr, ctx):
 
 
 def c1():
+    if copy_lacks_cpt('C1'):
+        return
     doc = load_cpt()
     if doc is None:
         check(False, 'C1 %s exists' % CPT)
@@ -202,6 +216,8 @@ def c1():
 
 
 def c2():
+    if copy_lacks_cpt('C2'):
+        return
     doc = load_cpt()
     if doc is None:
         check(False, 'C2 %s exists' % CPT)
@@ -288,6 +304,8 @@ def c3():
               [out[-300:]])
     finally:
         shutil.rmtree(d, ignore_errors=True)
+    if copy_lacks_cpt('C3 (the workflow half; the verifier half above ran)'):
+        return
     doc = load_cpt()
     runs = [st.get('run') or '' for j in ((doc or {}).get('jobs') or {}).values() for st in (j.get('steps') or [])]
     calls = [r for r in runs if 'verify_expected_signals.py' in r]
@@ -542,6 +560,8 @@ def seed_artifacts(w, grade_attack=False):
 
 
 def c4(bash):
+    if copy_lacks_cpt('C4'):
+        return
     doc = load_cpt()
     if doc is None:
         check(False, 'C4 %s exists' % CPT)

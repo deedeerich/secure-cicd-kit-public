@@ -171,9 +171,12 @@ class World(object):
         for k, v in (step.get('env') or {}).items():
             env[k] = re.sub(r'\$\{\{\s*inputs\.([A-Za-z0-9_-]+)\s*\}\}',
                             lambda m: str((inputs or {}).get(m.group(1), '')), str(v))
+        # UPPER CASE, as the runner spells them. Windows reads environment names without case, so a
+        # lower-case `github_api_url` reached the scripts there; on Linux it did not, and the hosted
+        # runner's own GITHUB_API_URL and GITHUB_SHA won (public run 41885418827: 37 R2..R4 failures).
         env.update({'GITHUB_ACTION_PATH': posix(os.path.join(self.kit, '.github', 'actions', action_dir)),
-                    'RUNNER_TEMP': posix(self.temp), 'GITHUB_REPOSITORY': 'o/r', 'github_api_url': self.api_url(),
-                    'GITHUB_RUN_ID': '4242', 'GITHUB_RUN_ATTEMPT': '1', 'github_sha': SHA,
+                    'RUNNER_TEMP': posix(self.temp), 'GITHUB_REPOSITORY': 'o/r', 'GITHUB_API_URL': self.api_url(),
+                    'GITHUB_RUN_ID': '4242', 'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_SHA': SHA,
                     'GITHUB_ACTOR': 'release-requester', 'GITHUB_TRIGGERING_ACTOR': 'release-requester'})
         # The kit root is found by `cd ... && pwd`, which Git Bash spells /tmp/...: a native python
         # needs its path conversion, so it is NOT switched off here (the deploy harness switches it

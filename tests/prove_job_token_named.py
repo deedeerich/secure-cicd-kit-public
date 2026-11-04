@@ -592,11 +592,20 @@ def t9(bash):
         # A KIT HOST'S COPY WAS SENT THE FILE (consumer-am, INCLUDE_PATH): it is checked, not skipped.
         io.open(wm, 'w').write(json.dumps({'source_commit': '0000000', 'profile': 'consumer-am',
                                            'files': {CPT: '0' * 64}, 'included_paths': [CPT]}) + '\n')
-        _sh.copy(os.path.join(ROOT, CPT), cpt)
-        got, out = run('host copy, the kit\'s file')
-        check(not got and 'SOURCE-ONLY ' + CPT not in out and 'CHECKED ' + CPT in out,
-              'T9 a kit host\'s copy that was sent %s: T3 and T6 CHECK it, and the kit\'s file passes' % CPT,
-              got + [out[-300:]])
+        if os.path.isfile(os.path.join(ROOT, CPT)):
+            _sh.copy(os.path.join(ROOT, CPT), cpt)
+            got, out = run('host copy, the kit\'s file')
+            check(not got and 'SOURCE-ONLY ' + CPT not in out and 'CHECKED ' + CPT in out,
+                  'T9 a kit host\'s copy that was sent %s: T3 and T6 CHECK it, and the kit\'s file passes' % CPT,
+                  got + [out[-300:]])
+        else:
+            # The tree under proof is a neutral export: the exporter withholds the kit's file, so
+            # there is none to hand the synthetic host copy. Said by name; nothing passed here.
+            # The source ran this check at the commit the watermark records. (Public run
+            # 41885418827 crashed on the copy; tests/prove_export_scope.py E9 holds it.)
+            print('  SOURCE-ONLY T9 a kit host\'s copy that was sent %s, with the kit\'s file: this tree '
+                  'has no %s (a neutral export withholds it). Nothing was checked here, and nothing '
+                  'passed.' % (CPT, CPT))
         io.open(cpt, 'w').write('name: an older harness\non: workflow_dispatch\njobs: {}\n')
         got, out = run('host copy, an older file')
         check(any(g.startswith('T3') and CPT in g for g in got) and any(g.startswith('T6') for g in got),

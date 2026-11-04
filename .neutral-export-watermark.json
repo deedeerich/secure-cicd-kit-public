@@ -1,5 +1,5 @@
 {
-  "exported_at_utc": "2026-11-04T18:14:38Z",
+  "exported_at_utc": "2026-11-04T19:29:59Z",
   "files": {
     ".custody.json": "56adfbefa20942fd8d03f2927ebe2c8b3d967152252c5b43303566e97928b168",
     ".env.example": "2803cf35729edfa1785d56e21070c95d7c656da07b422fa8be98b8b1320d34d9",
@@ -487,7 +487,7 @@
     "tests/prove_codeql_rows_read_sarif.py": "3c4d5cb474760c3f6dc974ab094c2c8ba6ba6c95e38cc2a67d130ae96c21ce24",
     "tests/prove_composite_build_once.py": "5c6782a7f57ede88d28e2de1557f57b240e37961aa3e94b687a8d4758f014234",
     "tests/prove_composite_move_equivalence.py": "979aa78790e2fffef9dba19475fd87adebb3449e1cf364728c4ed4273ff09720",
-    "tests/prove_consumer_path_preflight.py": "c60085d4a1b907387f259cd5752e221d2bfb0150f3d341cb8e69883856f99e3e",
+    "tests/prove_consumer_path_preflight.py": "0eeb4ff29e9e6188a856c1390b7c49917a6ec4a751e97c555c3d485075548a17",
     "tests/prove_context_integrity_refuses.py": "6edd212b4fd4c6e5e265a54c20c8110c344dbbf6b4cf8f823b48837435b6d479",
     "tests/prove_cpp_build_aware.py": "a1d64c6199199bf650e98006a9e6fe52d2a6dff27d1cf317f0aa742eb35437c6",
     "tests/prove_cppcheck_collects.py": "e3ea626f054acdf598b0b36f2a130818ff9e3eaf5677c00ec4f8fa8ec1f18848",
@@ -523,7 +523,7 @@
     "tests/prove_exception_history_derived.py": "c83173bc8fe3c3deca407241db5b0e19ee0ea5fe61bc725418cdd709dda2833f",
     "tests/prove_exception_lifecycle.py": "777376e130a4a4a0bc8e6f55ddc73fbd6f575cce590f0742c5e392eafe294ddd",
     "tests/prove_expected_signals_honest.py": "14ffbdae2a54ae3348482067f276f2c7abb3b1e4982e35787cc25a4657dae3a6",
-    "tests/prove_export_scope.py": "f44bc5b7eff1fc48ad35b60d399fe2a6b12da089b0d4ba0730716fd14d5017fb",
+    "tests/prove_export_scope.py": "e2d7e40a09073fbe4ad7cdacf600012aafa85e3dcb467e6dab8b04696feaae92",
     "tests/prove_external_evidence.py": "ee4a63ca8b91e2ede3d7427ab49049d6659ef728dcae3b06e145f5c97edf3f5a",
     "tests/prove_feed_mirror.py": "43c47db9f988466c128d2b24ca5c09b9941c1ef7b93bb5dd44015add36597bff",
     "tests/prove_feed_mirror_gaps.py": "ac2ab4b961601970842caab6978674de3583c4901fc7809eacb36ea617eb952a",
@@ -545,7 +545,7 @@
     "tests/prove_image_scan_retains.py": "d836fb9698de92a5686786e61a6d15a3e510d06bc5d1e8e2a64072feddb690cd",
     "tests/prove_image_secret_row.py": "426f00da469860b8043e7ed640314ef9775be857717860ea0bd6efb85444e54a",
     "tests/prove_jira_auth_and_routing.py": "23360d985b7f90be356f4037e0b4e91f73112863e2fd70174416a989f0a8d189",
-    "tests/prove_job_token_named.py": "544ded4005033bf0626940360f60ad46e89d53de96070ea8b00932ae49f28878",
+    "tests/prove_job_token_named.py": "5d3dd27e8ba79a6ae4460a61c7190916e5fdbc864848fb831a69dd73895a5dd9",
     "tests/prove_kit_api_client.py": "34061585b9bcdca63471f63d808dae1d129b9222ef17c11875d109be1b06a45e",
     "tests/prove_kit_api_server.py": "0da84a8ed331ef0e66af89a7da0fa698442b14536137c29d7c079b471b4b93fe",
     "tests/prove_kit_api_workflow.py": "49101e5a8b4cb8897129b22194b6317f24b1a49d31aebae245f07fd4c7aa29bb",
@@ -594,7 +594,7 @@
     "tests/prove_report_runs_as_shipped.py": "7c1bcbe607c71a3f7d33d8302b3c861f592d05a9e6434b4ba78c2ea748e600da",
     "tests/prove_report_wires_identity.py": "ab41441e18cd212fec776a05dbab8531795a057d7d15dab79a1dbdc6d7695fec",
     "tests/prove_reversal_disposition.py": "58d08e30d8212c6b1cbd4f1204f0d39c5b62a967127cae786c5703a704e53101",
-    "tests/prove_reviewer_signals.py": "c0d78cc118afe3b9cfdfb90ea8fd6aefa3f5119ae8bd4321b4ee7cd81dfb8828",
+    "tests/prove_reviewer_signals.py": "8ee4fb25c234c4e7045da49cd74f4354c5f123eca942ee828bcce131c8e6bd4b",
     "tests/prove_rollback_dependencies.py": "b9eb36a57a3f4498556b091b314b5a507822168f3281d6ea705e371c1b4ba9d1",
     "tests/prove_rollback_sequence.py": "c3a242473956f25ed9fa620585da3b8d5c894dcc4a3dfe458bb8b769537dd597",
     "tests/prove_rule_family_upgrade.py": "f7ca5de1b3364da4784638bb8e99279c31eb0d39b31bdcc4a03c44cbfe484cc8",
@@ -653,7 +653,7 @@
   "note": "Written by scripts/export_for_adoption.py. It records what this copy RECEIVED, so the next export can tell a source change from a change made here. Deleting it does not break anything; it only forces the next export to be told its baseline with --baseline.",
   "profile": "neutral",
   "source": "the kit's source repository (commit recorded; branch names are not)",
-  "source_commit": "acce43315b017d2686128915dc010bf64070b02e",
+  "source_commit": "cbf49f13acd918f7ccf4a4e812beb2d922872d70",
   "source_dirty": false,
   "unresolved_conflicts": {}
 }
