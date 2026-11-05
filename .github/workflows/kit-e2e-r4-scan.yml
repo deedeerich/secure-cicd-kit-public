@@ -1,7 +1,7 @@
 # RELEASE 4 END-TO-END (prepared, not run). Lives ONLY on the public mirror's e2e-r4/* branches,
 # never on main. Placed there by D:/handoffs/release4_e2e/run_e2e.sh (phase "branch").
 #
-#   push to e2e-r4/base     scan the seeded fixture -> gate -> TEST tickets (kit-test, [TEST]) in the
+#   push to e2e-r4/base     scan tests/consumer-fixture/full/python -> gate -> TEST tickets (kit-test, [TEST]) in the
 #                           ticketing-e2e-r4 environment (any branch but main is TEST, KDEC-028)
 #   push to e2e-r4/fix-*    scan only (its run id is what "fix observed" cites); no ticket job
 #   pull_request -> base    scan only (ticketing is refused on a pull request by the kit itself)
@@ -10,7 +10,7 @@ name: Kit e2e r4 scan
 on:
   push:
     branches: ['e2e-r4/base', 'e2e-r4/fix-*']
-    paths: ['tests/consumer-fixture/seeded/**', '.github/workflows/kit-e2e-r4-scan.yml']
+    paths: ['tests/consumer-fixture/full/python/**', '.github/workflows/kit-e2e-r4-scan.yml']
   pull_request:
     branches: ['e2e-r4/base']
 
@@ -30,7 +30,9 @@ jobs:
       actions: read
     with:
       language: python
-      paths: tests/consumer-fixture/seeded
+      # full/python: Bandit/Semgrep SOURCE findings the kit can key. The seeded requirements.txt gave
+      # only Trivy dependency findings, which the kit withholds without a purl (first e2e run 41945270732).
+      paths: tests/consumer-fixture/full/python
       environment: prod
 
   tickets:
