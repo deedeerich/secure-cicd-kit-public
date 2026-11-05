@@ -1,0 +1,65 @@
+# RELEASE 4 END-TO-END (prepared, not run): the kit API on the e2e branch. A workflow_dispatch needs
+# the file on the default branch (main), which is never touched, so the request is a COMMITTED FILE:
+# run_e2e.sh writes .kit-e2e/request.json on e2e-r4/base and pushes; this run answers it in the check
+# run kit-api/<correlation id>. default_branch is e2e-r4/base, so the review records under
+# .security/reviews/ are read from it, and must reach it by a pull request the approver APPROVED.
+name: Kit e2e r4 api
+
+run-name: kit-api e2e-r4 ${{ github.sha }}
+
+on:
+  push:
+    branches: ['e2e-r4/base']
+    paths: ['.kit-e2e/request.json']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kit-e2e-r4-api
+  cancel-in-progress: false
+
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      correlation_id: ${{ steps.r.outputs.correlation_id }}
+      idempotency_key: ${{ steps.r.outputs.idempotency_key }}
+      request: ${{ steps.r.outputs.request }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: r
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          r = json.load(open('.kit-e2e/request.json', encoding='utf-8'))
+          print('correlation_id=' + r['correlation_id'])
+          print('idempotency_key=' + (r.get('idempotency_key') or ''))
+          print('request=' + json.dumps(r, separators=(',', ':')))
+          PY
+
+  api:
+    needs: read
+    uses: ./.github/workflows/reusable-kit-api.yml
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+      pull-requests: read
+    with:
+      correlation_id: ${{ needs.read.outputs.correlation_id }}
+      idempotency_key: ${{ needs.read.outputs.idempotency_key }}
+      request: ${{ needs.read.outputs.request }}
+      default_branch: e2e-r4/base
+      operations: tickets.submit,tickets.get,tickets.search,tickets.comment,findings.get,findings.search
+      ticketing_environment: ticketing-e2e-r4
+      ticket_backend: jira
+      security_workflow: kit-e2e-r4-scan.yml
+    secrets:
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+      JIRA_HOST: ${{ secrets.JIRA_HOST }}   # a secret (masked); the environment's own secret wins inside the called job

@@ -1,0 +1,7 @@
+{
+ "approver_lists": {
+  "e2e-security": [
+   "stand-in-approver"
+  ]
+ }
+}

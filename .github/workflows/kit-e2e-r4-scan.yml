@@ -1,0 +1,55 @@
+# RELEASE 4 END-TO-END (prepared, not run). Lives ONLY on the public mirror's e2e-r4/* branches,
+# never on main. Placed there by D:/handoffs/release4_e2e/run_e2e.sh (phase "branch").
+#
+#   push to e2e-r4/base     scan the seeded fixture -> gate -> TEST tickets (kit-test, [TEST]) in the
+#                           ticketing-e2e-r4 environment (any branch but main is TEST, KDEC-028)
+#   push to e2e-r4/fix-*    scan only (its run id is what "fix observed" cites); no ticket job
+#   pull_request -> base    scan only (ticketing is refused on a pull request by the kit itself)
+name: Kit e2e r4 scan
+
+on:
+  push:
+    branches: ['e2e-r4/base', 'e2e-r4/fix-*']
+    paths: ['tests/consumer-fixture/seeded/**', '.github/workflows/kit-e2e-r4-scan.yml']
+  pull_request:
+    branches: ['e2e-r4/base']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kit-e2e-r4-scan-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  security:
+    uses: ./.github/workflows/reusable-security.yml
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    with:
+      language: python
+      paths: tests/consumer-fixture/seeded
+      environment: prod
+
+  tickets:
+    needs: security
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/e2e-r4/base'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/reusable-ticket-reconcile.yml
+    with:
+      backend: jira
+      environment: ticketing-e2e-r4
+      test_environment: ticketing-e2e-r4
+      default_branch: main
+      mode: reconcile
+      findings_artifact: ${{ needs.security.outputs.evidence_artifact }}
+      apply: true
+      kit_repository: ${{ github.repository }}
+      kit_ref: ${{ github.sha }}
+    secrets:
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+      JIRA_HOST: ${{ secrets.JIRA_HOST }}   # a secret (masked); the environment's own secret wins inside the called job
