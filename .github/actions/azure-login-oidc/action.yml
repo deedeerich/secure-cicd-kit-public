@@ -14,6 +14,10 @@ inputs:
   client-id:
     description: "App registration / managed identity client ID for OIDC federation"
     required: true
+  audience:
+    description: "Azure Government only: the federated credential's audience. Empty uses api://AzureADTokenExchangeUSGov (Microsoft's Government audience); set api://AzureADTokenExchange for a Government credential made with the global one. Commercial always uses api://AzureADTokenExchange."
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
@@ -25,3 +29,4 @@ runs:
         tenant-id: ${{ inputs.tenant-id }}
         subscription-id: ${{ inputs.subscription-id }}
         environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
+        audience: ${{ inputs.cloud == 'gov' && (inputs.audience || 'api://AzureADTokenExchangeUSGov') || 'api://AzureADTokenExchange' }}

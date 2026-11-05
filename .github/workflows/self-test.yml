@@ -1127,6 +1127,10 @@ jobs:
           # ticket; test ticketing chosen by the ref, refused against a real project.
           python3 -m pip install --quiet PyYAML
           python3 tests/prove_jira_auth_and_routing.py
+          # The Jira host may be a secret: read first, the variable second, written nowhere (owner 2026-11-04).
+          python3 tests/prove_jira_host_secret.py
+          # Azure Government: every Gov-capable azure/login asks for the Gov audience (owner 2026-11-04).
+          python3 tests/prove_azure_gov_audience.py
 
       - name: The kit's API -- contract, client, run side and wiring (KDEC-035)
         run: |

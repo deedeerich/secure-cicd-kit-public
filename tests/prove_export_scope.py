@@ -325,6 +325,18 @@ def prove_real_host_copy(fails, env):
     if not os.path.isfile(prof):
         print('E12 not applicable: no consumer-am profile in this tree')
         return
+    # A RELEASE TREE (main) carries the profile but never its overlay (KDEC-003, KDEC-013): the
+    # exporter refuses a profile whose overlay is absent, so there is no consumer-am copy to check.
+    # SOURCE-ONLY by name; the development branch, which holds the overlay, ran E12. (PR #11's
+    # private self-test 41901549538 went red on E12 for exactly this.)
+    wanted = [ln.split(None, 1)[1].strip() for ln in open(prof, encoding="utf-8")
+              if ln.strip().startswith('INCLUDE_OVERLAY ') and len(ln.split(None, 1)) == 2]
+    absent = [o for o in wanted if not os.path.isdir(os.path.join(ROOT, 'overlays', o))]
+    if absent:
+        print('SOURCE-ONLY E12: the consumer-am profile includes %d overlay(s) this tree does not carry '
+              '(a release tree keeps overlays/ out). There is no consumer-am copy to build here; E12 ran '
+              'on the development branch. Nothing was checked here, and nothing passed.' % len(absent))
+        return
     work = tempfile.mkdtemp(prefix='export-am-')
     try:
         out = os.path.join(work, 'copy')

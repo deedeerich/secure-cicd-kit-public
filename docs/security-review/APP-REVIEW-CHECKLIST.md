@@ -1,7 +1,7 @@
 # App review checklist — in the order a review actually runs
 
 ```
-Truth State:  Authored, not field-tested (2026-11-03).
+Truth State:  Authored, not field-tested (2026-11-03; cloud checks stated by intent 2026-11-04).
 Use with:     READING-THE-RUN-SUMMARY.md open beside it. S-numbers point to STOP-AND-ASK.md,
               E-numbers to ESCALATE-BROADER.md.
 Evidence:     one recent run of the app's security caller, and (if it deploys) one recent deploy run
@@ -22,11 +22,14 @@ Tick each box only from evidence you saw. "The team said so" is a different labe
       hosted as a Linux custom container on a Premium or Dedicated plan (the App Service reusable with
       `site_kind: functionapp`). Code-packaged Functions, AKS and VMs have no kit adapter: the gate
       names them `NO_KIT_ADAPTER:<kind>` (output `no_kit_adapter`, summary row "deploy coverage"), and
-      their deploy is outside the kit (`MOD-OUTSIDE-KIT`).
+      their deploy is outside the kit (`MOD-OUTSIDE-KIT`). The same is true of every target on AWS or
+      any other cloud: the kit scans the code wherever it runs, and releases only to the Azure targets
+      above.
 - [ ] **Its data**: what classes of data it stores, processes or passes on, and to whom. A flow to
       another team's system is E4; a new kind of regulated data is E6.
 - [ ] **Its exposure**: public, internal, partner-facing; which endpoints; does it sit behind a
-      shared edge (Front Door, a gateway). Shared edge entries are the landing zone's (E1).
+      shared edge (a front door or CDN such as Front Door or CloudFront, a gateway). Shared edge
+      entries are the landing zone's (E1).
 - [ ] **Its owners**: the app owner role, who approves releases at uat and prod, who can change the
       repository's workflows and environments. If one person is all of these, note it
       (`team_pattern`, `unvalidated_human_workflow_paths` in the gate's outputs).
@@ -131,19 +134,30 @@ Read the **security-gate** job's summary and outputs, and the **discover** job's
 
 ## 5 · Secrets and identities
 
-- [ ] **OIDC only**: no client secret, no `azure/login` with `creds:` (rule R5). The `AZURE_*`
-      values are identifiers held as environment variables or secrets, not credentials.
+- [ ] **OIDC only: CI reaches the cloud with a federated token, never a stored cloud key** (rule R5).
+      The values a workflow holds are identifiers, not credentials:
+
+      | Azure | AWS | GitHub | Other cloud: how to find the equivalent |
+      |---|---|---|---|
+      | `azure/login` with client, tenant and subscription ids and no `creds:`; the `AZURE_*` values are identifiers | `aws-actions/configure-aws-credentials` with `role-to-assume` and no access keys | the job grants `id-token: write` only where it logs in | the provider's workload-identity federation for CI; no service-account key file or access key in secrets |
 - [ ] **No long-lived keys** in the repository's secrets for cloud access. Optional ones the kit
       names: `SEMGREP_APP_TOKEN`, `NVD_API_KEY` (only if the datafeed is emptied), the tracker
       credential in a protected environment.
-- [ ] **One federated credential per environment**, subject
-      `repo:<owner>/<repo>:environment:<env>` (or the id-qualified form). `verify-azure-oidc.yml`
-      run on this identity shows `verdict` `PASS` and sibling scopes `REFUSED`.
-- [ ] **Least privilege**: the deploy identity holds `Website Contributor` (App Service) or
-      `Container Apps Contributor` (Container Apps) on that app, `Reader` on its resource group, and
-      nothing at subscription scope, nothing on another app, never `Owner` or
-      `User Access Administrator`. The build identity holds `AcrPush` only. The app's own managed
-      identity, not the deploy identity, holds `AcrPull`. Anything wider: E3.
+- [ ] **One federated trust per environment**, subject `repo:<owner>/<repo>:environment:<env>` (or
+      the id-qualified form), and proof that the identity reaches only its own scopes
+      (`../CLOUD-CHECKS.md` C2, C1):
+
+      | Azure | AWS | GitHub | Other cloud: how to find the equivalent |
+      |---|---|---|---|
+      | one federated credential per environment; `verify-azure-oidc.yml` run on this identity shows `verdict` `PASS` and sibling scopes `REFUSED` | the role's trust policy pins `sub` to that environment with `StringEquals`; no kit boundary probe exists for AWS: read C1 and C2 yourself | the repository's OIDC subject template | the identity's federation subject and audience, and a read showing a sibling scope refused |
+- [ ] **Least privilege**: the deploy identity can deploy that one app and read its group, and
+      nothing at subscription or account-wide scope, nothing on another app, never an owner or
+      user-access-administrator role. The build identity can only push its image. The app's own
+      runtime identity, not the deploy identity, pulls the image. Anything wider: E3.
+
+      | Azure | AWS | GitHub | Other cloud: how to find the equivalent |
+      |---|---|---|---|
+      | deploy: `Website Contributor` (App Service) or `Container Apps Contributor` (Container Apps) on the app, `Reader` on its resource group; build: `AcrPush` only; the app's managed identity: `AcrPull` | outside the kit: the deploy role's policy names only the one service and its resources; the build role pushes one ECR repository; the task or function role pulls | — | the deploy role's bindings on the one resource, the build identity's push grant, the runtime identity's pull grant (C1, C10) |
 - [ ] **Workflow permissions**: per job, `id-token: write` only where a job logs in; no
       workflow-level `id-token: write` (R3); `secrets: inherit` flagged (R8).
 

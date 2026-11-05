@@ -99,6 +99,9 @@ on:
         type: string
         default: ""
     secrets:
+      JIRA_HOST:
+        description: "Jira: the site URL (https://<site>.atlassian.net), held as a SECRET where the host must not appear in logs. Read first; vars.JIRA_HOST is the fallback. From the protected environment."
+        required: false
       JIRA_EMAIL:
         description: "Jira: the account email (basic auth is email:token). From the protected environment. Not needed with vars.JIRA_AUTH_MODE=bearer (a service account token through the gateway, KDEC-028)."
         required: false
@@ -309,7 +312,7 @@ jobs:
           LEDGER_PATH: ${{ inputs.ledger_path }}
           APPLY: ${{ inputs.apply }}
           TICKET_BACKEND: ${{ inputs.backend }}
-          JIRA_HOST: ${{ vars.JIRA_HOST }}
+          JIRA_HOST: ${{ secrets.JIRA_HOST || vars.JIRA_HOST }}
           JIRA_PROJECT: ${{ vars.JIRA_PROJECT }}
           JIRA_STAMP_FIELD: ${{ vars.JIRA_STAMP_FIELD }}
           JIRA_EPIC_ID: ${{ vars.JIRA_EPIC_ID }}
@@ -447,7 +450,7 @@ jobs:
           APPLY: ${{ inputs.apply }}
           TICKET_BACKEND: ${{ inputs.backend }}
           # Tracker SETTINGS come from the environment's variables, credentials from its secrets.
-          JIRA_HOST: ${{ vars.JIRA_HOST }}
+          JIRA_HOST: ${{ secrets.JIRA_HOST || vars.JIRA_HOST }}
           JIRA_PROJECT: ${{ vars.JIRA_PROJECT }}
           JIRA_STAMP_FIELD: ${{ vars.JIRA_STAMP_FIELD }}
           JIRA_EPIC_ID: ${{ vars.JIRA_EPIC_ID }}

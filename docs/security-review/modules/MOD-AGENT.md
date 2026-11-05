@@ -1,8 +1,8 @@
 # MOD-AGENT — AI or code acting on systems on its own
 
 ```
-Truth State: Authored, not field-tested (2026-11-03). One page. Tick only from evidence you saw;
-             otherwise label the line Stated or Not established (../SIGN-OFF.md).
+Truth State: Authored, not field-tested (2026-11-03; stated by intent 2026-11-04). One page. Tick only
+             from evidence you saw; otherwise label the line Stated or Not established (../SIGN-OFF.md).
 ```
 
 - [ ] **Escalated first (E9)** to the AI agent governance owner. The agent governance harness, not
@@ -17,3 +17,7 @@ Truth State: Authored, not field-tested (2026-11-03). One page. Tick only from e
 - [ ] A human owner role is accountable for the agent and can switch it off.
 - [ ] The kit scans the agent's code like any app (`MOD-BASE`); it does not observe what the agent does
       at runtime. Runtime claims are Stated unless the governance harness shows them.
+
+**Cloud-neutral.** Every line here reads the kit's own run, the source-control platform or the
+people involved; none depends on which cloud the app runs on. Cloud facts the change touches are
+read through `../CLOUD-CHECKS.md` by intent, on whichever cloud it is.

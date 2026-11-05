@@ -19,6 +19,7 @@
 # take the variables in docs/architecture/TICKETING_CONTRACT.md section 13.
 #   secrets    JIRA_TOKEN, and JIRA_EMAIL for basic auth (none with JIRA_AUTH_MODE=bearer: a service
 #              account's token through Atlassian's gateway; JIRA_CLOUD_ID optional, looked up)
+#   (JIRA_HOST may instead be a SECRET: read first, masked in logs; prove_jira_host_secret.py)
 #   variables  JIRA_HOST, JIRA_PROJECT, JIRA_STAMP_FIELD, JIRA_EPIC_ID, JIRA_CALIBRATION_ISSUE,
 #              TICKET_CREATE_CEILING (required); JIRA_TRANSITION_REOPEN, JIRA_TRANSITION_DONE,
 #              JIRA_PRIORITY_LADDER, TICKET_CALL_BUDGET, TICKET_RETRY_CEILING (optional)
@@ -87,6 +88,7 @@ jobs:
     secrets:
       JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
       JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+      JIRA_HOST: ${{ secrets.JIRA_HOST }}   # optional: the Jira host as a secret (masked in logs)
 
   # The ticket bindings persist through the one reviewed write path: a pull request (T-20).
   ledger:
@@ -118,3 +120,4 @@ jobs:
     secrets:
       JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
       JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+      JIRA_HOST: ${{ secrets.JIRA_HOST }}   # optional: the Jira host as a secret (masked in logs)

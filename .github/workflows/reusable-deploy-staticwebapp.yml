@@ -6786,6 +6786,7 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
           environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
+          audience: ${{ inputs.cloud == 'gov' && (vars.KIT_AZURE_OIDC_AUDIENCE || 'api://AzureADTokenExchangeUSGov') || 'api://AzureADTokenExchange' }}
 
       - name: Target lease -- acquire (KDEC-030, opt-in; refuse before the first capture)
         # The ONE lock the landing-zone apply and this deploy both take (a concurrency group

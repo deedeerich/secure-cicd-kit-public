@@ -11,7 +11,8 @@ output, a ticket, or "asked <role>: <answer>".
 ```
 
 **CAB ticket:** ________  **Change type:** ☐ app ☐ cloud ☐ both  **Environment:** ☐ dev ☐ test ☐ uat ☐ prod
-**Platform:** ☐ Azure commercial ☐ Azure Gov ☐ AWS ☐ GitHub  **App type:** ________  **Data class:** ☐ public ☐ internal ☐ confidential ☐ regulated
+**Cloud:** ☐ Azure ☐ AWS ☐ other: ________  **Partition:** ☐ commercial ☐ sovereign / government  **Source control:** ☐ GitHub ☐ other: ________
+**App type:** ________  **Data class:** ☐ public ☐ internal ☐ confidential ☐ regulated
 **Artefact (1.7):** repo ________ commit ________ digest ________
 **Requester / author / release approver (1.8):** ________ / ________ / ________ (three different people)
 
@@ -24,7 +25,7 @@ Blank, or "N/A" without a reason, makes this review **not valid**. Can't fill a 
 |---|---|---|
 | 1.1 | What is changing | |
 | 1.2 | What the app or system does | |
-| 1.3 | Where it runs (platform, environment) | |
+| 1.3 | Where it runs (cloud and partition, environment) | |
 | 1.4 | What data it touches | |
 | 1.5 | Who and what can reach it (auth, exposure) | |
 | 1.6 | What breaks if it goes wrong | |
@@ -50,19 +51,23 @@ Depth: ☐ full ☐ delta   Rows yes/unknown: ________
 
 Stop and ask if: you didn't open the run summary yourself; a word means nothing to you (S2, S3, S8, S16). Broader conversation if: an exception has no owner (E8); the run says something the code can't mean (E10).
 
-## D · Cloud checks (step 4) — per conversation, the platforms it touches; N/A needs a reason
+## D · Cloud checks (step 4) — one line per intent; fill the platforms the change touches; N/A needs a reason
 
-☐ **4.0** Asked "did anything else change on these resources?" — change history matches the ticket: ________
-☐ **4A Who can reach it** — Azure Z2/Z3/Z4 ____ · AWS W3/W4 ____ · GitHub H1/H3 ____
-☐ **4B Who gets access, how much** — Azure Z1/Z9/Z10/Z11 ____ · AWS W1/W2 ____ · GitHub H2/H5/H6/H7 ____
-☐ **4C Secrets and keys** — Azure Z12/Z5/Z4 ____ · AWS W9/W6/W5 ____ · GitHub H4 ____
-☐ **4D Where the data goes** — Azure Z4/Z6 ____ · AWS W4/W5 ____ · GitHub H6 ____
-☐ **4E Will we still see it** — Azure Z6/Z7/Z8 ____ · AWS W7/W11 ____ · GitHub H8 ____
-☐ **4F Does the app check callers** — Azure Z13 ____ · AWS W8/W10 ____
-☐ **4G New names or outside parties** — Azure Z14/Z10 ____ · AWS W12/W2 ____ · GitHub H6 ____
-Platforms not touched: Azure ☐ N/A because ____ · AWS ☐ N/A because ____ · GitHub ☐ N/A because ____
+The C-numbers are `CLOUD-CHECKS.md`'s, keyed by intent; the old Z/W/H ids in brackets still work. "Other"
+is any cloud the sheet does not name: write what you read there (the right-hand column of each check says
+what to look for).
 
-Stop and ask if: you can't run or read a check — ask the platform team to show you (S1). Broader conversation if: a new identity or trust (E3); new internet exposure (E1); a new platform, subscription, account or tenant (E1); a shared edge entry (E1); regulated data moves (E6).
+☐ **4.0 Did anything else change?** (C0) — change history matches the ticket: Azure ____ · AWS ____ · GitHub ____ · Other ____
+☐ **4A Who can reach it** (C3, C4; C16, C18) — Azure (Z2/Z3/Z4) ____ · AWS (W3/W4) ____ · GitHub (H1/H3) ____ · Other ____
+☐ **4B Who gets access, how much** (C1, C2, C10, C11, C12; C17, C19, C20) — Azure (Z1/Z9/Z10/Z11) ____ · AWS (W1/W2) ____ · GitHub (H2/H5/H6/H7) ____ · Other ____
+☐ **4C Secrets and keys** (C13, C6, C5, C4) — Azure (Z12/Z5/Z4) ____ · AWS (W9/W6/W5) ____ · GitHub (H4) ____ · Other ____
+☐ **4D Where the data goes** (C4, C5, C7) — Azure (Z4/Z6) ____ · AWS (W4/W5) ____ · GitHub (H6) ____ · Other ____
+☐ **4E Will we still see it** (C7, C8, C9) — Azure (Z6/Z7/Z8) ____ · AWS (W7/W11) ____ · GitHub (H8) ____ · Other ____
+☐ **4F Does the app check callers** (C14) — Azure (Z13) ____ · AWS (W8/W10) ____ · Other ____
+☐ **4G New names or outside parties** (C15, C11, C2, C20) — Azure (Z14/Z10) ____ · AWS (W12/W2) ____ · GitHub (H6) ____ · Other ____
+Platforms not touched: Azure ☐ N/A because ____ · AWS ☐ N/A because ____ · Other cloud ☐ N/A because ____ · GitHub ☐ N/A because ____
+
+Stop and ask if: you can't run or read a check — ask the platform team to show you (S1). Broader conversation if: a new identity or trust (E3); new internet exposure (E1); a new platform, subscription, account, project or tenant (E1); a shared edge entry (E1); regulated data moves (E6).
 
 ## E · Pipeline and evidence (step 5)
 

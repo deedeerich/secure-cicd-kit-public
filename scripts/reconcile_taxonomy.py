@@ -289,6 +289,9 @@ NOT_VOCABULARY = {
     # one.
     "KIT_ACR_LOGIN_SERVER", "KIT_APP_NAME", "KIT_CLOUD", "KIT_ENVIRONMENT_TIER",
     "KIT_IMAGE_REPOSITORY", "KIT_RESOURCE_GROUP",
+    # Azure Government: the repository variable overriding the federated-credential audience for
+    # cloud gov only (tests/prove_azure_gov_audience.py). A setting, not a state.
+    "KIT_AZURE_OIDC_AUDIENCE",
     # KDEC-036: three more hand-off and repository variables (the landing zone's hand-off marker, the
     # hosting kind it vended, the evidence retention in days) and the deploy's site kind setting.
     # Settings whose VALUES are registered (readiness_source, deploy_coverage, evidence_retention);
@@ -472,7 +475,7 @@ NOT_VOCABULARY = {
     # tests/prove_ticket_backends.py (the same class as JIRA_ENV). Containers, limits and URLs; never states.
     "API_STATES", "WRITE_OPERATIONS", "DEFAULT_ENABLED", "ENV_BY_PHASE", "REQUEST_MAX", "RESULT_TEXT_MAX",
     "CORRELATION_RE", "KEV_URL", "API_HOST", "API_URL", "BLOB_HOST", "AZDO_ENV",
-    # The CAB change-safety sheets (docs/security-review/CLOUD-CHECKS-AWS.md, 2026-11-03): AWS's own enum
+    # The CAB change-safety sheets (docs/security-review/CLOUD-CHECKS.md, 2026-11-03): AWS's own enum
     # values, quoted exactly because a read-only review command takes them or prints them -- the policy
     # type IAM Access Analyzer's validate-policy requires, the finding type it returns, and the Lambda
     # function-URL auth type. Somebody else's identifiers, the same class as the TRIVY_* above; nothing

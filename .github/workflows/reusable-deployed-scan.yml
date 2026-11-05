@@ -79,6 +79,7 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
           environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
+          audience: ${{ inputs.cloud == 'gov' && (vars.KIT_AZURE_OIDC_AUDIENCE || 'api://AzureADTokenExchangeUSGov') || 'api://AzureADTokenExchange' }}
 
       - name: The day the Trivy database is pinned to
         id: day

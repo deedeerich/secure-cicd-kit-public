@@ -13,7 +13,7 @@ Authority:    the kit's code, assurance-taxonomy.yaml and docs/architecture/* wi
 
 | You are about to... | Use |
 |---|---|
-| do the **security review of a change going to CAB** (cloud or app): is it safe, on what evidence? | [`CAB-CHANGE-SAFETY-STEPS.md`](CAB-CHANGE-SAFETY-STEPS.md) for the steps; fill in [`CAB-CHANGE-REVIEW-CHECKLIST.md`](CAB-CHANGE-REVIEW-CHECKLIST.md); cloud reads in [`CLOUD-CHECKS-AZURE.md`](CLOUD-CHECKS-AZURE.md), [`CLOUD-CHECKS-AWS.md`](CLOUD-CHECKS-AWS.md), [`CLOUD-CHECKS-GITHUB.md`](CLOUD-CHECKS-GITHUB.md) |
+| do the **security review of a change going to CAB** (cloud or app): is it safe, on what evidence? | [`CAB-CHANGE-SAFETY-STEPS.md`](CAB-CHANGE-SAFETY-STEPS.md) for the steps; fill in [`CAB-CHANGE-REVIEW-CHECKLIST.md`](CAB-CHANGE-REVIEW-CHECKLIST.md); cloud reads in [`CLOUD-CHECKS.md`](CLOUD-CHECKS.md), one list by intent with Azure, AWS, GitHub and "other cloud" columns (the old Z/W/H ids are aliases) |
 | answer someone who pulled you in **before the CAB presentation exists** | [`EARLY-REVIEW-REQUESTS.md`](EARLY-REVIEW-REQUESTS.md) |
 | explain **why** a check is asked: the principle, the source, the gotcha | [`PRINCIPLES-AND-SOURCES.md`](PRINCIPLES-AND-SOURCES.md) |
 | start a review, and want the order to do it in | [`APP-REVIEW-CHECKLIST.md`](APP-REVIEW-CHECKLIST.md) |
@@ -31,6 +31,14 @@ the checklist's paste block: the outcome, what the reviewer understood the chang
 they looked at, and the open questions. "Not reviewed — outside my knowledge, routed to `<role>`" and
 "Paused — broader conversation opened" are correct outcomes, not failures. These sheets are the
 security review of a change; the CAB process itself is the organisation's and is not defined here.
+
+## Any cloud
+
+Every check is stated once, by what it is for, and then implemented per platform: Azure, AWS,
+GitHub, and, for any other cloud, how to find the equivalent (`CLOUD-CHECKS.md`). A sovereign or
+government cloud uses the same checks against its own endpoints. What is Azure-specific is the
+kit's **deploy**: it releases only to its Azure targets, so on AWS or any other cloud the kit scans
+the code and the release is outside it (`modules/MOD-OUTSIDE-KIT.md`).
 
 ## The three rules the sheets lean on
 

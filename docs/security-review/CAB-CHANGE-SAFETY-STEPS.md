@@ -5,8 +5,8 @@ Truth State:  Authored, not field-tested (2026-11-03). Written from the kit's do
               trunk and from the sources in PRINCIPLES-AND-SOURCES.md; no reviewer has yet run a real
               change through these steps.
 What this is: the SECURITY REVIEW a security reviewer performs on one change that is going to CAB: a
-              change to an app, or to the cloud it runs on (Azure, AWS, GitHub). It answers one
-              question: is this change safe, and on what evidence?
+              change to an app, or to the cloud it runs on (any cloud: Azure, AWS or another), or to
+              GitHub. It answers one question: is this change safe, and on what evidence?
 What it is not: CAB. The organisation's CAB already exists, is well run, and has its own tickets,
               classes, meetings and process. Nothing here defines or changes any of that. The only
               place this review touches CAB is the end: the security verdict is written onto the
@@ -17,15 +17,16 @@ Why it exists: so that "security reviewed it" is never said by someone who did n
 Fill in:      CAB-CHANGE-REVIEW-CHECKLIST.md (one per change; it mirrors these steps line by line).
 Pulled in early, before the CAB presentation exists?  EARLY-REVIEW-REQUESTS.md.
 Why each check exists:  PRINCIPLES-AND-SOURCES.md (principle, source, the gotcha it catches).
-Cloud commands:  CLOUD-CHECKS-AZURE.md, CLOUD-CHECKS-AWS.md, CLOUD-CHECKS-GITHUB.md. Every one is a
-              read-only command or click path.
+Cloud commands:  CLOUD-CHECKS.md, keyed by what each check is for, with Azure, AWS, GitHub and
+              "other cloud" columns (old Z/W/H ids kept as aliases). Every one is a read-only
+              command or click path.
 Owner decisions marked: OWNER DECISION, with the default these sheets use until decided.
 ```
 
 This is written for a reviewer who may be new to a platform. The app and cloud checks (steps 2 to 4)
 are **conversations**: for each one you get the question to ask in plain words, **why we ask**, what
 **a good answer sounds like**, what to **worry about if you hear**, where to **then check** it yourself
-(the kit's run summary, the Azure portal or CLI, the AWS console or CLI, GitHub's settings), and when
+(the kit's run summary, the cloud's console or CLI, GitHub's settings), and when
 to **stop and ask** or open a **broader conversation**. The other steps say what to open, what to
 check, and what safe, ask and stop look like. "Ask" means the requester can
 answer with evidence (`STOP-AND-ASK.md`, S-numbers). "Stop" means you cannot recommend approval until
@@ -64,8 +65,8 @@ request(s) or commit(s), and the IaC plan if there is one.
 
 1.1 **What is changing.** One sentence you could explain to someone else.
 1.2 **What the app or system does**, and for whom.
-1.3 **Where it runs**: platform (Azure commercial, Azure Government, AWS, GitHub), environment(s), and
-    which serve real users.
+1.3 **Where it runs**: the platform (which cloud, and which of its partitions: commercial, or a
+    sovereign or government cloud; and GitHub), the environment(s), and which serve real users.
 1.4 **What data it touches**: the classes, and whether any is confidential or regulated.
 1.5 **Who and what can reach it**: its authentication, and its exposure (internet, internal,
     partner, other services).
@@ -141,7 +142,7 @@ evidence.
 | DB-5 | data | retention: kept longer or shorter, deletion or backup changed |
 | DB-6 | data | residency: a new region, jurisdiction or tenant holds or processes it |
 | SB-1 | security | network exposure: a port, listener, ingress, peering, route or private endpoint |
-| SB-2 | security | a firewall, security group, NSG, NACL, WAF rule or access restriction |
+| SB-2 | security | a firewall rule, security group or network ACL (on Azure an NSG), a WAF rule or an access restriction |
 | SB-3 | security | encryption in transit or at rest: TLS settings, a cipher, a store's encryption |
 | SB-4 | security | a key: a new key, a key policy, rotation, who may use or administer it |
 | SB-5 | security | logging or monitoring turned off, reduced, sampled, or its retention shortened |
@@ -153,7 +154,7 @@ evidence.
 | AB-5 | auth | an MFA or Conditional Access change, an exclusion added, a sign-in method |
 | AB-6 | auth | a secret: new, moved, rotated, or its scope changed (repository, environment, org, vault) |
 | AB-7 | auth | API authentication or authorisation: an authorizer, a key requirement, a route left open, CORS |
-| XB-1 | exposure | a public endpoint: a public IP, a function URL, a public bucket, `publicNetworkAccess` on |
+| XB-1 | exposure | a public endpoint: a public IP, a function URL, a public bucket or container, a public-network-access switch turned on |
 | XB-2 | exposure | a DNS record (new, changed target, a dangling one left behind) |
 | XB-3 | exposure | a new third party: SaaS, external API, vendor action, image, feed, webhook target |
 
@@ -298,12 +299,17 @@ run says something the code cannot mean (E10).
 
 ## Step 4 · Cloud checks — a conversation, then the platform
 
-Same pattern: ask, listen, then confirm it in the platform yourself. Each conversation below has a
-sub-block per platform. **Only the platforms the change touches apply**; for the others write "N/A"
-and why ("no AWS resource in the diff or the plan"). The exact commands and click paths are in
-`CLOUD-CHECKS-AZURE.md` (Z-numbers), `CLOUD-CHECKS-AWS.md` (W-numbers) and `CLOUD-CHECKS-GITHUB.md`
-(H-numbers); all of them only read. Azure Government uses the same checks: run
-`az cloud set --name AzureUSGovernment` first and use `graph.microsoft.us` for Graph.
+Same pattern: ask, listen, then confirm it in the platform yourself. Each conversation below is stated
+once, by what it is for, in words that hold on any cloud. Under it, an **implementation table** says
+where to confirm it on Azure, on AWS and on GitHub, and, for any other cloud, how to find the
+equivalent. **Only the platforms the change touches apply**; for the others write "N/A" and why ("no
+AWS resource in the diff or the plan"). The exact commands and click paths are in `CLOUD-CHECKS.md`
+(C-numbers, keyed by intent; the old Z-, W- and H-numbers stay as aliases). All of them only read.
+
+**A sovereign or government cloud** (a provider's separate partition for a government or a
+jurisdiction) uses the same checks: point the CLI at that cloud's endpoints and sign-in first, use
+its own API host, and record a feature that cloud does not offer as a gap, never as "off" or clean
+(`CLOUD-CHECKS.md`, the note at the top).
 
 **Read before and after.** Look at the state before the change (production now, or the plan's
 "before") and after it (a lower environment where it already ran, or the plan's "after"). Reading only
@@ -319,9 +325,12 @@ doesn't make sense, ask the platform team to walk you through it. Asking is part
 release: by hand, by another pipeline, during testing?"
 - *Why we ask:* the risky change is often the one next to the one being reviewed.
 - *Worry if you hear:* "I fixed a couple of other things while I was in there".
-- **Then check:** Azure: the resource's **Activity log**. AWS: **CloudTrail → Event history** and
-  **Config → Resource timeline**. GitHub: the organisation audit log, or the settings pages before and
-  after. The change history should match the ticket.
+- **Then check** the change history (C0); it should match the ticket:
+
+  | Azure | AWS | GitHub | Other cloud: how to find the equivalent |
+  |---|---|---|---|
+  | the resource's **Activity log** | **CloudTrail → Event history**; **Config → Resource timeline** | the organisation audit log, or the settings pages before and after | the provider's control-plane audit log and its resource configuration history |
+
 - **Stop if** a resource the ticket does not name changed in a boundary that matters.
 
 ### 4A · "Who can reach it after the change?" (rows SB-1, SB-2, XB-1)
@@ -333,14 +342,16 @@ or to a wider network than before? Is a private connection being replaced with a
 - *A good answer sounds like:* "Only the app gateway's subnet can reach it, same as now, port 443."
 - *Worry if you hear:* "it's just a quick firewall tweak", "we opened it for the migration, we'll close
   it after", "the private endpoint was flaky so we switched to public".
-- **Then check:**
-  - **Azure:** Z2 NSG and firewall rules (no `Internet`/`*` source to a management or database port);
-    Z3 private endpoints still approved; Z4 `publicNetworkAccess`, TLS and HTTPS settings.
-  - **AWS:** W3 security groups and network ACLs (no `0.0.0.0/0` to SSH, RDP or a database port); W4
-    S3 Block Public Access still on and the bucket not public.
-  - **GitHub:** H1 rulesets (who can push to the default branch) and H3 Actions permissions.
+- **Then check:** no source of "anywhere" to a management or database port (C3); private connections
+  still approved and public network access still off (C4); transport settings unchanged (C4); at the
+  source-control platform, who can push to the default branch and what CI may do (C16, C18).
+
+  | Azure | AWS | GitHub | Other cloud: how to find the equivalent |
+  |---|---|---|---|
+  | C3 (Z2) NSG and firewall rules: no `Internet`/`*` source to a management or database port; C4 (Z3) private endpoints still approved; C4 (Z4) `publicNetworkAccess`, TLS and HTTPS | C3 (W3) security groups and network ACLs: no `0.0.0.0/0` to SSH, RDP or a database port; C4 (W4) S3 Block Public Access still on, the bucket not public | C16 (H1) rulesets; C18 (H3) Actions permissions | the resource's firewall or security-group rules and its subnet ACL; its private-connectivity attachments; its public-access switch and TLS minimum |
+
 - **Broader conversation if** something internal becomes internet-facing, or a shared edge entry
-  (Front Door, WAF, DNS, firewall) changes (E1).
+  (an edge or CDN front door, WAF, DNS, firewall) changes (E1).
 
 ### 4B · "Who and what gets access, and how much?" (rows AB-1..AB-5)
 
@@ -348,20 +359,20 @@ or to a wider network than before? Is a private connection being replaced with a
 What can each one do, and on what? Does anything new get to assume or trust anything?"
 - *Why we ask:* a broad role given to get past an error is the most common way a small change gets a
   big blast radius.
-- *A good answer sounds like:* "The app's managed identity gets read on its own storage account; nothing
-  at subscription level."
+- *A good answer sounds like:* "The app's own identity gets read on its own storage; nothing at
+  subscription or account level."
 - *Worry if you hear:* "we gave it Contributor/Admin so it would stop failing", "it needs `*` for now",
   "it's the same identity the other app uses", "the trust is for our whole org".
-- **Then check:**
-  - **Azure:** Z1 role assignments, before and after (no `Owner`, `User Access Administrator` or
-    `Contributor` at subscription scope for a workload); Z9 the managed identity's scope; Z10 Entra app
-    permissions, admin consent, federated credentials and client secrets; Z11 Conditional Access and MFA
-    exclusions.
-  - **AWS:** W1 the IAM policy versions side by side (no `"Action": "*"`, no `iam:PassRole` on `*`;
-    run Access Analyzer's validate-policy); W2 the role's trust policy (no `"Principal": "*"`, GitHub
-    OIDC pinned to one repository and environment).
-  - **GitHub:** H2 environment reviewers and self-review; H5 deploy keys; H6 GitHub Apps and their
-    permissions; H7 organisation 2FA and SSO.
+- **Then check:** the permission diff, before and after, with nothing full-control, grant-others or
+  wildcard at a wide scope for a workload (C1); who may assume or federate into each identity (C2); the
+  runtime identity's reach (C10); directory or API permissions, consent and credentials (C11);
+  sign-in protections and their exclusions (C12); deployment approvals and the integrations that can
+  act on the code (C17, C19, C20).
+
+  | Azure | AWS | GitHub | Other cloud: how to find the equivalent |
+  |---|---|---|---|
+  | C1 (Z1) role assignments: no `Owner`, `User Access Administrator` or `Contributor` at subscription scope for a workload; C10 (Z9) the managed identity's scope; C11 (Z10) Entra app permissions, admin consent, federated credentials and client secrets; C12 (Z11) Conditional Access and MFA exclusions | C1 (W1) the IAM policy versions side by side (no `"Action": "*"`, no `iam:PassRole` on `*`; run Access Analyzer's validate-policy); C2 (W2) the role's trust policy (no `"Principal": "*"`, GitHub OIDC pinned to one repository and environment) | C17 (H2) environment reviewers and self-review; C19 (H5) deploy keys; C20 (H6) GitHub Apps and their permissions; C12 (H7) organisation 2FA and SSO | the role bindings on the resource and its parents; each identity's trust or federation configuration; the identity provider's app permissions and sign-in policies |
+
 - **Broader conversation if** it is a new identity design, cross-tenant or cross-account trust, or an MFA
   or Conditional Access change (E3).
 
@@ -371,15 +382,17 @@ What can each one do, and on what? Does anything new get to assume or trust anyt
 it, and how is it rotated? Does any encryption setting change?"
 - *Why we ask:* a secret in plain configuration is readable by everyone who can read the configuration,
   and that is usually more people than you think.
-- *A good answer sounds like:* "It's a Key Vault reference; only the app's identity can read it."
+- *A good answer sounds like:* "It's a reference to the secret store; only the app's identity can read it."
 - *Worry if you hear:* "it's in the app settings for now", "it's in an environment variable", "we'll
   move it to the vault later".
-- **Then check:**
-  - **Azure:** Z12 app settings are Key Vault references, not literals (look at names first; never
-    paste values into the ticket); Z5 Key Vault access and purge protection; Z4 TLS minimums.
-  - **AWS:** W9 Lambda and task-definition environment variables reference Secrets Manager or
-    Parameter Store; W6 the KMS key policy and rotation; W5 S3 encryption.
-  - **GitHub:** H4 secrets: names, scope and who can read an organisation secret.
+- **Then check:** credentials are references to the secret store, not literals (C13: look at names
+  first; never paste values into the ticket); who can use and administer the keys, and deletion
+  protection (C6); encryption at rest names the right key (C5); transport minimums (C4).
+
+  | Azure | AWS | GitHub | Other cloud: how to find the equivalent |
+  |---|---|---|---|
+  | C13 (Z12) app settings are Key Vault references; C6 (Z5) Key Vault access and purge protection; C4 (Z4) TLS minimums | C13 (W9) Lambda and task-definition variables reference Secrets Manager or Parameter Store; C6 (W6) the KMS key policy and rotation; C5 (W5) S3 encryption | C13 (H4) secrets: names, scope and who can read an organisation secret | the compute service's settings and environment variables; the provider's secret manager and key service access model; the store's encryption-at-rest key |
+
 - **Stop if** a literal secret is in configuration: it needs rotating, not just moving.
 
 ### 4D · "Where does the data go, and how long does it stay?" (rows DB-2, DB-5, DB-6)
@@ -391,11 +404,13 @@ and does that change?"
 - *A good answer sounds like:* "Same database, same region, same retention."
 - *Worry if you hear:* "it's just a temporary copy", "the new bucket is in another region but it's only
   for a while".
-- **Then check:**
-  - **Azure:** Z4 the store's network and public-access settings and its region; Z6 diagnostic
-    retention.
-  - **AWS:** W4 the bucket's region, policy and lifecycle rules; W5 encryption.
-  - **GitHub:** usually N/A; check H6 if an app or webhook receives repository data.
+- **Then check:** the store's network and public-access settings, region and retention rules (C4);
+  its encryption (C5); its log retention (C7).
+
+  | Azure | AWS | GitHub | Other cloud: how to find the equivalent |
+  |---|---|---|---|
+  | C4 (Z4) the store's network and public-access settings and its region; C7 (Z6) diagnostic retention | C4 (W4) the bucket's region, policy and lifecycle rules; C5 (W5) encryption | usually N/A; C20 (H6) if an app or webhook receives repository data | the store's region, resource policy, public-access setting and lifecycle or retention rules |
+
 - **Broader conversation if** regulated data moves, or data goes to another team's system (E6, E4).
 
 ### 4E · "Will we still see what happens?" (rows SB-5, SB-6)
@@ -404,17 +419,18 @@ and does that change?"
 anything being turned down to save cost or noise?"
 - *Why we ask:* logs are the evidence for every later investigation. Turning them down is invisible
   until the day you need them.
-- *A good answer sounds like:* "No logging change; Defender (or Security Hub) is unchanged."
+- *A good answer sounds like:* "No logging change; the cloud's security service is unchanged."
 - *Worry if you hear:* "we reduced diagnostics to cut the bill", "we paused the trail during the
   change", "that recommendation is just noise".
-- **Then check:**
-  - **Azure:** Z6 diagnostic settings before and after; Z7 Defender for Cloud recommendations for the
-    resource; Z8 Azure Policy compliance and any new exemption.
-  - **AWS:** W7 CloudTrail logging and Config recording still on; W11 Security Hub and GuardDuty findings
-    for the resource.
-  - **GitHub:** H8 secret scanning and push protection, and audit-log streaming where licensed.
-- **Broader conversation if** GuardDuty or Defender shows signs of active misuse: incident response
-  (E7).
+- **Then check:** log export settings before and after, and the account-wide audit trail (C7); the
+  posture and threat findings for the resource (C8); policy compliance and any new exemption (C9).
+
+  | Azure | AWS | GitHub | Other cloud: how to find the equivalent |
+  |---|---|---|---|
+  | C7 (Z6) diagnostic settings before and after; C8 (Z7) Defender for Cloud recommendations for the resource; C9 (Z8) Azure Policy compliance and any new exemption | C7 (W7) CloudTrail logging and Config recording still on; C8 (W11) Security Hub and GuardDuty findings for the resource | C7 (H8) secret scanning and push protection, and audit-log streaming where licensed | the provider's log export settings and API audit trail; its posture-management and threat-detection findings; its policy engine's compliance and exemptions |
+
+- **Broader conversation if** the platform's threat detection shows signs of active misuse: incident
+  response (E7).
 
 ### 4F · "Does the app check who's calling?" (row AB-7)
 
@@ -424,11 +440,11 @@ deliberately public?"
 - *A good answer sounds like:* "Every new route sits behind the same sign-in as the rest; the health
   check is the only public one."
 - *Worry if you hear:* "we'll add auth later", "nobody knows the URL", "CORS is `*` for now".
-- **Then check:**
-  - **Azure:** Z13 App Service or Container Apps authentication and ingress, and CORS.
-  - **AWS:** W8 the Lambda function URL (auth type `NONE` is a stop unless the ticket says public) and
-    resource policy; W10 API Gateway authorizers on every new route.
-  - **GitHub:** N/A.
+- **Then check:** the app's or gateway's authentication on every new route, ingress and CORS (C14).
+
+  | Azure | AWS | GitHub | Other cloud: how to find the equivalent |
+  |---|---|---|---|
+  | C14 (Z13) App Service or Container Apps authentication and ingress, and CORS | C14 (W8) the Lambda function URL (auth type `NONE` is a stop unless the ticket says public) and resource policy; C14 (W10) API Gateway authorizers on every new route | N/A | the compute service's built-in authentication, the gateway's per-route authorizers, CORS and invoke policies |
 
 ### 4G · "Any new names or new outside parties?" (rows XB-2, XB-3)
 
@@ -438,19 +454,22 @@ or give one access it didn't have?"
   your data on its own terms.
 - *A good answer sounds like:* "No DNS change; no new vendor."
 - *Worry if you hear:* "we'll clean up the old record later", "it's a free tool, no contract needed".
-- **Then check:**
-  - **Azure:** Z14 DNS records; Z10 admin consent to a third-party app.
-  - **AWS:** W12 Route 53 records; W2 a third-party account in a trust policy (with an external ID).
-  - **GitHub:** H6 a new app installation or webhook.
+- **Then check:** every new name points at something we own (C15); a third party's consent, trust or
+  installation (C11, C2, C20).
+
+  | Azure | AWS | GitHub | Other cloud: how to find the equivalent |
+  |---|---|---|---|
+  | C15 (Z14) DNS records; C11 (Z10) admin consent to a third-party app | C15 (W12) Route 53 records; C2 (W2) a third-party account in a trust policy (with an external ID) | C20 (H6) a new app installation or webhook | the provider's DNS zones and each CNAME or alias target; third-party consents, trusts and installed integrations |
+
 - **Broader conversation if** a third party nobody has cleared is involved (E5).
 
 **Triggers for the whole step.** *Stop and ask if* you cannot read a check or don't understand its
 output: ask the platform team to run it and walk you through it; never take a write role to review
-(S1). *Broader conversation if* the change creates a new subscription, account, tenant or landing zone
-(E1), or is an identity design rather than one grant (E3).
+(S1). *Broader conversation if* the change creates a new subscription, account, project, tenant or
+landing zone (E1), or is an identity design rather than one grant (E3).
 
-**Write down:** for each conversation, the answer and where you confirmed it (the Z/W/H check and what
-it showed), and "N/A — reason" for platforms not touched.
+**Write down:** for each conversation, the answer and where you confirmed it (the C-number, or its old
+Z/W/H alias, and what it showed), and "N/A — reason" for platforms not touched.
 
 ---
 
@@ -484,7 +503,7 @@ to the same target (`deploy-evidence-<run_id>-<attempt>`: `capability.json`, `re
 | 6.2 | **Mechanical for a kit release**: `rollback_on_failure` `true`; the reversal shown available; an e2e test command set; the previous digest still in the registry | all four | no e2e command (the deploy can never be verified for promotion) | reversal `UNAVAILABLE` at uat or prod |
 | 6.3 | **What cannot be rolled back is named**: a data migration, a deleted store, a destroyed key, an external send, a cached DNS record, a permission already used | each named with its forward-fix and who accepts it | "it can be rolled back" for a schema change, with no evidence | an irreversible boundary change with no named acceptance |
 | 6.4 | **Rollback restores the boundary too**: reverting the code does not revert an IAM grant, a firewall rule, a consent or a DNS record made outside it | the plan reverts the platform change too, or says why it stays | the plan covers only the app | a "temporary" opening with no step that closes it |
-| 6.5 | **Shared entries** (Front Door, DNS, WAF, NSG, firewall) belong to the platform; an app rollback never reverses them (`ROLLBACK_REFUSED_PLATFORM_OWNED`) | the platform owner has its own back-out | — | the app team plans to revert a shared entry itself (E1) |
+| 6.5 | **Shared entries** (an edge or CDN front door, DNS, WAF, network security rules, firewall) belong to the platform; an app rollback never reverses them (`ROLLBACK_REFUSED_PLATFORM_OWNED`) | the platform owner has its own back-out | — | the app team plans to revert a shared entry itself (E1) |
 
 **Write down:** the trigger, the owner role, the irreversible parts and who accepts them.
 

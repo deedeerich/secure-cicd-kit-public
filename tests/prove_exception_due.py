@@ -365,7 +365,8 @@ def main():
                                  'through env:)' % (jn, s.get('name')))
         on = wf.get('on', wf.get(True)) or {}
         sec = ((on.get('workflow_call') or {}).get('secrets') or {})
-        check(set(sec) == {'JIRA_EMAIL', 'JIRA_TOKEN'}, 'E11: the workflow takes secrets other than Jira\'s: %r' % sorted(sec))
+        check(set(sec) == {'JIRA_EMAIL', 'JIRA_TOKEN', 'JIRA_HOST'},  # JIRA_HOST: the host may be a secret (prove_jira_host_secret.py)
+              'E11: the workflow takes secrets other than Jira\'s: %r' % sorted(sec))
         tpl = yaml.safe_load(io.open(TEMPLATE, encoding='utf-8'))
         ton = tpl.get('on', tpl.get(True)) or {}
         crons = [c.get('cron', '') for c in ton.get('schedule') or []]

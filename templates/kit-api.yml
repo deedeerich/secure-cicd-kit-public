@@ -81,6 +81,7 @@ jobs:
     secrets:
       JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
       JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+      JIRA_HOST: ${{ secrets.JIRA_HOST }}   # optional: the Jira host as a secret (masked in logs)
       AZDO_PAT: ${{ secrets.AZDO_PAT }}
       GH_TICKET_TOKEN: ${{ secrets.GH_TICKET_TOKEN }}
       KIT_API_TEAM_READ_TOKEN: ${{ secrets.KIT_API_TEAM_READ_TOKEN }}

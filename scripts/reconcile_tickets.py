@@ -1158,13 +1158,14 @@ class Jira(HttpBackend):
                 cid = str((doc or {}).get('cloudId') or '').strip() if isinstance(doc, dict) else ''
             except Exception as exc:                  # noqa: BLE001 - reported, never swallowed
                 self._api_base_error = _no_credential_in(
-                    'JIRA_CLOUD_ID is unset and the lookup at %s failed (%s); set JIRA_CLOUD_ID'
-                    % (url, type(exc).__name__))
+                    'JIRA_CLOUD_ID is unset and the lookup at JIRA_HOST/_edge/tenant_info failed (%s); '
+                    'set JIRA_CLOUD_ID' % type(exc).__name__)
                 return None, self._api_base_error
             if not CLOUD_ID_RE.match(cid):
-                self._api_base_error = ('JIRA_CLOUD_ID is unset and %s/_edge/tenant_info gave no '
-                                        'usable cloud id (%r); set JIRA_CLOUD_ID'
-                                        % (self.host, cid[:40]))
+                # The host is named, never its value: it may be held as a secret (KDEC-037 e2e,
+                # owner 2026-11-04) and this text reaches logs and results.
+                self._api_base_error = ('JIRA_CLOUD_ID is unset and JIRA_HOST/_edge/tenant_info gave no '
+                                        'usable cloud id (%r); set JIRA_CLOUD_ID' % cid[:40])
                 return None, self._api_base_error
         elif not CLOUD_ID_RE.match(cid):
             self._api_base_error = 'JIRA_CLOUD_ID %r is not a cloud id' % cid[:40]

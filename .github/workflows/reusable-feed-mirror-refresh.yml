@@ -137,6 +137,7 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
           environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
+          audience: ${{ inputs.cloud == 'gov' && (vars.KIT_AZURE_OIDC_AUDIENCE || 'api://AzureADTokenExchangeUSGov') || 'api://AzureADTokenExchange' }}
       # The whole refresh -- fetch, verify, generation + manifest, upload (manifest LAST), read-back,
       # prune -- runs from the kit through `$/`: scripts/feed_mirror.py fetch-nvd | fetch-kev |
       # pack-trivy, then manifest, then `az storage blob upload-batch --auth-mode login` for the
@@ -169,6 +170,7 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
           environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
+          audience: ${{ inputs.cloud == 'gov' && (vars.KIT_AZURE_OIDC_AUDIENCE || 'api://AzureADTokenExchangeUSGov') || 'api://AzureADTokenExchange' }}
       - name: Copy each image by digest; prove it resolves at the same digest
         id: copy
         uses: $/.github/actions/feed-mirror-refresh

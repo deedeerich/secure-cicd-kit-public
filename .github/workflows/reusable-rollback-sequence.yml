@@ -281,6 +281,7 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
           environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
+          audience: ${{ inputs.cloud == 'gov' && (vars.KIT_AZURE_OIDC_AUDIENCE || 'api://AzureADTokenExchangeUSGov') || 'api://AzureADTokenExchange' }}
 
       - name: Target lease -- acquire once for the whole sequence (KDEC-030, opt-in)
         # The same lock the landing-zone apply and every kit deploy of this target take (a

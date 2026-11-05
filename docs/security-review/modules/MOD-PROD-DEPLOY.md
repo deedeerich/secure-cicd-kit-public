@@ -1,8 +1,8 @@
 # MOD-PROD-DEPLOY — a release to uat or prod
 
 ```
-Truth State: Authored, not field-tested (2026-11-03). One page. Tick only from evidence you saw;
-             otherwise label the line Stated or Not established (../SIGN-OFF.md).
+Truth State: Authored, not field-tested (2026-11-03; stated by intent 2026-11-04). One page. Tick only
+             from evidence you saw; otherwise label the line Stated or Not established (../SIGN-OFF.md).
 ```
 
 - [ ] The deploy reads `needs.security.outputs.routing_result` and `advisory_causes` (S8), and the
@@ -30,3 +30,7 @@ Truth State: Authored, not field-tested (2026-11-03). One page. Tick only from e
 - [ ] Evidence downloaded: `deploy-evidence-<run_id>-<attempt>` (with `review-signals.json`) and
       `kit-promotion-record-<environment>`; `release_record` kept (`RELEASE_RECORD_KEPT_DEPLOYMENT`
       with its id, or `RELEASE_RECORD_KEPT` with the lease).
+
+**Cloud-neutral.** Every line here reads the kit's own run, the source-control platform or the
+people involved; none depends on which cloud the app runs on. Cloud facts the change touches are
+read through `../CLOUD-CHECKS.md` by intent, on whichever cloud it is.

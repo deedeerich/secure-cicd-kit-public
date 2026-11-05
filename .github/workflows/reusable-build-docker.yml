@@ -296,6 +296,7 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
+          audience: ${{ inputs.cloud == 'gov' && (vars.KIT_AZURE_OIDC_AUDIENCE || 'api://AzureADTokenExchangeUSGov') || 'api://AzureADTokenExchange' }}
 
       - name: ACR login
         if: inputs.push

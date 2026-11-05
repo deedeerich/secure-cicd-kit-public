@@ -1,7 +1,7 @@
 # Questions for app teams — a short interview sheet
 
 ```
-Truth State:  Authored, not field-tested (2026-11-03).
+Truth State:  Authored, not field-tested (2026-11-03; cloud-neutral wording 2026-11-04).
 Use:          at the first meeting, before reading runs. Ask for links, not descriptions. Record
               each answer as Observed, Read or Stated (SIGN-OFF.md).
 ```
@@ -9,9 +9,12 @@ Use:          at the first meeting, before reading runs. Ask for links, not desc
 ## The app
 
 1. What does the app do, for whom, and who owns it (by role)?
-2. Where does it run: App Service, Container Apps, Static Web Apps, Functions (as a container, or as a
-   code package), AKS, VMs, or something else? Which
-   environments (dev, test, uat, prod), and which of them serve real users?
+2. Where does it run: which cloud (Azure, AWS or another) and which partition (commercial, or a
+   sovereign or government cloud), and on which service (for example App Service, Container Apps,
+   Static Web Apps, Functions as a container or as a code package, AKS, VMs; Lambda, ECS, EKS, EC2; or
+   another provider's equivalent)? Only the kit's Azure targets are released by the kit; anything else
+   is scanned by it and deployed outside it. Which environments (dev, test, uat, prod), and which of
+   them serve real users?
 3. Is it inside a landing zone that vends its target and deploy identity, or outside one?
 4. What data does it store, process or send on? Does any of it go to another team's system?
 5. Who can reach it: the internet, internal users only, other services only?
@@ -29,7 +32,9 @@ Use:          at the first meeting, before reading runs. Ask for links, not desc
 
 ## Identity and deploy
 
-11. Which identity deploys each environment, what roles does it hold, and at what scope?
+11. Which identity deploys each environment, how does CI obtain it (a federated token, or a stored
+    key), what roles or policies does it hold, and at what scope (resource, group, subscription,
+    account, project)?
 12. Who approves uat and prod releases? Does the approver quote the digest in the approval comment?
 13. Who set `KIT_ZONE_READINESS`, `KIT_ENVIRONMENT_TIER` and `KIT_HANDOFF_ISSUER` on each environment?
     (The readiness value must come from the landing zone, or from AppSec as a recorded attestation —

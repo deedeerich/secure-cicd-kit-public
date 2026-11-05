@@ -594,3 +594,4 @@ jobs:
     secrets:
       JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
       JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+      JIRA_HOST: ${{ secrets.JIRA_HOST }}   # optional: the Jira host as a secret (masked in logs)

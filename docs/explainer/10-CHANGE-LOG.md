@@ -5,6 +5,16 @@ Commit ids are on the build trunk `fix/normalization-and-discovery`. Versions 1.
 entries are in `10a-CHANGE-LOG-OCTOBER.md`; 1.10 and earlier in `10b-CHANGE-LOG-EARLIER.md`. A reader whose last copy was v1.10 (`a907dc8`) reads
 `12-CHANGES-SINCE-A907DC8.md` first: it groups every change since by what an integrator must do.
 
+## Unreleased — the security review sheets made cloud-agnostic (2026-11-04)
+
+Owner, 2026-11-04: the cloud checklists must work in Azure or AWS, cloud-agnostic, as the security review
+was meant to be. Documents only: no gate, output or state word changed.
+
+| change | parts affected |
+|---|---|
+| New `docs/security-review/CLOUD-CHECKS.md`: C0..C20, each check stated once by intent (safe / ask / stop), an implementation table (Azure, AWS, GitHub, other cloud: how to find the equivalent) and every command unchanged; every old id Z1..Z14, W1..W12, H1..H8 kept as an alias; the three platform sheets are now pointers | 11 |
+| `CAB-CHANGE-SAFETY-STEPS.md` step 4 and the checklist's block D by intent with per-platform tables; the Azure Government line replaced by a generic sovereign or government cloud note; modules, APP-REVIEW-CHECKLIST, QUESTIONS-FOR-APP-TEAMS, STOP-AND-ASK (new S18: a cloud the sheets do not name) and ESCALATE-BROADER worded for any cloud; the kit's Azure-only deploy stated as such (`MOD-OUTSIDE-KIT`) | 11 |
+
 ## Unreleased — ticket intake version 2: the owner's rulings (KDEC-037 amended, 2026-11-04)
 
 Proven locally (`prove_ticket_intake_v2.py` V1..V11, failed first; 20 mutants killed) and live on the

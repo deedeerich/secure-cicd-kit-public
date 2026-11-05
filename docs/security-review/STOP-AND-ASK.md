@@ -1,7 +1,7 @@
 # Stop and ask — pause on this item and ask the app team
 
 ```
-Truth State:  Authored, not field-tested (2026-11-03).
+Truth State:  Authored, not field-tested (2026-11-03; cloud-neutral wording 2026-11-04).
 Use when:     a signal below appears in the evidence. Pause on that item, ask the question, record
               the answer. The rest of the review can continue unless the row says "pause".
 Not this:     if the answer belongs to someone other than the app team, use ESCALATE-BROADER.md.
@@ -26,6 +26,7 @@ Not this:     if the answer belongs to someone other than the app team, use ESCA
 | S15 | `ATTESTATION_ABSENT`, or no `attestation_url` from the build | "How do we know the image deployed is the one your build produced and scanned?" |
 | S16 | The run's evidence artifacts have expired (and no durable deployment record, `release_record_ref`, covers the release), `RELEASE_RECORD_NOT_KEPT`, or the newest run is older than the change under review | "Please re-run the security caller on the commit under review, and send the run id." |
 | S17 | Job token preflight not `TOKEN_ACCEPTED` (`JOB_TOKEN_REJECTED`, `RATE_LIMITED`, `API_UNREACHABLE`, ...) | "Every API-derived value in this run is unknown. Has the owner role named in the summary fixed it, and is there a clean re-run?" |
+| S18 | The change is on a cloud, partition or service the cloud checks do not name, or you cannot map a check's intent to it (`CLOUD-CHECKS.md`, the "other cloud" column) | "Please show me, read-only, where this platform keeps the equivalent: who holds access, who may assume it, what is reachable, where its audit log is. Which of these does the platform not have?" A missing equivalent is a gap to record, not a pass |
 
 ## Rules for the pause
 

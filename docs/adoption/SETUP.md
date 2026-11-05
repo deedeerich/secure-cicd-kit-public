@@ -491,6 +491,23 @@ per app.
 > fails `AADSTS700213` the next time anything runs against it. Verified the hard way. Use *Add
 > credential* for each environment; confirm the count with the `list` command in §4.1.
 
+### 4.2 · Azure Government: the audience
+
+For a Government tenant (`cloud: gov`, the repository variable `KIT_CLOUD=gov`), Microsoft documents
+the federated credential's audience as **`api://AzureADTokenExchangeUSGov`**, with
+`environment: AzureUSGovernment`. Every kit `azure/login` step that serves Government now asks for that
+audience (`tests/prove_azure_gov_audience.py`); commercial sign-in is unchanged
+(`api://AzureADTokenExchange`).
+
+- Create the Government credential with `"audiences": ["api://AzureADTokenExchangeUSGov"]`.
+- A Government credential made with the global audience instead: set the repository variable
+  `KIT_AZURE_OIDC_AUDIENCE=api://AzureADTokenExchange` (it applies to `cloud: gov` only). Callers of
+  the `azure-login-oidc` composite pass it as the `audience` input.
+- The issuer for your GitHub host is set by the owner on the credential; this section does not change it.
+
+> **UNVERIFIED:** a live Government sign-in has not run. What is proven is what each step asks for;
+> that a Government tenant accepts it is owed to a Government sandbox run.
+
 ### Do not use the credential subject to restrict branches
 
 Both of these can express "only `main` deploys to prod". They are not equivalent.

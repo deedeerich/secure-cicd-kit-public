@@ -1576,7 +1576,7 @@ ticket's open state).
    | backend | required | optional |
    |---|---|---|
    | every | `TICKET_CREATE_CEILING` (jira, azdo) | `TICKET_STAMP_LABEL`, `TICKET_CALL_BUDGET`, `TICKET_RETRY_CEILING`, `TICKET_INSTANCE_THRESHOLD`, `TICKET_DEGRADED_RUN_THRESHOLD` |
-   | jira | `JIRA_HOST`, `JIRA_PROJECT`, `JIRA_STAMP_FIELD`, `JIRA_EPIC_ID`, `JIRA_CALIBRATION_ISSUE` | `JIRA_TYPE_CLUSTER`, `JIRA_TYPE_INSTANCE`, `JIRA_TRANSITION_REOPEN`, `JIRA_TRANSITION_DONE` (unset: the one transition into a done status), `JIRA_PRIORITY_LADDER` (default `Lowest,Low,Medium,High,Highest`) |
+   | jira | `JIRA_HOST` (a variable, or a secret of the same name, read first and masked in logs: the host may be private), `JIRA_PROJECT`, `JIRA_STAMP_FIELD`, `JIRA_EPIC_ID`, `JIRA_CALIBRATION_ISSUE` | `JIRA_TYPE_CLUSTER`, `JIRA_TYPE_INSTANCE`, `JIRA_TRANSITION_REOPEN`, `JIRA_TRANSITION_DONE` (unset: the one transition into a done status), `JIRA_PRIORITY_LADDER` (default `Lowest,Low,Medium,High,Highest`) |
    | azdo | `AZDO_ORG_URL`, `AZDO_PROJECT`, `AZDO_STAMP_FIELD`, `AZDO_EPIC_ID`, `AZDO_CALIBRATION_ITEM` | `AZDO_TYPE_CLUSTER`, `AZDO_TYPE_INSTANCE`, `AZDO_STATE_REOPEN`, `AZDO_STATE_DONE` |
    | github | `TICKET_REPO`, `TICKET_STAMP_LABEL`, `TICKET_CALIBRATION_REF` | -- |
 

@@ -1,8 +1,8 @@
 # MOD-AUTOMATION — an automation built in Tines 3B, or on another automation platform
 
 ```
-Truth State: Authored, not field-tested (2026-11-03). One page. Tick only from evidence you saw;
-             otherwise label the line Stated or Not established (../SIGN-OFF.md).
+Truth State: Authored, not field-tested (2026-11-03; stated by intent 2026-11-04). One page. Tick only
+             from evidence you saw; otherwise label the line Stated or Not established (../SIGN-OFF.md).
 ```
 
 - [ ] Where its code lives. If it is synced to a repository (for example by GitSync), that repository
@@ -23,3 +23,7 @@ Truth State: Authored, not field-tested (2026-11-03). One page. Tick only from e
       that token's scope, and check it cannot also approve the release (S6).
 - [ ] A change to the automation takes the same CAB class as any app change
       (`../CAB-AND-ADOPTION-REVIEW.md` step 3).
+
+**Cloud-neutral.** Every line here reads the kit's own run, the source-control platform or the
+people involved; none depends on which cloud the app runs on. Cloud facts the change touches are
+read through `../CLOUD-CHECKS.md` by intent, on whichever cloud it is.

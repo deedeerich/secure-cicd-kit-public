@@ -1,8 +1,8 @@
 # MOD-BASE — every review
 
 ```
-Truth State: Authored, not field-tested (2026-11-03). One page. Tick only from evidence you saw;
-             otherwise label the line Stated or Not established (../SIGN-OFF.md).
+Truth State: Authored, not field-tested (2026-11-03; stated by intent 2026-11-04). One page. Tick only
+             from evidence you saw; otherwise label the line Stated or Not established (../SIGN-OFF.md).
 ```
 
 - [ ] Every kit `uses:` in the app is pinned to one full 40-hex commit SHA; `kit_watermark`
@@ -28,3 +28,7 @@ Truth State: Authored, not field-tested (2026-11-03). One page. Tick only from e
       review relies on obtained, by role.
 - [ ] The app's workflows pass `workflow-policy-check.yml` with `soft_fail: false`.
 - [ ] `test_only_seed_artifact` empty in every non-test caller (S12).
+
+**Cloud-neutral.** Every line here reads the kit's own run, the source-control platform or the
+people involved; none depends on which cloud the app runs on. Cloud facts the change touches are
+read through `../CLOUD-CHECKS.md` by intent, on whichever cloud it is.
