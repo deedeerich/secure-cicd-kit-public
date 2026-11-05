@@ -61,6 +61,10 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # commands it issues) is proven locally; the GITHUB half -- the token scopes suffice, and
     # branch protection really holds an armed auto-merge until the checks pass -- needs a hosted run.
     "reusable-dependabot-triage.yml": ["dependabot-triage", "dependabot-merge-hosted"],
+    # The kit's OWN caller of it (owner, 2026-11-04): the same two capabilities, the decision proven
+    # locally with THIS caller's inputs (tests/prove_kit_dependabot_triage_caller.py), the GitHub half
+    # owed by the same hosted run (DEPENDABOT_TRIAGE.md section 6.0).
+    "dependabot-triage.yml": ["dependabot-triage", "dependabot-merge-hosted"],
     "reusable-deploy-appservice.yml": ["deploy-appservice"],
     "reusable-deploy-containerapp.yml": ["deploy-containerapp"],
     # KDEC-019 item 4 (lane L-RB, 2026-10-22): several deployments reversed newest first, the
@@ -733,11 +737,12 @@ DEFERRALS: dict[str, dict] = {
     # nor verify an attestation. The step's five-outcome classification and rung routing are proven
     # locally by tests/prove_attestation_verify.py against recorded gh answers; what no local run can
     # show is a real `gh attestation verify oci://<acr>/...@sha256` lookup (section 11.2).
-    # FUTURE_WORK section 6 (owner, 2026-10-22). Proven locally by running the shipped steps; nothing
-    # in this repository invokes it, by design: its caller must trigger on pull_request_target and
-    # grant write scopes, and the kit's self-test is no place for either. The proof that is owed is a
-    # hosted run on the owner's public test repository (Actions minutes there are free), planned in
-    # docs/adoption/DEPENDABOT_TRIAGE.md section 6.
+    # FUTURE_WORK section 6 (owner, 2026-10-22). Proven locally by running the shipped steps. Since
+    # 2026-11-04 this repository calls it on its own Dependabot PRs (.github/workflows/dependabot-
+    # triage.yml, owner: "Are we going to do my dependabot merge strategy finally?"), from its own
+    # pull_request_target caller -- never from the self-test. The proof that is owed is a hosted
+    # run (the public mirror or the owner's public test repository, Actions minutes free), planned
+    # in docs/adoption/DEPENDABOT_TRIAGE.md section 6.
     "dependabot-merge-hosted": {"reason": "a hosted run needs a repository receiving Dependabot PRs, "
                                       "with auto-merge allowed and required checks; Actions minutes "
                                       "on the kit's own account are blocked by billing",

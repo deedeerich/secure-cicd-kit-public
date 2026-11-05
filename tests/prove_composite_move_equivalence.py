@@ -18,8 +18,10 @@ WHY THIS EXISTS (completion ledger L64, B-01; decomposition plan section 7 step 
          inside the composite, no string-typed input standing in for a boolean in an expression;
       3  the expanded job -- its own keys (needs, if, name, runs-on, timeout, permissions, outputs,
          env) and every step's name, id, if, uses, with, env, run, shell, continue-on-error -- has
-         the SAME canonical digest as the job had at the base commit, with one declared
-         normalisation: a `run:` step with no shell is `bash -e {0}`, the default it ran under.
+         the SAME canonical digest as the job had at the base commit, with two declared
+         normalisations: a `run:` step with no shell is `bash -e {0}`, the default it ran under;
+         and a remote `uses: owner/repo[/path]@<40-hex SHA>` keeps its owner/repo/path but its SHA
+         reads as PINNED_SHA (2026-11-04, below).
          When the base commit is in this clone, the two are also compared step by step and any
          difference is printed.
 
@@ -31,6 +33,19 @@ WHY THIS EXISTS (completion ledger L64, B-01; decomposition plan section 7 step 
     A LATER, DELIBERATE CHANGE to a moved scanner re-pins with `--repin <job>` and says why in its
     commit: the pin then records reviewed content, exactly like the kit-scripts manifest digest.
 
+    A DEPENDENCY BUMP IS NOT A CHANGE TO THE MOVE (owner, 2026-11-04: "Dependabot things cannot sit
+    there and trip the normalizer drift. They must be able to be mergeable."). Until then the digest
+    held every remote action's SHA, so every Dependabot bump of an action these composites use
+    failed this proof -- and with it the required check `Normalizer drift` -- until somebody
+    re-pinned by hand (reproduced: setup-java v5.7.0 -> v6.2.0 in sast-java). The SHA is a
+    dependency pin and is held where pins are held: tests/check_action_pins.py (P1 a full SHA, P2
+    the exact release named, P4 `--online` the release IS that commit). So a full-SHA ref is
+    normalised to PINNED_SHA here and nothing else is: the action's identity (owner/repo/path), its
+    `with:`, and a tag or branch in place of the SHA all still change the digest. Nothing here reads
+    who opened the pull request. tests/prove_dependabot_bump_mergeable.py M1-M3.
+
+    `--root <dir>` reads another tree (the bump proof's copies); the default is this repository.
+
 EXIT  0 every moved job is equivalent   1 a difference or a broken move   2 UNKNOWN (cannot check)
 """
 import copy
@@ -38,6 +53,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -49,6 +65,22 @@ import _composite_expand as ce  # noqa: E402
 WF_REL = '.github/workflows/reusable-security.yml'
 WF = os.path.join(ROOT, *WF_REL.split('/'))
 STATUS_STEP = 'Result summary'
+
+# A remote action pinned by a full commit SHA. The SHA is a dependency pin (check_action_pins.py
+# P1-P4); the identity before the `@` is part of the move and stays in the digest.
+REMOTE_SHA = re.compile(r'^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_./-]+)?)@[0-9a-f]{40}$')
+PINNED_SHA = '<PINNED_SHA: tests/check_action_pins.py P1-P4>'
+
+
+def normalise_pin(step):
+    """`owner/repo[/path]@<sha40>` -> `owner/repo[/path]@PINNED_SHA`; anything else unchanged."""
+    u = step.get('uses') if isinstance(step, dict) else None
+    m = REMOTE_SHA.match(u) if isinstance(u, str) else None
+    if not m:
+        return step
+    out = dict(step)
+    out['uses'] = m.group(1) + '@' + PINNED_SHA
+    return out
 
 # job -> (composite, base commit the move was made from, canonical digest of the job AT that base)
 #
@@ -85,6 +117,15 @@ STATUS_STEP = 'Result summary'
 # pins were: deps-scan 75164842...405e  iac-scan edd6c6c6...7469  sast-cpp b90b7c74...148e
 #   sast-dotnet 7390c584...04c2  sast-java c8e8ce39...4571  secret-scan ab72005d...9134
 MOVES = {
+    # RE-PINNED 2026-11-04, lane dependabot-mergeable, all six with `--repin <job>`. Reason: the
+    # canonical form now reads a remote `uses:` pinned by a full SHA as PINNED_SHA (the SHA is a
+    # dependency pin, held by check_action_pins.py P1-P4), so a Dependabot bump no longer fails this
+    # proof. Verified mechanically before the re-pin: with the normalisation switched off each job's
+    # canonical form still had the previous digest, and with it on, the only difference in every job
+    # was the SHA of remote `uses:` values (deps-scan 13 steps, iac-scan 10, sast-cpp 6, sast-dotnet
+    # 6, sast-java 5, secret-scan 5); no job key and no other step key changed. The previous pins:
+    #   deps-scan 26ecd570...0d69  iac-scan 95ee17cf...d2ad  sast-cpp a5e34d2b...b9fe
+    #   sast-dotnet 83aefdff...c293  sast-java f6b45164...def21  secret-scan e290ce74...3804
     # RE-PINNED 2026-10-23, lane L-PIN (KDEC-027), `--repin deps-scan` and `--repin iac-scan`. Reason:
     # aquasecurity/trivy-action -> setup-trivy checks out `aquasecurity/trivy` against github.server_url,
     # which a GHE.com tenant does not have, so every Trivy step failed to install there. Each Trivy step
@@ -115,7 +156,7 @@ MOVES = {
     # same digest> when the registry is set. Nothing else in the step or the job changed.
     # The previous pin was 72d388c0...2d9d.
     'secret-scan': ('secret-scan', '11d1d56',
-                    'e290ce74bf8a507d130c43e4200a899602092cca648b17faca0f5754d36f3804'),
+                    '4e223f4368a49ea13fe43f92358779bfe75bbd1111b7b4acbf4040fc91f67ee8'),
     # RE-PINNED 2026-10-23, integration lane L-INT1, `--repin sast-cpp`, after the merge pin
     # 7981aba5...99f1. Reason: KDEC-027 -- L-SCAN-B's new `C/C++ build metadata` step wrote
     # scan_state/scan_reason as `$(cat ...)` straight into $GITHUB_OUTPUT; each is now read into a
@@ -130,7 +171,7 @@ MOVES = {
     # outputs scan_state and scan_reason (CPP_ANALYSIS_PARTIAL). No other step changed. The pin
     # before was 2763b67b...eeeb. tests/prove_cpp_build_aware.py runs the changed steps.
     'sast-cpp': ('sast-cpp', '11d1d56',
-                 'a5e34d2b6a7e81d84b8532fd48bb6a3c1799d4ce3bee35acada07818f33eb9fe'),
+                 '4b2c614afa01ccd2883918a6b2995a908c393fb09486aafc01aaac390645dda0'),
     # RE-PINNED 2026-10-23, integration lane L-INT1, `--repin iac-scan` and `--repin deps-scan`.
     # Reason: L-SCAN-A (KDEC-025, the lint steps below) and L-PIN (KDEC-027, the pinned Trivy
     # binary and sanitised output writes above) each re-pinned these two from c7e1ea9; merged, the
@@ -157,7 +198,7 @@ MOVES = {
     # `if: always()` because it follows Checkov's enforce step (tests/prove_scanners_survive_enforce.py).
     # The previous pin was 49d9144a...3093.
     'iac-scan': ('iac-scan', '11d1d56',
-                 '95ee17cfcc354061155ac94e817c31fcb656c269ff2469641a6b47847c51d2ad'),
+                 'a882d8e8e1152ae8addeab0840a88b0f9d8be3e94f1a13a7af116ae2bee2d44f'),
     # RE-PINNED 2026-10-27, lane L-MIRROR (KDEC-032 PROPOSED, Release 4 feed mirrors), `--repin
     # deps-scan`. Reason: the Trivy database may come from the organisation mirror. Against 9bdbb23 the
     # canonical diff is ADDITIVE ONLY: runs-on becomes `vars.KIT_FEED_MIRROR_RUNNER || 'ubuntu-latest'`
@@ -166,7 +207,7 @@ MOVES = {
     # scripts/feed_mirror_step.sh with the job's three vars.KIT_FEED_MIRROR_* values. No existing step's
     # name, id, if, uses, with, env, run or shell changed. The L-INT1 pin was 980ac662...8197.
     'deps-scan': ('deps-scan', '11d1d56',
-                  '26ecd570ea7438d44b2219a7977340ddd71bc3943768eb5ff25745a3fbf80d69'),
+                  '7f1523671c86f3382bff2e545a753ecefd0e6c8e453a02ae4a3158d68e1046ee'),
     # RE-PINNED 2026-10-23, integration lane L-INT1, `--repin sast-dotnet`. Reason: L-PIN (KDEC-027,
     # its pin was 5ffff3c6...cf1d) and L-SCAN-B (KDEC-026, below; its pin was 5194ff9c...94ec) each
     # re-pinned sast-dotnet from c7e1ea9; the merged composite carries both.
@@ -176,9 +217,9 @@ MOVES = {
     # result against the project dotnet reports. No other step changed. The pin before was
     # 08291421...bdf4.
     'sast-dotnet': ('sast-dotnet', '11d1d56',
-                    '83aefdff3e89429c4426e2dbf7e6f3bee6ae12f5df161a9eacf24dee8d73c293'),
+                    '2dc40a91e76bbd7917e66096e514348ac4dc920ce9f21d7879ffea952df640a1'),
     'sast-java': ('sast-java', '11d1d56',
-                  'f6b45164e5eb28edb5036b03e84f6dd84440b34992c8fbe80a663cb4355def21'),
+                  '73c910edb0dce0a93f76f5cdc48ed60e7e662746a764d1996a52536f437c71a6'),
 }
 
 
@@ -199,7 +240,7 @@ def canonical(doc, job_name, root=ROOT):
     steps, problems = ce.expand_steps(job.get('steps') or [], doc, root, None, reads)
     if reads and 'outputs' in job:
         job['outputs'] = ce.rewrite_reads(job['outputs'], reads)
-    job['steps'] = [ce.normalise_shell(ce.rewrite_reads(s, reads)) for s in steps]
+    job['steps'] = [normalise_pin(ce.normalise_shell(ce.rewrite_reads(s, reads))) for s in steps]
     return json.dumps(job, sort_keys=True, ensure_ascii=False, indent=1), problems
 
 
@@ -207,7 +248,7 @@ def digest(text):
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 
-def structure(doc, job_name, comp):
+def structure(doc, job_name, comp, root=None):
     """-> [problem]: the job delegates to its composite and keeps only its Result summary."""
     job = ((doc or {}).get('jobs') or {}).get(job_name) or {}
     steps = job.get('steps') or []
@@ -222,14 +263,16 @@ def structure(doc, job_name, comp):
     if rest != [STATUS_STEP]:
         probs.append('%s: steps after the composite call are %r; only %r (it reads job.status) '
                      'belongs in the job' % (job_name, rest, STATUS_STEP))
-    if not ce.action_file(comp):
+    if not ce.action_file(comp, root or ROOT):
         probs.append('%s: .github/actions/%s/action.yml does not exist' % (job_name, comp))
     return probs
 
 
-def git_show(rev, rel):
+def git_show(rev, rel, root=None):
+    if not os.path.isdir(os.path.join(root or ROOT, '.git')) and not os.path.isfile(os.path.join(root or ROOT, '.git')):
+        return None
     try:
-        p = subprocess.run(['git', 'show', '%s:%s' % (rev, rel)], cwd=ROOT, capture_output=True,
+        p = subprocess.run(['git', 'show', '%s:%s' % (rev, rel)], cwd=root or ROOT, capture_output=True,
                            text=True, encoding='utf-8', errors='replace')
     except OSError:
         return None
@@ -311,6 +354,21 @@ def self_test():
             c, p = canonical(new, 'j', tmp)
             if c == a and not p:
                 return 'did not catch: %s' % label
+        # The pin normalisation (2026-11-04): a Dependabot SHA bump is the same job; the action's
+        # identity and a tag in place of the SHA are not.
+        def one(uses):
+            return {'on': on, 'jobs': {'j': {'steps': [{'uses': uses, 'with': {'k': 'v'}}]}}}
+        sha1, sha2 = 'a' * 40, 'b' * 40
+        base_c, _ = canonical(one('owner/act/sub@' + sha1), 'j', tmp)
+        bump_c, _ = canonical(one('owner/act/sub@' + sha2), 'j', tmp)
+        if base_c != bump_c:
+            return 'the control failed: a SHA-only bump changed the canonical job'
+        for label, uses in (('an action swapped for another at the same SHA', 'other/act/sub@' + sha1),
+                            ('a SHA pin replaced by a tag', 'owner/act/sub@v1'),
+                            ('a short SHA in place of a full one', 'owner/act/sub@' + sha1[:12])):
+            c, _ = canonical(one(uses), 'j', tmp)
+            if c == base_c:
+                return 'did not catch: %s' % label
         return None
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -326,12 +384,21 @@ def main(argv):
     if err:
         print('SELF-TEST FAILED: %s' % err)
         return 1
-    print('self-test ok: 8 seeded defects caught, the control passes')
+    print('self-test ok: 11 seeded defects caught, the controls pass (a SHA bump among them)')
+
+    root = ROOT
+    if '--root' in argv:
+        root = os.path.abspath(argv[argv.index('--root') + 1])
+        if not os.path.isdir(os.path.join(root, '.github', 'workflows')):
+            print('UNKNOWN: %s holds no .github/workflows' % root)
+            return 2
+    wf = os.path.join(root, *WF_REL.split('/'))
+    print('tree: %s' % root)
 
     if '--repin' in argv:
         job = argv[argv.index('--repin') + 1]
-        doc = load(io.open(WF, encoding='utf-8').read())
-        c, p = canonical(doc, job)
+        doc = load(io.open(wf, encoding='utf-8').read())
+        c, p = canonical(doc, job, root)
         print('%s %s%s' % (job, digest(c), ('  PROBLEMS: %s' % p) if p else ''))
         return 1 if p else 0
     if '--base-digest' in argv:
@@ -339,27 +406,27 @@ def main(argv):
         i = argv.index('--base-digest')
         job = argv[i + 1]
         base = MOVES[job][1] if job in MOVES else (argv[i + 2] if len(argv) > i + 2 else 'HEAD')
-        old = git_show(base, WF_REL)
+        old = git_show(base, WF_REL, root)
         if old is None:
             print('UNKNOWN: %s is not in this clone' % base)
             return 2
-        c, p = canonical(load(old), job)
+        c, p = canonical(load(old), job, root)
         print('%s @ %s %s' % (job, base, digest(c)))
         return 0
 
-    doc = load(io.open(WF, encoding='utf-8').read())
+    doc = load(io.open(wf, encoding='utf-8').read())
     failures = 0
     for job, (comp, base, pin) in sorted(MOVES.items()):
-        probs = structure(doc, job, comp)
-        c, p = canonical(doc, job)
+        probs = structure(doc, job, comp, root)
+        c, p = canonical(doc, job, root)
         probs += p
         got = digest(c) if c else None
         if got != pin:
             probs.append('%s: expanded digest %s, pinned %s (the job as it stood at %s)'
                          % (job, got, pin, base))
-            old = git_show(base, WF_REL)
+            old = git_show(base, WF_REL, root)
             if old is not None:
-                oc, _op = canonical(load(old), job)
+                oc, _op = canonical(load(old), job, root)
                 probs += step_diff(oc, c) or ['  (no step-level difference: the pin is stale)']
             else:
                 probs.append('  (%s is not in this clone; no step-level diff)' % base)

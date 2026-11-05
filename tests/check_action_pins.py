@@ -42,6 +42,11 @@ WHAT IT REQUIRES, over `.github/workflows/*`, `.github/actions/**/action.y*ml` a
       P7  every other dependabot.yml entry names a directory holding a manifest of its ecosystem.
           An entry at `/` for an ecosystem the kit's root does not have fails Dependabot's own
           update job (`dependency_file_not_found`) every week (2026-11-02, the owner's work copy).
+      P8  the converse of P7, and how a bump stays mergeable (owner, 2026-11-04): every directory
+          OUTSIDE tests/consumer-fixture/ (and outside overlays/, .git) that holds a manifest is
+          read by an entry of its ecosystem, so a REAL dependency is kept current; and every entry
+          that may open pull requests says `rebase-strategy: auto`, so a Dependabot PR that falls
+          into conflict with main is rebased by Dependabot instead of sitting red.
 
     OVERLAYS ARE IN SCOPE for P1-P4 (`overlays/*/workflows/*`): they ship, by the consumer export
     profile, into a consumer's repository, and a tag there is the same repointable code with that
@@ -369,6 +374,49 @@ def entry_manifest_problems(root):
     return out
 
 
+P8_SKIP = ('tests/consumer-fixture', 'overlays', '.git', 'node_modules')
+
+
+def coverage_problems(root):
+    """P8: every real manifest directory is read by an entry of its ecosystem; every entry that may
+    open pull requests rebases automatically."""
+    import fnmatch
+    import yaml
+    p = os.path.join(root, '.github', 'dependabot.yml')
+    if not os.path.isfile(p):
+        return []
+    doc = yaml.safe_load(io.open(p, encoding='utf-8')) or {}
+    entries = doc.get('updates') or []
+    out = []
+    for u in entries:
+        if u.get('open-pull-requests-limit') == 0:
+            continue
+        if u.get('rebase-strategy') != 'auto':
+            out.append('dependabot %s entry %s does not say `rebase-strategy: auto`: a PR in conflict '
+                       'with main would sit red (P8)' % (u.get('package-ecosystem'),
+                                                         u.get('directory') or u.get('directories')))
+    for d, dirs, _names in os.walk(root):
+        rel = os.path.relpath(d, root).replace(os.sep, '/')
+        if rel != '.' and any(rel == x or rel.startswith(x + '/') for x in P8_SKIP):
+            dirs[:] = []
+            continue
+        if rel.startswith('.github'):
+            continue  # github-actions is P5's
+        rel = '/' if rel == '.' else '/' + rel
+        for eco in sorted(_ecosystems_in(d)):
+            hit = False
+            for u in entries:
+                if u.get('package-ecosystem') != eco:
+                    continue
+                ds = list(u.get('directories') or []) + ([u['directory']] if u.get('directory') else [])
+                if any(fnmatch.fnmatchcase(rel, str(x).rstrip('/') or '/') for x in ds):
+                    hit = True
+            if not hit:
+                out.append('%s holds a %s manifest that no dependabot.yml entry reads: that dependency is '
+                           'never kept current (P8)' % (rel, eco))
+    return out
+
+
 def _fixture_self_test(work):
     """-> None, or what got past P6."""
     import yaml
@@ -538,7 +586,7 @@ def main(argv):
         print('SELF-TEST FAILED: %s' % err)
         return 1
     print('self-test ok: 13 seeded defects across workflow, job-level, composite, template and '
-          'overlay locations refused, 3 fixture-ignore defects (P6) and a manifest-less entry (P7); '
+          'overlay locations refused, 3 fixture-ignore defects (P6), a manifest-less entry (P7), an unread manifest and a non-rebasing entry (P8); '
           'the controls pass')
     problems, pins, files = scan(ROOT)
     if not files:
@@ -547,6 +595,7 @@ def main(argv):
     problems += dependabot_problems(ROOT)
     problems += fixture_problems(ROOT)
     problems += entry_manifest_problems(ROOT)
+    problems += coverage_problems(ROOT)
     unknown = []
     if '--online' in argv and not problems:
         p, unknown = online(pins)
@@ -558,9 +607,9 @@ def main(argv):
           % (files, len(pins), len(distinct), len(problems)))
     if problems:
         unpinned = sum(1 for p in problems if '(P1)' in p)
-        fixture = sum(1 for p in problems if '(P6)' in p or '(P7)' in p)
+        fixture = sum(1 for p in problems if '(P6)' in p or '(P7)' in p or '(P8)' in p)
         print('FAIL: %d reference(s) are not pinned by a commit SHA, %d pinned but unnamed or '
-              'misnamed; %d Dependabot entry gap(s) (P6/P7).'
+              'misnamed; %d Dependabot entry gap(s) (P6/P7/P8).'
               % (unpinned, len(problems) - unpinned - fixture, fixture))
         return 1
     if unknown:

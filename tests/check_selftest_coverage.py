@@ -85,11 +85,16 @@ def triggers(doc):
 # scheduled run starts no job. Counting it as EXERCISED_ON_SCHEDULE would claim a weekly exercise
 # that does not happen; it is dispatch-only unless a repository opts in.
 OPT_IN_RX = re.compile(r"github\.event_name\s*!=\s*'schedule'\s*\|\|\s*vars\.[A-Z0-9_]+\s*==\s*'true'")
+# THE SAME FOR A PUSH (2026-11-04): consumer-path-test runs on a push to main only where
+# vars.KIT_CONSUMER_PATH_ON_PUSH is 'true'. Unset (every recipient's copy) a push starts no job, so
+# its push trigger is not EXERCISED_ON_PUSH; it stays dispatch-only unless a repository opts in.
+PUSH_OPT_IN_RX = re.compile(r"github\.event_name\s*!=\s*'push'\s*\|\|\s*vars\.[A-Z0-9_]+\s*==\s*'true'")
 
 
-def schedule_opt_in(doc):
+def schedule_opt_in(doc, rx=None):
+    rx = rx or OPT_IN_RX
     jobs = (doc or {}).get('jobs') or {}
-    gated = [j for j in jobs.values() if isinstance(j, dict) and OPT_IN_RX.search(str(j.get('if') or ''))]
+    gated = [j for j in jobs.values() if isinstance(j, dict) and rx.search(str(j.get('if') or ''))]
     # Every job is either gated itself or runs only after a gated job (needs, no status function).
     for j in jobs.values():
         if not isinstance(j, dict) or j in gated:
@@ -242,7 +247,9 @@ def main():
             doc = {}
         parsed[rel] = doc
         tg = triggers(doc)
-        auto[rel] = bool(tg & set(PUSH_TRIGGERS))
+        # A push trigger every job of which is opted in by a variable is not a push exercise;
+        # another automatic trigger (pull_request, merge_group) still is.
+        auto[rel] = bool(tg & set(PUSH_TRIGGERS) - {'push'}) or             ('push' in tg and not schedule_opt_in(doc, PUSH_OPT_IN_RX))
         sched[rel] = bool(tg & set(SCHEDULE_TRIGGERS)) and not schedule_opt_in(doc)
         disp[rel] = bool(tg & set(DISPATCH_TRIGGERS))
 

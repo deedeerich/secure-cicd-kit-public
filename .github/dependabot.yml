@@ -23,8 +23,10 @@
 #   ecosystem with no manifest". It does not: it fails that update job with
 #   dependency_file_not_found ("No Dockerfiles nor Kubernetes YAML found", file-path /Dockerfile),
 #   every week, on every copy of the kit (the owner's work copy, 2026-11-02). The kit's root holds
-#   no application manifest; its real ones are the workflows and composites (github-actions) and
-#   infra/feed-mirrors (terraform). The fixture directories below are listed only to be HELD.
+#   no application manifest; its real ones are the workflows and composites (github-actions),
+#   infra/feed-mirrors (terraform) and the live deploy probes' Dockerfiles (docker). The fixture
+#   directories below are listed only to be HELD. P8 (2026-11-04) holds the converse: every
+#   manifest outside the fixture is read by an entry, and every entry that opens PRs rebases.
 #   A copy of the kit that adds a manifest adds its entry, beside the manifest.
 
 # THE TEST FIXTURES ARE DELIBERATELY VULNERABLE -- never "fix" them.
@@ -51,6 +53,10 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    # A PR that falls into conflict with main is rebased by Dependabot (P8). Branch protection also
+    # requires the branch to be up to date with main ("strict"); a PR merely BEHIND main is not a
+    # conflict, so the triage or a human comments `@dependabot rebase` (DEPENDABOT_TRIAGE.md 3).
+    rebase-strategy: auto
     labels: [dependencies, github-actions]
     commit-message:
       prefix: "deps(actions)"
@@ -66,9 +72,33 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    rebase-strategy: auto
     labels: [dependencies, terraform]
     commit-message:
       prefix: "deps(terraform)"
+
+  # THE LIVE DEPLOY PROBES (tests/fixtures/deploy-probe, live-deploy-acceptance.yml): real images,
+  # NOT deliberately vulnerable -- busybox by tag AND digest. Kept current like any real base image
+  # (P8: every manifest outside tests/consumer-fixture/ is read). Docker is a protected ecosystem in
+  # the triage, so a base-image bump always goes to a human.
+  - package-ecosystem: docker
+    directories:
+      - "/tests/fixtures/deploy-probe/healthy-a"
+      - "/tests/fixtures/deploy-probe/healthy-b"
+      - "/tests/fixtures/deploy-probe/unhealthy"
+    # Every real entry excludes the deliberately vulnerable fixture (prove_deps_scan_composer C5).
+    exclude-paths:
+      - "tests/consumer-fixture/**"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    rebase-strategy: auto
+    labels: [dependencies, docker]
+    commit-message:
+      prefix: "deps(docker)"
+    groups:
+      deploy-probe-base-image:
+        patterns: ["*"]
 
   # THE FIXTURE, HELD STILL AGAINST SECURITY UPDATES TOO (tests/check_action_pins.py P6).
   #   exclude-paths above binds VERSION updates only. An alert-driven SECURITY update ignores it and

@@ -814,6 +814,56 @@ def _first_prop(props, names):
     return ('', '')
 
 
+# THE MANIFEST NAMES THE REGISTRY (tier 3 of a dependency locus). A fixed table, by file name:
+# each of these files can only list packages of ONE registry, so the ecosystem is read, not guessed.
+# A name not here refuses. Lower-case keys; `requirements*.txt` is matched by prefix and suffix.
+manifest_ecosystems = {
+    'requirements.txt': 'pypi', 'pipfile.lock': 'pypi', 'poetry.lock': 'pypi', 'uv.lock': 'pypi',
+    'pdm.lock': 'pypi', 'setup.py': 'pypi', 'pyproject.toml': 'pypi',
+    'package-lock.json': 'npm', 'npm-shrinkwrap.json': 'npm', 'yarn.lock': 'npm',
+    'pnpm-lock.yaml': 'npm', 'package.json': 'npm',
+    'go.mod': 'golang', 'go.sum': 'golang',
+    'pom.xml': 'maven', 'gradle.lockfile': 'maven',
+    'gemfile.lock': 'gem', 'cargo.lock': 'cargo', 'composer.lock': 'composer',
+    'packages.lock.json': 'nuget', 'packages.config': 'nuget',
+}
+
+
+def _labelled_package(msg):
+    """The labelled Package line; an npm scope (`@scope/name`) is allowed its leading `@`."""
+    m = re.search(r'(?im)^\s*Package\s*:\s*(@?[A-Za-z0-9][A-Za-z0-9._:+~@/-]{0,200})\s*$', msg or '')
+    return m.group(1) if m else _labelled(msg, 'Package')
+
+
+def manifest_purl(uri, name, version):
+    """-> (purl, why) from a manifest path and a package name and version, or ('', why)."""
+    import urllib.parse
+    base = os.path.basename(uri or '').lower()
+    eco = manifest_ecosystems.get(base)
+    if not eco and base.startswith('requirements') and base.endswith('.txt'):
+        eco = 'pypi'
+    if not eco:
+        return '', 'the manifest %r is not in the fixed table' % os.path.basename(uri or '')
+    if not (name and version):
+        return '', 'the message carries no labelled Package and Installed Version'
+    q = lambda x: urllib.parse.quote(x, safe='')
+    if eco == 'pypi':
+        nm = q(re.sub(r'[-_.]+', '-', name).lower())          # PEP 503
+    elif eco == 'maven':
+        if ':' not in name:
+            return '', 'a maven package %r without its group' % name
+        g, a = name.split(':', 1)
+        nm = '%s/%s' % (q(g), q(a))
+    elif eco in ('golang', 'composer'):
+        nm = '/'.join(q(x) for x in name.split('/'))
+    elif eco == 'npm' and name.startswith('@') and '/' in name:
+        sc, n = name.split('/', 1)
+        nm = '%s/%s' % (q(sc), q(n))
+    else:
+        nm = q(name)
+    return 'pkg:%s/%s@%s' % (eco, nm, q(version)), '%s (%s)' % (os.path.basename(uri), eco)
+
+
 def _labelled(msg, label):
     """-> a coordinate-shaped value following `<label>:` in a rendered message, or ''.
 
@@ -941,10 +991,22 @@ def locus_of(subject, rule, res, rid, msg, uri, what):
                 out['purl'] = value
                 basis.append('purl from properties.%s (tier 2)' % key)
             else:
-                basis.append('no purl in the SARIF. A dependency locus is the package '
-                             'coordinate, and assembling one from a package name plus a guessed '
-                             'ecosystem would name the wrong registry -- so this refuses and '
-                             'says which field is missing')
+                # TIER 3: the MANIFEST names the registry, so nothing is guessed. A
+                # requirements.txt can only name PyPI packages; a manifest the fixed table does not
+                # know still refuses (tests/prove_dependency_purl_from_manifest.py; found hosted,
+                # public run 41945270732: Trivy's SARIF carries no purl, so every dependency
+                # finding refused and nothing was ticketed).
+                purl, why = manifest_purl(uri, _labelled_package(msg), _labelled(msg, 'Installed Version'))
+                if purl:
+                    out['purl'] = purl
+                    basis.append('purl %s from the labelled Package and Installed Version lines and '
+                                 'the manifest %s (tier 3: the manifest names the registry)'
+                                 % (purl, why))
+                else:
+                    basis.append('no purl in the SARIF, and none from the manifest (%s). A dependency '
+                                 'locus is the package coordinate, and assembling one from a package '
+                                 'name plus a guessed ecosystem would name the wrong registry -- so '
+                                 'this refuses and says which field is missing' % why)
 
     elif subject == 'IMAGE':
         name, version, how = '', '', ''

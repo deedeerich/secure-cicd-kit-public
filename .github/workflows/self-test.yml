@@ -5,15 +5,15 @@ name: Self-test
 # the kit's own compliance with the policy gate it ships.
 
 on:
+  # EVERY PUSH TO MAIN RUNS THE WHOLE SELF-TEST (owner, 2026-11-04: "With full running on push to
+  # main right?"). The paths-ignore that used to sit here skipped docs-only pushes on the claim that
+  # documentation cannot change what the jobs evaluate -- false: Normalizer drift reads docs
+  # (check_doc_currency, check_export_safety, the doc-vs-registry checks), so a docs-only push could
+  # break main with nothing run. Pushes to main are releases, and rare. Jobs that cannot run on a
+  # push are skipped BY NAME with the reason (scripts/selftest_required.py EVENTGATED;
+  # tests/prove_push_to_main_runs_all.py).
   push:
     branches: [main]
-    # Documentation cannot change what the policy gate, profile schema, contract shape or
-    # validation-coverage jobs evaluate — they read workflows, actions and the registry.
-    # Running six jobs on a docs-only commit buys nothing and costs metered minutes.
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
-      - 'LICENSE'
   pull_request:
   workflow_dispatch:
 
@@ -456,6 +456,11 @@ jobs:
           # step, condition, artefact name and SARIF category -- and nothing in the composite
           # reads a context a composite does not have.
           python3 tests/prove_composite_move_equivalence.py
+          # A Dependabot bump of every remote pin passes it (the SHA is check_action_pins' to hold);
+          # a run-body byte, an action identity, a tag for a SHA or a `with:` change on that bumped
+          # tree still fails; nothing reads the PR's author; a lookup that did not answer is retried
+          # boundedly and stays UNKNOWN (owner 2026-11-04: Dependabot PRs must be mergeable).
+          python3 tests/prove_dependabot_bump_mergeable.py
 
       - name: The reporter must run where the report job runs it, with only what reaches that job
         run: |
@@ -1131,6 +1136,8 @@ jobs:
           python3 tests/prove_jira_host_secret.py
           # Azure Government: every Gov-capable azure/login asks for the Gov audience (owner 2026-11-04).
           python3 tests/prove_azure_gov_audience.py
+          # A dependency finding is keyed from its manifest's registry (found hosted, public run 41945270732).
+          python3 tests/prove_dependency_purl_from_manifest.py
 
       - name: The kit's API -- contract, client, run side and wiring (KDEC-035)
         run: |
@@ -1195,6 +1202,11 @@ jobs:
           # signals and an unguarded base branch go to a human; excluded paths are closed.
           python3 -m pip install --quiet PyYAML
           python3 tests/prove_dependabot_triage.py
+          # This repository runs that strategy on its own Dependabot PRs (owner 2026-11-04): its
+          # caller, its policy (required `Self-test required`, ceiling patch,minor, protected
+          # actions, the fixture closed) and this repository's real update shapes, decided by the
+          # same shipped steps.
+          python3 tests/prove_kit_dependabot_triage_caller.py
 
       - name: A cluster is one obligation to coordinate and several to discharge
         run: |
@@ -1905,6 +1917,9 @@ jobs:
           # The required check (step 8 defect): never green by skipping, never pending by filter.
           python3 scripts/selftest_required.py --self-test
           python3 tests/prove_selftest_required.py
+          # Every push to main runs the whole CI (owner 2026-11-04): no filter on main's push, every
+          # job runs there or is named with why, the opt-in consumer path test gated by its variable.
+          python3 tests/prove_push_to_main_runs_all.py
           # The acceptance-test arithmetic (docs/operations/COST_MEASUREMENT.md): per-job ceiling,
           # skipped jobs excluded, no saving below 5 runs per phase, every scanner compared.
           python3 scripts/measure_cost.py --self-test

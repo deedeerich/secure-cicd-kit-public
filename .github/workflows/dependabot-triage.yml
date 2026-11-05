@@ -1,0 +1,60 @@
+# The kit's OWN Dependabot triage: the owner's merge strategy (2026-10-22), dogfooded on this repo.
+#
+# Auto-merge only what cannot change behaviour; a human for the rest. The reusable is this
+# repository's own .github/workflows/reusable-dependabot-triage.yml (docs/adoption/DEPENDABOT_TRIAGE.md),
+# called by `./` -- under pull_request_target the caller AND the reusable are read from the DEFAULT
+# branch, so a Dependabot PR that bumps a pin inside them cannot decide its own merge. Nothing here or
+# in the reusable checks out the PR: it is read through the API, as data.
+#
+# WHAT THIS REPOSITORY'S DEPENDABOT OPENS (.github/dependabot.yml) AND WHAT HAPPENS TO IT
+#   github-actions patch/minor, SHA-pinned, inside one major   -> auto-merge (`--auto --squash`):
+#                                                                GitHub merges only when every
+#                                                                required check below has passed
+#   github-actions major (e.g. setup-java 5 -> 6)              -> needs-human-review (major_update)
+#   azure/login, actions/attest, github/codeql-action          -> needs-human-review: they sign in,
+#                                                                sign provenance, or produce the
+#                                                                assurance evidence (critical_package)
+#   dependabot/fetch-metadata, or this file                    -> needs-human-review (triage_chain)
+#   terraform (infra/feed-mirrors), docker (deploy probes)     -> needs-human-review (critical_ecosystem)
+#   anything under tests/consumer-fixture/** (deliberately     -> closed, with the reason (excluded_path)
+#   vulnerable; held by dependabot.yml P6 as well)
+#
+# OWNER STEPS (repository settings -- not changed by any workflow; DEPENDABOT_TRIAGE.md section 3a):
+#   1  Settings > General > "Allow auto-merge" on. Until then the auto-merge job says so on the PR.
+#   2  The `main` ruleset requires the status check `Self-test required` (KDEC-033: the one check
+#      that is never green by skipping). Until it is required, every PR here goes to a human with
+#      `scan_gate_not_required` -- fail closed, never a merge past an unrequired check.
+# tests/prove_kit_dependabot_triage_caller.py holds this file to those decisions.
+name: Dependabot triage
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+# No job inherits anything; the one job grants exactly what the kit's jobs request
+# (tests/check_caller_permissions.py). Each kit job then holds only its part.
+permissions: {}
+
+jobs:
+  triage:
+    # The PR AUTHOR: a re-run or a human push changes github.actor, not the author.
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    uses: ./.github/workflows/reusable-dependabot-triage.yml
+    with:
+      # The check branch protection must REQUIRE on main before anything merges on its own. It
+      # needs every self-test job, Normalizer drift and the dogfooded policy gate among them.
+      required_checks: "Self-test required"
+      # Actions that sign in, sign provenance or produce the kit's assurance evidence: a human.
+      critical_packages: |
+        azure/login
+        actions/attest
+        github/codeql-action
+        github/codeql-action/*
+      # The ceiling, stated: a major never merges on its own.
+      auto_merge_update_types: "patch,minor"
+      excluded_paths: "tests/consumer-fixture/**"
+      review_label: "needs-human-review"
