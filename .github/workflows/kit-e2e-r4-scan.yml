@@ -1,5 +1,6 @@
 # RELEASE 4 END-TO-END (prepared, not run). Lives ONLY on the public mirror's e2e-r4/* branches,
 # never on main. Placed there by D:/handoffs/release4_e2e/run_e2e.sh (phase "branch").
+# Revision 3 (2026-11-04): runs on the candidate at trunk fd7cf43, where dependency findings are keyed from the manifest.
 #
 #   push to e2e-r4/base     scan tests/consumer-fixture/full/python -> gate -> TEST tickets (kit-test, [TEST]) in the
 #                           ticketing-e2e-r4 environment (any branch but main is TEST, KDEC-028)
