@@ -7,8 +7,10 @@ it "materially changes something that could change functionality or is criticall
 runtime".
 
 **Status.** Proven locally by running the workflow's own steps (`tests/prove_dependabot_triage.py`,
-42 decisions plus the action steps, wired into `self-test.yml`). It has **not** run on GitHub. A hosted
-run is owed (section 6 below; registry deferral `dependabot-merge-hosted`).
+42 decisions plus the action steps, wired into `self-test.yml`). Since 2026-11-04 this repository
+calls it on its own Dependabot PRs (section 3a; `tests/prove_kit_dependabot_triage_caller.py`). It
+has **not** run on GitHub yet. A hosted run is owed (section 6 below; registry deferral
+`dependabot-merge-hosted`).
 
 ---
 
@@ -136,6 +138,48 @@ Further guards:
 7. **Merge queue.** GitHub's docs note `GITHUB_TOKEN` cannot add a PR to a merge queue; on a queued
    branch, auto-merge needs a different token. Not supported by this workflow yet.
 
+### 3a · This repository runs it on itself (owner, 2026-11-04)
+
+The kit dogfoods the strategy: `.github/workflows/dependabot-triage.yml` calls this repository's own
+reusable by `./` (both are read from the default branch under `pull_request_target`), with
+`required_checks: "Self-test required"`, the ceiling `patch,minor`, the fixture excluded, and
+`azure/login`, `actions/attest` and `github/codeql-action` protected. What happens to each kind of PR
+this repository's Dependabot opens is in that file's header and proven by
+`tests/prove_kit_dependabot_triage_caller.py` (K1-K3, through the shipped steps): an actions
+patch/minor bump on a full SHA auto-merges once every required check passes; a major (setup-java
+5 -> 6), a protected action, terraform, docker or a triage-chain update goes to a human; a fixture
+update is closed.
+
+**Owner steps (repository settings; no workflow changes them):**
+
+1. **Allow auto-merge.** Settings > General > Pull Requests > "Allow auto-merge", or
+   `gh api -X PATCH repos/<owner>/<kit-repo> -F allow_auto_merge=true`. Until then the auto-merge job
+   comments that auto-merge is not allowed, and nothing merges.
+2. **Require `Self-test required` on `main`.** Add it to the `main` ruleset's required status checks
+   (keep the checks already there). It is the verdict job that needs every self-test job and is
+   never green by skipping (KDEC-033). Until it is required, every PR here is `human_review` /
+   `scan_gate_not_required`: fail closed, never a merge past an unrequired check. CLI (read the
+   ruleset, add the check, write it back):
+
+   ```bash
+   R=<owner>/<kit-repo>
+   ID=$(gh api repos/$R/rulesets --jq '.[] | select(.target=="branch") | .id' | head -1)
+   gh api repos/$R/rulesets/$ID > ruleset.json
+   jq '(.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks)
+       += [{"context":"Self-test required"}]
+       | {name, target, enforcement, conditions, rules, bypass_actors}' ruleset.json > ruleset.new.json
+   gh api -X PUT repos/$R/rulesets/$ID --input ruleset.new.json
+   ```
+3. **Branches that must be up to date.** The kit's ruleset is strict ("require branches to be up to
+   date"). `rebase-strategy: auto` makes Dependabot rebase a PR that CONFLICTS with `main`; a PR
+   that is merely behind waits, armed, until it is updated: comment `@dependabot rebase` on it (or
+   relax "up to date" for the ruleset).
+4. **Labels** (`needs-human-review`, `urgent-security-review`) are created by the workflow when absent.
+   No secret is needed; `DEPENDABOT_METADATA_TOKEN` stays optional (section 3, step 5).
+
+On the public mirror, the same file runs once the mirror's default branch carries it, with the same
+two settings (section 6, step 0b).
+
 ### Inputs (all policy is caller data; every input can only send MORE to a human)
 
 | input | default | meaning |
@@ -180,7 +224,45 @@ D8 PR text stays data. It failed first: with no workflow, then with no template.
 
 ---
 
-## 6 · Hosted test plan (for the coordinator, on the owner's public `hello-world`)
+## 6 · Hosted test plan
+
+### 6.0 · On the public mirror itself (preferred since 2026-11-04: the kit dogfoods the triage)
+
+Read 2026-11-04 through the API (VERIFIED): the public mirror's default branch `main` has **no
+ruleset**, `allow_auto_merge: false`, and three open Dependabot PRs, all on the deliberately
+vulnerable fixture (`tests/consumer-fixture/**`, maven/pip/npm groups). Its Actions minutes are free.
+`pull_request_target` reads the caller and the reusable from the DEFAULT branch, so nothing can be
+observed until the mirror's `main` carries `.github/workflows/dependabot-triage.yml` (the release that
+ships this lane). **Steps 0a and 0b change repository settings: the owner's, never a workflow's.**
+
+0a. Allow auto-merge: `gh api -X PATCH repos/<owner>/<public-mirror> -F allow_auto_merge=true`.
+0b. Require the check the caller names, on `main`:
+
+    ```bash
+    gh api -X POST repos/<owner>/<public-mirror>/rulesets --input - <<'JSON'
+    {"name": "main: Self-test required (Dependabot triage)", "target": "branch", "enforcement": "active",
+     "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+     "rules": [{"type": "required_status_checks", "parameters": {
+       "strict_required_status_checks_policy": false,
+       "required_status_checks": [{"context": "Self-test required"}]}}]}
+    JSON
+    ```
+0c. After the release lands on the mirror's `main`, expect and record each run id:
+
+   | event | expected `action` / `rule` | what to observe |
+   |---|---|---|
+   | each open fixture PR on its next event (`@dependabot rebase` on it) | `close` / `excluded_path` (or Dependabot closes it itself: dependabot.yml now ignores every fixture dependency, P6) | closed, with the reason |
+   | the next github-actions patch/minor PR (Insights > Dependency graph > Dependabot > "Check for updates") | `auto_merge` / `all_conditions_met` | armed at once; merged only after `Self-test required` passes |
+   | a github-actions major (setup-java 5 -> 6) | `human_review` / `major_update` | labelled `needs-human-review`, one comment, not armed |
+   | the same patch PR with 0b not yet applied | `human_review` / `scan_gate_not_required` | fail closed |
+
+   Negative controls: step 6 below, (a) and (c), on a mirror PR.
+0d. Record the run ids against `dependabot-merge-hosted` in `tests/reconcile_validation.py` and close
+    the deferral (step 7 below).
+
+The private repository runs the same file once its `main` carries it (section 3a), on billed minutes.
+
+### 6.1 · On the owner's public `hello-world` (the original plan)
 
 Read 2026-10-22 through the API (VERIFIED): `<test-owner>/hello-world` is public, default branch
 `master`, **unprotected**, `allow_auto_merge: false`; it consumes the kit from the public mirror

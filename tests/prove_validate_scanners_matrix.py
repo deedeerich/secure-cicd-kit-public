@@ -84,10 +84,12 @@ WHAT IT PROVES
         runs and detects. FAILS ON 109cff8: Release 3 candidate run 39801652917 -- the semgrep-php
         docker run ended in under 0.3 s (the sibling leg on the same image took 17 s) with no
         report, and `>/dev/null 2>&1` had discarded the only evidence of why.
-    M12 validate-scanners.yml's push trigger is `branches: [main]` with its paths filter, and the
-        weekly schedule and workflow_dispatch stay (lane L-DOC, cost). FAILS ON 19b5e1d: push had
-        paths only, so any branch push touching tests/** ran the probe on metered private minutes
-        (18 private runs on 2026-10-22); the free public mirror runs it on the release candidate.
+    M12 validate-scanners.yml's push trigger is `branches: [main]` and nothing else -- every push to
+        main runs it, no paths filter (owner, 2026-11-04) -- the weekly schedule and
+        workflow_dispatch stay, and there is no pull_request trigger (lane L-DOC, cost). FAILS ON
+        19b5e1d: push had paths only, so any branch push touching tests/** ran the probe on metered
+        private minutes (18 private runs on 2026-10-22); the free public mirror runs it on the
+        release candidate.
 
 EXIT  0 all hold   1 any does not   2 could not be checked
 """
@@ -193,8 +195,8 @@ def check_m8(path):
 # M12 (lane L-DOC, 2026-10-23): the probe's push trigger is the default branch only. The private
 # repository pays for every Actions minute, and a push to any branch touching tests/** started the
 # whole probe (18 private runs on 2026-10-22 alone). Branch validation is the free public mirror's
-# run on the release candidate, or a dispatch. Schedule, dispatch and the paths filter stay.
-M12_PATHS = ('.github/workflows/reusable-security.yml', '.github/actions/**', 'tests/**')
+# run on the release candidate, or a dispatch. Schedule and dispatch stay. Since 2026-11-04 every
+# push to main runs it (owner: "full running on push to main"): no paths filter.
 
 
 def check_m12(doc):
@@ -206,13 +208,11 @@ def check_m12(doc):
     print('  M12 push=%r schedule=%s dispatch=%s pull_request=%s'
           % (push, 'schedule' in on, 'workflow_dispatch' in on, 'pull_request' in on))
     if not isinstance(push, dict) or push.get('branches') != ['main']:
-        bad.append('M12 push is not limited to branches [main]: every branch push touching the paths '
+        bad.append('M12 push is not limited to branches [main]: every branch push '
                    'runs the probe on metered private minutes (%r)' % (push,))
-    else:
-        paths = push.get('paths') or []
-        missing = [x for x in M12_PATHS if x not in paths]
-        if missing:
-            bad.append('M12 the push paths filter lost %s' % missing)
+    elif set(push) != {'branches'}:
+        bad.append('M12 the push to main carries a filter (%s): every push to main must run the '
+                   'probe (owner, 2026-11-04)' % sorted(set(push) - {'branches'}))
     if 'pull_request' in on or 'pull_request_target' in on:
         bad.append('M12 a pull_request trigger runs the probe on every PR branch')
     if not on.get('schedule'):

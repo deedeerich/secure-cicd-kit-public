@@ -208,8 +208,13 @@ the caller at the gate; and every seeded signal is detected by the open-source s
   `UNAVAILABLE` rows under "GHAS-dependent rows (recorded, never graded)"; they are never a pass and
   never fail the test, and CodeQL's findings are never counted as detection (`--not-graded codeql`).
 - **It is dispatch-only by default.** Its weekly schedule starts no job unless the repository variable
-  `KIT_CONSUMER_PATH_SCHEDULE` is `true`. Once it is green, disable the workflow (Actions → … → Disable
+  `KIT_CONSUMER_PATH_SCHEDULE` is `true`, and a push to `main` starts none unless
+  `KIT_CONSUMER_PATH_ON_PUSH` is `true`. Once it is green, disable the workflow (Actions → … → Disable
   workflow); re-enable it to troubleshoot, or after each kit import.
+- **The kit's own repository runs it on every push to `main`** (owner, 2026-11-04: "full running on
+  push to main"). Owner step, once: `gh variable set KIT_CONSUMER_PATH_ON_PUSH --body true -R
+  <owner>/<kit-repo>`. Every other workflow that can run on a push to `main` already does, with no
+  path filter; what does not is named with its reason in `tests/prove_push_to_main_runs_all.py`.
 - **A red names its cause:** a `JOB_TOKEN_REJECTED` (or other) preflight row before any API call;
   `Job absent` / `Wrong outcome` for a job that did not behave as documented; `Gate did not block` if
   the negative run succeeded; `Seeded signals NOT detected` with each file named.

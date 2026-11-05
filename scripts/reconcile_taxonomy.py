@@ -113,6 +113,13 @@ NOT_VOCABULARY = {
     # (the same class as INCLUDE_OVERLAY), and the repository VARIABLE that opts the consumer path
     # test's weekly schedule in (a setting, the same class as KIT_DAST_COMMAND). Neither is a state.
     "INCLUDE_PATH", "KIT_CONSUMER_PATH_SCHEDULE",
+    # Lane dependabot-mergeable (2026-11-04): the repository VARIABLE that opts the consumer path
+    # test's push-to-main runs in (the same class as KIT_CONSUMER_PATH_SCHEDULE); GitHub's own
+    # head-ref environment variable, set by the bump proof to show a verdict does not depend on it;
+    # and names the kit caller proof reads from tests/prove_dependabot_triage.py -- its gh shim text
+    # and the shim's two environment variables (log path, simulated files-API exit code), and its
+    # per-job permission table. Settings and harness names; none is a state.
+    "KIT_CONSUMER_PATH_ON_PUSH", "GITHUB_HEAD_REF", "GH_SHIM", "GH_LOG", "FILES_RC", "JOB_PERMS",
     # A Python constant in scripts/reconcile_tickets.py that POINTS AT a registered value rather
     # than being one: `UNCLASSIFIED_DEFAULT = BINDING_UNESTABLISHED`. It exists so that a future
     # branch which forgets to classify its lookup outcome lands on the safe value by construction

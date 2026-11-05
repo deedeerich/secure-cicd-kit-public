@@ -27,6 +27,17 @@ scripts/api_token_cause.sh classifies it (JOB_TOKEN_REJECTED, ORG_IP_ALLOW_LIST_
 ORG_SSO_BLOCKS_TOKEN, RATE_LIMITED, API_UNREACHABLE, TOKEN_PREFLIGHT_UNCLASSIFIED), and explain()
 says which, so a 401 is never reported as "rate-limited". tests/prove_job_token_named.py T2/T7.
 
+A LOOKUP THAT DID NOT OBSERVE IS RETRIED, BOUNDEDLY (2026-11-04). Dependabot PR #5 sat red on the
+required check `Normalizer drift` because ONE lookup of a ref that exists (dorny/paths-filter@v4,
+run 39664961192) did not answer, and every lookup was a single attempt. Now a TRANSIENT failure -- a
+git call that timed out or could not reach the host (API_UNREACHABLE), or a REST call with no HTTP
+answer or a 5xx -- is tried up to ATTEMPTS times with a short pause (BACKOFF seconds). An ANSWER is
+never retried: "not our ref", a 404, a 401/403/429, an SSO or allow-list refusal are observations.
+After the last attempt the result is still None -- UNKNOWN, never a pass. And once one lookup on a
+channel (git, REST) has failed every attempt, that channel is DOWN for the rest of the run: later
+lookups make one attempt each, so a runner with no route to github.com reports UNKNOWN in seconds per
+ref instead of retrying every pin. reset() closes the breaker. tests/prove_dependabot_bump_mergeable.py M4.
+
 PIN_CHECK_GITHUB_COM_TOKEN, when set, is a token github.com issued (a separate secret, optional):
 it is sent to api.github.com only, and used instead of the run's token on a run whose own token
 another host issued. Never required: the git path needs no token.
@@ -37,6 +48,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.request
 
@@ -46,6 +58,30 @@ REPO_RE = re.compile(r'^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')
 REF_RE = re.compile(r'^[A-Za-z0-9_.][A-Za-z0-9_./-]*$')
 SHA40 = re.compile(r'^[0-9a-f]{40}$')
 GIT_TIMEOUT = 60
+ATTEMPTS = 3
+BACKOFF = (2, 5)
+_sleep = time.sleep
+# Channels that failed every attempt once in this run: no more retries on them (the breaker).
+_DOWN = set()
+
+
+def _pause(attempt):
+    _sleep(BACKOFF[min(attempt, len(BACKOFF) - 1)])
+
+
+def _attempts(channel):
+    return 1 if channel in _DOWN else ATTEMPTS
+
+
+def _transient_git(out):
+    """A git result worth another try: no result at all, or a failure classified as unreachable or
+    as a 5xx. An authentication, SSO, allow-list or rate-limit answer is an observation."""
+    if out is None:
+        return True
+    if out[0] == 0:
+        return False
+    err = out[2] or ''
+    return api_cause(None, err) == 'API_UNREACHABLE' or bool(re.search(r'\b5\d\d\b', err))
 # What git says when the server has no such object. Everything else is not an observation.
 MISSING_OBJECT = ('not our ref', "couldn't find remote ref", 'unadvertised object')
 
@@ -129,6 +165,7 @@ def api_cause(status, text):
 
 def reset():
     _SEEN['git'], _SEEN['api'], _SEEN['no_token'] = [], [], False
+    _DOWN.clear()
 
 
 def explain():
@@ -159,21 +196,35 @@ def api_get(path, user_agent, timeout=15):
         return None, None
     headers = {'User-Agent': user_agent, 'Accept': 'application/vnd.github+json',
                'Authorization': 'Bearer ' + token}
-    try:
-        req = urllib.request.Request(GITHUB_API + path, headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.getcode(), json.load(r)
-    except urllib.error.HTTPError as e:
-        if e.code != 404:
-            try:
-                body = e.read().decode('utf-8', 'replace')[:2000]
-            except Exception:  # noqa: BLE001
-                body = ''
-            _SEEN['api'].append((api_cause(e.code, body), e.code))
-        return e.code, None
-    except Exception as e:  # noqa: BLE001 - network trouble is a status of None, never a verdict
-        _SEEN['api'].append((api_cause(None, str(e)), None))
-        return None, None
+    n = _attempts('api')
+    for attempt in range(n):
+        last = attempt == n - 1
+        try:
+            req = urllib.request.Request(GITHUB_API + path, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.getcode(), json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code >= 500 and not last:
+                _pause(attempt)
+                continue
+            if e.code >= 500 and n > 1:
+                _DOWN.add('api')
+            if e.code != 404:
+                try:
+                    body = e.read().decode('utf-8', 'replace')[:2000]
+                except Exception:  # noqa: BLE001
+                    body = ''
+                _SEEN['api'].append((api_cause(e.code, body), e.code))
+            return e.code, None
+        except Exception as e:  # noqa: BLE001 - network trouble is a status of None, never a verdict
+            if not last:
+                _pause(attempt)
+                continue
+            if n > 1:
+                _DOWN.add('api')
+            _SEEN['api'].append((api_cause(None, str(e)), None))
+            return None, None
+    return None, None
 
 
 def _git_env():
@@ -202,12 +253,21 @@ def ls_remote(repo, ref, timeout=GIT_TIMEOUT):
     """-> {refname: sha} for the exact tag (and its peeled commit) and branch, or None."""
     if not valid(repo, ref):
         return None
-    tmp = tempfile.mkdtemp(prefix='pin-ls-')
-    try:
-        out = _git(['ls-remote', '%s/%s' % (GITHUB_GIT, repo), 'refs/tags/' + ref,
-                    'refs/tags/%s^{}' % ref, 'refs/heads/' + ref], tmp, timeout)
-    finally:
-        _rmtree(tmp)
+    out = None
+    n = _attempts('git')
+    for attempt in range(n):
+        tmp = tempfile.mkdtemp(prefix='pin-ls-')
+        try:
+            out = _git(['ls-remote', '%s/%s' % (GITHUB_GIT, repo), 'refs/tags/' + ref,
+                        'refs/tags/%s^{}' % ref, 'refs/heads/' + ref], tmp, timeout)
+        finally:
+            _rmtree(tmp)
+        if not _transient_git(out):
+            break
+        if attempt < n - 1:
+            _pause(attempt)
+        elif n > 1:
+            _DOWN.add('git')
     if out is None or out[0] != 0:
         _SEEN['git'].append('API_UNREACHABLE' if out is None else api_cause(None, out[2]))
         return None
@@ -245,8 +305,18 @@ def commit_exists(repo, sha, timeout=GIT_TIMEOUT):
         init = _git(['init', '-q', '--bare', bare], tmp, timeout)
         if init is None or init[0] != 0:
             return None
-        out = _git(['-C', bare, 'fetch', '-q', '--no-tags', '--depth=1', '--filter=tree:0',
-                    '%s/%s' % (GITHUB_GIT, repo), sha], tmp, timeout)
+        n = _attempts('git')
+        for attempt in range(n):
+            out = _git(['-C', bare, 'fetch', '-q', '--no-tags', '--depth=1', '--filter=tree:0',
+                        '%s/%s' % (GITHUB_GIT, repo), sha], tmp, timeout)
+            if out is not None and any(m in out[2].lower() for m in MISSING_OBJECT):
+                break
+            if not _transient_git(out):
+                break
+            if attempt < n - 1:
+                _pause(attempt)
+            elif n > 1:
+                _DOWN.add('git')
     finally:
         _rmtree(tmp)
     if out is None:
