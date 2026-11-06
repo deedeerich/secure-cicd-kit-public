@@ -1,0 +1,148 @@
+# Starter: drop this into a calling repo at .github/workflows/kit-api.yml to give that repository
+# THE KIT'S API (KDEC-035, PROPOSED; docs/api/README.md). Replace YOUR_ORG, and replace every
+# 0000000000000000000000000000000000000000 below with the 40-hex commit SHA of the kit you chose --
+# the same one templates/build-deploy.yml pins.
+#
+# WHAT IT IS. Another program -- a Tines 3B automation or agent, or anything with a GitHub
+# credential -- calls the kit by dispatching THIS workflow with a v1 request
+# (api/v1/request.schema.json); scripts/kit_api.py does it in one command. The run is named
+# `kit-api <correlation id>` and answers with a v1 result (api/v1/result.schema.json) in the check
+# run `kit-api/<correlation id>`, the run summary and the artifact kit-api-result-<correlation id>.
+# There is no server to host: GitHub is the transport, the queue and the audit trail.
+#
+# WHAT THE CALLER'S TOKEN NEEDS (fine-grained, this repository only): Actions read and write (to
+# dispatch and to read runs), Checks read (to read the answer), Metadata read. Nothing else -- never
+# Contents write. repository_dispatch works too, but needs Contents write, so prefer the dispatch.
+#
+# WHAT A REPOSITORY TURNS ON. Reads and scans are served by default. Writes are served only where
+# vars.KIT_API_OPERATIONS names them (e.g. "tickets.write,tickets.submit,tickets.comment,tickets.get,
+# tickets.search,findings.get,findings.search,scan.request,deploy.request"). tickets.submit (KDEC-037)
+# writes from a FINALIZED review only: .security/reviews/<review id>.json on the default branch, merged
+# by a pull request its concurring reviewer approved (protect that path with CODEOWNERS). A release may be
+# requested only for environments in vars.KIT_API_DEPLOY_ENVIRONMENTS, and only where GitHub shows
+# that environment demands a human approver with self-review prevented.
+#
+# WHAT IT NEVER DOES. A release is THIS repository's build-deploy.yml, called as a reusable workflow:
+# every gate applies (the verdict, the approval bound to the digest, readiness, the lease, the
+# release block, promotion), and because the API caller is this run's actor, the caller can never
+# approve its own request. Tickets go through the kit's own reconciler in the `ticketing`
+# environment -- the pipeline's ticket reconciliation's environment, settings and stamp -- so a
+# ticket asked for here and one the pipeline raises for the same finding are one ticket.
+name: Kit API
+
+run-name: kit-api ${{ inputs.correlation_id || github.event.client_payload.correlation_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      correlation_id:
+        description: "kapi-<yyyymmddThhmmssZ>-<12 hex>, made by the caller (scripts/kit_api.py makes it)"
+        type: string
+        required: true
+      idempotency_key:
+        description: "One key per intended write; the same key twice is refused naming the first call"
+        type: string
+        default: ""
+      request:
+        description: "The v1 request, JSON (api/v1/request.schema.json)"
+        type: string
+        required: true
+  repository_dispatch:
+    types: [kit-api]
+
+# ONE CALL PER IDEMPOTENCY KEY AT A TIME. A repeat waits, then finds the first call's marker and is
+# refused API_DUPLICATE_REQUEST. A call without a key is grouped by its own run: nothing queues it.
+concurrency:
+  group: kit-api-${{ inputs.idempotency_key || github.event.client_payload.idempotency_key || github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  api:
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-kit-api.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+      pull-requests: read   # tickets.submit reads back who approved a review record's pull request
+    with:
+      correlation_id: ${{ inputs.correlation_id || github.event.client_payload.correlation_id }}
+      idempotency_key: ${{ inputs.idempotency_key || github.event.client_payload.idempotency_key }}
+      request: ${{ inputs.request || github.event.client_payload.request }}
+      default_branch: ${{ github.event.repository.default_branch }}
+      operations: ${{ vars.KIT_API_OPERATIONS }}
+      ticketing_environment: ticketing
+      ticket_backend: ${{ vars.KIT_API_TICKET_BACKEND || 'jira' }}
+      security_workflow: build-deploy.yml
+      deploy_environments: ${{ vars.KIT_API_DEPLOY_ENVIRONMENTS }}
+      build_deploy_environments: dev,test
+    secrets:
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+      JIRA_HOST: ${{ secrets.JIRA_HOST }}   # optional: the Jira host as a secret (masked in logs)
+      AZDO_PAT: ${{ secrets.AZDO_PAT }}
+      GH_TICKET_TOKEN: ${{ secrets.GH_TICKET_TOKEN }}
+      KIT_API_TEAM_READ_TOKEN: ${{ secrets.KIT_API_TEAM_READ_TOKEN }}
+
+  # scan.request: the kit's security workflow on the ref this run was dispatched at. Its verdict and
+  # evidence are this run's; findings.search with this run's id reads what it found.
+  scan:
+    needs: api
+    if: needs.api.outputs.accepted == 'true' && needs.api.outputs.operation == 'scan.request'
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-security.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    with:
+      environment: prod     # the baseline-ledger environment, as in build-deploy.yml
+    secrets:
+      SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+  # deploy.request: THIS repository's own release workflow, called -- not re-dispatched -- so the API
+  # caller is the release's requester and every gate in it applies. The inputs are intake's
+  # VALIDATED values, never the raw request.
+  deploy:
+    needs: api
+    if: needs.api.outputs.accepted == 'true' && needs.api.outputs.operation == 'deploy.request'
+    uses: ./.github/workflows/build-deploy.yml
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+      id-token: write
+      attestations: write
+      deployments: write   # the deploy keeps its durable release record (KDEC-036 G6)
+      pull-requests: read  # the readiness attestation's approving review (KDEC-036 G1)
+    with:
+      deploy: ${{ needs.api.outputs.deploy_mode == 'build-deploy' }}
+      environment: ${{ needs.api.outputs.deploy_environment }}
+      promote_from_run_id: ${{ needs.api.outputs.promote_from_run_id }}
+      promote_from_environment: ${{ needs.api.outputs.promote_from_environment }}
+      release_path: ${{ needs.api.outputs.release_path }}
+    secrets: inherit
+
+  # The answer for a scan or a release, from what those jobs established. Runs whatever they did:
+  # a skipped, failed or cancelled job is reported as such, never as a success.
+  finish:
+    needs: [api, scan, deploy]
+    if: always() && needs.api.outputs.accepted == 'true' && (needs.api.outputs.operation == 'scan.request' || needs.api.outputs.operation == 'deploy.request')
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-kit-api.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+      pull-requests: read   # the reusable's tickets job requests it (it does not run in this phase)
+    with:
+      phase: finish
+      correlation_id: ${{ inputs.correlation_id || github.event.client_payload.correlation_id }}
+      request: ${{ inputs.request || github.event.client_payload.request }}
+      default_branch: ${{ github.event.repository.default_branch }}
+      intake: ${{ needs.api.outputs.intake }}
+      job_result: ${{ needs.api.outputs.operation == 'scan.request' && needs.scan.result || needs.deploy.result }}
+      routing_result: ${{ needs.scan.outputs.routing_result }}
+      assurance_state: ${{ needs.scan.outputs.assurance_state }}
+      advisory_causes: ${{ needs.scan.outputs.advisory_causes }}
+      evidence_artifact: ${{ needs.scan.outputs.evidence_artifact }}

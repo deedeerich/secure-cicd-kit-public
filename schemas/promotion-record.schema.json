@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://secure-cicd-kit/schemas/promotion-record.schema.json",
+  "title": "Promotion record (kit-promotion-record/1)",
+  "description": "What one deploy established about one digest in one environment (KDEC-029, owner 2026-10-26, closing O-11). Written by scripts/promotion.py record on every deploy path and published as the artifact kit-promotion-record-<environment>; the promotion gate reads it, never trusting its validity fields: stale, superseded and revoked are re-judged at every promotion. Only a healthy deploy whose conditions all hold reads verified-for-promotion; break-glass reads BREAK_GLASS with its testing owed.",
+  "type": "object",
+  "required": ["schema", "record_id", "state", "release_path", "artifact", "provenance", "environment",
+               "predecessor", "tests", "conditions", "approval", "validity", "live_state", "run",
+               "preflight", "break_glass"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "kit-promotion-record/1"},
+    "record_id": {"type": "string", "description": "<run id>-<attempt>-<environment>"},
+    "state": {"enum": ["verified-for-promotion", "not-verified", "BREAK_GLASS"]},
+    "release_path": {"enum": ["normal", "hotfix", "rollback", "break-glass"]},
+    "artifact": {
+      "type": "object",
+      "required": ["digest", "image", "sbom_sha256", "artifact_identity"],
+      "properties": {
+        "digest": {"type": "string", "pattern": "^(sha256:[0-9a-f]{64})?$"},
+        "image": {"type": "string"},
+        "sbom_sha256": {"type": ["string", "null"]},
+        "artifact_identity": {"type": ["string", "null"]}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["source_sha", "source_ref", "build_run_id", "build_workflow", "attestation_outcome"],
+      "properties": {
+        "source_sha": {"type": ["string", "null"]},
+        "source_ref": {"type": ["string", "null"]},
+        "build_run_id": {"type": ["string", "null"]},
+        "build_workflow": {"type": ["string", "null"], "description": "the signer workflow V1 pins"},
+        "attestation_outcome": {"type": ["string", "null"]},
+        "scanner_evidence": {"type": "array", "items": {"type": "string"}},
+        "gate_routing_result": {"type": ["string", "null"]},
+        "controls_unavailable": {"type": "array", "items": {"type": "string"}},
+        "advisory_causes": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "environment": {
+      "type": "object",
+      "required": ["name", "tier", "adapter", "target_resource_id", "oidc_subject"],
+      "properties": {
+        "name": {"type": "string"},
+        "tier": {"type": "string"},
+        "adapter": {"enum": ["containerapp", "appservice"]},
+        "target_resource_id": {"type": ["string", "null"]},
+        "oidc_subject": {"type": "string", "description": "the default-form subject of the environment-scoped federated credential"}
+      }
+    },
+    "predecessor": {
+      "type": "object",
+      "required": ["required", "promoted_from", "gate", "overridden"],
+      "properties": {
+        "required": {"type": ["string", "null"]},
+        "promoted_from": {"type": ["object", "null"]},
+        "gate": {"type": ["string", "null"]},
+        "overridden": {"type": "array"}
+      }
+    },
+    "tests": {
+      "type": "object",
+      "required": ["health", "e2e_test_period", "dast", "security_settings"],
+      "properties": {
+        "health": {"type": ["string", "null"]},
+        "e2e_test_period": {"type": ["object", "null"]},
+        "dast": {"type": ["object", "null"]},
+        "security_settings": {"type": ["object", "null"]}
+      }
+    },
+    "conditions": {
+      "type": "object",
+      "required": ["established", "missing"],
+      "properties": {
+        "established": {"type": "array", "items": {"type": "string"}},
+        "missing": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "approval": {
+      "type": "object",
+      "required": ["state", "approvers"],
+      "properties": {
+        "state": {"enum": ["APPROVED", "REJECTED", "NONE_REQUIRED_OR_RECORDED", "UNREADABLE"]},
+        "approvers": {"type": "array"},
+        "recorded_at": {"type": ["string", "null"]},
+        "why": {"type": "string"}
+      }
+    },
+    "validity": {
+      "type": "object",
+      "required": ["verified_at", "expires_at", "superseded_by", "revoked"],
+      "properties": {
+        "verified_at": {"type": ["string", "null"]},
+        "expires_at": {"type": ["string", "null"], "description": "verified_at + 14 days: a maximum, never a guarantee"},
+        "superseded_by": {"type": ["object", "null"]},
+        "revoked": {"type": ["object", "null"]},
+        "note": {"type": "string"}
+      }
+    },
+    "live_state": {
+      "type": "object",
+      "required": ["deployment_outcome", "now_serving", "verified_serving"],
+      "properties": {
+        "deployment_outcome": {"type": ["string", "null"]},
+        "now_serving": {"type": "array"},
+        "verified_serving": {"type": "boolean"}
+      }
+    },
+    "run": {"type": "object", "required": ["id", "attempt", "url"]},
+    "preflight": {"type": ["string", "null"]},
+    "break_glass": {
+      "type": ["object", "null"],
+      "required": ["exception", "testing_owed", "flagged_until"]
+    }
+  }
+}

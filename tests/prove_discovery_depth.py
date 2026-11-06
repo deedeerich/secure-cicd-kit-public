@@ -37,6 +37,14 @@ COMPOSITE = os.path.join(ROOT, '.github', 'actions', 'discover', 'action.yml')
 DEEP_GO = 'a/b/c/d/e/f/g/h/i/svc/go.mod'
 
 
+def _shipped(path):
+    """The flagship's text plus the scanner composites it calls through `$/` (ledger L64): a
+    scanner's commands live there now, and reading the workflow alone would count fewer sites."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.shipped_text(path)
+
+
 def main():
     try:
         shell = td.extract_discovery_shell()
@@ -63,7 +71,7 @@ def main():
 
     comp = io.open(COMPOSITE, encoding='utf-8').read()
     disc = set(re.findall(r'find "\$scope" -maxdepth (\d+)', comp))
-    flag = io.open(FLAGSHIP, encoding='utf-8').read()
+    flag = _shipped(FLAGSHIP)
     enum = re.findall(r'find "\$scope" -maxdepth (\d+)[^\n]*-name (package\.json|go\.mod|\'\*\.sln\')',
                       flag)
     print('  D3 discovery depth(s) %s; enumeration %s' % (sorted(disc), enum))

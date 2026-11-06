@@ -29,6 +29,9 @@ WHAT IT PROVES
     G7  the host is a literal, not a regex
     G8  a non-pull-request event is NOT ASSESSED: exit 0, and the summary says nothing was checked
     G9  every exit path prints ACTION REQUIRED and the assurance boundary
+    G10 a malformed key fails closed: letters, digits-run-on or an underscore straight after the
+        number, or a leading zero, is not a key, and is named as malformed rather than read as its
+        leading digits. Punctuation after the number (a full stop, a bracket, a query) ends the key
 
 WHAT IT CANNOT PROVE
     That GitHub substitutes the expressions as the env: block says -- a hosted run proves that. And,
@@ -206,6 +209,20 @@ def main():
          'NOT ASSESSED', 'NOT_A_PULL_REQUEST'),
         ('G8 pull_request_target is assessed', 'See %s-1234' % B,
          {'event': 'pull_request_target'}, 0, 'WORK-1234', 'REFERENCE_FOUND'),
+        # G10: A MALFORMED KEY FAILS CLOSED. The number used to be read as its leading digits, so
+        # WORK-123abc passed as WORK-123 -- a key that does not exist satisfied the gate.
+        ('G10 letters after the number refused', 'See %s-123abc' % B, {}, 1, 'malformed',
+         'NO_CANDIDATE_PASSED'),
+        ('G10 underscore after the number refused', 'See %s-1234_' % B, {}, 1, 'malformed',
+         'NO_CANDIDATE_PASSED'),
+        ('G10 leading zero refused', 'See %s-0123' % B, {}, 1, 'malformed',
+         'NO_CANDIDATE_PASSED'),
+        ('G10 malformed under a range refused', 'See %s-1234X' % B,
+         {'mind': '3', 'maxd': '4'}, 1, 'malformed', 'NO_CANDIDATE_PASSED'),
+        ('G10 malformed first, valid second', 'Old %s-12x\nStory %s-1004' % (B, B),
+         {'mind': '3', 'maxd': '4'}, 0, 'WORK-1004', 'REFERENCE_FOUND'),
+        ('G10 punctuation ends the key', 'Done (%s-123). Also %s-124?x=1' % (B, B), {}, 0,
+         'WORK-123', 'REFERENCE_FOUND'),
     ]
 
     print('%-46s %-4s %s' % ('case', 'rc', 'verdict'))

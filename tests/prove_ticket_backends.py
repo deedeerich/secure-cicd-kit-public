@@ -673,8 +673,10 @@ class AzdoTracker(object):
                  if o['path'].startswith('/fields/'))
         i = self.next_id
         self.next_id += 1
-        self.items[i] = {'id': i, 'fields': dict(f, **{'System.Id': i, 'System.State': 'To Do'}),
-                         'ops': ops, 'type': re.search(r'\$(\w+)', rec['url']).group(1)}
+        # Microsoft.VSTS.Common.Priority defaults to 2 on the Basic process's Issue and Task.
+        self.items[i] = {'id': i, 'fields': dict({'Microsoft.VSTS.Common.Priority': 2}, **dict(
+            f, **{'System.Id': i, 'System.State': 'To Do'})),
+            'ops': ops, 'type': re.search(r'\$(\w+)', rec['url']).group(1)}
         return 200, {'id': i, 'fields': self.items[i]['fields']}, {}
 
     def _patch(self, rec):
@@ -891,11 +893,70 @@ class JiraTracker(object):
         # Issue ids whose description read answers 500 (TC 5.4: unreadable is never a blind write).
         self.unreadable = set()
         self.puts = []
+        # KDEC-024 (lane L-TKT): the lifecycle half of a Jira project -- comments, the workflow's
+        # transitions (Done out of an open status, Reopen out of a done one) and priority. A
+        # transition list is per issue and per status, as Jira documents it.
+        self.comments = []
+        self.transitions_posted = []
+        self.refuse_reopen = False
         _jira_healthy(replay)
         replay.on('POST', r'/rest/api/3/search/jql$', self._search)
         replay.on('POST', r'/rest/api/3/issue$', self._create)
         replay.on('PUT', r'/rest/api/3/issue/\d+$', self._put)
         replay.on('GET', r'/rest/api/3/issue/\d+\?fields=description$', self._get_description)
+        replay.on('GET', r'/rest/api/3/issue/\d+\?fields=priority,labels$', self._get_priority)
+        replay.on('POST', r'/rest/api/3/issue/\d+/comment$', self._comment)
+        replay.on('GET', r'/rest/api/3/issue/\d+/transitions$', self._transitions)
+        replay.on('POST', r'/rest/api/3/issue/\d+/transitions$', self._transition)
+
+    @staticmethod
+    def _id(rec):
+        return re.search(r'/issue/(\d+)', rec['url']).group(1)
+
+    def status_of(self, i):
+        return ((self.issues.get(str(i)) or {}).get('fields') or {}).get('status') or {}
+
+    def _comment(self, rec):
+        i = self._id(rec)
+        if i not in self.issues:
+            return 404, {'errorMessages': ['Issue does not exist']}, {}
+        self.comments.append((i, adf_text((rec['json'] or {}).get('body'))))
+        return 201, {'id': str(len(self.comments))}, {}
+
+    def _transitions(self, rec):
+        i = self._id(rec)
+        if i not in self.issues:
+            return 404, {'errorMessages': ['Issue does not exist']}, {}
+        done = (self.status_of(i).get('statusCategory') or {}).get('key') == 'done'
+        if done:
+            offered = [] if self.refuse_reopen else [
+                {'id': '41', 'name': 'Reopen', 'to': {'name': 'To Do',
+                                                      'statusCategory': {'key': 'new'}}}]
+        else:
+            offered = [{'id': '21', 'name': 'In Progress',
+                        'to': {'name': 'In Progress', 'statusCategory': {'key': 'indeterminate'}}},
+                       {'id': '31', 'name': 'Done', 'to': {'name': 'Done',
+                                                          'statusCategory': {'key': 'done'}}}]
+        return 200, {'transitions': offered}, {}
+
+    def _transition(self, rec):
+        i = self._id(rec)
+        tid = str(((rec['json'] or {}).get('transition') or {}).get('id'))
+        self.transitions_posted.append((i, tid))
+        to = {'31': ('Done', 'done'), '41': ('To Do', 'new'),
+              '21': ('In Progress', 'indeterminate')}.get(tid)
+        if i not in self.issues or to is None:
+            return 400, {'errorMessages': ['transition not valid']}, {}
+        self.issues[i]['fields']['status'] = {'name': to[0], 'statusCategory': {'key': to[1]}}
+        return 204, None, {}
+
+    def _get_priority(self, rec):
+        i = self._id(rec)
+        if i not in self.issues:
+            return 404, {'errorMessages': ['Issue does not exist']}, {}
+        f = self.issues[i]['fields']
+        return 200, {'id': i, 'fields': {'priority': {'name': f.get('priority') or 'Medium'},
+                                         'labels': list(f.get('labels') or [])}}, {}
 
     def _get_description(self, rec):
         i = re.search(r'/issue/(\d+)\?', rec['url']).group(1)
@@ -912,6 +973,13 @@ class JiraTracker(object):
         f = (rec['json'] or {}).get('fields') or {}
         if i in self.issues and 'description' in f:
             self.issues[i]['description'] = f['description']
+        if i in self.issues and 'priority' in f:
+            self.issues[i]['fields']['priority'] = (f['priority'] or {}).get('name')
+        for op in (((rec['json'] or {}).get('update') or {}).get('labels') or []):
+            if i in self.issues and op.get('add'):
+                labels = self.issues[i]['fields'].setdefault('labels', [])
+                if op['add'] not in labels:
+                    labels.append(op['add'])
         return 204, None, {}
 
     def _search(self, rec):
@@ -941,6 +1009,80 @@ class JiraTracker(object):
                                                 'statusCategory': {'key': 'new'}}},
                           'description': f.get('description')}
         return 201, {'id': i, 'key': 'KIT-%s' % i}, {}
+
+
+class GitHubTracker(object):
+    """A STATEFUL stand-in for one GitHub repository's issues (KDEC-024, lane L-TKT): the list
+    endpoint filtered by label and paged at 100, create with labels in the same call, PATCH for
+    body and state, comments, and labels added to an issue. Documented shapes only."""
+
+    def __init__(self, replay, repo='o/r'):
+        self.issues = {7: {'number': 7, 'state': 'open', 'labels': [{'name': 'bug'}],
+                           'body': 'a foreign issue', 'title': 'calibration'}}
+        self.next_number = 100
+        self.comments = []
+        self.patches = []
+        base = r'^https://api\.github\.com/repos/' + re.escape(repo)
+        replay.on('GET', base + r'$', ok({'has_issues': True}))
+        replay.on('GET', base + r'/issues/(\d+)$', self._get)
+        replay.on('GET', base + r'/issues\?', self._list)
+        replay.on('POST', base + r'/issues$', self._create)
+        replay.on('PATCH', base + r'/issues/(\d+)$', self._patch)
+        replay.on('POST', base + r'/issues/(\d+)/comments$', self._comment)
+        replay.on('POST', base + r'/issues/(\d+)/labels$', self._labels)
+
+    @staticmethod
+    def _n(rec):
+        return int(re.search(r'/issues/(\d+)', rec['url']).group(1))
+
+    def _get(self, rec):
+        n = self._n(rec)
+        if n not in self.issues:
+            return 404, {'message': 'Not Found'}, {}
+        return 200, dict(self.issues[n], url='https://api.github.com/x/%d' % n), {}
+
+    def _list(self, rec):
+        label = re.search(r'labels=([^&]+)', rec['url']).group(1)
+        page = int(re.search(r'[?&]page=(\d+)', rec['url']).group(1))
+        hits = [i for _n, i in sorted(self.issues.items())
+                if label in [lb['name'] for lb in i['labels']]]
+        return 200, [dict(i, url='https://api.github.com/x/%d' % i['number'], node_id='N%d'
+                          % i['number']) for i in hits[(page - 1) * 100:page * 100]], {}
+
+    def _create(self, rec):
+        body = rec['json'] or {}
+        n = self.next_number
+        self.next_number += 1
+        self.issues[n] = {'number': n, 'state': 'open', 'title': body.get('title'),
+                          'body': body.get('body') or '',
+                          'labels': [{'name': x} for x in body.get('labels') or []]}
+        return 201, dict(self.issues[n]), {}
+
+    def _patch(self, rec):
+        n = self._n(rec)
+        self.patches.append((n, rec['json']))
+        if n not in self.issues:
+            return 404, {'message': 'Not Found'}, {}
+        for k in ('state', 'body', 'state_reason'):
+            if k in (rec['json'] or {}):
+                self.issues[n][k] = rec['json'][k]
+        return 200, dict(self.issues[n]), {}
+
+    def _comment(self, rec):
+        n = self._n(rec)
+        if n not in self.issues:
+            return 404, {'message': 'Not Found'}, {}
+        self.comments.append((n, (rec['json'] or {}).get('body') or ''))
+        return 201, {'id': len(self.comments)}, {}
+
+    def _labels(self, rec):
+        n = self._n(rec)
+        if n not in self.issues:
+            return 404, {'message': 'Not Found'}, {}
+        for x in (rec['json'] or {}).get('labels') or []:
+            if x not in [lb['name'] for lb in self.issues[n]['labels']]:
+                self.issues[n]['labels'].append({'name': x})
+        return 200, self.issues[n]['labels'], {}
 
 
 def _jira_backend(rt, r, **change):
@@ -1265,7 +1407,9 @@ def case_human_text_preserved(rt, fails):
 FORBIDDEN_FIELD = re.compile(r'due|disposition|approv|expir|\bsla\b|deadline|resolution',
                              re.I)
 WRITE_METHODS = ('create', 'create_instance', '_create', 'update_block', 'write_description',
-                 'splice_description', 'comment', 'reopen')
+                 'splice_description', 'comment', 'reopen',
+                 # KDEC-024: closure on clearance / supersede, and the escalation write.
+                 'close', 'mark')
 
 
 def _field_names(obj, out):

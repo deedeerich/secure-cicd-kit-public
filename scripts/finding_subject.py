@@ -113,6 +113,11 @@ BY_SCANNER = {
     # the pipeline looking at itself
     'actionlint': 'SOURCE',
     'zizmor': 'SOURCE',
+    # Scripts and Dockerfiles, linted since lane L-SCAN-A (KDEC-025): shell and PowerShell are
+    # source; a Dockerfile is a build template, the subject Checkov and Trivy config give it too.
+    'shellcheck': 'SOURCE',
+    'psscriptanalyzer': 'SOURCE',
+    'hadolint': 'IAC_PLAN',
 
     # dynamic analysis reaches a RUNNING thing
     'zap': 'RUNTIME_OBSERVATION',
@@ -137,6 +142,10 @@ BY_SCANNER = {
     'code-quality': 'SOURCE',         # ruff / mypy over source
     'java-sast': 'SOURCE',            # semgrep, java rules
     'semgrep-csharp': 'SOURCE',       # semgrep, c# rules
+    # sast-mobile (lane L-SCAN-B, KDEC-026): source, manifests, network security configs, plists
+    # and Gradle scripts in the repository -- the locus is the file and line, as for Semgrep.
+    'mobsfscan': 'SOURCE',            # mobsfscan, Android/iOS source and configuration
+    'mobile-config': 'SOURCE',        # semgrep, the kit's Android configuration rules
     'trivy-iac': 'IAC_PLAN',          # trivy config mode over templates
     'trivy-image': 'IMAGE',           # trivy image mode
     'trivy-image-secret': 'IMAGE',    # trivy image mode, secrets scanner: the locus is a layer

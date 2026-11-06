@@ -1,0 +1,245 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/tickets/finding.schema.json",
+  "title": "ticket template: finding (template_version 2)",
+  "description": "A finding the kit's own scan did not produce: a USR review, a cloud tool (any Azure cloud, Azure Government, AWS), a pentest, an audit, a review or another tool. Normalised by scripts/ticket_templates.py into the kit's finding model with its provenance, correlated with scripts/finding_correlation.py, deduplicated against EVERY ticket in the tracker (manual ones included) and written through the kit's reconciler. KDEC-037. The asset's per-scheme fields are checked in code (TEMPLATE_ASSET_IDENTITY_INVALID): this subset of JSON Schema has no conditional schemas.",
+  "x-template": "finding",
+  "x-template-version": 2,
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source_type",
+    "source_tool",
+    "environment",
+    "asset",
+    "identifier",
+    "severity",
+    "fix_status",
+    "evidence",
+    "title"
+  ],
+  "properties": {
+    "source_type": {
+      "description": "Where the finding came from (docs/ticketing/TAGGING-STRATEGY-PROPOSAL.md: the source-type tag).",
+      "type": "string",
+      "enum": [
+        "scan-app",
+        "project",
+        "subscription",
+        "account",
+        "resource",
+        "pentest",
+        "review",
+        "audit",
+        "usr",
+        "cloud-tool",
+        "other-tool"
+      ]
+    },
+    "source_tool": {
+      "description": "The tool or the review that reported it (a name, never a credential).",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,63}$"
+    },
+    "source_tool_version": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,39}$"
+    },
+    "environment": {
+      "description": "The environment, tenant or account label the finding was seen in (for example azure-commercial-prod, azure-government-prod, aws-prod).",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "asset": {
+      "description": "The asset identity scheme. repo-path: repository + path (+ line). azure-resource: cloud + tenant_id + subscription_id + resource_id (the resource id names the subscription). aws-resource: account_id + region + arn (the ARN names the account). github-repo: host + org + repo. engagement: engagement_id + kind + target.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scheme"
+      ],
+      "properties": {
+        "scheme": {
+          "type": "string",
+          "enum": [
+            "repo-path",
+            "azure-resource",
+            "aws-resource",
+            "github-repo",
+            "engagement"
+          ]
+        },
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cloud": {
+          "type": "string",
+          "enum": [
+            "azure-commercial",
+            "azure-government"
+          ]
+        },
+        "tenant_id": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "subscription_id": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "resource_id": {
+          "type": "string",
+          "pattern": "^/subscriptions/[^\\s]{1,800}$"
+        },
+        "account_id": {
+          "type": "string",
+          "pattern": "^[0-9]{12}$"
+        },
+        "region": {
+          "type": "string",
+          "pattern": "^[a-z]{2}(-gov)?-[a-z]+-[0-9]$|^global$"
+        },
+        "arn": {
+          "type": "string",
+          "pattern": "^arn:aws(-us-gov)?:[a-z0-9-]+:[a-z0-9-]*:[0-9]{0,12}:[^\\s]{1,1000}$"
+        },
+        "host": {
+          "type": "string",
+          "pattern": "^[a-z0-9.-]{3,200}$"
+        },
+        "org": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]{1,100}$"
+        },
+        "repo": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]{1,100}$"
+        },
+        "engagement_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,79}$"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "pentest",
+            "audit",
+            "review"
+          ]
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        }
+      }
+    },
+    "identifier": {
+      "description": "What was found, as an identifier: a CVE, a rule id, a control id, an engagement finding id. The correlation anchor.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{1,127}$"
+    },
+    "aliases": {
+      "description": "Other identifiers for the same thing (a GHSA beside a CVE).",
+      "type": "array",
+      "maxItems": 20,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{1,127}$"
+      }
+    },
+    "severity": {
+      "type": "string",
+      "enum": [
+        "critical",
+        "high",
+        "medium",
+        "low",
+        "info"
+      ]
+    },
+    "fix_status": {
+      "description": "The fix availability axis (assurance-taxonomy.yaml :: fix_availability).",
+      "type": "string",
+      "enum": [
+        "FIX_AVAILABLE",
+        "MITIGATION_AVAILABLE",
+        "NO_FIX_AVAILABLE",
+        "FIX_AVAILABILITY_NOT_ESTABLISHED"
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "sha256"
+      ],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 500
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "receipt": {
+          "description": "A custody receipt for the evidence (a store's object id or signature).",
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 300
+        }
+      }
+    },
+    "title": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 200
+    },
+    "cwe": {
+      "type": "string",
+      "pattern": "^CWE-[0-9]{1,5}$"
+    },
+    "kev": {
+      "description": "The submitter says the CVE is on the CISA KEV catalog (a floor class: never routed to no ticket).",
+      "type": "boolean"
+    },
+    "finding_subject": {
+      "description": "Optional override of the subject the scheme implies.",
+      "type": "string",
+      "enum": [
+        "SOURCE",
+        "SOURCE_DEPENDENCY",
+        "IAC_PLAN",
+        "RESOURCE",
+        "IMAGE",
+        "POLICY",
+        "IDENTITY_ASSIGNMENT",
+        "RUNTIME_OBSERVATION"
+      ]
+    },
+    "correlation_key": {
+      "description": "Optional: the key the caller computed. It must equal the kit's (TEMPLATE_FIELD_INVALID otherwise); the kit's is authoritative.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "requested_by": {
+      "description": "Who asked for this ticket (recorded; never an approver for it).",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9 @._+\\[\\]-]{1,100}$"
+    }
+  },
+  "x-enabled": true
+}

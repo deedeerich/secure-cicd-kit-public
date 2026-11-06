@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/params/findings.search.schema.json",
+  "title": "params of findings.search",
+  "description": "Read and search the normalised findings one security run established (its findings.json): the vulnerability and findings management view. Redacted at source; no code content is returned.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "run_id": {
+      "description": "A completed run of the repository's security caller on the default branch, by id, or \"latest\" for the newest such run that kept its evidence.",
+      "type": [
+        "integer",
+        "string"
+      ],
+      "minimum": 1,
+      "pattern": "^latest$"
+    },
+    "filters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8,128}$"
+        },
+        "finding_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16,128}$"
+        },
+        "cluster_key": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16,128}$"
+        },
+        "severity": {
+          "type": "array",
+          "maxItems": 9,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "moderate",
+              "low",
+              "info",
+              "informational",
+              "note",
+              "none"
+            ]
+          }
+        },
+        "scanner": {
+          "type": "string",
+          "pattern": "^[a-z0-9_.-]{1,64}$"
+        },
+        "job": {
+          "type": "string",
+          "pattern": "^[a-z0-9_.-]{1,64}$"
+        },
+        "rule": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "cve": {
+          "type": "string",
+          "pattern": "^CVE-[0-9]{4}-[0-9]{4,}$"
+        },
+        "kev": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "established_only": {
+          "type": "boolean"
+        }
+      }
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200
+    },
+    "offset": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100000
+    }
+  },
+  "required": [
+    "run_id"
+  ]
+}

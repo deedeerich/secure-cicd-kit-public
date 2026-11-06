@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/params/tickets.comment.schema.json",
+  "title": "params of tickets.comment",
+  "description": "Add one comment to a ticket the kit's reconciler owns (it carries the kit's cluster stamp). The comment is prefixed with who asked and through what; it changes no state, closes nothing and decides nothing.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "ref": {
+      "description": "A tracker reference: a Jira numeric id or key (KEY-123), an Azure DevOps or GitHub number.",
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}-[0-9]{1,12}$|^[0-9]{1,12}$"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    }
+  },
+  "required": [
+    "ref",
+    "text"
+  ]
+}

@@ -1,0 +1,105 @@
+name: kit-api
+description: >-
+  KDEC-035: one phase of a call to the kit's API (intake, tickets, findings, finish), run by
+  scripts/kit_api_server.py from the kit at the commit the caller pinned ($/ delivers the whole
+  repository). Everything the phase reads arrives as the CALLING step's env: -- data, never script
+  text -- and is listed per phase in scripts/kit_api_server.py ENV_BY_PHASE
+  (tests/prove_kit_api_workflow.py W7 holds the wiring to it). The findings and tickets phases read
+  the CISA KEV catalog through the organisation mirror when one is configured (KDEC-032), by the
+  same rule as the security gate's known-exploited step: a refused mirror is UNAVAILABLE, named,
+  never quietly replaced by the public feed. docs/api/README.md.
+inputs:
+  phase:
+    description: intake | tickets | findings | finish.
+    required: true
+  out-dir:
+    description: Where the phase writes intake.json, op-result.json and result.json (the artifact steps read them).
+    required: true
+  kev-mirror-url:
+    description: The organisation feed mirror's base URL (vars.KIT_FEED_MIRROR_URL). Empty reads the public KEV feed.
+    required: false
+    default: ''
+  kev-mirror-max-age-hours:
+    description: The mirror's age ceiling in hours (vars.KIT_FEED_MIRROR_MAX_AGE_HOURS); a caller may only tighten the 48 h policy.
+    required: false
+    default: ''
+  kev-mirror-fallback:
+    description: "`upstream` reads the public feed when the mirror is refused (recorded); anything else does not (vars.KIT_FEED_MIRROR_FALLBACK)."
+    required: false
+    default: ''
+outputs:
+  accepted: {description: "true when intake accepted the call", value: "${{ steps.p.outputs.accepted }}"}
+  operation: {description: The call's operation, value: "${{ steps.p.outputs.operation }}"}
+  refusal: {description: "The refusal by name (kit_api_refusal), empty when none", value: "${{ steps.p.outputs.refusal }}"}
+  write: {description: "true for a write (an idempotency marker is kept)", value: "${{ steps.p.outputs.write }}"}
+  idem_hash: {description: The idempotency key's hash (the marker's name), value: "${{ steps.p.outputs.idem_hash }}"}
+  check_run_id: {description: The call's check run, value: "${{ steps.p.outputs.check_run_id }}"}
+  correlation_id: {description: The validated correlation id (empty when malformed), value: "${{ steps.p.outputs.correlation_id }}"}
+  intake: {description: The intake record (one-line JSON) the later phases read, value: "${{ steps.p.outputs.intake }}"}
+  deploy_mode: {description: "deploy.request: promote | build-deploy, validated", value: "${{ steps.p.outputs.deploy_mode }}"}
+  deploy_environment: {description: "deploy.request: the environment, validated", value: "${{ steps.p.outputs.deploy_environment }}"}
+  promote_from_run_id: {description: "deploy.request: the predecessor run", value: "${{ steps.p.outputs.promote_from_run_id }}"}
+  promote_from_environment: {description: "deploy.request: the predecessor environment", value: "${{ steps.p.outputs.promote_from_environment }}"}
+  release_path: {description: "deploy.request: normal | hotfix", value: "${{ steps.p.outputs.release_path }}"}
+  api_state: {description: "finish: the call's kit_api_state", value: "${{ steps.p.outputs.api_state }}"}
+runs:
+  using: composite
+  steps:
+    - name: Read the KEV catalog's organisation mirror, if one is configured
+      id: mirror
+      if: inputs.phase == 'findings' || inputs.phase == 'tickets'
+      shell: bash
+      env:
+        M_FEED: kev
+        M_URL: ${{ inputs.kev-mirror-url }}
+        M_MAX_AGE: ${{ inputs.kev-mirror-max-age-hours }}
+        M_FALLBACK: ${{ inputs.kev-mirror-fallback }}
+      run: |
+        set -uo pipefail
+        bash "$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)/scripts/feed_mirror_step.sh"
+    - name: Run the phase
+      id: p
+      shell: bash
+      env:
+        # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
+        KAPI_PHASE: ${{ inputs.phase }}
+        KAPI_OUT: ${{ inputs.out-dir }}
+        K_MIRROR_URL: ${{ inputs.kev-mirror-url }}
+        K_MIRROR_STATE: ${{ steps.mirror.outputs.mirror_state }}
+        K_MIRROR_USABLE: ${{ steps.mirror.outputs.mirror_usable }}
+        K_MIRROR_FILE: ${{ steps.mirror.outputs.mirror_file }}
+        K_MIRROR_SHA256: ${{ steps.mirror.outputs.mirror_sha256 }}
+        K_MIRROR_WHY: ${{ steps.mirror.outputs.mirror_why }}
+      run: |
+        set -uo pipefail
+        kit_root="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)"
+        script="${kit_root}/scripts/kit_api_server.py"
+        if [ ! -s "$script" ]; then
+          echo "::error title=kit-api::scripts/kit_api_server.py is not in the kit delivered by \$/; the call is not answered."
+          exit 1
+        fi
+        # The kit's central policy register travels with the kit; a repository's own register is
+        # passed by the calling step.
+        if [ -z "${KIT_API_CENTRAL_REGISTRATION:-}" ] && [ -f "${kit_root}/policy/policy-registration.json" ]; then
+          export KIT_API_CENTRAL_REGISTRATION="${kit_root}/policy/policy-registration.json"
+        fi
+        # WHERE THE KEV CATALOG COMES FROM (the known-exploited composite's rule): a current mirror's
+        # checked file; nothing (UNAVAILABLE, named) when a configured mirror was refused; else the feed.
+        case "$KAPI_PHASE" in
+          findings|tickets)
+            if [ -z "${K_MIRROR_STATE:-}" ]; then
+              if [ -n "${K_MIRROR_URL:-}" ]; then
+                K_MIRROR_STATE=MIRROR_UNREACHABLE; K_MIRROR_USABLE=false; K_MIRROR_WHY="the mirror step reported no state"
+              else
+                K_MIRROR_STATE=NOT_CONFIGURED; K_MIRROR_USABLE=true
+              fi
+            fi
+            if [ "$K_MIRROR_STATE" = MIRROR_CURRENT ]; then
+              export KIT_API_KEV_FEED_FILE="${K_MIRROR_FILE:-}" KIT_API_KEV_SHA256="${K_MIRROR_SHA256:-}"
+            elif [ "${K_MIRROR_USABLE:-false}" = false ]; then
+              export KIT_API_KEV_UNAVAILABLE="${K_MIRROR_STATE}: ${K_MIRROR_WHY:-}"
+            fi
+            ;;
+        esac
+        mkdir -p "$KAPI_OUT"
+        python3 "$script" "$KAPI_PHASE" --out-dir "$KAPI_OUT"

@@ -2,8 +2,12 @@
 # Copy to .github/workflows/nvd-cve.yml in the consuming repo, replace YOUR_ORG, and pin the kit by
 # its 40-hex commit SHA (a branch or moving tag means the result came from code nobody chose).
 #
-# NVD_API_KEY (strongly recommended; without it the DB update is rate-limited, 20-40 minutes):
-#   Free, self-service: https://nvd.nist.gov/developers/request-an-api-key
+# NVD data: by default the NVD database is built from the Dependency-Check project's public
+#   datafeed (https://dependency-check.github.io/DependencyCheck_Builder/nvd_cache/). Unless the
+#   organisation's Release 4 mirror is configured (vars.KIT_FEED_MIRROR_URL, docs/adoption/FEED_MIRRORS.md),
+#   the runner needs egress to that third-party host.
+# NVD_API_KEY is used only if you set nvd_datafeed_url to "" (the NVD API directly; without a key
+#   that update is rate-limited, 20-40 minutes). Free: https://nvd.nist.gov/developers/request-an-api-key
 #   A repository or organisation secret is passed as below. If the key is an ENVIRONMENT secret,
 #   also pass `github_environment: <env>` -- a caller job cannot declare an environment, and
 #   `secrets: inherit` does not carry environment secrets on its own.
@@ -15,6 +19,11 @@
 name: NVD CVE Scan
 
 on:
+  # STAYS ON pull_request (cost redesign step 2, KDEC-033). Its PR pass is Trivy-only and looks like a
+  # repeat of the security suite's dependency job. The two configurations differ: that job adds the
+  # licence scanner and reads the caller's `paths`, while this pass reads `.` under its own fail threshold
+  # and routing_result. The owner ruled this comes off pull_request only once the configurations match;
+  # tests/prove_security_caller_triggers.py compares them and fails if it is dropped before they do.
   pull_request:
   schedule:
     - cron: "0 5 * * *"   # daily, after NVD publishes

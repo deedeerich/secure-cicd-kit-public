@@ -21,8 +21,19 @@ import prove_bootstrap_failure as pbf  # noqa: E402
 ATTEMPT = '3'   # not 1, so a hard-coded "-1" cannot pass by coincidence
 
 
+def _expand(doc):
+    """The workflow with every `$/` composite step expanded into its job, as the runner sees it.
+
+    Scanner job bodies live in `.github/actions/<scanner>/` (ledger L64); this reads the steps a
+    job actually runs. One rule, tests/_composite_expand.py, for every reader.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.expanded_doc(doc)
+
+
 def report_upload_name(doc):
-    for s in doc['jobs']['report'].get('steps') or []:
+    for s in doc['jobs']['security-gate'].get('steps') or []:
         if 'upload-artifact' in str(s.get('uses') or ''):
             name = str((s.get('with') or {}).get('name') or '')
             body, _ = pbf.substitute(name, {'github.run_attempt': ATTEMPT})
@@ -40,7 +51,7 @@ def main():
     if not bash:
         print('UNKNOWN: no usable bash (%s).' % why)
         return 2
-    doc = yaml.safe_load(io.open(pbf.WF, encoding='utf-8'))
+    doc = _expand(yaml.safe_load(io.open(pbf.WF, encoding='utf-8')))
     uploaded = report_upload_name(doc)
     if not uploaded:
         print('UNKNOWN: the report job uploads no artifact.')

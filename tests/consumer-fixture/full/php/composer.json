@@ -1,0 +1,13 @@
+{
+    "name": "fixture/php",
+    "description": "synthetic, intentionally vulnerable",
+    "require": {
+        "php": ">=7.4",
+        "phpmailer/phpmailer": "5.2.18"
+    },
+    "config": {
+        "platform": {
+            "php": "8.2.0"
+        }
+    }
+}

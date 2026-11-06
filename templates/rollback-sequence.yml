@@ -1,0 +1,72 @@
+# Consumer template -- roll back several deployments in reverse order, with an end-to-end TEST PERIOD
+# after every step (KDEC-019 item 4; KDEC-021). Copy to .github/workflows/rollback-sequence.yml in the
+# consuming repository, replace YOUR_ORG, and pin the kit by its 40-hex commit SHA; kit_ref is the
+# SAME commit.
+#
+# Run it by hand. `sequence` names the deploy runs to roll back, OLDEST FIRST (their run ids are on
+# the Actions page; each uploaded a deploy-evidence-<run>-<attempt> artifact), and `target_version`
+# names the version to return to -- the image (registry/repo@sha256:...) or digest production ran
+# BEFORE the oldest of them (required for App Service). They are rolled back NEWEST FIRST; after
+# each one the health probe and YOUR end-to-end tests run at the start and at the end of a test
+# period (e2e_test_period_minutes, default 15), and a failure at any check halts the sequence for a
+# human decision. With no end-to-end command, or a period of 0, nothing is rolled back
+# (ROLLBACK_SEQUENCE_REFUSED_NO_E2E, ROLLBACK_SEQUENCE_REFUSED_NO_TEST_PERIOD).
+#
+# Deploys of the target are FROZEN while this runs: the reusable takes the same concurrency group as
+# the deploy reusables (environment + resource group + app name), so a deploy queues behind it. A
+# kit deployment that lands anyway is rolled back first. The environment is the one the deploys ran
+# in (the deploy identity; required reviewers approve the run).
+#
+# Example sequence:
+#   {"sequence_id": "release-42",
+#    "target_version": "myregistry.azurecr.io/shop/web@sha256:<the digest before release 41>",
+#    "steps": [
+#     {"run_id": "1234567890", "run_attempt": "1", "adapter": "appservice"},
+#     {"run_id": "1234567999", "run_attempt": "1", "adapter": "appservice"}]}
+
+name: Sequential rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      sequence:
+        description: "JSON: the deploy runs to roll back, oldest first, and target_version (see the comment at the top)"
+        required: true
+        type: string
+      environment:
+        description: "The GitHub environment the deploys ran in"
+        required: true
+        type: string
+      resource_group:
+        description: "The resource group of the app being rolled back"
+        required: true
+        type: string
+      app_name:
+        description: "The Container App or web app being rolled back (the name the deploys used)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  actions: read
+
+jobs:
+  rollback:
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-rollback-sequence.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    with:
+      github_environment: ${{ inputs.environment }}
+      kit_repository: YOUR_ORG/secure-cicd-kit
+      kit_ref: "0000000000000000000000000000000000000000"   # the same commit as the pin above
+      target_resource_group: ${{ inputs.resource_group }}
+      target_name: ${{ inputs.app_name }}
+      sequence: ${{ inputs.sequence }}
+      # Your application's end-to-end tests, run at the start and end of the test period after EACH
+      # step in this repository's checkout. $ROLLBACK_APP_URL is the restored app's URL;
+      # $ROLLBACK_STEP the step being tested; $ROLLBACK_CHECK_PHASE start, interval or end.
+      e2e_test_command: "./tests/e2e.sh"
+      e2e_timeout_minutes: 30
+      # How long each restored state is watched before the next step (0 is refused; at most 240).
+      e2e_test_period_minutes: 15
+      # Extra checks inside the period every N minutes; 0 checks at its start and end only.
+      e2e_check_interval_minutes: 0

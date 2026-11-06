@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/params/deploy.request.schema.json",
+  "title": "params of deploy.request",
+  "description": "Ask the repository's own build-and-deploy pipeline for a release. Every gate still applies: the verdict, the approval bound to the digest, readiness, the lease, the release block. The API deploys nothing itself, and a request through it needs a human approval on the target environment.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "mode": {
+      "description": "promote: move a digest a predecessor verified (KDEC-029; uat and prod only this way). build-deploy: build the default branch and deploy it (dev and test only).",
+      "type": "string",
+      "enum": [
+        "promote",
+        "build-deploy"
+      ]
+    },
+    "environment": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,64}$"
+    },
+    "promote_from_run_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "promote_from_environment": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,64}$"
+    },
+    "release_path": {
+      "description": "normal or hotfix through the API. rollback and break-glass are accepted by the schema only so that the refusal is named (API_RELEASE_PATH_NOT_PERMITTED).",
+      "type": "string",
+      "enum": [
+        "normal",
+        "hotfix",
+        "rollback",
+        "break-glass"
+      ]
+    }
+  },
+  "required": [
+    "mode",
+    "environment"
+  ]
+}

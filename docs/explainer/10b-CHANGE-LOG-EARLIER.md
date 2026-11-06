@@ -1,9 +1,37 @@
-# 10b · Change log, earlier versions (1.8 back to 1)
+# 10b · Change log, earlier versions (1.10 back to 1)
 
-The continuation of `10-CHANGE-LOG.md`, which holds version 1.9 onward and says what changed most
+The continuation of `10-CHANGE-LOG.md`, which holds version 1.11 onward and says what changed most
 recently. This part is history: each entry was true at its version and commit, and later versions
 may have changed what it says. Newest first. Commit ids are on the build trunk
 `fix/normalization-and-discovery`.
+
+## Version 1.10 — 2026-10-16 (trunk `af8672c`)
+
+| commit / run | change | parts affected |
+|---|---|---|
+| `4360aeb` | **live ticketing proven on a real Jira**: every broken setting refused by name with zero writes; a repeat run creates nothing; a closed ticket with no reopen setting gets a successor that references it; with the reopen transition named, the closed ticket is reopened; two tickets carrying the same stamp are reported AMBIGUOUS and neither is written. Azure DevOps live is not yet run | 06, 09 |
+| runs 38912063363, 38912546778 | **App Service staging-slot swap proven live**: a healthy release is deployed to the slot, checked there and swapped in; an unhealthy one is caught on the slot, never swapped, production untouched, the slot restored and verified | 07, 09 |
+
+Deferrals: 3, none blocking — attestation signing (needs a public repository; being wired) and two
+capabilities not yet in use.
+
+## Version 1.9 — 2026-10-16 (trunk `c140fe6`)
+
+Live on the owner's personal Azure test subscription (KDEC-012), from the trunk branch the `test`
+environment admits, through `live-deploy-acceptance.yml` calling the deploy workflows as a consumer does.
+
+| commit / run | change | parts affected |
+|---|---|---|
+| runs 38832628162, 38832634828, 38850408850 | **authorization boundary proven on the real tenant**: the kit's own and shared groups reachable; a sibling product's group, an empty opposite-tier group and the subscription REFUSED with their AuthorizationFailed bodies printed; a reachable scope placed in a refused position fails the run | 07 |
+| runs 38857011286–38857024014 | **build once, push to a cloud registry**: the kit's own build pushed three images over OIDC and read each digest back (REGISTRY_IDENTITY_PROVEN); those exact digests were deployed | 05, 07 |
+| runs 38857259257, 38858033863, 38855929525 | **Container Apps deploy proven live**: a kit-built digest pulled with the app's own identity and served healthy; an unhealthy one never received traffic and was rolled back and verified; a later release created mid-run made the reversal defer rather than reverse out of order | 07 |
+| runs 38878189985, 38886279650 | **App Service deploy proven live** (direct path): an unhealthy image rolled back and verified; a second person's change during the health check was detected and NOT overwritten — the run reports ROLLBACK_PARTIAL naming what it refused. The staging-slot swap path is not yet live (needs a Standard tier slot the owner creates) | 07, 09 |
+| `ece9d00`, `fe606ae`, `6ee04c3`, `6e40dad`, `95bd5cc` | **five deploy defects found only by running live, each fixed test-first**: a Container App moved all traffic to an unverified revision; the reversal missed inactive revisions; App Service read a 200 from the PREVIOUS container as the new one's health; an idle free-tier site never started until requested; a refused reversal was summarised as verified | 07 |
+| `72102ad` | eleven places where a caller's input reached a shell script directly now pass through `env:`, and the lint blocks that pattern in every shared workflow | 05 |
+| `e509d6c` | self-test had been intermittently red; a proof crashed when a test registry dropped its connection on Linux. Fixed test-first; self-test green since | 08 |
+
+Deferrals: 4, none blocking. Owed: live ticketing's person-only steps (expires 2026-10-23),
+attestation signing (public repository or Enterprise Cloud), two capabilities not yet in use.
 
 ## Version 1.8 — 2026-10-15 (trunk `47fe6bb`)
 

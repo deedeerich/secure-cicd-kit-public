@@ -1,0 +1,27 @@
+{
+    "_readme": [
+        "Synthetic lock file for a scanner fixture. Intentionally vulnerable."
+    ],
+    "content-hash": "00000000000000000000000000000000",
+    "packages": [
+        {
+            "name": "phpmailer/phpmailer",
+            "version": "v5.2.18",
+            "type": "library",
+            "license": [
+                "LGPL-2.1"
+            ]
+        }
+    ],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": [],
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {
+        "php": ">=7.4"
+    },
+    "platform-dev": [],
+    "plugin-api-version": "2.6.0"
+}

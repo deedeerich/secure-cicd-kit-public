@@ -1,71 +1,148 @@
 # 10 · Change log
 
 Newest first. On every later delivery, read this file first: it says which parts changed and why.
-Commit ids are on the build trunk `fix/normalization-and-discovery`. Versions 1.8 and earlier are in
-`10b-CHANGE-LOG-EARLIER.md`. A reader whose last copy was v1.10 (`a907dc8`) reads
+Commit ids are on the build trunk `fix/normalization-and-discovery`. Versions 1.11 to the 2026-10-23
+entries are in `10a-CHANGE-LOG-OCTOBER.md`; 1.10 and earlier in `10b-CHANGE-LOG-EARLIER.md`. A reader whose last copy was v1.10 (`a907dc8`) reads
 `12-CHANGES-SINCE-A907DC8.md` first: it groups every change since by what an integrator must do.
 
-## Version 1.12 — 2026-10-21 (trunk `078ef90`, lane `lane/L-G2`)
+## Unreleased — the security review sheets made cloud-agnostic (2026-11-04)
 
-`main` is still `ef4b15d`. The trunk's changes below are proven locally; the trunk owes the consumer-path run.
+Owner, 2026-11-04: the cloud checklists must work in Azure or AWS, cloud-agnostic, as the security review
+was meant to be. Documents only: no gate, output or state word changed.
 
-| commit / run | change | parts affected |
-|---|---|---|
-| `078ef90` | **KDEC-014, the verdict step always answers**: both deploy reusables write exactly one `version_gap_ruling` on every path their verdict step reaches, the new `VERSION_GAP_NOT_ENGAGED` where no gap rule applied; an EMPTY ruling (the step never answered) routes the deploy's posture `EVIDENCE_UNTRUSTED` (a BLOCKED stands) and the summary reads "not reported", not "not engaged". Stub-proven (`prove_version_gap_production.py`) | 03, 05, 07, 09, 11 |
-| `71a3d63` | **the assurance tracer reads `env:` and `needs.*`** (31 → 120 hand-offs traced) and the ten real defects it found are fixed: in both deploy reusables a rollback-capability step that wrote no verdict read as reversal available, now UNAVAILABLE (→ `EVIDENCE_UNTRUSTED`); the OIDC verifier counted a baseline step that never answered as a baseline taken, now UNAVAILABLE; the NVD summary's unavailable list is read only when it wrote its state; ticket-reconcile's absent exit code has its own case arm | 05, 07, 08, 11 |
-| `fa19c02` | **hollow scan per tool (KDEC-008 OD-2)**: the report now agrees with the runner that a clean Bandit run is not hollow (its rows had read NOT ESTABLISHED), and reads error notifications from both SARIF arrays; `prove_hollow_scan.py` wired into self-test (completion ledger L01) | 02, 04, 08, 09 |
-| `1542c05` | **scan validity**: every `semgrep scan` runs `--strict`, exit 3 (a file it could not parse) is COLLECTION_FAILED; a CodeQL autobuild that did not succeed reads PARTIAL (summary and annotation; the gate does not read it) | 02, 04, 08, 09 |
-| `11db350` | **discovery depth**: beyond the 8-level search bound a language is UNDETERMINED and its scanner runs, never NOT_APPLICABLE, with a `BeyondSearchDepth` coverage gap; the Node/.NET/Go root enumerations search 8 levels, not 6 | 02, 08, 09 |
-| `655a2e5`, run 39618320185 | **weekly tool probe** probes the shipped Semgrep 1.178.0 and gosec 2.24.6 container; its negative control installs Trivy and can fail. Hosted run on `078ef90` green | 04, 08 |
-| `3500e23`, `bc98cc5`, `b352729`, `fdd0a0c`, `c82b34f`, `c7309f1` | **export and neutrality**: `.context/` never exported; no deny list (or an empty one) refuses the export; the profile is bound to the destination's watermark; the kit's own consumer-path harness is no longer exported; every deny pattern carries samples it must match (`prove_deny_samples.py`); three more name forms denied; `check_export_safety` reads the deny list by the gate's own rules and refuses if they disagree; the watermark keeps the commit and drops the branch | 08 |
-| `5fde1e4` | the consumer census writes outside the kit (system temp or `CONSUMER_COVERAGE_OUT`) and refuses a destination inside it | 08 |
-| `bb7ef0d` | two self-descriptions corrected (taxonomy `version_applicability`; the tracer's undelivered ORPHAN check) | — |
-| v1.11 correction | **v1.11 missed three merges that landed before it**: lane L-F (`a0e8b16`: F-01 fixed — a ledger is established by an approved ESTABLISH pull request under CODEOWNERS; one move record; scanner-generation hold; environment presence; ticket ledger in the same PR), lane L-T (`85bd33d`: T-02 fixed — updates never erase human text; delta-only updates; reopen classes; sweep without credentials; degraded streak) and `9b18e49` (KDEC-013's reference gate now on the trunk). Parts 06, 09 and 11 said F-01 and T-02 were open | 06, 09, 11 |
-| docs | part 02 said 24 report rows (25); `RELEASE_1_EVIDENCE_MANIFEST.md` split into three standalone parts under 20 KB (the original name keeps part 1; `_PART2.md` holds identity, build, deploy and ticketing; `_PART3.md` the consumer interface and the trunk's additions) and brought to `078ef90`; this log split (`10b`); new part 12; part 00 separates VERIFIED (run) from READ | 00, 09, 10, 11, 12 |
+| change | parts affected |
+|---|---|
+| New `docs/security-review/CLOUD-CHECKS.md`: C0..C20, each check stated once by intent (safe / ask / stop), an implementation table (Azure, AWS, GitHub, other cloud: how to find the equivalent) and every command unchanged; every old id Z1..Z14, W1..W12, H1..H8 kept as an alias; the three platform sheets are now pointers | 11 |
+| `CAB-CHANGE-SAFETY-STEPS.md` step 4 and the checklist's block D by intent with per-platform tables; the Azure Government line replaced by a generic sovereign or government cloud note; modules, APP-REVIEW-CHECKLIST, QUESTIONS-FOR-APP-TEAMS, STOP-AND-ASK (new S18: a cloud the sheets do not name) and ESCALATE-BROADER worded for any cloud; the kit's Azure-only deploy stated as such (`MOD-OUTSIDE-KIT`) | 11 |
 
-Deferrals: 3, none blocking — unchanged. Hosted on `078ef90`: Validate scanners 39618320185 green;
-self-test 39618329392 failed in the export-scope proof (a downloaded scanner archive in the
-runner's working tree tripped the deny list during the proof's own export). The exporter excluded
-only gitignored files, so the download would also have shipped. **`904bc7a`**: whatever git does not
-track is neither scanned nor exported (proof E8, failed first); self-test 39622321744 green on it.
+## Unreleased — ticket intake version 2: the owner's rulings (KDEC-037 amended, 2026-11-04)
 
-## Version 1.11 — 2026-10-16 (trunk `3830edb`, lane `lane/L-G`)
+Proven locally (`prove_ticket_intake_v2.py` V1..V11, failed first; 20 mutants killed) and live on the
+owner's personal Jira and GitHub Issues (Azure DevOps owed: the local token is rejected). `template_version`
+1 is refused as superseded.
 
-`main` is at Release 1: `ef4b15d` (PR #3, neutral, no overlays, Jira ticketing in core).
+| change | parts affected |
+|---|---|
+| **Separation of duties**: no author role concurs or verifies; AGREE or DISAGREE with an alternative (`kit-review-record/2`); `SOD_SELF_APPROVAL` | 06, 11 |
+| **Approvers**: the whole security team, `list:<name>` in the same `approver_lists` as KDEC-036's AppSec list, or `team:<org>/<slug>` (optional secret `KIT_API_TEAM_READ_TOKEN`) | 11 |
+| **Closure**: resolve (pending verification, approvers notified, reminded at 7 days, escalated at 14), verify (not the fixer, or the rescan on the mapped branch; else "fix observed"), reject; `KIT_API_BRANCH_ENVIRONMENTS` | 06, 11 |
+| **Dedupe**: closed duplicate under the original, regression, possible duplicate in triage, dedupe pending, durable outbox (`kit-ticket-outbox-<id>` artifact) | 06, 11 |
+| **Trust score** beside the confidence, on the ticket and in the API | 06, 11 |
+| **Taxonomy**: `exception` (≤ 90 days, scoped), `exemption`, `accepted-risk`, `compliance-exception`; the reconciler's exception mapping fixed; extensions and the no-fix clock per the owner | 06, 11 |
+| **Intake**: Azure DevOps and GitHub Issues adapters; 14 proposed ticket types, disabled (`docs/ticketing/TICKET-TYPES.md`) | 11 |
 
-| commit / run | change | parts affected |
-|---|---|---|
-| `1c20a0b` | **KDEC-014**: the gate emits `advisory_causes`; at uat/prod both deploy reusables refuse a `PROCEED_WITH_ADVISORY` caused by a proven `VERSION_GAP` unless the weakening record names an accepter, a reason and an unexpired date; an UNVERIFIED-range gap proceeds, recorded; an advisory with no cause is refused. Stub-proven (`prove_version_gap_production.py`); no live run. KDEC-015 recorded: internal tools are released by the kit too | 03, 05, 07, 11 |
-| lane L-G | **documents made true to the code**: advisory mode never covered secrets (START-HERE said it did); the deploy workflows are proven live (START-HERE, USAGE, SETUP, the rollback contract and parts 07/11 said never executed or stub-only); examples no longer set the dead `enable_iac` or narrow `language`; caller permissions stated per reusable; the deploy reusables do not check `artifact_identity` (the template does); report rows 25, routing scenarios 21; the run record and deploy outcome are not workflow outputs. New: `docs/assurance/RELEASE_1_EVIDENCE_MANIFEST.md`. `check_doc_currency.py` now reads the consumer documents and refuses those three classes | 02–09, 11 |
+## Unreleased — what a reviewer could not see, recorded; typed verdicts refused (KDEC-036 PROPOSED, 2026-11-03)
 
-Deferrals: 3, none blocking — attestation-verify, change-detection, toolchain-terraform (all 2026-12-31).
+The security-review lane's gaps (`docs/security-review/`): signals a reviewer needs that the kit did not
+compute or kept only in a job summary. Proven locally, each proof failed first
+(`prove_reviewer_signals.py` R1..R8, 72 failures on `4a181ff`); no hosted run yet. No new job and no new
+required check name.
 
-## Version 1.10 — 2026-10-16 (trunk `af8672c`)
+| change | parts affected |
+|---|---|
+| **Weakening records approved or not (G2, G3; owner rulings 2026-11-03).** Approved (`WEAKENING_ATTRIBUTED`) only with an evidence reference, a reason, a named owner, an expiry within the ceiling (default 90 days) and an approver (new input `weakening_approver`) on a register approver list who is not the requester; a missing field is `WEAKENING_NOT_APPROVED`, named (proceeds at crawl, the control still counted weakened; refused at uat/prod); the requester, actor or release author as owner or approver is `WEAKENING_SELF_APPROVED`, BLOCKED everywhere. No exception without an expiry (KNOWN_DEFECTS D-14) | 03, 05, 07 |
+| **The verdict's provenance (G8).** A deploy reads the `kit-security-record` of the run its verdict came from (this run, the promotion source, or the new input `security_run_id`): `VERDICT_FROM_GATE`; `TYPED_VERDICT` (refused at uat/prod); `VERDICT_CONTRADICTED` (more permissive, a dropped cause, another commit: refused at every tier); `VERDICT_RECORD_UNREADABLE` | 03, 07, 11 |
+| **Signals as outputs and a machine-readable record (G5).** Security outputs `capability_floor`, `token_preflight`, `leak_gate_alarm`, `policy_notices`, `no_kit_adapter`, `kit_watermark`, `security_record`, and the artifact `kit-security-record-<attempt>`; each deploy outputs `release_approval_by`, `verdict_provenance`, `tier_source`, `readiness_source`, `tier_reality`, `release_record`, `lease_state`, `seam_state`, `review_signals` and keeps `review-pre.json` / `review-signals.json` in its evidence | 03, 07, 11 |
+| **Durable release record without the lease (G6).** A GitHub deployment (`task: kit-release-record`, the record as payload) and its status; **every deploy caller must now grant `deployments: write`**. Evidence retention is `KIT_EVIDENCE_RETENTION_DAYS`, never below the 90-day audit floor | 07, 11 |
+| **The kit copy's watermark read at run time (G9)**: `source_commit`, profile, dirty, conflicts, beside the called kit ref, in every gate and deploy summary and record | 02, 11 |
+| **Tier source (G4) and readiness (G1, owner ruling 2026-11-03).** `TIER_VENDED` / `TIER_SELF_DECLARED` (the landing zone's new hand-off marker `KIT_HANDOFF_ISSUER`); `TIER_MISMATCH_SUSPECTED` (warn only). Readiness comes from the landing zone, or from AppSec's attestation `.kit/zone-readiness.json` approved through a pull request by the AppSec list (`READINESS_SOURCE_APPSEC_ATTESTATION`); self-set is refused at uat/prod unless labelled a test fixture. **Deploy callers now also grant `pull-requests: read`** | 07, 11 |
+| **Manual review verdicts (G8, owner ruling).** A typed `routing_result` with `manual_review_by` (AppSec list, not the requester or author), `manual_review_ref` and `manual_review_date` is `MANUAL_REVIEW_VERDICT`, recorded distinctly; any other typed verdict is `TYPED_VERDICT` | 07, 11 |
+| **Deploy coverage and Functions (G10).** Discovery names `NO_KIT_ADAPTER:aks`, `:vm`, `:function_app_code`; a vended `KIT_HOSTING_KIND` the adapter does not serve is refused. The App Service reusable releases a containerised Functions app with `site_kind: functionapp` (`az functionapp`); a code-packaged one is refused before any change. AKS, VM and Functions-zip adapters are sized in `KNOWN_DEFECTS.md` D-13 | 07, 09, 11 |
+| `docs/security-review/`: every sheet names the new signal where a gap closed; new `OBTAIN-SEPARATELY.md` (G7 admin-only settings, G11 automation runtime: what to obtain, from which role) | 11 |
+| Change log split: v1.11 to the 2026-10-23 entries moved to `10a-CHANGE-LOG-OCTOBER.md` (this file was over 20 KB) | 00, 10 |
 
-| commit / run | change | parts affected |
-|---|---|---|
-| `4360aeb` | **live ticketing proven on a real Jira**: every broken setting refused by name with zero writes; a repeat run creates nothing; a closed ticket with no reopen setting gets a successor that references it; with the reopen transition named, the closed ticket is reopened; two tickets carrying the same stamp are reported AMBIGUOUS and neither is written. Azure DevOps live is not yet run | 06, 09 |
-| runs 38912063363, 38912546778 | **App Service staging-slot swap proven live**: a healthy release is deployed to the slot, checked there and swapped in; an unhealthy one is caught on the slot, never swapped, production untouched, the slot restored and verified | 07, 09 |
+## Unreleased — the security review of a CAB change to cloud or apps: steps and checklist (2026-11-03)
 
-Deferrals: 3, none blocking — attestation signing (needs a public repository; being wired) and two
-capabilities not yet in use.
+Owner, 2026-11-03: CAB already exists, is well run and has its own tickets and process; what is needed
+is the security review a reviewer performs on a change going to CAB (cloud and apps), with a checklist,
+"to stop people from saying work security reviewed when they don't understand what they are reviewing
+and when to ask questions and when to stop for a larger conversation". Documents only: no gate or
+enforcement changed; nothing here defines CAB. Authored, not field-tested.
 
-## Version 1.9 — 2026-10-16 (trunk `c140fe6`)
+| change | parts affected |
+|---|---|
+| New `docs/security-review/CAB-CHANGE-SAFETY-STEPS.md`: six valid outcomes (approve, with conditions, reject, needs more info, "not reviewed — outside my knowledge, routed to <role>", "paused — broader conversation opened"); eight steps (the understanding gate; boundary triage over data, security, auth and exposure rows deciding full or delta review; app checks from the run summary; cloud checks; pipeline and evidence; rollback; decide by written criteria; the security verdict written onto the existing CAB ticket), the app and cloud checks written as guided conversations (the question in plain words, why we ask, what a good answer sounds like, what to worry about, where to then check it in the run summary, Azure, AWS or GitHub), with inline stop-and-ask and broader-conversation triggers; a tick counts only with its source; the emergency retrospective within 5 working days (OWNER DECISION, default) | 11 |
+| New `CAB-CHANGE-REVIEW-CHECKLIST.md` (one per change, mirrors the steps; header fields, understanding gate, triage box, app / Azure / AWS / GitHub / pipeline / rollback blocks with sources, triggers, "signs you're rubber-stamping", outcome and conditions with owner and expiry, a sign-off attesting understanding by role, AppSec as the required reviewer, the paste block for the CAB ticket; a bare "security reviewed" or "LGTM" is not a sign-off) | 11 |
+| New read-only cloud sheets `CLOUD-CHECKS-AZURE.md` (Z1..Z14: portal path, `az` and Graph), `CLOUD-CHECKS-AWS.md` (W1..W12: console path, `aws`), `CLOUD-CHECKS-GITHUB.md` (H1..H8: `gh api`) | 11 |
+| New `EARLY-REVIEW-REQUESTS.md` (pulled in before the CAB presentation: what the reviewer asks for, early guidance only, the note recorded on the ticket, when to stop for a broader conversation) and `PRINCIPLES-AND-SOURCES.md` (eight principles mapped to the checks; OWASP ASVS and Top 10, NIST SP 800-53 CM-3/CM-4/AC-6/AU, NIST SSDF, CIS, MCSB, AWS Well-Architected, ITIL 4; 24 common gotchas with the check that catches each) | 11 |
+| `CAB-AND-ADOPTION-REVIEW.md` kept as the adoption path, its step 3 now the boundary triage; README, APPROVAL-MATRIX, MOD-EMERGENCY-CHANGE, MOD-IAC, MOD-DATA, MOD-API, MOD-WEB, MOD-THIRD-PARTY and USAGE point to the review; `scripts/reconcile_taxonomy.py` classifies three AWS enum values the AWS sheet quotes as somebody else's identifiers | 08, 11 |
 
-Live on the owner's personal Azure test subscription (KDEC-012), from the trunk branch the `test`
-environment admits, through `live-deploy-acceptance.yml` calling the deploy workflows as a consumer does.
+## Unreleased — ticket templates and external findings, behind a finalized human review (KDEC-037, 2026-11-03)
 
-| commit / run | change | parts affected |
-|---|---|---|
-| runs 38832628162, 38832634828, 38850408850 | **authorization boundary proven on the real tenant**: the kit's own and shared groups reachable; a sibling product's group, an empty opposite-tier group and the subscription REFUSED with their AuthorizationFailed bodies printed; a reachable scope placed in a refused position fails the run | 07 |
-| runs 38857011286–38857024014 | **build once, push to a cloud registry**: the kit's own build pushed three images over OIDC and read each digest back (REGISTRY_IDENTITY_PROVEN); those exact digests were deployed | 05, 07 |
-| runs 38857259257, 38858033863, 38855929525 | **Container Apps deploy proven live**: a kit-built digest pulled with the app's own identity and served healthy; an unhealthy one never received traffic and was rolled back and verified; a later release created mid-run made the reversal defer rather than reverse out of order | 07 |
-| runs 38878189985, 38886279650 | **App Service deploy proven live** (direct path): an unhealthy image rolled back and verified; a second person's change during the health check was detected and NOT overwritten — the run reports ROLLBACK_PARTIAL naming what it refused. The staging-slot swap path is not yet live (needs a Standard tier slot the owner creates) | 07, 09 |
-| `ece9d00`, `fe606ae`, `6ee04c3`, `6e40dad`, `95bd5cc` | **five deploy defects found only by running live, each fixed test-first**: a Container App moved all traffic to an unverified revision; the reversal missed inactive revisions; App Service read a 200 from the PREVIOUS container as the new one's health; an idle free-tier site never started until requested; a refused reversal was summarised as verified | 07 |
-| `72102ad` | eleven places where a caller's input reached a shell script directly now pass through `env:`, and the lint blocks that pattern in every shared workflow | 05 |
-| `e509d6c` | self-test had been intermittently red; a proof crashed when a test registry dropped its connection on Linux. Fixed test-first; self-test green since | 08 |
+Owner, 2026-11-03, amending KDEC-035: external findings are accepted through templates (O-35f), and
+Tines writes tickets through the API only after her recorded concurrence with the finalized review
+(O-35g); every ticket, manual ones included, is looked at before one is created. Proven locally
+(`prove_ticket_templates.py` T1..T10, T5b: 70 checks failed first; ten mutants killed); no hosted or
+live call yet.
 
-Deferrals: 4, none blocking. Owed: live ticketing's person-only steps (expires 2026-10-23),
-attestation signing (public repository or Enterprise Cloud), two capabilities not yet in use.
+| change | parts affected |
+|---|---|
+| **`tickets.submit`**: versioned templates (`api/v1/tickets/`) -- finding, four compliance REQUESTS, extension, no-fix re-check, closure -- each with required fields and named refusals (`ticket_template_refusal`); routed by template, source type and environment | 06, 11 |
+| **The finalize gate** (`scripts/review_finalize.py`): a FINALIZED record on the default branch, bound to the call's evidence-set hash, concurred by an approver who is not the automation and who APPROVED the record's pull request (read back) -- else `API_REVIEW_NOT_FINALIZED`, nothing touched | 06, 11 |
+| **External findings** normalised with provenance and an asset identity scheme (repo path, Azure tenant/subscription/resource, AWS account/region/ARN, GitHub org/repo, engagement); two tools on one asset and identifier are one ticket | 06 |
+| **Dedupe against every ticket** (`scripts/ticket_intake.py`): stamp or correlation-key label is exact; asset + identifier or a close title is a candidate for a person, never merged; a partial search creates nothing. **Tracker intake**: `tickets.search` `tracker_query` pages manual and kit tickets (Jira; FreshService a seam) | 06, 11 |
+| **Closure** only verified (kit scan or the approved reviewer), never by the requester or fixer; **extensions** counted from the ticket's labels and capped; the **no-fix re-check** reopens as remediation when a fix ships, and the clock raises a due re-check once | 06 |
+| **Corroboration score** (`finding_correlation.corroboration_score`), deterministic 0..100 with its derivation, beside the tier | 03, 06 |
+| Tagging proposal for the owner: `docs/ticketing/TAGGING-STRATEGY-PROPOSAL.md` | 06 |
 
-Versions 1.8 and earlier: `10b-CHANGE-LOG-EARLIER.md`.
+## Unreleased — security review sheets for reviewers, CAB and adoption (2026-11-03)
+
+Owner requests 2026-11-03 (a checklist and small helper sheets for a security team reviewing an app;
+the approval path for CAB changes and adoption of internally built apps) and the owner ruling
+refining O-34a. Documents only: no code, no gate, no enforcement changed. Authored, not field-tested.
+
+| change | parts affected |
+|---|---|
+| New `docs/security-review/`: README, the app review checklist (scope, kit pin and watermark, run summary, findings, identities, deploy path, supply chain, evidence), stop-and-ask (S1..S17), escalate (E1..E10, by role), reading the run summary, questions for app teams, sign-off with claim labels; the CAB and adoption selector, the approval matrix and fourteen one-page modules under `modules/`. Pointer from `docs/adoption/USAGE.md` | 11 |
+| `KIT_ZONE_READINESS` is issued by the landing zone when connected, otherwise by AppSec as a recorded attestation; never set by the app or deploy team. USAGE, SETUP and the hand-off contract keep `fb3f0a1`'s TEST FIXTURE ONLY label and now name the issuer in place of "owner decision, still open". The kit still records only the value, not its issuer (a stated gap) | 07, 11 |
+| `tests/check_doc_currency.py` reads `docs/security-review/**` as consumer documents | 08 |
+
+## Unreleased — the kit's API, v1 (KDEC-035 PROPOSED, 2026-11-03)
+
+Owner: an API "for other products/programs to use secure cicd kit ... so tines can use it to deploy
+products and write tickets from its workflows on 3B". Proven locally, each proof failed first
+(`prove_kit_api_client.py` K1..K9, `prove_kit_api_server.py` S1..S8, `prove_kit_api_workflow.py`
+W1..W8); no hosted or live call yet. The contract and every operation: `docs/api/README.md`.
+
+| change | parts affected |
+|---|---|
+| **A call is a dispatch of the repository's `kit-api.yml`** (`templates/kit-api.yml`) with a v1 request (`api/v1/`); the answer is the check run `kit-api/<correlation id>`, the summary and an artifact. States `kit_api_state`, 25 named refusals `kit_api_refusal`. Client `scripts/kit_api.py`; never assumes a host; the token stays on it | 11 |
+| **Tickets through the reconciler**: write, comment, get, search -- one ticket per finding across the API and the pipeline (shared stamp, ledger and a shared concurrency group with `reusable-ticket-reconcile.yml`'s reconcile and resurface jobs); only findings a default-branch run established; closes nothing; no disposition or transition | 06, 11 |
+| **Findings read and search** from a run's `findings.json`, with KEV (`UNAVAILABLE`, never false) and the ticket binding | 06, 11 |
+| **A release is the repository's own `build-deploy.yml`, called** (it gains `workflow_call`): every gate applies and the caller is the requester; the API also refuses an environment without a human approver, rollback and break-glass | 07, 11 |
+| `tests/check_caller_permissions.py` resolves a template's `./.github/workflows/<f>` to the starter beside it | 08 |
+
+## Unreleased — a rejected job token is named once; the host is always written (D-11, 2026-11-02)
+
+From the owner's GHE.com work copy: every API call answered 401 "Bad credentials" and five steps said
+so five ways, none naming the cause (the runs were a pre-KDEC-027 revision). Proven locally, each
+failed first (`prove_job_token_named.py` T1..T8, `prove_ghe_host.py` H8/H9, `check_action_pins.py`
+P7); no hosted run yet.
+
+| change | parts affected |
+|---|---|
+| Job token preflight in the discover job: `token_preflight` = `JOB_TOKEN_REJECTED`, `ORG_IP_ALLOW_LIST_BLOCKS_RUNNER`, `ORG_SSO_BLOCKS_TOKEN`, `RATE_LIMITED`, `API_UNREACHABLE` or `TOKEN_ACCEPTED`, with owner role and checklist in the summary; resolve, the consumer path and the pin checkers report the same word | 02, 03 |
+| `GH_REPO` and `-R`/`--repo` always `HOST/OWNER/REPO`; attestation verify passes `--hostname` | 07, 11 |
+| Dependabot entries only where a manifest is (no more `dependency_file_not_found` at `/`) | 08 |
+| The self-test tools install Trivy as the pinned, sha256-verified binary (not `install.sh`) | 08 |
+
+## Unreleased — CodeQL legs build what they can and report what they did (integrate/r8, 2026-10-28)
+
+Found on the cost runs of the six-language fixture (public mirror, cost/after run 40791360475): the
+C/C++, C# and Java legs ran autobuild at the checkout root, found no build system (the projects sit in
+subdirectories), held an empty database (`database finalize` exit 32), wrote no SARIF, and stayed
+green, so the gate read the CodeQL job as a success. Proven locally, each failed first
+(`prove_codeql_dynamic_matrix.py`, `prove_codeql_build_outcome.py` C4..C6,
+`prove_codeql_rows_read_sarif.py` per-leg and partial, `prove_gate_policy_enforcement.py`
+crawl_codeql_*). Hosted on the public mirror (throwaway branch, deleted): run 40809492962, all six
+CodeQL legs COMPLETE / PASS with their findings, 24/24, the capability floor HELD, the negative
+control blocked.
+
+| change | parts affected |
+|---|---|
+| Each CodeQL leg names its build mode: `none` (buildless) for Python, JavaScript/TypeScript, C#, Java and C/C++; `autobuild` for Go and for Kotlin (not extracted buildless) | 02, 04 |
+| Each leg files its own state (`sarif-codeql-leg-<leg>` artifact); its row reads it, not the job result six legs share | 04 |
+| An autobuild leg whose build did not succeed is `PARTIAL` in its row and in the verdict (`COVERAGE_PARTIAL`, `CODEQL_BUILD_PARTIAL`) | 02, 04, 05 |
+| A leg that initialised and could not analyse fails its job (`COLLECTION_FAILED`); the gate reads it as untrusted evidence. A licence that refused init (`UNAVAILABLE`) still never fails the build | 02, 04, 05 |
+| The six-language fixture's C# compiles: `Fixture.csproj` references `System.Data.SqlClient` 4.9.0 (not vulnerable), which `Vuln.cs` uses. Hosted run 40808064559 showed the buildless C# leg analysing it and reporting compiler errors as error-level notifications, which validity row 5 correctly reads as a failed run (`prove_fixture_dotnet_compiles.py`, failed first: CS1069) | 04 |
+

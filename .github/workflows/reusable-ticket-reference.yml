@@ -263,7 +263,9 @@ jobs:
           # suppression: EXPECTED_NEGATIVE_RESULT -- grep exits 1 when the body holds no reference,
           # which is the NO_CANDIDATE path below. A DIFFERENT failure (exit 2, e.g. a pattern grep
           # cannot compile) also yields no candidates, so the gate FAILS closed; it never passes.
-          all=$(printf '%s\n' "$PR_BODY" | grep -oE "https://${host_re}/browse/${proj_re}-[0-9]+" || true)
+          # Letters, digits or an underscore running on from the number are captured WITH it, so
+          # WORK-123abc is examined as the malformed key it is, never read as WORK-123 (G10).
+          all=$(printf '%s\n' "$PR_BODY" | grep -oE "https://${host_re}/browse/${proj_re}-[0-9]+[A-Za-z0-9_]*" || true)
           seen=$(printf '%s\n' "$all" | sed '/^$/d' | wc -l | tr -d ' ')
           urls=$(printf '%s\n' "$all" | sed '/^$/d' | head -50)
 
@@ -295,6 +297,13 @@ jobs:
             [ -z "$cand" ] && continue
             cand_id="${cand##*/}"
             cand_num="${cand_id##*-}"
+            # A MALFORMED KEY FAILS CLOSED. Jira issue numbers are digits with no leading zero;
+            # anything else is not a key, whatever its leading digits say.
+            case "$cand_num" in
+              ''|0*|*[!0-9]*)
+                rejected="${rejected}${rejected:+, }${cand_id} (malformed key)"
+                continue ;;
+            esac
             if [ -z "$mind" ] || { [ "${#cand_num}" -ge "$mind" ] && [ "${#cand_num}" -le "$maxd" ]; }; then
               url="$cand"; id="$cand_id"; num="$cand_num"
               break
@@ -312,23 +321,27 @@ jobs:
           fi
 
           if [ -z "$url" ]; then
-            summary "| Valid reference | **NONE** — every candidate failed the issue-number range |"
+            summary "| Valid reference | **NONE** — every candidate was a malformed key or outside the issue-number range |"
             summary "| Rejected | ${rejected} |"
-            summary "| Range | ${mind}-${maxd} digits (a CONSUMER rule, not a Jira rule) |"
+            if [ -n "$mind" ]; then
+              summary "| Range | ${mind}-${maxd} digits (a CONSUMER rule, not a Jira rule) |"
+            else
+              summary "| Range | none configured |"
+            fi
             summary "| Gate | **FAIL** |"
             summary ""
             summary "**ACTION REQUIRED**"
             summary ""
             summary "- **Developer:** link the ${proj} work item this change implements."
-            summary "  Found: ${rejected} — none satisfy the configured issue-number range."
+            summary "  Found: ${rejected} — none is a well-formed key within the configured range."
             summary "- Platform owner: none."
             summary "- **Governance owner:** if one of these IS the legitimate work item, the range"
             summary "  has been outgrown — raise \`max_digits\` rather than asking the developer to"
             summary "  work around the gate."
             assurance "FAIL"
             echo "::error title=No acceptable Jira reference::${seen} Jira URL(s) found; none"
-            echo "satisfy the ${mind}-${maxd} digit range. Rejected: ${rejected}"
-            echo "Jira issue numbers are unbounded -- this is a consumer rule, not a Jira constraint."
+            echo "is a well-formed key${mind:+ within the ${mind}-${maxd} digit range}. Rejected: ${rejected}"
+            echo "Jira issue numbers are unbounded -- a digit range is a consumer rule, not a Jira constraint."
             finish NO_CANDIDATE_PASSED 1
           fi
 

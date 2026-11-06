@@ -65,6 +65,7 @@ from finding_subject import subject_for    # noqa: E402
 # The three libraries that were built, proven and called by nothing (L44, L46, L48). Each is a
 # pure function over records; this file is where the records are, so this file calls them.
 import finding_correlation                 # noqa: E402
+CVE_ID = re.compile(r'CVE-\d{4}-\d{4,}', re.I)
 import finding_match                       # noqa: E402
 import rule_family                         # noqa: E402
 
@@ -400,7 +401,7 @@ def examination_of(doc, scanner=None):
     return (EXAMINED, [])
 
 
-def parse_sarif(path, scanner, table=None):
+def parse_sarif(path, scanner, table=None, mode=''):
     """-> (findings, parse_state, examination).
 
     parse_state is COMPLETE, ABSENT or UNPARSEABLE -- whether a machine-readable report arrived.
@@ -412,6 +413,10 @@ def parse_sarif(path, scanner, table=None):
 
     `table` is the parsed rule-family alias table (rule_family.parse_table), or None when no
     usable table was read for this run. See `what_of` for what each case does to WHAT.
+
+    `mode` is a subject DECLARED by the row (KDEC-028): an adopted external row names the subject
+    of what its scanner observed, because the kit's subject map must never be taught a caller's
+    own tool. finding_subject.subject_for honours a declaration over inference; empty infers.
     """
     if not path or not os.path.exists(path) or os.path.getsize(path) == 0:
         return ([], 'ABSENT',
@@ -435,7 +440,7 @@ def parse_sarif(path, scanner, table=None):
                                             'can be read as a statement about what it examined'
                                             % type(doc).__name__]))
     try:
-        return _parse_runs(doc, scanner, table)
+        return _parse_runs(doc, scanner, table, mode)
     except (AttributeError, TypeError, KeyError, ValueError, IndexError) as exc:
         return ([], 'UNPARSEABLE',
                 (EXAMINATION_NOT_DECLARED, ['the report is valid JSON but not SARIF-shaped: '
@@ -444,7 +449,7 @@ def parse_sarif(path, scanner, table=None):
                                             % (type(exc).__name__, str(exc)[:200])]))
 
 
-def _parse_runs(doc, scanner, table):
+def _parse_runs(doc, scanner, table, mode=''):
     """The SARIF walk, separated so parse_sarif can declare its fourth state (L06)."""
     examination = examination_of(doc, scanner)
     out = []
@@ -491,7 +496,7 @@ def _parse_runs(doc, scanner, table):
             # and a reviewer facing a wall of re-raised findings approves them in bulk or stops
             # reading. So `fp` stays the legacy hash until the ledger is migrated, `identity` is
             # the durable one, and `identity_state` says whether it could be computed at all.
-            subj, subj_basis = subject_for(scanner=scanner, tool=tool, uri=uri)
+            subj, subj_basis = subject_for(scanner=scanner, tool=tool, uri=uri, mode=mode)
             what, what_basis = what_of(rules.get(rid), res, rid, msg, scanner=scanner, tool=tool,
                                        version=version, table=table)
             rec = {
@@ -809,6 +814,56 @@ def _first_prop(props, names):
     return ('', '')
 
 
+# THE MANIFEST NAMES THE REGISTRY (tier 3 of a dependency locus). A fixed table, by file name:
+# each of these files can only list packages of ONE registry, so the ecosystem is read, not guessed.
+# A name not here refuses. Lower-case keys; `requirements*.txt` is matched by prefix and suffix.
+manifest_ecosystems = {
+    'requirements.txt': 'pypi', 'pipfile.lock': 'pypi', 'poetry.lock': 'pypi', 'uv.lock': 'pypi',
+    'pdm.lock': 'pypi', 'setup.py': 'pypi', 'pyproject.toml': 'pypi',
+    'package-lock.json': 'npm', 'npm-shrinkwrap.json': 'npm', 'yarn.lock': 'npm',
+    'pnpm-lock.yaml': 'npm', 'package.json': 'npm',
+    'go.mod': 'golang', 'go.sum': 'golang',
+    'pom.xml': 'maven', 'gradle.lockfile': 'maven',
+    'gemfile.lock': 'gem', 'cargo.lock': 'cargo', 'composer.lock': 'composer',
+    'packages.lock.json': 'nuget', 'packages.config': 'nuget',
+}
+
+
+def _labelled_package(msg):
+    """The labelled Package line; an npm scope (`@scope/name`) is allowed its leading `@`."""
+    m = re.search(r'(?im)^\s*Package\s*:\s*(@?[A-Za-z0-9][A-Za-z0-9._:+~@/-]{0,200})\s*$', msg or '')
+    return m.group(1) if m else _labelled(msg, 'Package')
+
+
+def manifest_purl(uri, name, version):
+    """-> (purl, why) from a manifest path and a package name and version, or ('', why)."""
+    import urllib.parse
+    base = os.path.basename(uri or '').lower()
+    eco = manifest_ecosystems.get(base)
+    if not eco and base.startswith('requirements') and base.endswith('.txt'):
+        eco = 'pypi'
+    if not eco:
+        return '', 'the manifest %r is not in the fixed table' % os.path.basename(uri or '')
+    if not (name and version):
+        return '', 'the message carries no labelled Package and Installed Version'
+    q = lambda x: urllib.parse.quote(x, safe='')
+    if eco == 'pypi':
+        nm = q(re.sub(r'[-_.]+', '-', name).lower())          # PEP 503
+    elif eco == 'maven':
+        if ':' not in name:
+            return '', 'a maven package %r without its group' % name
+        g, a = name.split(':', 1)
+        nm = '%s/%s' % (q(g), q(a))
+    elif eco in ('golang', 'composer'):
+        nm = '/'.join(q(x) for x in name.split('/'))
+    elif eco == 'npm' and name.startswith('@') and '/' in name:
+        sc, n = name.split('/', 1)
+        nm = '%s/%s' % (q(sc), q(n))
+    else:
+        nm = q(name)
+    return 'pkg:%s/%s@%s' % (eco, nm, q(version)), '%s (%s)' % (os.path.basename(uri), eco)
+
+
 def _labelled(msg, label):
     """-> a coordinate-shaped value following `<label>:` in a rendered message, or ''.
 
@@ -936,10 +991,22 @@ def locus_of(subject, rule, res, rid, msg, uri, what):
                 out['purl'] = value
                 basis.append('purl from properties.%s (tier 2)' % key)
             else:
-                basis.append('no purl in the SARIF. A dependency locus is the package '
-                             'coordinate, and assembling one from a package name plus a guessed '
-                             'ecosystem would name the wrong registry -- so this refuses and '
-                             'says which field is missing')
+                # TIER 3: the MANIFEST names the registry, so nothing is guessed. A
+                # requirements.txt can only name PyPI packages; a manifest the fixed table does not
+                # know still refuses (tests/prove_dependency_purl_from_manifest.py; found hosted,
+                # public run 41945270732: Trivy's SARIF carries no purl, so every dependency
+                # finding refused and nothing was ticketed).
+                purl, why = manifest_purl(uri, _labelled_package(msg), _labelled(msg, 'Installed Version'))
+                if purl:
+                    out['purl'] = purl
+                    basis.append('purl %s from the labelled Package and Installed Version lines and '
+                                 'the manifest %s (tier 3: the manifest names the registry)'
+                                 % (purl, why))
+                else:
+                    basis.append('no purl in the SARIF, and none from the manifest (%s). A dependency '
+                                 'locus is the package coordinate, and assembling one from a package '
+                                 'name plus a guessed ecosystem would name the wrong registry -- so '
+                                 'this refuses and says which field is missing' % why)
 
     elif subject == 'IMAGE':
         name, version, how = '', '', ''
@@ -1577,6 +1644,24 @@ def roster_faults(states, expect):
 # file read back as a state file on the next call would be a list of records with `scanner`
 # keys, and every one would become a phantom scanner row.
 findings_filename = 'findings.json'
+# WHAT EACH SCANNER ESTABLISHED THIS RUN (KDEC-024, T-09), beside the findings. A finding absent
+# from findings.json is only POTENTIALLY_ABSENT -- its scanner may not have run, may have run
+# PARTIAL, or may have scanned somewhere else. The ticket reconciler closes a ticket on clearance
+# only when this record shows the scanner that saw the finding ESTABLISHED its row over a scope
+# covering the file. Skipped by the state loader for the same reason as findings.json.
+coverage_filename = 'findings-coverage.json'
+
+
+def sarif_tool_version(path):
+    """The version the SARIF's driver states (`semanticVersion`, else `version`), or '' -- read
+    even when the report holds no result, because a clearance names the version that proved the
+    finding ABSENT (owner 2026-10-23). Unreadable is '', never a guess."""
+    try:
+        doc = json.load(io.open(path, encoding='utf-8', errors='replace'))
+        driver = ((doc.get('runs') or [{}])[0].get('tool') or {}).get('driver') or {}
+        return str(driver.get('semanticVersion') or driver.get('version') or '').strip()
+    except Exception:  # noqa: BLE001 -- absent, unreadable or malformed: no version stated
+        return ''
 
 # What each observation record carries, and what it never does. Keyed by the names identify()
 # uses, because finding_match, finding_correlation and propose_ledger read those names: `state`,
@@ -1692,7 +1777,8 @@ def batch(state_dir, disp_path, max_detail, run_url, expect=(), summary=None, fi
     findings_out = findings_out or os.path.join(state_dir, findings_filename)
     table, table_note = load_rule_families(rule_families)
     for fn in sorted(os.listdir(state_dir)) if os.path.isdir(state_dir) else []:
-        if not fn.endswith('.json') or fn.startswith('.') or fn == findings_filename:
+        if not fn.endswith('.json') or fn.startswith('.') or fn in (findings_filename,
+                                                                    coverage_filename):
             continue
         try:
             d = json.load(io.open(os.path.join(state_dir, fn), encoding='utf-8',
@@ -1725,6 +1811,8 @@ def batch(state_dir, disp_path, max_detail, run_url, expect=(), summary=None, fi
     # evidence: the blocking total over ESTABLISHED rows only, and which JOBS established any.
     # A row that established nothing contributes nothing -- it is not a zero.
     by_job = {}
+    secret_fps = []
+    cve_tokens = []
     present = set(st.get('scanner') for st in states)
     for name in expect:
         if name and name not in present:
@@ -1735,6 +1823,7 @@ def batch(state_dir, disp_path, max_detail, run_url, expect=(), summary=None, fi
 
     disp, disp_state = load_dispositions(disp_path)
     blocks, index, observations, legacy_closed = [], [], [], 0
+    coverage_rows = []
     for st in states:
         sarif = st.get('sarif') or ''
         if sarif and not os.path.isabs(sarif):
@@ -1745,7 +1834,10 @@ def batch(state_dir, disp_path, max_detail, run_url, expect=(), summary=None, fi
         # row with a witness, and the loop goes on. One scanner's broken file must never erase
         # fifteen others' evidence, and a row that could not be read never carries a count.
         try:
-            findings, parse_state, examination = parse_sarif(sarif, st['scanner'], table)
+            # KDEC-028: an ADOPTED EXTERNAL ROW declares its subject; only such a row may.
+            declared = str(st.get('subject') or '') if st.get('external') is True else ''
+            findings, parse_state, examination = parse_sarif(sarif, st['scanner'], table,
+                                                             declared)
         except Exception as exc:  # noqa: BLE001 -- the wall; the reason is kept, never swallowed
             findings, parse_state = [], 'UNPARSEABLE'
             examination = (EXAMINATION_NOT_DECLARED,
@@ -1799,9 +1891,32 @@ def batch(state_dir, disp_path, max_detail, run_url, expect=(), summary=None, fi
                        and cfg['applicability'] not in NO_COUNT_APPLIC
                        and examination[0] in COUNTABLE_EXAMINATION)
         blk = blocking_of(findings, disp, today)
+        coverage_rows.append({'scanner': cfg['scanner'], 'job': st.get('job') or '',
+                              'applicability': cfg['applicability'],
+                              'execution': cfg['execution'], 'gate': cfg['gate'],
+                              'scope': cfg['scope'] or '', 'parse_state': parse_state,
+                              'scanner_version': sarif_tool_version(sarif) if sarif else '',
+                              'established': bool(established), 'findings': len(findings)})
         job = st.get('job') or ''
         if established and job:
             by_job[job] = by_job.get(job, 0) + len(blk)
+        # THE SECRET FINDINGS, BY FINGERPRINT, FOR THE GATE (owner ruling 2026-10-22, lane L-S). A
+        # secret exception in the policy register names ONE finding by this `fp`; the gate excepts
+        # a secret only when every one the secret scan reported is named, one exception each.
+        # Secrets carry no durable identity (section 5.7), so `fp` is the key -- a hash, never text.
+        if established and job == 'secret-scan':
+            secret_fps.extend(f['fp'] for f in blk)
+        # EVERY CVE A DEPENDENCY OR IMAGE FINDING NAMES, FOR THE GATE'S KNOWN-EXPLOITED CHECK (KDEC-022
+        # item 3): job:fp:CVE, over EVERY finding of an established row -- not only the blocking
+        # severities, and not after dispositions: a CVE exploited in the wild blocks at every rung
+        # whatever its severity, and only a register exception (ticketed, by fingerprint) excepts it.
+        if established and job and job != 'secret-scan':
+            for f in findings:
+                for c in CVE_ID.findall('%s %s' % (f.get('rule') or f.get('rule_id') or '',
+                                                         f.get('message') or '')):
+                    tok = '%s:%s:%s' % (job, f['fp'], c.upper())
+                    if tok not in cve_tokens:
+                        cve_tokens.append(tok)
         held = len([f for f in findings if is_suppressed(f, disp, today)])
         legacy_closed += len([f for f in findings
                               if disposition_for(f, disp, today)[1] == 'legacy-closed'])
@@ -1865,6 +1980,11 @@ def batch(state_dir, disp_path, max_detail, run_url, expect=(), summary=None, fi
     # "no findings" -- the same rule as the gate's absent count.
     with io.open(findings_out, 'w', encoding='utf-8') as fh:
         json.dump(observations, fh, indent=1, sort_keys=True)
+        fh.write('\n')
+    with io.open(os.path.join(os.path.dirname(os.path.abspath(findings_out)), coverage_filename),
+                 'w', encoding='utf-8') as fh:
+        json.dump({'schema': 'findings-coverage/1', 'rows': coverage_rows}, fh, indent=1,
+                  sort_keys=True)
         fh.write('\n')
 
     L = ['## Security scan report', '',
@@ -1945,6 +2065,8 @@ def batch(state_dir, disp_path, max_detail, run_url, expect=(), summary=None, fi
     if summary is not None:
         summary['blocking_findings'] = sum(by_job.values())
         summary['jobs_with_findings'] = sorted(j for j, n in by_job.items() if n > 0)
+        summary['secret_findings'] = sorted(secret_fps)
+        summary['cve_findings'] = cve_tokens
         summary['findings'] = findings_out
         summary['identity_routing'] = identity_routing
         summary['baseline_state'] = baseline_state or ''
@@ -2456,6 +2578,10 @@ def main():
                 fh.write('jobs_with_findings=%s\n'
                          % ' '.join(summary.get('jobs_with_findings', [])))
                 fh.write('findings=%s\n' % summary.get('findings', ''))
+                # One fingerprint per secret finding, repeated when two share one (lane L-S).
+                fh.write('secret_findings=%s\n' % ' '.join(summary.get('secret_findings', [])))
+                # Every dependency/image finding's CVE, job:fp:CVE (KDEC-022 item 3, the KEV check).
+                fh.write('cve_findings=%s\n' % ' '.join(summary.get('cve_findings', [])))
                 # THE IDENTITY CLAIM, beside the block and never inside it (L44/L45).
                 fh.write('identity_routing=%s\n' % summary.get('identity_routing', ''))
                 fh.write('baseline_state=%s\n' % summary.get('baseline_state', ''))

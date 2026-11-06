@@ -112,8 +112,66 @@ def strip_generated(text):
     return GENERATED.sub('', text)
 
 
+# WORKFLOWS THAT COPY A SCANNER'S DATA OR IMAGE AND RUN NO SCANNER (KDEC-032). The feed-mirror refresh names
+# semgrep/semgrep, securego/gosec and zricethezav/gitleaks -- the images it copies BY DIGEST into the
+# organisation's registry -- and Dependency-Check's datafeed, and the image patterns above read every one of
+# those names as an invocation. A copy of an image is not a run of it. Each entry says why; the file still
+# counts as a MENTION, so it stays visible in the census, never silently dropped.
+NOT_INVOCATION = {
+    'reusable-feed-mirror-refresh.yml': 'refreshes the feed mirrors and copies scanner images by digest; '
+                                        'it runs no scanner',
+}
+
+
+_SCANNER_CALL = re.compile(r'(?m)^(?P<pad>[ ]*)(?:- )?uses:[ ]*\$/\.github/actions/(?P<name>[\w-]+)[ ]*$')
+
+
+def scanner_composites(root):
+    """Composite names that ARE a scanner job's body (scanner-registry.yaml, class scanner)."""
+    try:
+        import yaml
+        reg = yaml.safe_load(io.open(os.path.join(root, 'scanner-registry.yaml'), encoding='utf-8'))
+    except Exception:  # noqa: BLE001 -- no registry: nothing to splice, and the census says so
+        return set()
+    return {(r or {}).get('composite') for r in ((reg or {}).get('jobs') or {}).values()
+            if (r or {}).get('class') == 'scanner' and (r or {}).get('composite')}
+
+
+def splice_composites(text, root, names):
+    """A scanner job's steps live in its `$/` composite (ledger L64): read them where they run.
+
+    Without this the census lost every scanner whose body moved -- gitleaks fell from ENFORCED to
+    INVOKED and detect-secrets to IDENTIFIED ONLY the moment secret-scan became a composite, which
+    is decomposition plan section 6.4's warning ("INVOCATION patterns must also scan
+    .github/actions/**") arriving on schedule. The composite's `runs:` text is placed under the
+    call, indented below the job header, so job_of() still attributes it to the calling job.
+    Only scanner composites are spliced: discovery, resolve and the report are not a scanner's
+    body, and their prose names scanners without invoking them.
+    """
+    def rep(m):
+        if m.group('name') not in names:
+            return m.group(0)
+        p = os.path.join(root, '.github', 'actions', m.group('name'), 'action.yml')
+        if not os.path.isfile(p):
+            return m.group(0)
+        body = strip_generated(io.open(p, encoding='utf-8', errors='replace').read())
+        i = body.find('\nruns:')
+        body = body[i + 1:] if i >= 0 else body
+        pad = m.group('pad') + '      '
+        return m.group(0) + '\n' + '\n'.join(pad + ln if ln.strip() else ''
+                                             for ln in body.splitlines())
+    return _SCANNER_CALL.sub(rep, text)
+
+
 def scan(text, pats):
     return [p for p in pats if re.search(p, text, re.I)]
+
+
+def invoked_in(fname, text, pats):
+    """-> the invocation matches of `pats` in `text`, none for a declared NOT_INVOCATION workflow."""
+    if fname in NOT_INVOCATION:
+        return []
+    return [m for p in pats for m in re.finditer(p, text, re.I)]
 
 
 def job_of(text, idx):
@@ -146,6 +204,10 @@ def self_test():
     ok_strip = (not scan(strip_generated(gen), INVOCATION['gosec'])
                 and not scan(strip_generated(gen), INVOCATION['trivy'])
                 and bool(scan(gen, INVOCATION['trivy'])))
+    # A declared mirror-only workflow names images without running them: mention, never invocation.
+    ok_mirror = invoked_in('reusable-feed-mirror-refresh.yml', 'images: securego/gosec@sha256:x',
+                           INVOCATION['gosec']) == [] and bool(scan('images: securego/gosec@sha256:x', MENTION['gosec']))
+    ok_strip = ok_strip and ok_mirror
     if not all((ok_no_credit, ok_credit, ok_mention, ok_sarif, ok_job, ok_strip)):
         print('SELF-TEST FAILED: upload-not-credited=%s init-credited=%s mention=%s sarif=%s '
               'job=%s generated-stripped=%s'
@@ -182,20 +244,21 @@ def main():
         print('no workflow files in %s' % wdir)
         return 1
 
+    root = os.path.dirname(os.path.dirname(wdir))
+    names = scanner_composites(root)
     blobs = {}
     for f in files:
-        blobs[f] = strip_generated(
-            io.open(os.path.join(wdir, f), encoding='utf-8', errors='replace').read())
+        blobs[f] = splice_composites(strip_generated(
+            io.open(os.path.join(wdir, f), encoding='utf-8', errors='replace').read()), root, names)
 
     rows = []
     for cap in sorted(INVOCATION):
         inv_where, men_where, jobs = [], [], set()
         surfaced = consumed = enforced = False
         for f, t in blobs.items():
-            for p in INVOCATION[cap]:
-                for m in re.finditer(p, t, re.I):
-                    inv_where.append(f)
-                    jobs.add(job_of(t, m.start()))
+            for m in invoked_in(f, t, INVOCATION[cap]):
+                inv_where.append(f)
+                jobs.add(job_of(t, m.start()))
             if scan(t, MENTION[cap]):
                 men_where.append(f)
         inv_where = sorted(set(inv_where))

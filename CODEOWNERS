@@ -39,6 +39,15 @@
 # whether the posture is acceptable.
 /profiles/                   @YOUR_ORG/pipeline-maintainers @YOUR_ORG/security-approvers
 
+# ── The protected capability floor (owner ruling 4, 2026-10-27, KDEC-033) ─────────
+# What the gate must expect WHATEVER scanner-registry.yaml says. Kit-owned, and it only shrinks
+# through a tombstone with a recorded decision, so both teams sign -- as for profiles. Its checker
+# and the composite that reads it in the gate are held the same way: a floor anyone can re-read
+# differently is not protected.
+/capability-floor.json                    @YOUR_ORG/pipeline-maintainers @YOUR_ORG/security-approvers
+/scripts/capability_floor.py              @YOUR_ORG/pipeline-maintainers @YOUR_ORG/security-approvers
+/.github/actions/capability-floor/        @YOUR_ORG/pipeline-maintainers @YOUR_ORG/security-approvers
+
 # ── Exceptions: may THIS finding pass ───────────────────────────────────────────
 # Security approves exceptions and NOTHING ELSE. Deliberately no ownership of the gate itself.
 /dispositions/                             @YOUR_ORG/security-approvers

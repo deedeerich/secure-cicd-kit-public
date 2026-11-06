@@ -52,7 +52,18 @@ BENIGN = {"0", "false", "", "none", "NOT_APPLICABLE", "PASS", "COMPLETE"}
 
 
 def load(name):
-    return yaml.safe_load(io.open(os.path.join(WF, name), encoding="utf-8"))
+    """The workflow with every `$/` composite step expanded into its job.
+
+    A scanner job's steps live in `.github/actions/<scanner>/` (ledger L64). Read without the
+    expansion, every hand-off inside a moved job -- gitleaks.count -> Enforce, cppcheck.collection
+    -> enforce, ... -- simply vanished from the trace (142 -> 128 handoffs) while the verdict stayed
+    "every traced handoff is guarded": a tracer that cannot see a hand-off cannot call it unguarded.
+    The one expansion rule is tests/_composite_expand.py, shared with the proofs.
+    """
+    doc = yaml.safe_load(io.open(os.path.join(WF, name), encoding="utf-8"))
+    sys.path.insert(0, os.path.join(ROOT, "tests"))
+    import _composite_expand
+    return _composite_expand.expanded_doc(doc, ROOT)
 
 
 # A `run:` line that hands the step to one of this kit's scripts: `python3 "$RUNNER_TEMP/kit-deploy/

@@ -1,0 +1,40 @@
+# Starter template -- the organisation's feed mirror refresh (Release 4, KDEC-032 PROPOSED).
+# Install ONCE, in the platform/security repository that owns the mirror -- not in every application
+# repository. Copy to .github/workflows/feed-mirror-refresh.yml, replace YOUR_ORG, and pin the kit by its
+# 40-hex commit SHA. Step-by-step: docs/adoption/FEED_MIRRORS.md.
+#
+# Before the first run (FEED_MIRRORS.md steps 1-4):
+#   - infra/feed-mirrors deployed (storage account + static website + private endpoints + DNS + grants)
+#   - a GitHub environment `feed-mirror` with variables AZURE_CLIENT_ID, AZURE_TENANT_ID,
+#     AZURE_SUBSCRIPTION_ID (the refresh identity; identifiers, not secrets), required reviewers off
+#     (it runs unattended on a schedule) and a deployment branch policy of the default branch only
+#   - repository variables KIT_FEED_MIRROR_ACCOUNT, KIT_FEED_MIRROR_URL, KIT_FEED_MIRROR_RUNNER
+#     (and KIT_SCANNER_IMAGE_REGISTRY to mirror the scanner images)
+#
+# The consumers' 48-hour policy means one missed daily run is tolerated and two are not: a refresh that
+# keeps failing turns every scan's mirror read into MIRROR_STALE. Watch this workflow's failures.
+
+name: Feed mirror refresh
+
+on:
+  schedule:
+    - cron: "17 4 * * *"   # daily, after NVD/CISA publish; off the hour to avoid the schedule rush
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: feed-mirror-refresh
+  cancel-in-progress: false   # never cut a publication in half; the next run waits
+
+jobs:
+  refresh:
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-feed-mirror-refresh.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    with:
+      storage_account: ${{ vars.KIT_FEED_MIRROR_ACCOUNT }}
+      mirror_url: ${{ vars.KIT_FEED_MIRROR_URL }}
+      runner: ${{ vars.KIT_FEED_MIRROR_RUNNER }}
+      github_environment: feed-mirror
+      registry: ${{ vars.KIT_SCANNER_IMAGE_REGISTRY }}

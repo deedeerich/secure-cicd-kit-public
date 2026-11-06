@@ -1,0 +1,46 @@
+# Starter: drop this into a calling repo at .github/workflows/dependabot-triage.yml
+# Replace YOUR_ORG and pin the kit by COMMIT SHA. Setup (repository settings, branch protection, the
+# required checks to name below): docs/adoption/DEPENDABOT_TRIAGE.md.
+#
+# WHY pull_request_target, AND WHY IT IS SAFE HERE (DEPENDABOT_TRIAGE.md section 2): this file and
+# the kit pin are read from the DEFAULT branch, so a Dependabot PR that bumps them cannot decide its
+# own merge with its own proposed code. The kit's workflow checks out NOTHING -- it reads the PR
+# through the API as data. Do not add a checkout of the PR to this workflow.
+name: Dependabot triage
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+# No job inherits anything; the one job grants exactly what the kit's jobs request, or GitHub refuses
+# the run before it starts (tests/check_caller_permissions.py). Each kit job then holds only its part:
+# classify reads, auto-merge may merge, human-review may label and comment, close may close.
+permissions: {}
+
+jobs:
+  triage:
+    # The PR AUTHOR: a re-run or a human push changes github.actor, not the author.
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-dependabot-triage.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    with:
+      # REQUIRED for anything to auto-merge: the status checks that must be REQUIRED on the base
+      # branch -- at least the job that fails on the kit's security verdict. Empty sends every PR to
+      # a human. The name is the check as GitHub shows it on a PR ("<caller job> / <job name>").
+      required_checks: "security / Security gate"
+      # Your own runtime-critical packages, added to the kit's protected list. Include the kit itself.
+      critical_packages: |
+        YOUR_ORG/secure-cicd-kit
+      # critical_ecosystems: "maven"             # added to docker, compose, helm, terraform, devcontainers
+      # auto_merge_update_types: "patch"         # narrower than the default patch,minor
+      # lockfile_line_threshold: "200"           # lower than the 400 ceiling
+      # excluded_paths: "samples/vulnerable/**"  # closed with an explanation; added to the default
+      # min_compatibility_score: "80"            # needs METADATA_TOKEN
+      # review_team: "YOUR_ORG/platform"         # CODEOWNERS is the reliable route
+    secrets:
+      # Optional: a token with Dependabot alerts read, for the security linkage (urgent label) and the
+      # compatibility score. Without it the linkage is recorded as NOT established.
+      METADATA_TOKEN: ${{ secrets.DEPENDABOT_METADATA_TOKEN }}
