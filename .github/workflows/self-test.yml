@@ -1138,6 +1138,8 @@ jobs:
           python3 tests/prove_azure_gov_audience.py
           # A dependency finding is keyed from its manifest's registry (found hosted, public run 41945270732).
           python3 tests/prove_dependency_purl_from_manifest.py
+          # The fixtures' deliberately vulnerable pins move only with their registry (Dependabot PR #10 bumped one, 2026-11-06).
+          python3 tests/check_fixture_seed_pins.py
 
       - name: The kit's API -- contract, client, run side and wiring (KDEC-035)
         run: |

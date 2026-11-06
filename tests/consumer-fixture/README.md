@@ -55,3 +55,11 @@ Nothing here is installed, imported, or executed. They exist to be *detected*. D
 upgrading them silently disables the seeded assertion and the test would go green having tested
 nothing. If a pin ever stops producing a HIGH/CRITICAL finding, replace it with one that does and
 say so in the commit message.
+
+## The seeds are held
+
+Every dependency manifest here, and the named vulnerable pins the expected signals depend on, are held
+by `SEED_PINS.json` and `tests/check_fixture_seed_pins.py` (in Normalizer drift, a required check). A
+bump that moves a manifest without the registry fails; a deliberate seed change edits both in one pull
+request (`--update` rewrites the hashes). Dependabot PR #10 bumped phpmailer here on 2026-11-06 and was
+merged; Release 4 restored the seed.
