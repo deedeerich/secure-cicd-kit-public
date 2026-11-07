@@ -1,5 +1,5 @@
 {
-  "$comment": "The API's named refusals (KDEC-035). The registered vocabulary is assurance-taxonomy.yaml :: kit_api_refusal; tests/prove_kit_api_contract.py fails when the two disagree. `where` is who refuses: the client before anything is sent, the run's intake before anything is read or written, or the operation itself.",
+  "$comment": "The API's named refusals (KDEC-035). The registered vocabulary is assurance-taxonomy.yaml :: kit_api_refusal; tests/prove_kit_api_client.py (K2) fails when the two disagree. `where` is who refuses: the client before anything is sent, the run's intake before anything is read or written, or the operation itself.",
   "api_version": "v1",
   "refusals": {
     "API_HOST_NOT_NAMED": {"where": "client", "meaning": "No API host was named (KIT_API_URL, GITHUB_API_URL or GH_HOST). The client never assumes github.com.", "remedy": "Name the host the credential was issued by, e.g. GH_HOST=<tenant>.ghe.com."},

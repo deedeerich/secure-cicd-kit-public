@@ -73,6 +73,9 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     "dependabot-config-check.yml": ["dependabot-config-check"],
     # Owner 2026-11-06: SonarQube / Aikido findings pulled read-only, submitted only behind the review gate.
     "reusable-external-findings.yml": ["external-findings-pull"],
+    # Owner 2026-11-07: the read-only org survey and the one-time org setup check (KDEC-045).
+    "reusable-kit-survey.yml": ["org-survey"],
+    "kit-survey.yml": ["org-survey"],
     "external-findings.yml": ["external-findings-pull"],
     "reusable-deploy-appservice.yml": ["deploy-appservice"],
     "reusable-deploy-containerapp.yml": ["deploy-containerapp"],
@@ -571,6 +574,10 @@ VALIDATION_REGISTRY: dict[str, dict] = {
     # OBSERVED 2026-11-06, locally: both adapters against a 127.0.0.1 stand-in answering the documented
     # shapes (tests/prove_external_findings_pull.py P1-P3, N1-N8) and the workflow's pull step as shipped
     # (tests/prove_external_findings_workflow.py). Level `tool`: no call to a real SonarQube or Aikido yet.
+    # OBSERVED 2026-11-07, locally: scripts/kit_survey.py and scripts/kit_org_init.py against a 127.0.0.1 stand-in
+    # in the github.com and GHE.com shapes (tests/prove_kit_survey.py P1-P7 N1-N7 M1-M8; tests/prove_kit_org_init.py),
+    # and read-only against the owner's personal account. Level `tool`: no hosted run of the reusable yet.
+    "org-survey": {"probe": "tests/prove_kit_survey.py", "state": "observed", "level": "tool"},
     "external-findings-pull": {"probe": "tests/prove_external_findings_pull.py", "state": "observed",
                                "level": "tool"},
     # OBSERVED 2026-10-22, locally (lane L-FX): scripts/exception_due.py against fixture registers and

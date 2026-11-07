@@ -643,7 +643,8 @@ GitHub refuses the whole run before any job starts (`startup_failure`, no log); 
 reusable workflow is in [`USAGE.md`](USAGE.md) → *What's in it*, and `tests/check_caller_permissions.py`
 enforces it on the kit's own callers and templates.
 
-The kit's policy gate rejects workflow-level `id-token: write`. Grant it per job, only where needed.
+The kit's policy gate warns on workflow-level `id-token: write` when the workflow has more than one job
+(`workflow-policy-check.yml` rule R3, a WARN, not an ERROR). Grant it per job, only where needed.
 
 ---
 

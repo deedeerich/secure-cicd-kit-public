@@ -1408,6 +1408,16 @@ jobs:
           python3 scripts/friction_summary.py --self-test
           python3 tests/prove_friction_summary.py
 
+      - name: Org survey and org setup check -- read-only, GET only, github.com and GHE.com (KDEC-045, 2026-11-07)
+        run: |
+          set -euo pipefail
+          # What already runs in the org, compared with the kit; turn-offs and their reasons; never "none" when unread.
+          python3 scripts/kit_survey.py --self-test
+          python3 tests/prove_kit_survey.py
+          # The one-time org setup: PASS / ACTION_NEEDED / NOT_ESTABLISHED with what, how and why; it changes nothing.
+          python3 scripts/kit_org_init.py --self-test
+          python3 tests/prove_kit_org_init.py
+
       - name: A workflow over the size limit does not fail, it never starts
         run: |
           # RUN THIS EARLY. reusable-security.yml crossed 500 KB on 2026-09-16 and GitHub stopped
@@ -1553,6 +1563,23 @@ jobs:
           # Every FUTURE_WORK section is cited by a completion-ledger row, or exempted with a reason:
           # section 6 (auto-merge) was designed, asked for and never planned (lane L-FWA).
           python3 tests/check_future_work_traceability.py
+
+      - name: Every diagram parses, and every file is in the code walkthrough
+        run: |
+          set -euo pipefail
+          # The architecture suite (docs/architecture/INDEX.md) is drawn in Mermaid so GitHub renders it
+          # in place. A diagram that does not parse renders as an error box, and nothing else would
+          # notice: the Markdown is valid and every link resolves. This is a pure-Python structural
+          # check (no node): brackets, quotes, subgraph/end, sequence blocks, classes, and the suite's
+          # cited paths and size. The self-test seeds one broken diagram per rule and a clean one first.
+          python3 tests/check_mermaid_diagrams.py --self-test
+          python3 tests/check_mermaid_diagrams.py
+          # The owner: "I need to intimately understand every drop of code." Every tracked file has one
+          # row in docs/architecture/code-walkthrough/ (an overlay's and the export profiles' rows live
+          # in their own directories, so the neutral core names no one); a row for a file that is gone,
+          # or with no sentence, fails. Self-test first: one tree per rule and a tree that holds.
+          python3 tests/check_code_walkthrough_coverage.py --self-test
+          python3 tests/check_code_walkthrough_coverage.py
 
       - name: A documented credential-free path must not authenticate
         run: |

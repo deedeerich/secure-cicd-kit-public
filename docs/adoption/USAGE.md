@@ -97,7 +97,8 @@ Nothing environment-specific is baked in. Every deploy input arrives from the ca
   differ: `commercial` for Container Apps and the build, `gov` for App Service — set it explicitly.
 
 Grant `permissions` on the *calling job* as in the table above — a reusable workflow cannot grant
-itself more than the caller has. The kit's policy gate rejects workflow-level `id-token: write`.
+itself more than the caller has. The kit's policy gate WARNS on workflow-level `id-token: write` in a workflow with more than one job
+(`workflow-policy-check.yml`, a WARN, not an ERROR); grant it per job.
 
 ## Deploy contract
 

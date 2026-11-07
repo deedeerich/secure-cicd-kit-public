@@ -52,6 +52,8 @@ EXEMPT = {
                              'a push supplies no environment or scopes to assert',
     'nvd-cve.yml': 'the NVD pass needs a dispatch-chosen environment holding NVD_API_KEY; without it the '
                    'database update is rate-limited for 20-40 minutes',
+    'kit-survey.yml': 'surveys an organisation with a read-only token this repository holds only when the owner '
+                      'adds it, and names private repositories: a person decides when (owner 2026-11-07)',
     'external-findings.yml': 'pulls SonarQube / Aikido with secrets this repository does not hold; a push '
                              'run would only end SOURCE_NOT_CONFIGURED (owner 2026-11-06: dispatch only here)',
 }

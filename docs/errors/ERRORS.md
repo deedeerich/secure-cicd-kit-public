@@ -35,15 +35,18 @@ In a run, the same sentence is the title of the annotation at the top of the run
 - [finding_baseline_state](#finding_baseline_state) (1)
 - [finding_id_form](#finding_id_form) (2)
 - [human_control_availability](#human_control_availability) (2)
+- [kit_adoption_state](#kit_adoption_state) (4)
 - [kit_api_refusal](#kit_api_refusal) (29)
 - [kit_api_state](#kit_api_state) (6)
 - [kit_init_state](#kit_init_state) (11)
+- [kit_survey_state](#kit_survey_state) (7)
 - [kit_watermark](#kit_watermark) (2)
 - [known_exploited](#known_exploited) (3)
 - [known_exploited_exception_refusal](#known_exploited_exception_refusal) (7)
 - [leak_gate_setup_refusal](#leak_gate_setup_refusal) (9)
 - [leak_gate_state](#leak_gate_state) (3)
 - [oidc_subject_form](#oidc_subject_form) (1)
+- [org_init_result](#org_init_result) (2)
 - [platform_applicability](#platform_applicability) (3)
 - [policy_notice](#policy_notice) (2)
 - [policy_resolution](#policy_resolution) (16)
@@ -1328,6 +1331,42 @@ A control needs a second person, and this repository has only one. **[HUMAN_CONT
 - **Fix:** Name an approver from platform or security outside the team (docs/adoption/ROLLOUT_PLAN.md, small teams).
 - **More:** [docs/adoption/ROLLOUT_PLAN.md](../adoption/ROLLOUT_PLAN.md)
 
+## kit_adoption_state
+
+Not failures (nothing to do): `ADOPTED`, `KIT_HOST`, `NEVER`.
+
+### NOT_ESTABLISHED (kit_adoption_state)
+
+The survey could not tell whether this repository ever used the kit. **[NOT_ESTABLISHED]**
+
+- **Why it matters:** Its workflows or their history could not be read in full; "never" would be a guess.
+- **Fix:** Raise --history, or give the token Contents read on the repository, and run it again.
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
+### PARTIAL (kit_adoption_state)
+
+This repository calls the kit, but not all of it is in force. **[PARTIAL]**
+
+- **Why it matters:** A moving kit reference, a caller off the pull-request path or a declared weakening means a change can merge without the full check.
+- **Fix:** Read partial_because in KIT_ADOPTION_INVENTORY.md: pin the kit by commit SHA, add pull_request to the caller, or close the weakening by its expiry.
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
+### REASON_NOT_RECORDED (kit_adoption_state)
+
+The kit was turned off here and nobody wrote down why. **[REASON_NOT_RECORDED]**
+
+- **Why it matters:** Without the reason the same pain will turn it off again elsewhere.
+- **Fix:** Ask the team who made the commit named in the evidence column, and record the answer in the inventory.
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
+### TURNED_OFF (kit_adoption_state)
+
+This repository used the kit and switched it off. **[TURNED_OFF]**
+
+- **Why it matters:** Its changes are no longer checked, and whatever made the team switch it off is probably hurting other teams too.
+- **Fix:** Read the evidence and the stated reason in KIT_ADOPTION_INVENTORY.md, talk to the team about the pain point, fix that, then turn the caller back on.
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
 ## kit_api_refusal
 
 ### API_CORRELATION_MISMATCH (kit_api_refusal)
@@ -1706,6 +1745,66 @@ kit init did not recognise any language or deploy type in this repository, so it
 - **Fix:** Add the missing manifest (requirements.txt, package.json, pom.xml, go.mod, a .csproj, composer.json, a Dockerfile, *.tf or *.bicep), or copy templates/security.yml by hand.
 - **More:** [docs/adoption/GETTING_STARTED_1_HOUR.md](../adoption/GETTING_STARTED_1_HOUR.md)
 
+## kit_survey_state
+
+Not failures (nothing to do): `SURVEY_COMPLETE`.
+
+### SURVEY_AUTH_REFUSED (kit_survey_state)
+
+GitHub refused the token the survey used, so it could not list the repositories. **[SURVEY_AUTH_REFUSED]**
+
+- **Why it matters:** Nothing can be compared without the list; an empty list would read as an empty estate.
+- **Fix:** Use a read-only token with Metadata, Contents, Actions, Administration, Secrets and Variables read across the organisation (the guide lists them), saved as KIT_SURVEY_TOKEN.
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
+### SURVEY_HOST_MISMATCH (kit_survey_state)
+
+The API answered for a different GitHub host than the one named, so the survey stopped. **[SURVEY_HOST_MISMATCH]**
+
+- **Why it matters:** The token goes only to the host that issued it; a mixed-up host could send it somewhere else or mix two estates in one report.
+- **Fix:** Make --host and --api-url (or GITHUB_API_URL) name the same host, and run the survey from a runner of that host.
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
+### SURVEY_HOST_NOT_NAMED (kit_survey_state)
+
+The survey was not told which GitHub host to read, so it read nothing. **[SURVEY_HOST_NOT_NAMED]**
+
+- **Why it matters:** It never assumes github.com: a token from a GHE.com tenant must never be sent there.
+- **Fix:** Pass --host github.com or --host <tenant>.ghe.com (in a workflow, GITHUB_API_URL names it for you).
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
+### SURVEY_HOST_UNSUPPORTED (kit_survey_state)
+
+The host named is neither github.com nor a <tenant>.ghe.com host. **[SURVEY_HOST_UNSUPPORTED]**
+
+- **Why it matters:** The kit supports those two kinds of host only (KDEC-027).
+- **Fix:** Name github.com or your <tenant>.ghe.com host.
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
+### SURVEY_OUT_IN_KIT (kit_survey_state)
+
+The survey refused to write its reports inside the kit repository. **[SURVEY_OUT_IN_KIT]**
+
+- **Why it matters:** The reports name private repositories and their settings; inside the kit they are one commit away from being shared.
+- **Fix:** Choose an output directory outside the repository (the workflow uses the runner temp directory and an artifact).
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
+### SURVEY_OWNER_NOT_FOUND (kit_survey_state)
+
+No organisation or user of that name exists on this host. **[SURVEY_OWNER_NOT_FOUND]**
+
+- **Why it matters:** A typo here would otherwise produce an empty survey.
+- **Fix:** Check the owner name (the part after the host in a repository URL).
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
+### SURVEY_PARTIAL (kit_survey_state)
+
+The survey finished, but some columns of some repositories could not be read. **[SURVEY_PARTIAL]**
+
+- **Why it matters:** An unread column is not the same as "nothing there": counting it as none would overstate what is missing or hide what is set.
+- **Fix:** Read the not_established column in KIT_SURVEY.csv, give the token read access to what it names (administration, secrets, variables), and run it again.
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
 ## kit_watermark
 
 Not failures (nothing to do): `WATERMARK_ABSENT`, `WATERMARK_BOUND`.
@@ -1913,6 +2012,26 @@ The identity GitHub presented does not match the federated credential's expected
 - **Why it matters:** Azure will refuse the sign-in (AADSTS700213); nothing was attempted.
 - **Fix:** Add a federated credential whose subject is exactly repo:<org>/<repo>:environment:<env> (case-sensitive), with this host's issuer.
 - **More:** [docs/adoption/SETUP.md](../adoption/SETUP.md)
+
+## org_init_result
+
+Not failures (nothing to do): `PASS`.
+
+### ACTION_NEEDED (org_init_result)
+
+An organisation setting the kit needs is not set the way it needs to be. **[ACTION_NEEDED]**
+
+- **Why it matters:** Until it is, the kit fails in a way that does not name the setting (for example "workflow not found" for a private kit).
+- **Fix:** Open ORG_INIT_CHECKLIST.md: each item says what to change, the exact command, and why. The check changed nothing; a person runs the commands.
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
+### NOT_ESTABLISHED (org_init_result)
+
+The organisation setup check could not read this setting. **[NOT_ESTABLISHED]**
+
+- **Why it matters:** An unread setting is not a passing one.
+- **Fix:** Run the check with an org owner's read-only token, or, on a user account, set the equivalent per repository as the item says.
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
 
 ## platform_applicability
 
@@ -3603,12 +3722,15 @@ These taxonomy namespaces hold vocabulary a developer never sees as a run outcom
 | `identity_refusal` | why a durable finding identity was not computed, read by the ledger and its proofs |
 | `identity_scope` | how far a finding identity may be trusted, a field of the evidence model |
 | `kit_api_data` | words the API writes inside result data, not refusals |
+| `kit_survey_cell` | a per-cell read state inside the survey report, never a run outcome |
+| `kit_survey_comparison` | a comparison verdict in the survey report, read by a person, never a run outcome |
 | `lineage_attribution` | who asserted a lineage link, recorded on ledger events for maintainers |
 | `lineage_cause` | why an identity moved, recorded on ledger events for maintainers |
 | `lineage_ledger_integrity` | whether the lineage ledger chain verifies, checked by kit maintainers |
 | `lineage_proof_failure` | the failure words of one kit proof, seen only by kit maintainers |
 | `lineage_relation` | how finding identities relate across an identity change, internal to the ledger |
 | `lineage_resolution` | what an identity resolves to now, internal to the ledger |
+| `local_tool_pin` | printed only by the kit maintainers' local battery, never a consumer pipeline |
 | `lz_drift_class` | the landing zone's drift severity, emitted by the deployed scan for the platform team |
 | `lz_drift_dimension` | the landing zone's drift vocabulary, emitted by the deployed scan for the platform team |
 | `mutation_class` | which ticket mutations need a person, internal to the reconciler |
