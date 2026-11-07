@@ -33,7 +33,22 @@ USAGE
     python tools/battery.py --strict      UNKNOWN fails the battery too (rc 2)
     tools/battery.sh / tools/battery.ps1 are the shell twins; they find bash and python and call this.
 
-EXIT  0 no check failed (UNKNOWN allowed unless --strict)   1 one or more FAILED
+LOCAL SCANNER TOOLS (KIT_LOCAL_TOOLS)
+
+    KIT_LOCAL_TOOLS=<dir> puts <dir>, each <dir>/<child>/ and each <dir>/<child>/bin/ ahead of PATH
+    for every check this run (laid out as <dir>/<tool>-<version>/, e.g. gitleaks-8.21.2/), so a
+    laptop can prove what the hosted runner proves. The battery NEVER downloads anything: you place
+    the tools, checksum-verified (CONTRIBUTING.md). Then, before any check runs, a preflight resolves
+    every tool `.github/actions/selftest-tools/action.yml` and self-test.yml pin (the release URLs
+    they download -- no second list) on that PATH and asks its version:
+        OK                the version is the pin
+        VERSION_MISMATCH  any other version, or none could be read: the battery FAILS (rc 1) even if
+                          every check passed -- a pass on another release is not the hosted proof
+        ABSENT            not found: the checks that need it answer UNKNOWN, as before
+    Unset or empty: nothing changes (no preflight, the PATH untouched). A value that is not a
+    directory: UNKNOWN (rc 2) before anything runs.
+
+EXIT  0 no check failed (UNKNOWN allowed unless --strict)   1 one or more FAILED, or VERSION_MISMATCH
       2 --strict and one or more UNKNOWN, or the plan could not be read
 """
 import argparse
@@ -71,6 +86,11 @@ SUPERSEDED = {
 LOCAL_EXPRESSIONS = {
     '${{ github.event_name }}': 'workflow_dispatch',
 }
+
+LOCAL_TOOLS_ENV = 'KIT_LOCAL_TOOLS'
+TOOLS_ACTION = os.path.join(ROOT, '.github', 'actions', 'selftest-tools', 'action.yml')
+RELEASE_URL = re.compile(r'github\.com/[^/\s"\']+/([^/\s"\']+)/releases/download/([^/\s"\']+)/')
+SHELL_VAR = re.compile(r'(?:^|[\s;])([vt])=([^\s;]+)')
 
 CHECK_LINE = re.compile(r'^(?:[A-Z_][A-Z0-9_]*=\S+\s+)*python3?\s+(?:tests|scripts|tools)/\S+')
 SETUP_LINE = re.compile(r'^python3?\s+-m\s+pip\s+install\b')
@@ -199,6 +219,72 @@ def plan(workflow_path=SELF_TEST, fast=False):
     return checks, hosted, None
 
 
+def tool_pins(paths=None):
+    """{tool: version} for every release the selftest-tools composite and self-test.yml download.
+
+    `paths` is one file or a list (default: the composite, then self-test.yml); a tool pinned in
+    more than one keeps its first pin.
+
+    The tool is the release's repository name, the version its tag without a leading `v`. The
+    composite's `v=`/`t=` shell variables are substituted line by line, as bash would.
+    """
+    if paths is None:
+        paths = [TOOLS_ACTION, SELF_TEST]
+    elif isinstance(paths, str):
+        paths = [paths]
+    pins = {}
+    for path in paths:
+        try:
+            with open(path, encoding='utf-8') as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        found, var = {}, {}
+        for line in text.splitlines():
+            for k, val in SHELL_VAR.findall(line):
+                var[k] = re.sub(r'\$\{?v\}?', var.get('v', ''), val)
+            expanded = re.sub(r'\$\{?([vt])\}?', lambda m: var.get(m.group(1), m.group(0)), line)
+            for repo, tag in RELEASE_URL.findall(expanded):
+                if '$' not in tag:
+                    found[repo] = tag[1:] if re.match(r'v\d', tag) else tag
+        for tool, version in found.items():
+            pins.setdefault(tool, version)
+    return pins
+
+
+def local_tools_path(tools_dir):
+    """The directories KIT_LOCAL_TOOLS adds, in order: the dir, each child, each child's bin/."""
+    out = [tools_dir]
+    for name in sorted(os.listdir(tools_dir)):
+        child = os.path.join(tools_dir, name)
+        if os.path.isdir(child) and not name.startswith(('.', '_')):
+            out.append(child)
+            if os.path.isdir(os.path.join(child, 'bin')):
+                out.append(os.path.join(child, 'bin'))
+    return out
+
+
+def tool_version_state(tool, pin, path):
+    """-> (state, where, what it said). state is OK, VERSION_MISMATCH or ABSENT."""
+    exe = shutil.which(tool, path=path)
+    if not exe:
+        return 'ABSENT', '-', ''
+    said = []
+    token = re.compile(r'(?<![\d.])%s(?!\.?\d)' % re.escape(pin))  # 1.2.3 is not 1.2.30
+    for args in (['--version'], ['version']):
+        try:
+            p = subprocess.run([exe] + args, capture_output=True, text=True, encoding='utf-8',
+                               errors='replace', timeout=60)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            said.append('could not run: %s' % e)
+            continue
+        text = (p.stdout or '') + (p.stderr or '')
+        if token.search(text):
+            return 'OK', exe, pin
+        said.append(' '.join(text.split())[:80])
+    return 'VERSION_MISMATCH', exe, ' | '.join(s for s in said if s) or 'no version printed'
+
+
 def find_bash():
     env = os.environ.get('BATTERY_BASH')
     if env:
@@ -210,8 +296,10 @@ def find_bash():
     return shutil.which('bash') or 'bash'
 
 
-def run_check(check, root, tmp, timeout, bash):
+def run_check(check, root, tmp, timeout, bash, path=None):
     env = dict(os.environ)
+    if path is not None:
+        env['PATH'] = path  # KIT_LOCAL_TOOLS: the tools directories ahead of the caller's PATH
     env.update({'RUNNER_TEMP': tmp, 'GITHUB_OUTPUT': os.path.join(tmp, 'github_output'),
                 'GITHUB_ENV': os.path.join(tmp, 'github_env'),
                 'GITHUB_STEP_SUMMARY': os.path.join(tmp, 'step_summary'),
@@ -279,6 +367,9 @@ def main(argv=None):
     ap.add_argument('--strict', action='store_true')
     ap.add_argument('--timeout', type=int, default=TIMEOUT)
     ap.add_argument('--json', help='also write the per-check results to this file')
+    ap.add_argument('--pins', default=None,
+                    help='a file whose release downloads are the tool pins (default: the selftest-tools '
+                         'composite, then self-test.yml)')
     a = ap.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -293,6 +384,25 @@ def main(argv=None):
     if a.only:
         rx = re.compile(a.only)
         checks = [c for c in checks if rx.search(c['name'])]
+
+    run_path, mismatched = None, []
+    tools_dir = os.environ.get(LOCAL_TOOLS_ENV, '')
+    if tools_dir:
+        if not os.path.isdir(tools_dir):
+            print('UNKNOWN: %s=%s is not a directory; nothing was run.' % (LOCAL_TOOLS_ENV, tools_dir))
+            return 2
+        added = local_tools_path(os.path.abspath(tools_dir))
+        run_path = os.pathsep.join(added + [os.environ.get('PATH', '')])
+        pins = tool_pins(a.pins)
+        print('== local tools (%s=%s): %d directories ahead of PATH; pins from %s'
+              % (LOCAL_TOOLS_ENV, tools_dir, len(added), a.pins or
+                 'the selftest-tools composite and self-test.yml'))
+        for tool in sorted(pins):
+            state, where, said = tool_version_state(tool, pins[tool], run_path)
+            print('  %-14s %-16s %-10s %s' % (tool, state, pins[tool], where if state != 'VERSION_MISMATCH'
+                                               else '%s said: %s' % (where, said)))
+            if state == 'VERSION_MISMATCH':
+                mismatched.append((tool, pins[tool], where, said))
     if a.list:
         for c in checks:
             print('%-20s %s' % (c['job'], c['name'].splitlines()[0][:150]))
@@ -307,7 +417,7 @@ def main(argv=None):
     try:
         before = tree_status(a.root)
         for i, c in enumerate(checks, 1):
-            rc, out, secs = run_check(c, a.root, tmp, a.timeout, bash)
+            rc, out, secs = run_check(c, a.root, tmp, a.timeout, bash, run_path)
             v = verdict_of(rc)
             after = tree_status(a.root)
             if before is not None and after is not None and after - before:
@@ -333,10 +443,15 @@ def main(argv=None):
             print('          %s' % ln)
     for r in unknown:
         print('UNKNOWN rc=2  %s  (%s)' % (r['check'].splitlines()[0], (r['tail'] or ['-'])[-1][:120]))
+    for tool, pin, where, said in mismatched:
+        # Never a silent pass: a check that passed on another release is not the hosted proof.
+        print('VERSION_MISMATCH  %s  the kit pins %s; %s said: %s' % (tool, pin, where, said))
     if a.json:
         with open(a.json, 'w', encoding='utf-8') as fh:
-            json.dump({'results': results, 'hosted_only': hosted}, fh, indent=1)
-    if fails:
+            json.dump({'results': results, 'hosted_only': hosted,
+                       'version_mismatch': [{'tool': t, 'pin': p, 'path': w, 'said': x}
+                                            for t, p, w, x in mismatched]}, fh, indent=1)
+    if fails or mismatched:
         return 1
     if unknown and a.strict:
         return 2

@@ -234,6 +234,10 @@ NOT_VOCABULARY = {
     # and tools/battery.py's override for the bash it runs step bodies with, and its constant for
     # the self-test workflow path. Names of settings, not states.
     "EXPECTED_AUDIENCE", "BATTERY_BASH", "SELF_TEST",
+    # tools/battery.py's KIT_LOCAL_TOOLS: the env var naming a directory of placed scanners (lane
+    # tools, 2026-11-07). A setting's name, not a state; the state it can produce, VERSION_MISMATCH,
+    # is registered under local_tool_pin.
+    "KIT_LOCAL_TOOLS",
     # scripts/dependabot_config.py: the env var a caller may set to add path globs to leave out.
     "DEPENDABOT_CONFIG_EXCLUDE",
     # Lane kit-adoption (KDEC-041, 2026-11-06). scripts/kit_init.py and its proof: Python constant names that
@@ -254,6 +258,12 @@ NOT_VOCABULARY = {
     # constant names that alias registered states (reviewer_signals' KEPT_DEPLOYMENT and friends, the
     # pull's AUTH_REFUSED / HOST_REFUSED), the template version constant, and SonarQube's own hotspot
     # status word TO_REVIEW (the vendor's, read, never a state of this kit).
+    # scripts/kit_survey.py / kit_org_init.py (owner 2026-11-07): stored-cloud-key secret NAMES the survey looks
+    # for (never values), the token secret's name, and constant names (lists of variable names, claim keys).
+    "AZURE_CREDENTIALS", "AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "GCP_SA_KEY", "GOOGLE_CREDENTIALS",
+    "KIT_SURVEY_TOKEN", "WRONG_AT_ORG", "ORG_LEVEL_REQUIRED", "DEFAULT_SUB_CLAIMS", "STATIC_CLOUD_SECRETS",
+    "STRENGTH_STEPS", "KIT_ADVANTAGE", "SCANNER_KIT_ATTRS", "NATIVE_OWNERS", "DEPLOY_SIGNS", "PR_EVENTS",
+    "WORKFLOW_DIR", "CSV_COLUMNS", "DEFAULT_UI_MESSAGE", "SECRET_VALUE", "VAR_VALUE",
     "SONAR_TOKEN", "SONAR_HOST_URL", "SONAR_ORGANIZATION", "AIKIDO_API_BASE", "AIKIDO_CLIENT_ID", "AIKIDO_CLIENT_SECRET",
     "AIKIDO_ID", "AIKIDO_SECRET", "KEPT_DEPLOYMENT", "NOT_KEPT", "NOT_APPROVED", "SELF_APPROVED",
     "AUTH_REFUSED", "HOST_REFUSED", "TEMPLATE_VERSION", "TO_REVIEW",

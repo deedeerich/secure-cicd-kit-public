@@ -1,0 +1,142 @@
+name: "Kit: org survey and org setup check (reusable, read-only)"
+
+# Owner, 2026-11-07: "a scanner of what's already running in the org first, so it can identify if there's
+# something that's being done better or needs to be adopted, and we adopt it through the overlays", and a
+# one-time org setup that says what people need to fill out, how, and why.
+#
+# WHAT IT DOES. One job, read-only against GitHub, dispatched by a person (templates/kit-survey.yml has no
+# schedule: the survey names private repositories and a person decides when to look):
+#   scripts/kit_survey.py      every repository of `owner`: workflows and actions (pinned or not), scanners
+#                              already running, protection, rulesets, environments, CODEOWNERS, Dependabot,
+#                              secret and variable NAMES only, kit callers and pins, deploy targets, and the
+#                              workflow history (a kit caller removed or switched off, and the stated reason).
+#                              KIT_SURVEY.csv / .md, KIT_SURVEY_COMPARISON.md (KIT_BETTER ... GAP, credit,
+#                              "adopt via the org overlay" and how to do it by hand), KIT_ADOPTION_INVENTORY.md.
+#   scripts/kit_org_init.py    the organisation settings the kit needs: PASS / ACTION_NEEDED / NOT_ESTABLISHED,
+#                              with WHAT, HOW and WHY for each, and a dry-run plan. ORG_INIT_CHECKLIST.md.
+# Both send GET only. Neither changes a setting, writes a secret or opens anything.
+#
+# THE TOKEN. KIT_SURVEY_TOKEN: read-only across the organisation (a fine-grained token or a GitHub App
+# installation with Metadata, Contents, Actions, Administration, Secrets and Variables READ, and organisation
+# Members / Administration READ for the org check). The run's own GITHUB_TOKEN sees one repository only.
+# A permission it lacks shows as NOT_ESTABLISHED in that column, never as "none".
+#
+# THE HOST (KDEC-027). The API is this run's GITHUB_API_URL; the token goes there and nowhere else.
+# OUTPUT. The artifact `kit-survey` (14 days): it names private repositories, so it is never committed.
+# PROOF: tests/prove_kit_survey.py, tests/prove_kit_org_init.py (a 127.0.0.1 stand-in, github.com and GHE.com).
+
+on:
+  workflow_call:
+    inputs:
+      kit_repository:
+        description: "owner/repo of this kit, checked out for its scripts."
+        type: string
+        required: true
+      kit_ref:
+        description: "Full commit SHA of the kit to check out. A tag or branch can move."
+        type: string
+        required: true
+      owner:
+        description: "The organisation (or user account) to survey."
+        type: string
+        required: true
+      kit_repo_name:
+        description: "The kit repository's NAME as consumers reference it (finds the kit callers)."
+        type: string
+        default: "secure-cicd-kit"
+      overlay:
+        description: "The org overlay directory name (the org overlay directory). Empty: the owner's name."
+        type: string
+        default: ""
+      platform_team:
+        description: "The platform approver team slug (uat/prod reviewers, KDEC-042)."
+        type: string
+        default: ""
+      appsec_team:
+        description: "The AppSec approver team slug."
+        type: string
+        default: ""
+      history:
+        description: "Workflow-history commits read per repository (a shorter history is NOT_ESTABLISHED, never NEVER)."
+        type: number
+        default: 200
+      timeout_minutes:
+        description: "Bound on the job."
+        type: number
+        default: 60
+    secrets:
+      KIT_SURVEY_TOKEN:
+        description: "A read-only token across the organisation (see the header)."
+        required: true
+    outputs:
+      survey_state:
+        description: "SURVEY_COMPLETE, SURVEY_PARTIAL, or the refusal (kit_survey_state in assurance-taxonomy.yaml)."
+        value: ${{ jobs.survey.outputs.survey_state }}
+
+permissions: {}
+
+jobs:
+  survey:
+    name: Survey ${{ inputs.owner }} (read-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions:
+      contents: read
+    outputs:
+      survey_state: ${{ steps.survey.outputs.survey_state }}
+    steps:
+      - name: Check out the kit at a pinned commit (its scripts)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.kit_repository }}
+          ref: ${{ inputs.kit_ref }}
+          path: .kit
+          persist-credentials: false
+      - name: PyYAML (to read the workflows)
+        run: python3 -m pip install --quiet pyyaml==6.0.2
+      - name: Survey and org check
+        id: survey
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.KIT_SURVEY_TOKEN }}
+          IN_OWNER: ${{ inputs.owner }}
+          IN_KIT_NAME: ${{ inputs.kit_repo_name }}
+          IN_OVERLAY: ${{ inputs.overlay }}
+          IN_PLATFORM: ${{ inputs.platform_team }}
+          IN_APPSEC: ${{ inputs.appsec_team }}
+          IN_HISTORY: ${{ inputs.history }}
+        run: |
+          set -uo pipefail
+          [ -n "${GH_TOKEN:-}" ] && echo "::add-mask::${GH_TOKEN}"
+          out="$RUNNER_TEMP/kit-survey"; mkdir -p "$out"
+          rc=0
+          python3 .kit/scripts/kit_survey.py --owner "$IN_OWNER" --api-url "$GITHUB_API_URL" \
+            --kit-repo "$IN_KIT_NAME" --history "$IN_HISTORY" --out "$out" > "$out/survey.txt" 2>&1 || rc=$?
+          cat "$out/survey.txt"
+          state="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("state",""))' "$out/kit-survey.json" 2>/dev/null || head -1 "$out/survey.txt")"
+          echo "survey_state=$state" >> "$GITHUB_OUTPUT"
+          args=(--owner "$IN_OWNER" --api-url "$GITHUB_API_URL" --kit-repo "$IN_KIT_NAME" --out "$out")
+          [ -n "$IN_OVERLAY" ] && args+=(--overlay "$IN_OVERLAY")
+          [ -n "$IN_PLATFORM" ] && args+=(--platform-team "$IN_PLATFORM")
+          [ -n "$IN_APPSEC" ] && args+=(--appsec-team "$IN_APPSEC")
+          rc2=0
+          python3 .kit/scripts/kit_org_init.py "${args[@]}" > "$out/org-init.txt" 2>&1 || rc2=$?
+          cat "$out/org-init.txt"
+          {
+            echo "### Kit survey of \`$IN_OWNER\`: $state"; echo ""
+            [ -f "$out/KIT_ADOPTION_INVENTORY.md" ] && sed -n '1,12p' "$out/KIT_ADOPTION_INVENTORY.md"
+            echo ""; echo '```'; cat "$out/org-init.txt"; echo '```'
+            echo ""; echo "Full results: the \`kit-survey\` artifact (it names private repositories)."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" != 0 ] || [ "$rc2" != 0 ]; then
+            echo "::error title=Survey did not complete::$state (see the summary); a refused survey is never an empty estate"
+            exit 1
+          fi
+      - name: Keep the survey
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kit-survey
+          path: ${{ runner.temp }}/kit-survey
+          if-no-files-found: warn
+          retention-days: 14

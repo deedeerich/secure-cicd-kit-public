@@ -1,0 +1,32 @@
+# The kit's OWN caller of the org survey and org setup check (owner, 2026-11-07), DISPATCH ONLY: a survey names
+# private repositories, so a person decides when to look, and it needs the read-only KIT_SURVEY_TOKEN this
+# repository holds only when the owner adds it. Without it the run refuses (SURVEY_AUTH_REFUSED), named.
+# templates/kit-survey.yml is the organisation's starter; docs/adoption/ORG_SURVEY_AND_ORG_INIT.md the guide.
+name: Kit survey (org survey and org setup check)
+
+on:
+  workflow_dispatch:
+    inputs:
+      owner:
+        description: "The organisation or user account to survey"
+        type: string
+        required: true
+      history:
+        description: "Workflow-history commits read per repository"
+        type: number
+        default: 200
+
+permissions: {}
+
+jobs:
+  survey:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/reusable-kit-survey.yml
+    with:
+      kit_repository: ${{ github.repository }}
+      kit_ref: ${{ github.sha }}
+      owner: ${{ inputs.owner }}
+      history: ${{ inputs.history }}
+    secrets:
+      KIT_SURVEY_TOKEN: ${{ secrets.KIT_SURVEY_TOKEN }}

@@ -513,6 +513,27 @@ namespaces:
           deferral wearing a technical costume.
 
   # ─────────────────────────────────────────────────────────────────────────────
+  local_tool_pin:
+    description: >-
+      Whether a scanner the local battery found (tools/battery.py, KIT_LOCAL_TOOLS) is the release
+      the kit pins: the selftest-tools composite's and self-test.yml's release downloads. Its
+      siblings OK (the pinned release answered) and ABSENT (not found; that tool's checks stay
+      UNKNOWN, as before) are ordinary words; only the mismatch is a state with consequences.
+    consumers: [tools/battery.py, tests/prove_battery_mirrors_selftest.py]
+    rule: >-
+      A PASS ON ANOTHER RELEASE IS NOT THE HOSTED PROOF. A check that passed with a scanner other
+      than the pin proved something about that other scanner; the battery may not read it as the
+      result the runner would have given.
+    values:
+      VERSION_MISMATCH:
+        definition: >-
+          The tool resolved on the battery's PATH printed a version other than the pin (a near miss
+          such as 1.2.30 for 1.2.3 included), or printed no version at all.
+        rule: >-
+          Fails the battery (rc 1) even when every check passed. Not ABSENT: an absent tool leaves
+          its checks UNKNOWN; a mismatched one lets them run and pass on the wrong release, which is
+          the silent pass this value exists to stop. Moves to OK only by placing the pinned release.
+
   artifact_identity:
     description: >-
       Whether the artefact a control inspected is provably the artefact that was published. Emitted
@@ -5925,6 +5946,100 @@ namespaces:
           NO_KIT_ADAPTER:<kind> -- aks, vm, function_app_code, or a vended kind no adapter serves;
           NO_KIT_ADAPTER:UNDETERMINED when the survey could not run.
 
+  kit_survey_state:
+    description: >-
+      scripts/kit_survey.py and scripts/kit_org_init.py (owner, 2026-11-07: "a scanner of what's already running in
+      the org first"): what one read-only survey of an organisation or user account did. Both send GET only and
+      never change a setting; their outputs name private repositories and are written outside the kit.
+    consumers: [scripts/kit_survey.py, scripts/kit_org_init.py, .github/workflows/reusable-kit-survey.yml, scripts/plain_errors.py, docs/adoption/ORG_SURVEY_AND_ORG_INIT.md]
+    rule: >-
+      Only SURVEY_COMPLETE and SURVEY_PARTIAL are done (PARTIAL names every cell it could not read); every other
+      state exits 1 and writes nothing. A host is never assumed (KDEC-027).
+    values:
+      SURVEY_COMPLETE:
+        definition: Every repository of the owner was read in every column the survey reads.
+      SURVEY_PARTIAL:
+        definition: The survey finished, and at least one cell is NOT_ESTABLISHED (a permission, a rate limit) or the repository list was cut at --max-repos.
+        rule: Each unread cell is named in its row; it is never read as "none".
+      SURVEY_HOST_NOT_NAMED:
+        definition: No host was named (--host, GITHUB_API_URL or GH_HOST); the survey never assumes github.com.
+      SURVEY_HOST_UNSUPPORTED:
+        definition: The host is neither github.com nor a <tenant>.ghe.com host.
+      SURVEY_HOST_MISMATCH:
+        definition: The API URL is not the named host's API, or the API answered for a repository (or offered a next page) on another host.
+        rule: Nothing is written and the token is sent nowhere else.
+      SURVEY_AUTH_REFUSED:
+        definition: The API refused the token reading the owner or its repository list.
+      SURVEY_OWNER_NOT_FOUND:
+        definition: No organisation or user of that name on the host.
+      SURVEY_OUT_IN_KIT:
+        definition: The output directory is inside the kit repository; the outputs name private repositories, so they are refused there.
+  kit_survey_cell:
+    description: >-
+      One column of one repository in scripts/kit_survey.py (and one read in scripts/kit_org_init.py): read, absent,
+      or not established. A 403, 401, 429 or 5xx is NOT_ESTABLISHED, never absent.
+    consumers: [scripts/kit_survey.py, scripts/kit_org_init.py]
+    values:
+      READ:
+        definition: The API answered 200 and the value was read.
+      ABSENT:
+        definition: The API answered 404 (or 409 for an empty repository) -- the thing is not there.
+      NOT_ESTABLISHED:
+        definition: The API did not answer with the value (a permission, a rate limit, an error).
+  kit_survey_comparison:
+    description: >-
+      Per kit capability, how the organisation's OWN practice (never a kit caller) compares with the kit
+      (scripts/kit_survey.py compare). ORG_BETTER and ORG_ONLY carry an "adopt via overlay" proposal and the
+      by-hand steps; proprietary or vendor practice stays in overlays/<org>/.
+    consumers: [scripts/kit_survey.py, docs/adoption/ORG_SURVEY_AND_ORG_INIT.md]
+    values:
+      KIT_BETTER:
+        definition: The org does it, and lacks an attribute the kit holds (pinned, on the pull request, blocking, a review rule ...).
+      ORG_BETTER:
+        definition: The org does it with an attribute the kit lacks (a schedule, broader CodeQL queries, signed commits, a wait timer, a Dependabot cooldown); credited by repository.
+      EQUIVALENT:
+        definition: The org does it with every attribute the kit compares, and nothing the kit lacks.
+      ORG_ONLY:
+        definition: The org does something the kit does not do at all (SonarQube, Snyk, Aikido, runner hardening ...).
+      KIT_ONLY:
+        definition: The kit does it and no surveyed repository does.
+      GAP:
+        definition: 'Neither does it, and it is on the kit''s expected baseline (signing, DAST, runner hardening): a kit gap to build.'
+  kit_adoption_state:
+    description: >-
+      Per repository, how far the kit is in use (scripts/kit_survey.py adopt), with the evidence and, for a
+      turn-off, the stated reason or REASON_NOT_RECORDED.
+    consumers: [scripts/kit_survey.py, docs/adoption/ORG_SURVEY_AND_ORG_INIT.md]
+    rule: >-
+      NEVER only when the whole workflow history was read; a cut or unreadable history is NOT_ESTABLISHED. The kit
+      repository itself (KIT_HOST), archived repositories and forks are out of the denominator, and named.
+    values:
+      ADOPTED:
+        definition: An active kit security or deploy caller, pinned by commit SHA, on the pull request path, with no declared weakening; its rung from the repository's registration (crawl when none).
+      PARTIAL:
+        definition: A kit caller is active but the kit is referenced by a moving ref, runs off the pull request path, carries a declared weakening, or only non-security kit workflows are called.
+      TURNED_OFF:
+        definition: 'A kit caller was removed by a commit, disabled with `if: false`, or its workflow disabled through the API; the commit or state is the evidence.'
+      NEVER:
+        definition: No kit caller now and none anywhere in the workflow history, read in full.
+      NOT_ESTABLISHED:
+        definition: The workflows or their history could not be read in full (a permission, or --history cut it short); never read as NEVER.
+      KIT_HOST:
+        definition: The kit repository itself; out of the denominator.
+      REASON_NOT_RECORDED:
+        definition: A turn-off whose commit message (a UI default such as "Update security.yml"), pull request and weakening record give no reason.
+  org_init_result:
+    description: >-
+      One item of scripts/kit_org_init.py, the one-time organisation setup check. It never performs a change: each
+      ACTION_NEEDED item carries WHAT, HOW (the exact command) and WHY, and the dry-run plan lists them in order.
+    consumers: [scripts/kit_org_init.py, docs/adoption/ORG_SURVEY_AND_ORG_INIT.md]
+    values:
+      PASS:
+        definition: The setting was read and is what the kit needs.
+      ACTION_NEEDED:
+        definition: The setting was read and must change; the checklist says what, how and why.
+      NOT_ESTABLISHED:
+        definition: The setting could not be read (a permission), or a user account has no such setting.
   dependabot_config:
     description: >-
       The Dependabot configuration check (owner, 2026-11-06: no developer bitten by a missing

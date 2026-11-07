@@ -1408,6 +1408,16 @@ jobs:
           python3 scripts/friction_summary.py --self-test
           python3 tests/prove_friction_summary.py
 
+      - name: Org survey and org setup check -- read-only, GET only, github.com and GHE.com (KDEC-045, 2026-11-07)
+        run: |
+          set -euo pipefail
+          # What already runs in the org, compared with the kit; turn-offs and their reasons; never "none" when unread.
+          python3 scripts/kit_survey.py --self-test
+          python3 tests/prove_kit_survey.py
+          # The one-time org setup: PASS / ACTION_NEEDED / NOT_ESTABLISHED with what, how and why; it changes nothing.
+          python3 scripts/kit_org_init.py --self-test
+          python3 tests/prove_kit_org_init.py
+
       - name: A workflow over the size limit does not fail, it never starts
         run: |
           # RUN THIS EARLY. reusable-security.yml crossed 500 KB on 2026-09-16 and GitHub stopped
