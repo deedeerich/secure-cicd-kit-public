@@ -157,6 +157,16 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.self_test:
         return self_test()
+    # SOURCE-ONLY CONTROL (2026-11-06): the registers live under .context/, which a neutral export never
+    # carries (tests/prove_export_scope.py E2, E9). In an exported copy -- its watermark present and
+    # .context/ absent -- there is nothing to check: said by name, never a pass.
+    if (os.path.isfile(os.path.join(a.root, '.neutral-export-watermark.json'))
+            and not os.path.isdir(os.path.join(a.root, '.context'))):
+        print('SOURCE-ONLY CONTROL: check_register_mitigations.py guards the source repository registers '
+              'under .context/. This is an exported copy (.neutral-export-watermark.json present) and, by '
+              'design, carries no .context/; the source ran it at the commit the watermark records. '
+              'Nothing was checked here, and nothing passed.')
+        return 0
     counts, problems = check(a.root)
     if counts is None:
         print('UNKNOWN: %s' % problems[0])

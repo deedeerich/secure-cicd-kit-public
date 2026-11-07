@@ -527,8 +527,10 @@ def main():
         # failure of the first public Release 2 PR), and not pretend to have checked anything.
         # check_context_current.py joined 2026-10-22: the export ships no .context (E2), and once
         # the sweep refused any exit 1 the copy's self-test went red on it (public run 39840692734).
+        # prove_register_mitigations.py joined 2026-11-06 (public run 42317591967, tree-clean): it read
+        # the registers under .context/, which the copy never carries.
         for tool in ('check_export_safety.py', 'prove_deny_samples.py', 'prove_export_scope.py',
-                     'check_context_current.py'):
+                     'check_context_current.py', 'prove_register_mitigations.py'):
             q = subprocess.run([sys.executable, os.path.join(out, 'tests', tool)], cwd=out,
                                capture_output=True, text=True, encoding='utf-8', errors='replace',
                                env=env)
@@ -536,11 +538,20 @@ def main():
             if q.returncode != 0 or 'SOURCE-ONLY CONTROL' not in said:
                 fails.append('E9 in the exported copy tests/%s exited %d without naming itself a '
                              'source-only control: %s' % (tool, q.returncode, said.strip()[-200:]))
+        # scripts/check_register_mitigations.py joined 2026-11-06: self-test runs it under bash -e, and in
+        # the copy it answered UNKNOWN (exit 2) for the registers under .context/, which the copy never carries.
+        q = subprocess.run([sys.executable, os.path.join(out, 'scripts', 'check_register_mitigations.py')],
+                           cwd=out, capture_output=True, text=True, encoding='utf-8', errors='replace', env=env)
+        if q.returncode != 0 or 'SOURCE-ONLY CONTROL' not in (q.stdout + q.stderr):
+            fails.append('E9 in the exported copy scripts/check_register_mitigations.py exited %d without naming '
+                         'itself a source-only control: %s' % (q.returncode, (q.stdout + q.stderr).strip()[-200:]))
         # The proofs that READ the withheld consumer-path workflow must still pass in the copy
         # (each says SOURCE-ONLY for the part it cannot check). prove_job_token_named.py T9 copied
         # the kit's file from the tree under proof and crashed in the exported copy: the Release 4
-        # candidate's "Normalizer drift" (public run 41885418827) went red on it.
-        for tool in ('prove_job_token_named.py', 'prove_consumer_path_preflight.py'):
+        # candidate's "Normalizer drift" (public run 41885418827) went red on it. prove_dispatch_correlation.py
+        # joined 2026-11-06: it crashed the same way in the Release 5 candidate (public run 42317591967).
+        for tool in ('prove_job_token_named.py', 'prove_consumer_path_preflight.py',
+                     'prove_dispatch_correlation.py'):
             q = subprocess.run([sys.executable, os.path.join(out, 'tests', tool)], cwd=out,
                                capture_output=True, text=True, encoding='utf-8', errors='replace',
                                env=env)

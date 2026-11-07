@@ -411,7 +411,7 @@ jobs:
       - name: Upload Trivy SARIF
         if: always() && inputs.enable_trivy && steps.pub_trivy.outputs.publish == 'true'
         continue-on-error: true          # PUBLICATION=DEGRADED, never ANALYSIS=FAILED
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
         with:
           sarif_file: nvd-scan-results/trivy-nvd.sarif
           category: trivy-nvd
@@ -734,7 +734,7 @@ jobs:
       - name: Upload Dependency-Check SARIF
         if: always() && inputs.enable_dependency_check && steps.pub_dc.outputs.publish == 'true'
         continue-on-error: true          # PUBLICATION=DEGRADED, never ANALYSIS=FAILED
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
         with:
           sarif_file: nvd-scan-results/dependency-check/dependency-check-report.sarif
           category: owasp-dependency-check

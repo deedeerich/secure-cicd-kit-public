@@ -60,6 +60,16 @@ def edit(d, rel, old, new):
 
 
 def main():
+    # SOURCE-ONLY CONTROL (2026-11-06, public run 42317591967): the registers live under .context/, which
+    # a neutral export never carries (prove_export_scope.py E2). In an exported copy -- its watermark
+    # present and .context/ absent -- there is nothing to check: said by name, never a pass. E9.
+    if (os.path.isfile(os.path.join(ROOT, '.neutral-export-watermark.json'))
+            and not os.path.isdir(os.path.join(ROOT, '.context'))):
+        print('SOURCE-ONLY CONTROL: prove_register_mitigations.py guards the source repository registers '
+              'under .context/. This is an exported copy (.neutral-export-watermark.json present) '
+              'and, by design, carries no .context/; the source ran it at the commit the watermark records. '
+              'Nothing was checked here, and nothing passed.')
+        return 0
     print('Register mitigations (scripts/check_register_mitigations.py):')
     rc, out = run(ROOT)
     check(rc == 0, 'G1 the real registers pass', out)

@@ -102,7 +102,12 @@ def main():
                 dispatch_lines.append('%s:%d' % (os.path.basename(p), n))
             if 'gh run list' in s and re.search(r'--limit 1(?![0-9])', s):
                 latest.append('%s:%d' % (os.path.basename(p), n))
-    check(len(copies) >= 2 and len(set(copies)) == 1, 'S1 %d copies of the dispatch block, all identical' % len(copies))
+    # SOURCE-ONLY in an exported copy (2026-11-06, public run 42317591967): the dispatch block lives in
+    # consumer-path-test.yml, which the neutral export withholds. S1's count and P1/N1/N2/N4/M1/M2 (which run
+    # that workflow's jobs) say so by name; S2 and the kit API client and cost tool cases still run.
+    cpt_withheld = CP.copy_lacks_cpt('S1/P1/N1/N2/N4/M1/M2')
+    if not cpt_withheld:
+        check(len(copies) >= 2 and len(set(copies)) == 1, 'S1 %d copies of the dispatch block, all identical' % len(copies))
     check(len(dispatch_lines) == len(copies), 'S1 every `gh workflow run` is inside the block (%s)' % dispatch_lines)
     check(not latest, 'S2 no workflow selects a run by --limit 1 (%s)' % latest)
     neg = yaml.safe_load(io.open(os.path.join(ROOT, '.github', 'workflows', 'consumer-path-negative.yml'), encoding='utf-8'))
@@ -111,7 +116,7 @@ def main():
           '[${{ inputs.correlation_id' in str(neg.get('run-name', '')),
           'S2 the negative workflow takes correlation_id and carries it, in brackets, in its run-name')
 
-    jobs = CP.load_cpt()['jobs']
+    jobs = {} if cpt_withheld else CP.load_cpt()['jobs']
     states = '{"bandit":"PASS"}'
     ctx = {'github.token': 'ghs_job_token_placeholder', 'github.repository': CP.REPO, 'github.run_id': '777',
            'github.ref_name': 'main', 'needs.clean.result': 'success', 'needs.multi.result': 'success',
@@ -134,36 +139,37 @@ def main():
         finally:
             w.close()
 
-    # P1: a concurrent decoy (newer, failed) is ignored; our own run is paired.
-    rc, log = run('assert-seeded-blocks', {'stub_decoy': '1'})
-    check(rc == 0 and re.search(r'negative run: 101 \(paired by its correlation id\)', log) and
-          'Negative control passed' in log, 'P1 with a decoy, the full negative pairs ITS run (101, not the decoy 102)', log)
-    rc, log = run('assert-php-blocks', {'stub_decoy': '1'})
-    check(rc == 0 and 'PHP-only negative run: 101 (paired' in log, 'P1 with a decoy, the PHP negative pairs ITS run', log)
-    # N1: our run never shows our id -> NOT_ESTABLISHED.
-    rc, log = run('assert-seeded-blocks', {'stub_nomatch': '1', 'stub_decoy': '1'})
-    check(rc != 0 and 'NOT_ESTABLISHED' in log and 'Negative control passed' not in log,
-          'N1 no run carries our id (only a decoy with its own): NOT_ESTABLISHED, the job fails', log)
-    # N2: two runs carry the same id.
-    rc, log = run('assert-seeded-blocks', {'stub_dupe': '1'})
-    check(rc != 0 and re.search(r'NOT_ESTABLISHED::2 runs', log), 'N2 two runs with one id: NOT_ESTABLISHED', log)
-    # N4: the run listed with our id reads back as something else (not a dispatch): refused.
-    rc, log = run('assert-seeded-blocks', {'stub_view_event': 'schedule'})
-    check(rc != 0 and 'did not read back as the dispatched run' in log, 'N4 a run that does not read back as our dispatch is refused', log)
-    # M1: the old "latest run" selection pairs the decoy.
-    call = re.compile(r'dispatch_correlated consumer-path-negative\.yml "\$REF" "[^"]*full[^"]*" \|\| exit 1\n(\s*)rid="\$DC_RID"\n')
+    if not cpt_withheld:
+        # P1: a concurrent decoy (newer, failed) is ignored; our own run is paired.
+        rc, log = run('assert-seeded-blocks', {'stub_decoy': '1'})
+        check(rc == 0 and re.search(r'negative run: 101 \(paired by its correlation id\)', log) and
+              'Negative control passed' in log, 'P1 with a decoy, the full negative pairs ITS run (101, not the decoy 102)', log)
+        rc, log = run('assert-php-blocks', {'stub_decoy': '1'})
+        check(rc == 0 and 'PHP-only negative run: 101 (paired' in log, 'P1 with a decoy, the PHP negative pairs ITS run', log)
+        # N1: our run never shows our id -> NOT_ESTABLISHED.
+        rc, log = run('assert-seeded-blocks', {'stub_nomatch': '1', 'stub_decoy': '1'})
+        check(rc != 0 and 'NOT_ESTABLISHED' in log and 'Negative control passed' not in log,
+              'N1 no run carries our id (only a decoy with its own): NOT_ESTABLISHED, the job fails', log)
+        # N2: two runs carry the same id.
+        rc, log = run('assert-seeded-blocks', {'stub_dupe': '1'})
+        check(rc != 0 and re.search(r'NOT_ESTABLISHED::2 runs', log), 'N2 two runs with one id: NOT_ESTABLISHED', log)
+        # N4: the run listed with our id reads back as something else (not a dispatch): refused.
+        rc, log = run('assert-seeded-blocks', {'stub_view_event': 'schedule'})
+        check(rc != 0 and 'did not read back as the dispatched run' in log, 'N4 a run that does not read back as our dispatch is refused', log)
+        # M1: the old "latest run" selection pairs the decoy.
+        call = re.compile(r'dispatch_correlated consumer-path-negative\.yml "\$REF" "[^"]*full[^"]*" \|\| exit 1\n(\s*)rid="\$DC_RID"\n')
 
-    def to_latest(body):
-        return call.sub(lambda m: OLD_LATEST, body) if call.search(body) else body
-    rc, log = run('assert-seeded-blocks', {'stub_decoy': '1'}, to_latest)
-    check('negative run: 102' in log or ('rid' in log and '102' in log),
-          'M1 the old "latest run" code, under the same decoy, pairs the DECOY 102 (the defect is real)', log)
-    # M2: the selection ignores the id.
+        def to_latest(body):
+            return call.sub(lambda m: OLD_LATEST, body) if call.search(body) else body
+        rc, log = run('assert-seeded-blocks', {'stub_decoy': '1'}, to_latest)
+        check('negative run: 102' in log or ('rid' in log and '102' in log),
+              'M1 the old "latest run" code, under the same decoy, pairs the DECOY 102 (the defect is real)', log)
+        # M2: the selection ignores the id.
 
-    def ignore_id(body):
-        return body.replace('select(.displayTitle | contains(\\"[$cid]\\"))', 'select(true)')
-    rc, log = run('assert-seeded-blocks', {'stub_decoy': '1'}, ignore_id)
-    check(rc != 0 and 'NOT_ESTABLISHED' in log, 'M2 a selection that ignores the id is caught (NOT_ESTABLISHED)', log)
+        def ignore_id(body):
+            return body.replace('select(.displayTitle | contains(\\"[$cid]\\"))', 'select(true)')
+        rc, log = run('assert-seeded-blocks', {'stub_decoy': '1'}, ignore_id)
+        check(rc != 0 and 'NOT_ESTABLISHED' in log, 'M2 a selection that ignores the id is caught (NOT_ESTABLISHED)', log)
 
     # P2/N3 the kit API client
     import kit_api as KA

@@ -64,7 +64,7 @@ THE RECORDED TABLE
     Resolved 2026-10-22 through the GitHub REST API (`git/ref/tags/<tag>`, annotated tags peeled to
     the commit), each commit confirmed either on the action's default-branch history (compare API:
     the default branch is identical to or ahead of it) or the target of a published release tag
-    (azure/login v3.1.0 and actions/setup-java v5.7.0 are cut from release branches). Dependabot's
+    (azure/login v3.1.0 is cut from a release branch; actions/setup-java v6.1.0 resolved 2026-11-06). Dependabot's
     github-actions ecosystem updates a SHA and its version comment together; a pin it moves leaves
     this table and P3 no longer spot-checks it, so P4 (`--online`, run by the self-test) is what
     checks every pin. A row is evidence of one resolution, not a list of allowed
@@ -117,7 +117,7 @@ RECORDED = {
     'actions/download-artifact': {'9000827ccba6bdab643e8b6fd33ac0654aef8333': 'v8.0.2'},
     'actions/setup-dotnet': {'a98b56852c35b8e3190ac28c8c2271da59106c68': 'v6.0.0'},
     'actions/setup-go': {'b7ad1dad31e06c5925ef5d2fc7ad053ef454303e': 'v7.0.0'},
-    'actions/setup-java': {'b6effb05e454b25005698d916606bdc6ffcbf961': 'v5.7.0'},
+    'actions/setup-java': {'b843ebf9b913146b38da2eaa7aeddf76074ae1ad': 'v6.1.0'},
     'actions/setup-node': {'949feb2413d6458794dcd2491c4babbbce0c15c1': 'v7.1.0'},
     'actions/setup-python': {'6d4fd22b20465ccc0f7354476588e8df7c9ca0e0': 'v7.1.0'},
     'actions/upload-artifact': {'cf430e030ddbb5b0abf93d22962f4752f3646cd9': 'v7.0.2'},
