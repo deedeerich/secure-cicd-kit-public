@@ -23,7 +23,7 @@ In a run, the same sentence is the title of the annotation at the top of the run
 - [deployment_outcome](#deployment_outcome) (6)
 - [discovery_state](#discovery_state) (8)
 - [edge_purge](#edge_purge) (2)
-- [environment_protection](#environment_protection) (4)
+- [environment_protection](#environment_protection) (9)
 - [evidence_retention](#evidence_retention) (2)
 - [exception_lifecycle](#exception_lifecycle) (3)
 - [exception_resurfacing](#exception_resurfacing) (7)
@@ -74,11 +74,12 @@ In a run, the same sentence is the title of the annotation at the top of the run
 - [seam_ownership_refusal](#seam_ownership_refusal) (2)
 - [secret_exception_refusal](#secret_exception_refusal) (7)
 - [target_lease](#target_lease) (12)
+- [ticket_governance_state](#ticket_governance_state) (9)
 - [ticket_intake_state](#ticket_intake_state) (3)
 - [ticket_lookup_outcome](#ticket_lookup_outcome) (4)
 - [ticket_reference_outcome](#ticket_reference_outcome) (5)
 - [ticket_template_outcome](#ticket_template_outcome) (4)
-- [ticket_template_refusal](#ticket_template_refusal) (14)
+- [ticket_template_refusal](#ticket_template_refusal) (15)
 - [ticketing_availability](#ticketing_availability) (3)
 - [tier_reality](#tier_reality) (2)
 - [tier_source](#tier_source) (1)
@@ -889,6 +890,14 @@ The edge endpoint the environment names is not a Front Door endpoint, so its cac
 
 Not failures (nothing to do): `ENVIRONMENT_PROTECTION_NOT_REQUIRED`, `ENVIRONMENT_PROTECTION_VERIFIED`.
 
+### ENVIRONMENT_APPROVERS_ALL_APP_TEAM (environment_protection)
+
+Every reviewer of the uat or prod environment is on the app team that wrote the change. **[ENVIRONMENT_APPROVERS_ALL_APP_TEAM]**
+
+- **Why it matters:** The team cannot approve its own production release; someone from platform or security must be able to; the deploy is refused before sign-in.
+- **Fix:** Add the platform or security team as a required reviewer of the environment (Settings > Environments > <env>), keeping Prevent self-review on.
+- **More:** [docs/adoption/BRANCH_PROTECTION_SETTINGS.md](../adoption/BRANCH_PROTECTION_SETTINGS.md)
+
 ### ENVIRONMENT_APPROVER_GROUP_MISSING (environment_protection)
 
 The environment's reviewers are not from the approver groups the policy names. **[ENVIRONMENT_APPROVER_GROUP_MISSING]**
@@ -896,6 +905,22 @@ The environment's reviewers are not from the approver groups the policy names. *
 - **Why it matters:** Someone outside the named groups could approve a production release; refused.
 - **Fix:** Set the environment's required reviewers to the groups the summary names (for example platform or security).
 - **More:** [docs/adoption/SETUP.md](../adoption/SETUP.md)
+
+### ENVIRONMENT_APPROVER_POOL_MISSING (environment_protection)
+
+None of the uat or prod environment's reviewers is in the platform or security approver pool. **[ENVIRONMENT_APPROVER_POOL_MISSING]**
+
+- **Why it matters:** Approvals for production come from platform or security, outside the app team; the deploy is refused before sign-in.
+- **Fix:** Make a platform or security pool team (vars.KIT_APPROVER_POOLS, else approver_pools in .kit/settings.json) a required reviewer of the environment in Settings > Environments > <env>.
+- **More:** [docs/adoption/BRANCH_PROTECTION_SETTINGS.md](../adoption/BRANCH_PROTECTION_SETTINGS.md)
+
+### ENVIRONMENT_NOT_FOUND (environment_protection)
+
+The uat or prod environment this deploy names does not exist in the repository. **[ENVIRONMENT_NOT_FOUND]**
+
+- **Why it matters:** Without the environment GitHub has no reviewer to wait for, so a production deploy would need no approval; it is refused before sign-in.
+- **Fix:** Create the environment with its reviewers (the gh api -X PUT repos/<repo>/environments/<env> command in .kit/ADOPTION_CHECKLIST.md), or correct the github_environment name in the caller workflow.
+- **More:** [docs/adoption/BRANCH_PROTECTION_SETTINGS.md](../adoption/BRANCH_PROTECTION_SETTINGS.md)
 
 ### ENVIRONMENT_PROTECTION_NOT_ESTABLISHED (environment_protection)
 
@@ -907,11 +932,19 @@ The deploy could not read the environment's protection rules (or the tier is not
 
 ### ENVIRONMENT_REVIEWERS_ABSENT (environment_protection)
 
-The uat or prod environment has no required reviewers, so anyone who can run the workflow could deploy. **[ENVIRONMENT_REVIEWERS_ABSENT]**
+The uat or prod environment has no required reviewers (no required-reviewers rule), so anyone who can run the workflow could deploy. **[ENVIRONMENT_REVIEWERS_ABSENT]**
 
 - **Why it matters:** A production deploy must be approved by someone other than the deployer; the deploy is refused.
 - **Fix:** A repository admin adds required reviewers (platform or security) in Settings > Environments > <env>; .kit/ADOPTION_CHECKLIST.md has the gh api command.
 - **More:** [docs/adoption/SETUP.md](../adoption/SETUP.md)
+
+### ENVIRONMENT_REVIEWERS_EMPTY (environment_protection)
+
+The uat or prod environment has a required-reviewers rule that names nobody, so nobody is waited for. **[ENVIRONMENT_REVIEWERS_EMPTY]**
+
+- **Why it matters:** A production deploy needs a person from platform or security to approve it; the deploy is refused before sign-in.
+- **Fix:** A repository admin adds the platform or security team as a required reviewer in Settings > Environments > <env>; .kit/ADOPTION_CHECKLIST.md has the exact gh api -X PUT command.
+- **More:** [docs/adoption/BRANCH_PROTECTION_SETTINGS.md](../adoption/BRANCH_PROTECTION_SETTINGS.md)
 
 ### ENVIRONMENT_SELF_REVIEW_ALLOWED (environment_protection)
 
@@ -920,6 +953,14 @@ The environment lets the person who started the deploy approve it themselves. **
 - **Why it matters:** Self-approval is not an independent check; the deploy is refused.
 - **Fix:** Tick "Prevent self-review" in Settings > Environments > <env> (or prevent_self_review: true in the gh api call).
 - **More:** [docs/adoption/SETUP.md](../adoption/SETUP.md)
+
+### ENVIRONMENT_UNCLASSED (environment_protection)
+
+The deploy names no environment, or one the kit cannot tell is dev, test, uat or prod. **[ENVIRONMENT_UNCLASSED]**
+
+- **Why it matters:** An environment nobody has classed might be production, so it is refused at every tier rather than deployed without an approval.
+- **Fix:** Add the environment to .kit/environments.json with "class": "dev", "test", "uat" or "prod" (kit init writes this file), or use a name with dev, test, uat or prod in it.
+- **More:** [docs/adoption/BRANCH_PROTECTION_SETTINGS.md](../adoption/BRANCH_PROTECTION_SETTINGS.md)
 
 ## evidence_retention
 
@@ -2987,6 +3028,82 @@ This run's hold on the target was taken over or broken, so its change was not se
 - **Fix:** Re-run the deploy once the target is free.
 - **More:** [docs/architecture/LZ_KIT_SEAM_CONTRACT.md](../architecture/LZ_KIT_SEAM_CONTRACT.md)
 
+## ticket_governance_state
+
+Not failures (nothing to do): `AREA_RESOLVED`, `PROVENANCE_ESTABLISHED`, `TAG_PRESERVATION_ESTABLISHED`.
+
+### AREA_UNRESOLVED (ticket_governance_state)
+
+No routing rule gave this finding an owning area, so it waits in triage with an owner role and a deadline. **[AREA_UNRESOLVED]**
+
+- **Why it matters:** A finding nobody owns is not worked; the triage owner must place it before the deadline.
+- **Fix:** The owner role adds a ticket_routing rule that covers this kind of finding (or records why it has none).
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### AREA_UNRESOLVED_OVERDUE (ticket_governance_state)
+
+A finding with no owning area is past its triage deadline. **[AREA_UNRESOLVED_OVERDUE]**
+
+- **Why it matters:** It is still unowned; every run reports it until it is routed.
+- **Fix:** Add a ticket_routing rule for it (the run names the owner role and the ticket).
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### CORRELATION_LABEL_COLLISION (ticket_governance_state)
+
+A ticket carries this finding's label but its full key belongs to a different finding. **[CORRELATION_LABEL_COLLISION]**
+
+- **Why it matters:** The full key is the only identity; a shared short label is a search ambiguity, not a match.
+- **Fix:** A person checks both tickets; nothing is merged unless a reviewer links them.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### CORRELATION_LABEL_UNVERIFIED (ticket_governance_state)
+
+A ticket carries the finding's label but not its full key, so it was shown to a person instead of being linked. **[CORRELATION_LABEL_UNVERIFIED]**
+
+- **Why it matters:** A label is only a search aid; linking on it alone could attach the finding to the wrong ticket.
+- **Fix:** Confirm the link in a finalized review (link_decisions); the kit then writes the full key into the ticket.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### PROVENANCE_MISMATCH (ticket_governance_state)
+
+The integration named on the ticket (the via label) is not the identity that actually wrote it. **[PROVENANCE_MISMATCH]**
+
+- **Why it matters:** A via label is a claim; a mismatch can mean a misconfigured integration or a ticket made to look automated.
+- **Fix:** Check KIT_INTEGRATION_IDENTITIES and who created the ticket; correct the mapping or investigate the ticket.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### PROVENANCE_NOT_ESTABLISHED (ticket_governance_state)
+
+The kit could not confirm who wrote the ticket. **[PROVENANCE_NOT_ESTABLISHED]**
+
+- **Why it matters:** Without the authenticated identity and the tracker's write record, the via claim is unproven.
+- **Fix:** Give the tracker credential read access to the creator or activity history, and register the integration in KIT_INTEGRATION_IDENTITIES.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### STAMP_FIELD_NOT_CONFIRMED (ticket_governance_state)
+
+The new Freshservice ticket's key field did not save the full key. **[STAMP_FIELD_NOT_CONFIRMED]**
+
+- **Why it matters:** The key field is how the kit finds the ticket again; the description still carries the key.
+- **Fix:** Check FRESHSERVICE_STAMP_FIELD is a single-line text field on the ticket form.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### TAG_PRESERVATION_NOT_ESTABLISHED (ticket_governance_state)
+
+Freshservice replaced the ticket's whole tag list and the kit could not prove nobody else's tag change was lost. **[TAG_PRESERVATION_NOT_ESTABLISHED]**
+
+- **Why it matters:** A person's tag may have been dropped by the kit's write.
+- **Fix:** Check the ticket's tags against its activity history (the kit left a private note saying so).
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### TICKET_WRITE_LOCK_HELD (ticket_governance_state)
+
+Another kit writer was updating the same ticket, so this write waited and then stopped. **[TICKET_WRITE_LOCK_HELD]**
+
+- **Why it matters:** Two writers on one Freshservice ticket can overwrite each other's tags.
+- **Fix:** Nothing to do; the next run makes the write. If it repeats, look for a stuck run.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
 ## ticket_intake_state
 
 Not failures (nothing to do): `TRACKER_INTAKE_COMPLETE`.
@@ -3132,6 +3249,14 @@ A verifier rejected the fix, so the ticket was reopened. **[TEMPLATE_VERIFICATIO
 - **More:** [docs/ticketing/TICKET-TYPES.md](../ticketing/TICKET-TYPES.md)
 
 ## ticket_template_refusal
+
+### CHILD_OBLIGATION_OPEN (ticket_template_refusal)
+
+The multicloud ticket cannot close yet: a child obligation (Azure or AWS) is still open. **[CHILD_OBLIGATION_OPEN]**
+
+- **Why it matters:** Each cloud has its own owner and its own fix; the parent closes only when every child is verified.
+- **Fix:** Close each child ticket first (its owner resolves it; a rescan or another person verifies it); the parent then closes itself.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
 
 ### CLOSURE_NOT_VERIFIED (ticket_template_refusal)
 
@@ -3449,6 +3574,7 @@ These taxonomy namespaces hold vocabulary a developer never sees as a run outcom
 
 | namespace | why it is not here |
 |---|---|
+| `app_team_check` | a recorded note beside environment_protection; only its refusal, ENVIRONMENT_APPROVERS_ALL_APP_TEAM, is shown to developers |
 | `capability_maturity` | how far a kit capability is proven, read by kit maintainers and reviewers |
 | `capability_metadata` | capability-specific facts carried beside the shared vocabulary, not outcomes |
 | `capability_origin` | where a kit capability came from, read by kit maintainers |

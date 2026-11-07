@@ -43,7 +43,7 @@ a person can see whose label it is and the kit never collides with a team's own 
 | **KEV** | `<p>-kev` | present or absent | 2 |
 | **disposition / request** | `<p>-tpl-<template>` names what is asked (`false-positive`, `accepted-risk`, `mitigation`, `exemption`); the ticket CLASS is in the machine-owned block (`FALSE_POSITIVE_REQUEST`, ...); a granted disposition lives on the protected branch, never in a label | 8 templates | |
 | **SLA** | `<p>-sla-overdue` (only when breached; KDEC-024). The due date is in the block, never in the tracker's due-date field | 1 | |
-| **correlation key** | `<p>-ck-<32 hex>` | one per finding | high (by design: an identifier, not a dimension) |
+| **correlation key** | `<p>-ck-<32 hex>` (on GitHub a 50-character hashed short form) | one per finding | high -- a SEARCH AID only: the full key in the stamp field or the block decides (KDEC-043, docs/ticketing/TICKET-GOVERNANCE.md) |
 | **review id** | `<p>-review-<review id>` | one per review | medium |
 | **template type** | `<p>-tpl-<template>` | `finding`, `false-positive`, `accepted-risk`, `mitigation`, `exemption`, `extension`, `nofix-recheck`, `closure` | 8 |
 | lifecycle markers | `<p>-linked`, `<p>-nofix`, `<p>-recheck-due`, `<p>-fix-available`, `<p>-extension-<n>`, `<p>-remediated`, `<p>-superseded`, `<p>-disagreement` | | small |
@@ -97,5 +97,5 @@ Nothing is renamed, re-typed or moved; only labels and one comment are added.
 | T-5 | whether the floor class (secret / KEV / malicious) gets its own label beside routing | KEV only (`<p>-kev`) |
 | T-6 | whether the review id label is kept after closure (audit trail vs label clutter) | kept |
 | T-7 | components: which team owns which source type or environment | none set unless a routing rule names one |
-| T-8 | Freshservice (later): the same dimensions as Freshservice tags/custom fields | the same names, when the adapter is built |
+| T-8 | Freshservice: the same dimensions as Freshservice tags/custom fields | the same names; the adapter is built (KDEC-043): tags are set at creation and lifecycle markers go in private notes unless FRESHSERVICE_MARK_MODE=tags (docs/architecture/TICKETING_BACKENDS.md 4A) |
 | T-9 | the Jira projects per source (routing): e.g. cloud findings to the cloud team's board, pentests to the security board, requests to GRC | everything to `JIRA_PROJECT` until a `ticket_routing` rule says otherwise |

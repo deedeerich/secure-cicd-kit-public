@@ -2775,7 +2775,7 @@ jobs:
         id: cs_semgrep
         if: always() && steps.sarif_semgrep.outputs.exists == 'true'
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: semgrep.sarif
           category: semgrep
@@ -2978,7 +2978,7 @@ jobs:
         id: cs_bandit
         if: always() && steps.sarif_bandit.outputs.exists == 'true'
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: bandit.sarif
           category: bandit
@@ -3068,7 +3068,7 @@ jobs:
         id: cq_init
         if: matrix.gate == 'true'
         continue-on-error: true
-        uses: github/codeql-action/init@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: ${{ matrix.lang }}
           # From the plan: `none` (buildless) or `autobuild` (go; java-kotlin with Kotlin).
@@ -3082,13 +3082,13 @@ jobs:
         id: cq_build
         if: matrix.gate == 'true' && steps.cq_init.outcome == 'success' && matrix.build_mode == 'autobuild'
         continue-on-error: true
-        uses: github/codeql-action/autobuild@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        uses: github/codeql-action/autobuild@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
 
       - name: CodeQL — analyse
         id: cq_analyze
         if: matrix.gate == 'true' && steps.cq_init.outcome == 'success'
         continue-on-error: true
-        uses: github/codeql-action/analyze@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           category: "/language:${{ matrix.lang }}"
           # NEVER, AND PUBLISHED BELOW AFTER REDACTION. `upload: always` sent the SARIF to the
@@ -3264,7 +3264,7 @@ jobs:
         id: cs_codeql
         if: always() && matrix.gate == 'true' && steps.cq_analyze.outcome == 'success'
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: codeql-results
           category: "/language:${{ matrix.lang }}"
@@ -3952,7 +3952,7 @@ jobs:
         id: cs_gosec
         if: always() && steps.sarif_gosec.outputs.exists == 'true'
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: gosec.sarif
           category: gosec
@@ -4302,7 +4302,7 @@ jobs:
         id: cs_img
         if: always() && steps.sarif_img.outputs.vuln == 'true'
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: trivy-image.sarif
           category: trivy-image
@@ -4347,7 +4347,7 @@ jobs:
         id: cs_img_secret
         if: always() && steps.sarif_img.outputs.secret == 'true'
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: trivy-image-secret.sarif
           category: trivy-image-secret
@@ -4652,7 +4652,7 @@ jobs:
         id: cs_osv
         if: always() && steps.sarif_osv.outputs.exists == 'true'
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: osv.sarif
           category: osv

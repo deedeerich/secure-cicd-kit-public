@@ -148,7 +148,9 @@
   "promotion_record_state": "internal: a field inside the promotion record, explained by promotion_gate refusals",
   "promotion_approval": "internal: a field inside the promotion record, explained by release_approval refusals",
   "cost_measurement_state": "internal: what the kit's cost measurement can say, read by kit maintainers",
-  "kit_api_data": "internal: words the API writes inside result data, not refusals"
+  "kit_api_data": "internal: words the API writes inside result data, not refusals",
+  "ticket_governance_state": "developer",
+  "app_team_check": "internal: a recorded note beside environment_protection; only its refusal, ENVIRONMENT_APPROVERS_ALL_APP_TEAM, is shown to developers"
  },
  "not_a_failure": {
   "routing_result": [
@@ -447,6 +449,11 @@
    "all_conditions_met",
    "not_dependabot",
    "wrong_trigger"
+  ],
+  "ticket_governance_state": [
+   "AREA_RESOLVED",
+   "PROVENANCE_ESTABLISHED",
+   "TAG_PRESERVATION_ESTABLISHED"
   ]
  },
  "entries": {
@@ -1387,10 +1394,40 @@
    "link": "docs/architecture/PROVENANCE_AND_ATTESTATION.md"
   },
   "environment_protection.ENVIRONMENT_REVIEWERS_ABSENT": {
-   "what": "The uat or prod environment has no required reviewers, so anyone who can run the workflow could deploy.",
+   "what": "The uat or prod environment has no required reviewers (no required-reviewers rule), so anyone who can run the workflow could deploy.",
    "why": "A production deploy must be approved by someone other than the deployer; the deploy is refused.",
    "fix": "A repository admin adds required reviewers (platform or security) in Settings > Environments > <env>; .kit/ADOPTION_CHECKLIST.md has the gh api command.",
    "link": "docs/adoption/SETUP.md"
+  },
+  "environment_protection.ENVIRONMENT_REVIEWERS_EMPTY": {
+   "what": "The uat or prod environment has a required-reviewers rule that names nobody, so nobody is waited for.",
+   "why": "A production deploy needs a person from platform or security to approve it; the deploy is refused before sign-in.",
+   "fix": "A repository admin adds the platform or security team as a required reviewer in Settings > Environments > <env>; .kit/ADOPTION_CHECKLIST.md has the exact gh api -X PUT command.",
+   "link": "docs/adoption/BRANCH_PROTECTION_SETTINGS.md"
+  },
+  "environment_protection.ENVIRONMENT_NOT_FOUND": {
+   "what": "The uat or prod environment this deploy names does not exist in the repository.",
+   "why": "Without the environment GitHub has no reviewer to wait for, so a production deploy would need no approval; it is refused before sign-in.",
+   "fix": "Create the environment with its reviewers (the gh api -X PUT repos/<repo>/environments/<env> command in .kit/ADOPTION_CHECKLIST.md), or correct the github_environment name in the caller workflow.",
+   "link": "docs/adoption/BRANCH_PROTECTION_SETTINGS.md"
+  },
+  "environment_protection.ENVIRONMENT_UNCLASSED": {
+   "what": "The deploy names no environment, or one the kit cannot tell is dev, test, uat or prod.",
+   "why": "An environment nobody has classed might be production, so it is refused at every tier rather than deployed without an approval.",
+   "fix": "Add the environment to .kit/environments.json with \"class\": \"dev\", \"test\", \"uat\" or \"prod\" (kit init writes this file), or use a name with dev, test, uat or prod in it.",
+   "link": "docs/adoption/BRANCH_PROTECTION_SETTINGS.md"
+  },
+  "environment_protection.ENVIRONMENT_APPROVER_POOL_MISSING": {
+   "what": "None of the uat or prod environment's reviewers is in the platform or security approver pool.",
+   "why": "Approvals for production come from platform or security, outside the app team; the deploy is refused before sign-in.",
+   "fix": "Make a platform or security pool team (vars.KIT_APPROVER_POOLS, else approver_pools in .kit/settings.json) a required reviewer of the environment in Settings > Environments > <env>.",
+   "link": "docs/adoption/BRANCH_PROTECTION_SETTINGS.md"
+  },
+  "environment_protection.ENVIRONMENT_APPROVERS_ALL_APP_TEAM": {
+   "what": "Every reviewer of the uat or prod environment is on the app team that wrote the change.",
+   "why": "The team cannot approve its own production release; someone from platform or security must be able to; the deploy is refused before sign-in.",
+   "fix": "Add the platform or security team as a required reviewer of the environment (Settings > Environments > <env>), keeping Prevent self-review on.",
+   "link": "docs/adoption/BRANCH_PROTECTION_SETTINGS.md"
   },
   "environment_protection.ENVIRONMENT_SELF_REVIEW_ALLOWED": {
    "what": "The environment lets the person who started the deploy approve it themselves.",
@@ -2747,6 +2784,66 @@
    "why": "The merge would not wait for it.",
    "fix": "Make the named check required in the branch ruleset.",
    "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "ticket_template_refusal.CHILD_OBLIGATION_OPEN": {
+   "what": "The multicloud ticket cannot close yet: a child obligation (Azure or AWS) is still open.",
+   "why": "Each cloud has its own owner and its own fix; the parent closes only when every child is verified.",
+   "fix": "Close each child ticket first (its owner resolves it; a rescan or another person verifies it); the parent then closes itself.",
+   "link": "docs/ticketing/TICKET-GOVERNANCE.md"
+  },
+  "ticket_governance_state.CORRELATION_LABEL_UNVERIFIED": {
+   "what": "A ticket carries the finding's label but not its full key, so it was shown to a person instead of being linked.",
+   "why": "A label is only a search aid; linking on it alone could attach the finding to the wrong ticket.",
+   "fix": "Confirm the link in a finalized review (link_decisions); the kit then writes the full key into the ticket.",
+   "link": "docs/ticketing/TICKET-GOVERNANCE.md"
+  },
+  "ticket_governance_state.CORRELATION_LABEL_COLLISION": {
+   "what": "A ticket carries this finding's label but its full key belongs to a different finding.",
+   "why": "The full key is the only identity; a shared short label is a search ambiguity, not a match.",
+   "fix": "A person checks both tickets; nothing is merged unless a reviewer links them.",
+   "link": "docs/ticketing/TICKET-GOVERNANCE.md"
+  },
+  "ticket_governance_state.PROVENANCE_MISMATCH": {
+   "what": "The integration named on the ticket (the via label) is not the identity that actually wrote it.",
+   "why": "A via label is a claim; a mismatch can mean a misconfigured integration or a ticket made to look automated.",
+   "fix": "Check KIT_INTEGRATION_IDENTITIES and who created the ticket; correct the mapping or investigate the ticket.",
+   "link": "docs/ticketing/TICKET-GOVERNANCE.md"
+  },
+  "ticket_governance_state.PROVENANCE_NOT_ESTABLISHED": {
+   "what": "The kit could not confirm who wrote the ticket.",
+   "why": "Without the authenticated identity and the tracker's write record, the via claim is unproven.",
+   "fix": "Give the tracker credential read access to the creator or activity history, and register the integration in KIT_INTEGRATION_IDENTITIES.",
+   "link": "docs/ticketing/TICKET-GOVERNANCE.md"
+  },
+  "ticket_governance_state.AREA_UNRESOLVED": {
+   "what": "No routing rule gave this finding an owning area, so it waits in triage with an owner role and a deadline.",
+   "why": "A finding nobody owns is not worked; the triage owner must place it before the deadline.",
+   "fix": "The owner role adds a ticket_routing rule that covers this kind of finding (or records why it has none).",
+   "link": "docs/ticketing/TICKET-GOVERNANCE.md"
+  },
+  "ticket_governance_state.AREA_UNRESOLVED_OVERDUE": {
+   "what": "A finding with no owning area is past its triage deadline.",
+   "why": "It is still unowned; every run reports it until it is routed.",
+   "fix": "Add a ticket_routing rule for it (the run names the owner role and the ticket).",
+   "link": "docs/ticketing/TICKET-GOVERNANCE.md"
+  },
+  "ticket_governance_state.TAG_PRESERVATION_NOT_ESTABLISHED": {
+   "what": "Freshservice replaced the ticket's whole tag list and the kit could not prove nobody else's tag change was lost.",
+   "why": "A person's tag may have been dropped by the kit's write.",
+   "fix": "Check the ticket's tags against its activity history (the kit left a private note saying so).",
+   "link": "docs/ticketing/TICKET-GOVERNANCE.md"
+  },
+  "ticket_governance_state.TICKET_WRITE_LOCK_HELD": {
+   "what": "Another kit writer was updating the same ticket, so this write waited and then stopped.",
+   "why": "Two writers on one Freshservice ticket can overwrite each other's tags.",
+   "fix": "Nothing to do; the next run makes the write. If it repeats, look for a stuck run.",
+   "link": "docs/ticketing/TICKET-GOVERNANCE.md"
+  },
+  "ticket_governance_state.STAMP_FIELD_NOT_CONFIRMED": {
+   "what": "The new Freshservice ticket's key field did not save the full key.",
+   "why": "The key field is how the kit finds the ticket again; the description still carries the key.",
+   "fix": "Check FRESHSERVICE_STAMP_FIELD is a single-line text field on the ticket form.",
+   "link": "docs/ticketing/TICKET-GOVERNANCE.md"
   }
  }
 }

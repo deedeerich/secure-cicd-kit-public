@@ -381,6 +381,13 @@ def write_default_api(api_root):
     listing = os.path.join(repo, 'actions', 'artifacts')
     if not os.path.exists(listing):
         io.open(listing, 'w', encoding='utf-8').write(json.dumps({'total_count': 0, 'artifacts': []}))
+    # KDEC-042: the deploy classes its environment before login. The recorded repository classes the
+    # harness's generic environment name `env` as dev, the way kit init's .kit/environments.json would;
+    # the bound tier still raises it (a prod-tier run is gated). tests/prove_uat_prod_gating.py proves classing.
+    spec = os.path.join(repo, 'contents', '.kit', 'environments.json')
+    if not os.path.exists(spec):
+        os.makedirs(os.path.dirname(spec), exist_ok=True)
+        io.open(spec, 'w', encoding='utf-8').write(json.dumps({'classes': {'env': 'dev'}}))
 
 
 def run_world(path, inputs, state, cancel_after=None, environment_answer=PROTECTED_ENVIRONMENT,

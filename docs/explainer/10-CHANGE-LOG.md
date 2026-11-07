@@ -5,6 +5,32 @@ Commit ids are on the build trunk `fix/normalization-and-discovery`. Versions 1.
 entries are in `10a-CHANGE-LOG-OCTOBER.md`; 1.11 and earlier in `10b-CHANGE-LOG-EARLIER.md`. A reader whose last copy was v1.10 (`a907dc8`) reads
 `12-CHANGES-SINCE-A907DC8.md` first: it groups every change since by what an integrator must do.
 
+## Unreleased — ticket governance and the Freshservice tracker (KDEC-043 PROPOSED, 2026-11-06)
+
+Proven locally against stand-ins only (`prove_ticket_governance.py` G1-G4, `prove_freshservice_tracker.py` F1-F12 on
+127.0.0.1; 8 mutants killed). No live tracker call; no hosted run yet.
+
+| change | parts affected |
+|---|---|
+| The correlation key is never truncated as identity: a label is a verified search aid (GitHub's 50-character form is a hashed short form); a label hit is exact only when the stamp field or the block carries the full key; a collision or an unverified label goes to a person; a reviewer's link writes the full key into the kit's block on the person's ticket; `tickets.search` links only governed keys (`label_key_hints` for labels) | 06, 11 |
+| `via` is a claim: `tickets.submit` takes `via`; provenance compares it with the authenticated identity and the tracker's write record (`KIT_INTEGRATION_IDENTITIES`); a mismatch is labelled and alerted | 06, 11 |
+| `area-unresolved`: an unrouted finding is created in triage with an owner role and a deadline (`ticket_routing.unresolved`); overdue ones are a decision owed in every reconcile run | 06 |
+| Multicloud findings (`obligations` on a finding): one parent, one owned child per Azure/AWS asset; the parent closes only when every child is verified (`CHILD_OBLIGATION_OPEN`) | 06, 11 |
+| Freshservice, the fourth tracker (`scripts/tracker_freshservice.py`; TICKETING_BACKENDS.md 4A): search-first, tags at creation, markers as notes, read-merge-write-verify under a per-ticket lock, a person's simultaneous tag edit reconciled from the activity history, `TAG_PRESERVATION_NOT_ESTABLISHED` when unprovable; wired through the reusable ticket workflows | 06, 11 |
+
+## Unreleased — never a uat or prod deploy without a human approval (KDEC-042 PROPOSED, 2026-11-06)
+
+Proven locally against a stand-in API on 127.0.0.1 (`prove_uat_prod_gating.py` P1-P6, N1-N17, 13 mutants;
+`check_deploy_environment_declared.py` 9 mutants; `prove_deploy_environment_protection.py`; `prove_kit_init.py` P5).
+No hosted deploy has run it yet: whether a run token reads the reviewer list and `prevent_self_review` is owed.
+
+| change | parts affected |
+|---|---|
+| The deploy's `protection` step CLASSES the environment first (the strongest of the bound tier, `.kit/environments.json` `class` and the name; an explicit class never lowers a production name) and refuses an empty or unclassed name at every tier (`ENVIRONMENT_UNCLASSED`) | 03, 07, 11 |
+| At uat and prod it also refuses an environment that does not exist (`ENVIRONMENT_NOT_FOUND`), a reviewer rule naming nobody (`ENVIRONMENT_REVIEWERS_EMPTY`), no platform or security pool reviewer (`ENVIRONMENT_APPROVER_POOL_MISSING`) and app-team-only reviewers (`ENVIRONMENT_APPROVERS_ALL_APP_TEAM`); pools and team from `vars.KIT_APPROVER_POOLS` / `vars.KIT_APP_TEAM`, else `.kit/settings.json`; unreadable membership is `app_team_check=NOT_ESTABLISHED`, never guessed | 03, 07, 11 |
+| `tests/check_deploy_environment_declared.py`: every kit deploy job (and the rollback) runs in `environment: ${{ inputs.github_environment }}` from a required input, never conditional, so a push to main waits on the same reviewers as a dispatch; callers may not pass an empty environment or pick one by trigger | 07, 08, 11 |
+| `kit init`: `class` per environment, `approver_pools` and `app_team` (`--app-team`) in `.kit/settings.json`, the `gh variable set` commands in the checklist; SETUP.md 1.4, BRANCH_PROTECTION_SETTINGS.md, AUTOMERGE_RISKS_AND_ROLLOUT.md risk 4 (now enforced), GETTING_STARTED_1_HOUR.md; risks R-27, R-28 | 09, 11 |
+
 ## Unreleased — adoption without "a million hoops" (KDEC-041 PROPOSED, 2026-11-06)
 
 Proven locally (`prove_kit_init.py`, `prove_plain_errors.py`, `prove_friction_summary.py`, `prove_adoption_guides.py` R1/N4; 13 mutants killed). No hosted run yet.

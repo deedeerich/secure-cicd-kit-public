@@ -303,6 +303,18 @@ def pr_mode(base):
     open_ = all(not envs[n]['required_reviewers'] and not envs[n]['prevent_self_review'] for n in ('dev', 'test'))
     check(gated and open_ and all(e['deployment_branches'] == ['main'] for e in envs.values()),
           'P5 uat/prod need platform or security, self-review prevented; dev/test ungated; main only')
+    # KDEC-042: the spec the deploy reads back classes every deploy environment, the settings name the pools,
+    # and the checklist carries the exact PUT per environment and the variables a push cannot edit.
+    import environment_protection as ep
+    settings = json.load(io.open(os.path.join(d, '.kit', 'settings.json'), encoding='utf-8'))
+    classes = dict((n, ep.classify(n, 'dev', spec)[0]) for n in ('dev', 'test', 'uat', 'prod'))
+    check(classes == {'dev': 'dev', 'test': 'test', 'uat': 'uat', 'prod': 'prod'} and
+          all(envs[n].get('class') == n for n in classes), 'P5 the spec classes dev/test/uat/prod as the deploy reads it', classes)
+    check(ep.parse_pools(settings.get('approver_pools')) == {'appsec', 'platform'},
+          'P5 .kit/settings.json names the platform and security pools the deploy holds uat/prod to', settings)
+    check(all(('gh api -X PUT repos/acme/prapp/environments/%s --input - <<JSON' % n) in chk for n in classes) and
+          chk.count('"prevent_self_review":true') == 2 and "gh variable set KIT_APPROVER_POOLS --repo acme/prapp" in chk,
+          'P5 the checklist lists the exact PUT per environment, self-review prevented at uat and prod, and the pools variable')
     return d
 
 

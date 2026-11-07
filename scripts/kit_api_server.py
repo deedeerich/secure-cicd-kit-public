@@ -71,7 +71,7 @@ ENV_BY_PHASE = {
                 'KIT_API_GH_TICKET_TOKEN', 'TICKET_BACKEND', 'KIT_API_REVIEWS_DIR',
                 'KIT_API_REVIEW_APPROVER_LIST', 'KIT_API_REVIEW_APPROVER_SOURCE', 'KIT_API_TEAM_READ_TOKEN',
                 'KIT_API_BRANCH_ENVIRONMENTS', 'KIT_API_APPROVED_TOOLS',
-                'KIT_API_EVIDENCE_STORES') + TEMPLATE_SETTING_ENV,
+                'KIT_API_EVIDENCE_STORES', 'KIT_INTEGRATION_IDENTITIES') + TEMPLATE_SETTING_ENV,
     'findings': ('KIT_API_INTAKE', 'KIT_API_LEDGER', 'KIT_API_SECURITY_WORKFLOW',
                  'KIT_API_DEFAULT_BRANCH', 'KIT_API_KEV_FEED_FILE', 'KIT_API_KEV_SHA256',
                  'KIT_API_KEV_UNAVAILABLE', 'KIT_API_KEV_URL'),
@@ -642,6 +642,7 @@ BACKEND_VARS = {
     'jira': ('JIRA_',),
     'azdo': ('AZDO_',),
     'github': ('TICKET_REPO', 'TICKET_CALIBRATION_REF', 'GH_TOKEN'),
+    'freshservice': ('FRESHSERVICE_',),
 }
 
 
@@ -946,6 +947,8 @@ def _tickets_submit(rt, backend, ledger, routing, central, repo_reg, req, p, env
            'branch_map': _e(env, 'KIT_API_BRANCH_ENVIRONMENTS'),
            'approved_tools': _csv(_e(env, 'KIT_API_APPROVED_TOOLS')),
            'evidence_stores': _csv(_e(env, 'KIT_API_EVIDENCE_STORES')),
+           # KDEC-043 rule 2: which identity each `via` integration name is registered as (name=identity,...).
+           'integrations': __import__('ticket_governance').integrations_from(_e(env, 'KIT_INTEGRATION_IDENTITIES')),
            'evidence': lambda run_id, any_branch=False: evidence(client, env, run_id, any_branch)}
     dry = bool(req.get('dry_run'))
     drained = []
@@ -987,14 +990,17 @@ def _tickets_intake(rt, backend, ledger, routing, p, env, client, notes):
             return answer(ka.API_REFUSED, data, notes, refusal=ref)
         keys = set(f.get('cluster_key') for f in recs if f.get('cluster_key'))
         data['findings_run'] = {'id': run.get('id'), 'commit': run.get('head_sha')}
+    import ticket_governance as tg
     prefix = '%s-ck-' % (getattr(backend, 'stamp_label', '') or rt.DEFAULT_STAMP_LABEL)
     out = []
     for t in page['tickets']:
-        cks = set(x[len(prefix):] for x in t.get('labels') or [] if str(x).startswith(prefix))
-        if t.get('stamp'):
-            cks.add(t['stamp'])
+        # KDEC-043: a LINKED key is a full key in a governed place (the stamp field, a stamp or link line in the
+        # body). A label is a search aid: shown as a hint, never as a link -- on GitHub it may be a short form.
+        cks = tg.ticket_keys(t)
+        hints = set(x[len(prefix):] for x in t.get('labels') or [] if str(x).startswith(prefix)) - cks
         shaped = ti.public(t)
         shaped['linked_cluster_keys'] = sorted(cks & keys if keys is not None else cks)
+        shaped['label_key_hints'] = sorted(hints)
         shaped['manual'] = not t.get('stamp')
         out.append(shaped)
     data.update(tickets=out, count=len(out), next_page_token=page['next_page_token'])

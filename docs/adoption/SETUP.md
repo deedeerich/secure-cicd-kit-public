@@ -119,7 +119,7 @@ that blames authentication rather than policy.
 > A job that fails with **zero steps** has been refused by a protection rule. It is not a broken
 > workflow — do not go debugging the YAML.
 
-### 1.4 · Required reviewers (optional)
+### 1.4 · Required reviewers (optional at dev and test; REQUIRED at uat and prod)
 
 **GUI:** same page → tick **Required reviewers** → add up to 6 users/teams → **Save protection rules**
 
@@ -131,8 +131,32 @@ gh api -X PUT "repos/$ORG/$REPO/environments/$ENVIRONMENT" --input - <<JSON
 JSON
 ```
 
-The run pauses as *Waiting* until approved. Note that **you cannot approve your own deployment** in
-organization-owned repos, though you can in a personal one.
+The run pauses as *Waiting* until approved. Whether the person who started the run may approve it is
+the environment's **Prevent self-review** setting (`prevent_self_review`); at uat and prod it must be on.
+
+**uat and prod (KDEC-042, "never a prod deployment without a human approval"):** reviewers from the
+**platform or security** pool, never the app team alone, self-review prevented. A push straight to main
+still waits: the deploy job runs in the environment. Run as a repository admin (kit init prints the same
+commands, with your teams, in `.kit/ADOPTION_CHECKLIST.md`):
+
+```bash
+PLATFORM_ID=$(gh api orgs/$ORG/teams/platform --jq .id)
+SECURITY_ID=$(gh api orgs/$ORG/teams/security --jq .id)
+for ENVIRONMENT in uat prod; do
+gh api -X PUT "repos/$ORG/$REPO/environments/$ENVIRONMENT" --input - <<JSON
+{ "wait_timer": 0, "prevent_self_review": true,
+  "reviewers": [ { "type": "Team", "id": $PLATFORM_ID }, { "type": "Team", "id": $SECURITY_ID } ] }
+JSON
+done
+gh variable set KIT_APPROVER_POOLS --repo "$ORG/$REPO" --body '{"platform":["@'$ORG'/platform"],"security":["@'$ORG'/security"]}'
+gh variable set KIT_APP_TEAM --repo "$ORG/$REPO" --body "@$ORG/<app-team>"
+```
+
+Before it signs in, the deploy classes the environment (`.kit/environments.json` `class`, else its name;
+an environment it cannot class is refused, `ENVIRONMENT_UNCLASSED`) and at uat and prod refuses one that
+does not exist, has no reviewers, allows self-review, has no pool reviewer or only app-team reviewers, or
+cannot be read. The full table is in [BRANCH_PROTECTION_SETTINGS.md](BRANCH_PROTECTION_SETTINGS.md),
+section "What the deploy refuses"; each refusal's plain words and fix are in `docs/errors/ERRORS.md`.
 
 **At `uat` and `prod` they are not optional.** The deploy reads the environment's reviewers back and
 refuses without one (self-review prevented). It also reads the run's own approval (OF-5 K-1): the

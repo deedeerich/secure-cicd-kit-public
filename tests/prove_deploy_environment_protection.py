@@ -66,7 +66,8 @@ def main():
     cases = [
         ('prod', '', rule([team('security')]), 'ENVIRONMENT_PROTECTION_VERIFIED'),
         ('prod', '', {'protection_rules': []}, 'ENVIRONMENT_REVIEWERS_ABSENT'),
-        ('prod', '', rule([]), 'ENVIRONMENT_REVIEWERS_ABSENT'),
+        ('prod', '', rule([]), 'ENVIRONMENT_REVIEWERS_EMPTY'),
+        ('prod', '', 404, 'ENVIRONMENT_NOT_FOUND'),
         ('prod', '', rule([team('security')], prevent=False), 'ENVIRONMENT_SELF_REVIEW_ALLOWED'),
         ('prod', '', None, 'ENVIRONMENT_PROTECTION_NOT_ESTABLISHED'),
         ('prod', '', {'name': 'prod'}, 'ENVIRONMENT_PROTECTION_NOT_ESTABLISHED'),
@@ -123,18 +124,12 @@ def main():
         os.makedirs(kit)
         shutil.copyfile(os.path.join(ROOT, 'scripts', 'environment_protection.py'),
                         os.path.join(kit, 'environment_protection.py'))
-        api = os.path.join(work, 'api')
+        import _env_api_standin as standin
+        api = standin.StandIn().__enter__()
 
         def answer(name, doc):
-            d = os.path.join(api, 'repos', 'o', 'r', 'environments')
-            if not os.path.isdir(d):
-                os.makedirs(d)
-            p = os.path.join(d, name)
-            if doc is None:
-                if os.path.exists(p):
-                    os.remove(p)
-            else:
-                io.open(p, 'w', encoding='utf-8').write(json.dumps(doc))
+            # the stand-in on 127.0.0.1 (KDEC-042): an unreadable answer is a 500, never a pass
+            api.reset({'/repos/o/r/environments/%s' % name: (500, {}) if doc is None else (200, doc)})
 
         runs = [('prod-unprotected', 'prod', {'protection_rules': []}, False),
                 ('prod-self-review', 'prod', rule([team('security')], prevent=False), False),
@@ -143,24 +138,27 @@ def main():
                 ('dev-unprotected', 'dev', {'protection_rules': []}, True)]
         for wf, step in sorted(bodies.items()):
             for name, tier, doc, ok in runs:
-                answer('production', doc)
+                envname = 'production' if tier == 'prod' else 'development'
+                answer(envname, doc)
                 outf = os.path.join(work, 'out')
                 io.open(outf, 'w').close()
                 summ = os.path.join(work, 'summ')
                 io.open(summ, 'w').close()
                 script = os.path.join(work, 'step.sh')
                 io.open(script, 'w', encoding='utf-8', newline='\n').write(step.get('run') or '')
-                api_url = 'file:///' + api.replace('\\', '/').lstrip('/')
                 env = dict(
                     os.environ,
                     RUNNER_TEMP=os.path.join(work, 'rt'),
                     GITHUB_OUTPUT=outf,
                     GITHUB_STEP_SUMMARY=summ,
                     GITHUB_REPOSITORY='o/r',
-                    GITHUB_API_URL=api_url,
-                    DEPLOY_ENVIRONMENT='production',
+                    GITHUB_API_URL=api.url,
+                    GITHUB_SHA='a' * 40,
+                    DEPLOY_ENVIRONMENT=envname,
                     ENVIRONMENT_TIER=tier,
                     DEPLOY_APPROVAL='',
+                    KIT_APPROVER_POOLS='',
+                    KIT_APP_TEAM='',
                     GH_TOKEN='')
                 p = subprocess.run([bash, script], capture_output=True, text=True, env=env)
                 emitted = dict(l.rstrip('\n').split('=', 1) for l in io.open(outf, encoding='utf-8') if '=' in l)
@@ -169,6 +167,7 @@ def main():
                 check((p.returncode == 0) == ok, 'rule 3: %s %s exit %d, expected %s\n%s'
                       % (wf, name, p.returncode, 'proceed' if ok else 'refusal', (p.stdout + p.stderr)[-400:]))
                 check(emitted.get('environment_protection'), 'rule 3: %s %s emitted no outcome' % (wf, name))
+        api.__exit__(None, None, None)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

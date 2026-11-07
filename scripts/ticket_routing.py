@@ -22,6 +22,9 @@ THE SHAPE (on a policy register entry, beside rung/controls; the entry still car
              "components": ["Azure"],          optional
              "labels": ["cloud-security"]}],   optional, added beside the kit's own
         "default": {"project": "SEC", ...}     optional; same target fields as a rule
+        "unresolved": {"owner_role": "security-triage", "deadline_days": 5}
+                                               optional (KDEC-043): who triages a finding that no rule
+                                               and no default give an area, and by when
     }
 
     match keys (all given must hold; a list means any of):
@@ -82,7 +85,7 @@ SUBJECTS = ('SOURCE', 'SOURCE_DEPENDENCY', 'IAC_PLAN', 'RESOURCE', 'IMAGE', 'POL
             'IDENTITY_ASSIGNMENT', 'RUNTIME_OBSERVATION', 'RELEASE')
 SEVERITY_ORDER = ('critical', 'high', 'medium', 'moderate', 'low', 'info', 'informational', 'note',
                   'none')
-ROUTING_KEYS = ('inherit', 'rules', 'default', 'notes')
+ROUTING_KEYS = ('inherit', 'rules', 'default', 'notes', 'unresolved')
 TARGET_KEYS = ('project', 'issue_type', 'epic', 'components', 'labels')
 RULE_KEYS = ('id', 'match', 'notes') + TARGET_KEYS
 MATCH_KEYS = ('class', 'scanner_family', 'scanner', 'category', 'severity', 'min_severity',
@@ -186,6 +189,17 @@ def check_routing(obj, where, unreadable_code):
                           '%s routes %s to "none": a secret, a KEV-listed vulnerability or a '
                           'known-malicious package is always ticketed; route it to a project'
                           % (w, '/'.join(named))))
+    if 'unresolved' in obj:
+        # KDEC-043 rule 3: who triages a finding no rule and no default give an area, and by when.
+        u = obj['unresolved']
+        if not isinstance(u, dict) or any(k not in ('owner_role', 'deadline_days', 'notes') for k in u):
+            bad('%s unresolved must be an object of owner_role, deadline_days (and notes)' % where)
+        else:
+            if 'owner_role' in u and not (isinstance(u['owner_role'], str) and LABEL_RE.match(u['owner_role'])):
+                bad('%s unresolved.owner_role must be a role name with no whitespace' % where)
+            if 'deadline_days' in u and not (isinstance(u['deadline_days'], int) and
+                                             not isinstance(u['deadline_days'], bool) and 1 <= u['deadline_days'] <= 90):
+                bad('%s unresolved.deadline_days must be a whole number of days from 1 to 90' % where)
     if 'default' in obj:
         d = obj['default']
         if not isinstance(d, dict):
@@ -237,6 +251,8 @@ def resolve_routing(central, repo_doc, repository):
                 out['rules'].append(dict(rule, source=src))
         if out['default'] is None and isinstance(tr.get('default'), dict):
             out['default'] = dict(tr['default'], source=src)
+        if out.get('unresolved') is None and isinstance(tr.get('unresolved'), dict):
+            out['unresolved'] = dict(tr['unresolved'], source=src)
         if inheriting and tr.get('inherit') is False:
             out['notes'].append('%s does not inherit routing rules from broader scopes' % src)
             inheriting = False

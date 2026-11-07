@@ -1178,6 +1178,15 @@ jobs:
           # taxonomy, extensions and the no-fix clock; proposed types disabled; AzDO and GitHub intake.
           python3 scripts/separation_of_duties.py --self-test
           python3 tests/prove_ticket_intake_v2.py
+          # KDEC-043 (PROPOSED): the full correlation key is the only identity (a label is a verified search
+          # aid); via is a claim compared with the authenticated identity and the write event; area-unresolved
+          # has an owner role and a deadline; a multicloud parent closes only when every child is verified.
+          python3 scripts/ticket_governance.py --self-test
+          python3 tests/prove_ticket_governance.py
+          # KDEC-043: the Freshservice adapter against a stand-in on 127.0.0.1 (never a live tracker): tags at
+          # creation, markers as notes, read-merge-write-verify under a per-ticket lock, a simultaneous human
+          # tag edit reconciled from the activity history, NOT_ESTABLISHED when it cannot be proven.
+          python3 tests/prove_freshservice_tracker.py
 
       - name: The live R-1/R-2 runner is safe before anyone runs it live
         run: |
@@ -1613,6 +1622,12 @@ jobs:
           # or cannot be read.
           python3 scripts/environment_protection.py --self-test
           python3 tests/prove_deploy_environment_protection.py
+          # KDEC-042 (owner 2026-11-06): never a uat or prod deploy without a human approval from outside the app
+          # team, even from a push to main: every deploy job runs in its environment, and the read-back classes it
+          # and refuses an absent, reviewer-less, self-reviewable, pool-less or app-team-only uat/prod.
+          python3 tests/check_deploy_environment_declared.py --self-test
+          python3 tests/check_deploy_environment_declared.py
+          python3 tests/prove_uat_prod_gating.py
           # OF-5 K-1/K-2/K-3 (KDEC-034 proposed): the landing zone's platform stop and the zone's readiness
           # reach releases, and the run's own approval is neither the requester's nor the author's and
           # quotes the digest -- each refused before login.

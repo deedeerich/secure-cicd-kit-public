@@ -225,3 +225,14 @@ calls spent and every 429; Azure DevOps meters in TSTUs (200 per five minutes) a
 `X-RateLimit-Remaining` before it is delayed. A lookup that cannot complete creates nothing.
 
 Full design: `docs/architecture/TICKETING_CONTRACT.md` and `docs/architecture/TICKETING_BACKENDS.md`.
+
+**Ticket governance (KDEC-043 PROPOSED, 2026-11-06; proven against stand-ins only)**: the full correlation key
+is the only identity -- it lives in the stamp field or the kit's block, and a label (on GitHub a 50-character
+hashed short form) is a search aid every hit is verified against; a `via` label is a claim compared with the
+identity the kit authenticated as and the tracker's record of the write; a finding the routing gives no area is
+created in `area-unresolved` triage with an owner role and a deadline and is a decision owed once overdue; a
+multicloud finding is one parent with an owned child per Azure and AWS asset, and the parent closes only when every
+child is verified. **Freshservice** is the fourth tracker: search-first, tags at creation, markers as private notes,
+and -- because its update replaces the whole tag list -- read-merge-write-verify under a per-ticket lock with a
+person's simultaneous edit reconciled from the activity history, or `TAG_PRESERVATION_NOT_ESTABLISHED` and a person
+asked. `docs/ticketing/TICKET-GOVERNANCE.md`; `docs/architecture/TICKETING_BACKENDS.md` section 4A.

@@ -25,8 +25,10 @@ WHAT IT DOES
          a CODEOWNERS block (AppSec on .kit/, .kit/zone-readiness.json, .security/, the workflows,
            Dependabot config, Dockerfiles and IaC);
          .kit/environments.json (the environments SPEC: dev/test ungated, uat/prod with required reviewers
-           from platform or security and self-review prevented, deployments from main only), .kit/settings.json
-           (the answers, re-read on the next run) and .kit/ADOPTION_CHECKLIST.md (the PR body).
+           from platform or security and self-review prevented, deployments from main only; each environment's
+           `class`, which the deploy reads back, KDEC-042), .kit/settings.json (the answers, re-read on the next
+           run; its approver_pools and app_team are read by the deploy at uat/prod) and .kit/ADOPTION_CHECKLIST.md
+           (the PR body, with the `gh api -X PUT` and `gh variable set` commands).
     3. VERIFIES what it generated before writing a byte: every caller grants what its callee requests
        (tests/check_caller_permissions.py) and nothing more, deploy callers grant deployments: write and
        pull-requests: read (scripts/consumer_surface_check.py R1), every kit reference is pinned to the one
@@ -379,7 +381,7 @@ def environments_spec(shape, opts, repo, host):
     reviewers = [t for t in (opts.platform_team, opts.appsec_team) if t]
     for name in deploy_envs:
         gated = name in ('uat', 'prod')
-        envs.append({'name': name, 'tier': name,
+        envs.append({'name': name, 'tier': name, 'class': name,
                      'required_reviewers': [{'type': 'Team', 'team': t} for t in reviewers] if gated else [],
                      'prevent_self_review': gated, 'wait_timer_minutes': 0,
                      'deployment_branches': ['main'],
@@ -464,8 +466,25 @@ def checklist(ctx):
         if not teams:
             body.append('No `--platform-team` / `--appsec-team` was given, so uat and prod above have NO reviewers '
                         'yet: re-run kit init with them, or add the reviewers in Settings > Environments.')
-        body.append('The spec is `.kit/environments.json`; the deploy reads the rules back and refuses an unprotected '
-                    'uat or prod before it signs in (ENVIRONMENT_REVIEWERS_ABSENT).')
+        pools = [t for t in (o.platform_team, o.appsec_team) if t]
+        body += ['Then pin who may approve, as repository variables (a push to main cannot edit a variable; the '
+                 'same answers are in `.kit/settings.json`, which the deploy reads when the variables are unset):', '',
+                 '```bash',
+                 "gh variable set KIT_APPROVER_POOLS --repo %s --body '%s'" % (repo, json.dumps(
+                     {'platform': [o.platform_team] if o.platform_team else [],
+                      'security': [o.appsec_team] if o.appsec_team else []}, separators=(',', ':')))]
+        if getattr(o, 'app_team', None):
+            body.append("gh variable set KIT_APP_TEAM --repo %s --body '%s'" % (repo, o.app_team))
+        body += ['```', '']
+        body.append('The spec is `.kit/environments.json` (each environment\'s `class`: dev and test ungated, uat and '
+                    'prod gated). Before it signs in, the deploy classes the environment and, at uat and prod, refuses '
+                    'one that does not exist (ENVIRONMENT_NOT_FOUND), has no reviewers (ENVIRONMENT_REVIEWERS_ABSENT, '
+                    'ENVIRONMENT_REVIEWERS_EMPTY), lets the deployer approve (ENVIRONMENT_SELF_REVIEW_ALLOWED), has no '
+                    'platform or security reviewer (ENVIRONMENT_APPROVER_POOL_MISSING) or only app-team reviewers '
+                    '(ENVIRONMENT_APPROVERS_ALL_APP_TEAM). An environment name it cannot class is refused '
+                    '(ENVIRONMENT_UNCLASSED): add it to `.kit/environments.json` with its class. A push to main waits '
+                    'on the same reviewers: the deploy job runs in the environment.' + (
+                        '' if pools else ' No pools were given, so the pool check is off until you set them.'))
         step('Create the environments and their reviewers', body)
         subj = spec['oidc']['subjects']
         body = ['One federated credential per environment on the deploy identity (the landing zone vends it; '
@@ -703,8 +722,13 @@ def build(opts):
                 'with_api': bool(opts.with_api), 'automerge': bool(opts.automerge),
                 'outside_landing_zone': bool(opts.outside_landing_zone),
                 'appsec_team': opts.appsec_team, 'platform_team': opts.platform_team,
-                'rung': 'crawl', 'note': 'kit init re-reads these answers on its next run; the kit itself reads none '
-                'of them (the rung comes from the policy register, crawl when there is none).'}
+                'app_team': opts.app_team or None,
+                'approver_pools': {'platform': [opts.platform_team] if opts.platform_team else [],
+                                   'security': [opts.appsec_team] if opts.appsec_team else []},
+                'rung': 'crawl', 'note': 'kit init re-reads these answers on its next run. The kit\'s deploy reads two '
+                'of them at uat and prod (KDEC-042): approver_pools (a reviewer must come from one) and app_team (the '
+                'reviewers must not all be on it); vars.KIT_APPROVER_POOLS and vars.KIT_APP_TEAM win over them. The '
+                'rung comes from the policy register, crawl when there is none.'}
     files[SETTINGS] = json.dumps(settings, indent=2) + '\n'
     return {'root': root, 'opts': opts, 'kit_repo': kit_repo, 'kit_sha': kit_sha, 'found': found, 'shape': shape,
             'shape_reason': why, 'host': host, 'repo': repo, 'spec': spec, 'files': files, 'teams': teams,
@@ -892,7 +916,7 @@ def load_previous(opts):
     for k in ('with_triage', 'with_api', 'automerge', 'outside_landing_zone'):
         if not getattr(opts, k) and s.get(k):
             setattr(opts, k, True)
-    for k in ('appsec_team', 'platform_team', 'dockerfile', 'site_dir'):
+    for k in ('appsec_team', 'platform_team', 'app_team', 'dockerfile', 'site_dir'):
         if not getattr(opts, k) and s.get(k):
             setattr(opts, k, s[k])
     if opts.deploy == 'auto' and s.get('deploy_requested') in ('container', 'static', 'none'):
@@ -916,6 +940,7 @@ def parser():
     ap.add_argument('--outside-landing-zone', action='store_true', help='this repository deploys outside a landing zone')
     ap.add_argument('--appsec-team', help='@org/team for AppSec (CODEOWNERS, uat/prod reviewers)')
     ap.add_argument('--platform-team', help='@org/team for platform (CODEOWNERS, uat/prod reviewers)')
+    ap.add_argument('--app-team', help='@org/team that writes this app: never the only uat/prod approvers (KDEC-042)')
     ap.add_argument('--repo', help='ORG/REPO of the target (default: its origin remote)')
     ap.add_argument('--host', help='github.com or <tenant>.ghe.com (default: its origin remote)')
     ap.add_argument('--dry-run', action='store_true', help='write the files only: no branch, no commit, no PR')

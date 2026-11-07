@@ -61,7 +61,10 @@ command. Typically:
 
 1. **Create the environments and their reviewers** (dev, test, uat, prod; `gh api` commands included). uat
    and prod need a reviewer from platform or security who is not you: the kit refuses a production deploy
-   nobody else approved. Ask a repository admin if you are not one.
+   nobody else approved, even one from a push straight to main. Ask a repository admin if you are not one.
+   Set the two variables the checklist names (`KIT_APPROVER_POOLS`, and `KIT_APP_TEAM` if you gave
+   `--app-team`). An environment with a name other than dev, test, uat or prod needs a `class` in
+   `.kit/environments.json`, or the deploy refuses it (`ENVIRONMENT_UNCLASSED`).
 2. **Add the OIDC federated credentials** (`az ad app federated-credential create ...`, one per
    environment). There is no client secret anywhere; the deploy signs in with a short-lived token. On a
    `<tenant>.ghe.com` host the issuer is `https://token.actions.<tenant>.ghe.com`; the checklist already

@@ -598,8 +598,11 @@ def case_d5(rt, fails):
                  'AZDO_STATE_DONE', 'TICKET_CALL_BUDGET'):
         if need not in text:
             fails.append('D5: reusable-ticket-reconcile.yml does not wire %s' % need)
-    if not re.search(r'description: "jira, azdo or github', text):
-        fails.append('D5: the backend input does not offer github')
+    if not re.search(r'description: "jira, azdo, github or freshservice', text):
+        fails.append('D5: the backend input does not offer github and freshservice (KDEC-043)')
+    for need in ('FRESHSERVICE_HOST', 'FRESHSERVICE_API_KEY', 'FRESHSERVICE_STAMP_FIELD'):
+        if need not in text:
+            fails.append('D5: reusable-ticket-reconcile.yml does not wire %s (KDEC-043)' % need)
 
 
 # ── D4: one key; cross-scanner duplicates merged ────────────────────────────────────────

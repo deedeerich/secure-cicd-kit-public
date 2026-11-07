@@ -4151,8 +4151,12 @@ namespaces:
       reviewers give what the policy demands at this tier (one approver, from the named groups,
       self-review prevented). Emitted by the deploy reusables' `protection` step, before login.
     consumers: [scripts/environment_protection.py, reusable-deploy-appservice.yml,
-                reusable-deploy-containerapp.yml, tests/prove_deploy_environment_protection.py]
+                reusable-deploy-containerapp.yml, reusable-deploy-staticwebapp.yml,
+                tests/prove_deploy_environment_protection.py, tests/prove_uat_prod_gating.py]
     rule: >-
+      THE ENVIRONMENT IS CLASSED FIRST (KDEC-042): the strongest of the bound tier, the caller's
+      .kit/environments.json class and the name; an explicit class never lowers a production name, and an
+      empty or unclassed name is ENVIRONMENT_UNCLASSED, refused at every tier.
       AT uat AND prod ONLY VERIFIED AND NOT_REQUIRED PROCEED. The kit cannot set an environment's
       reviewers; it can read them, so an unprotected production environment is a refusal, not a
       hand-off note. A rule that could not be read is not a rule that was satisfied. Below uat every
@@ -4164,7 +4168,27 @@ namespaces:
       ENVIRONMENT_PROTECTION_NOT_REQUIRED:
         definition: Nothing is demanded at this tier (below uat, by default); the rules were not consulted.
       ENVIRONMENT_REVIEWERS_ABSENT:
-        definition: No required-reviewer rule, or one with no reviewers -- anyone who can run the workflow deploys.
+        definition: No required-reviewer rule -- anyone who can run the workflow deploys.
+      ENVIRONMENT_REVIEWERS_EMPTY:
+        definition: A required-reviewer rule that names nobody, so nobody is waited for (KDEC-042).
+      ENVIRONMENT_NOT_FOUND:
+        definition: >-
+          The GitHub environment a uat or prod deploy names does not exist (the API answered 404), so GitHub
+          has no reviewer to wait for (KDEC-042).
+      ENVIRONMENT_UNCLASSED:
+        definition: >-
+          No environment is named, or nothing classes the name: no class in the caller's
+          .kit/environments.json and no dev/test/uat/prod word in it. Refused at EVERY tier until it is
+          classed, because a name nobody can class cannot be shown to be below production (KDEC-042).
+      ENVIRONMENT_APPROVER_POOL_MISSING:
+        definition: >-
+          Approver pools are named (vars.KIT_APPROVER_POOLS, else .kit/settings.json approver_pools) and
+          none of the environment's reviewers is a platform or security pool team or member (KDEC-042).
+      ENVIRONMENT_APPROVERS_ALL_APP_TEAM:
+        definition: >-
+          The app team is named (vars.KIT_APP_TEAM, else .kit/settings.json app_team) and every reviewer is
+          on it, so nobody outside the team approves. Membership the kit cannot read is never assumed: it is
+          recorded as app_team_check NOT_ESTABLISHED and the decision rests on the rules (KDEC-042).
       ENVIRONMENT_SELF_REVIEW_ALLOWED:
         definition: Self-review must be prevented and the environment lets the deployer approve their own deploy.
       ENVIRONMENT_APPROVER_GROUP_MISSING:
@@ -4176,6 +4200,26 @@ namespaces:
           The environment API could not be read, the demand could not be read, or the tier is not
           a registered one.
         rule: Refused at uat and prod. Unknown is not protected.
+
+  app_team_check:
+    description: >-
+      Whether a uat or prod environment's required reviewers include someone outside the app team, when the
+      team is named (vars.KIT_APP_TEAM, else .kit/settings.json app_team). Printed by the deploy's
+      `protection` step beside environment_protection (KDEC-042).
+    consumers: [scripts/environment_protection.py, tests/prove_uat_prod_gating.py]
+    rule: >-
+      MEMBERSHIP IS READ, NEVER INVENTED. A Team reviewer is the app team only when it IS the app team; a
+      User reviewer only when the declared or readable member list names them. Only APP_TEAM_ONLY refuses
+      (as ENVIRONMENT_APPROVERS_ALL_APP_TEAM); NOT_ESTABLISHED is recorded and the rules decide.
+    values:
+      APP_TEAM_NOT_DECLARED:
+        definition: No app team is named, so the check is not made.
+      APP_TEAM_INDEPENDENT:
+        definition: At least one reviewer is shown to be outside the app team.
+      APP_TEAM_ONLY:
+        definition: Every reviewer is shown to be on the app team.
+      NOT_ESTABLISHED:
+        definition: Some membership could not be read and no reviewer is shown to be outside the team.
 
   # ─────────────────────────────────────────────────────────────────────────
   # OF-5 (the LZ-vs-kit deployment review, 2026-10-28; KDEC-034 PROPOSED). The landing zone's stronger
@@ -5541,6 +5585,12 @@ namespaces:
           A scan verification did not establish the fix: the kit's scan never observed the finding,
           the run still reports it, or its scanners did not cover where it lived.
 
+      CHILD_OBLIGATION_OPEN:
+        definition: >-
+          KDEC-043 (PROPOSED): a verification asked to close a multicloud PARENT while a child obligation
+          (one per cloud asset, each with its own owner role) is not closed-verified, was never created, or
+          cannot be read. The parent closes only when every child is closed by the kit's rescan or a second
+          person; it closes itself when the last child is verified.
       SOD_SELF_APPROVAL:
         definition: >-
           Separation of duties (owner, 2026-11-04; docs/ticketing/SEPARATION-OF-DUTIES.md): the person
@@ -5665,12 +5715,78 @@ namespaces:
           The search did not answer, or ran past its page bound; what was not read is not absent.
       TRACKER_INTAKE_NOT_CONFIGURED:
         definition: >-
-          No intake adapter serves this tracker (FreshService is the seam not yet built; Azure DevOps and
-          GitHub Issues have none: work tickets are Jira only, KDEC-017 item 5).
+          No intake adapter serves this tracker: the adapter asked for is not this run's tracker (a
+          Freshservice search against a Jira run), or no tracker is configured. Jira, Azure DevOps, GitHub
+          Issues and Freshservice (KDEC-043) each have one.
       TRACKER_QUERY_REFUSED:
         definition: >-
           The query named a project outside this repository's ticket projects, or its JQL carried ORDER BY
           or a statement break.
+
+  ticket_governance_state:
+    description: >-
+      KDEC-043 PROPOSED (lane tickets, 2026-11-06): what the ticket governance rules every tracker shares
+      established -- the correlation key's identity, a `via` claim's provenance, an unrouted finding's triage,
+      and Freshservice's whole-list tag write (scripts/ticket_governance.py, scripts/tracker_freshservice.py).
+    consumers: [scripts/ticket_governance.py, scripts/tracker_freshservice.py, scripts/ticket_intake.py,
+                scripts/ticket_submit.py, scripts/reconcile_tickets.py, tests/prove_ticket_governance.py,
+                tests/prove_freshservice_tracker.py]
+    rule: >-
+      NOTHING HERE IS ASSUMED. The full key decides identity and a label never does; a claim is compared, never
+      trusted; a preservation the history cannot show is NOT_ESTABLISHED and goes to a person.
+    values:
+      CORRELATION_LABEL_UNVERIFIED:
+        definition: >-
+          A correlation-key label (or its short search form) is on a ticket that carries no full key in a governed
+          place (the stamp field, a stamp or link line). A candidate for a person, never an exact match.
+      CORRELATION_LABEL_COLLISION:
+        definition: >-
+          A correlation-key label is on a ticket whose governed full key is ANOTHER key: a search ambiguity, for a
+          person. The full key is the sole authority; nothing is merged.
+      PROVENANCE_ESTABLISHED:
+        definition: >-
+          The `via` claim (if any), the identity the kit's credential authenticated as, and the tracker's own
+          record of who made the write all agree.
+      PROVENANCE_MISMATCH:
+        definition: >-
+          Two of the three disagree: the ticket is labelled `<stamp>-provenance-mismatch`, a comment names the
+          sides, and the API answer carries an alert. A person checks who wrote it.
+      PROVENANCE_NOT_ESTABLISHED:
+        definition: >-
+          A side could not be read (the identity at run start, the tracker's write record, or the claim's
+          registered identity in KIT_INTEGRATION_IDENTITIES). With a claim present the ticket is labelled
+          `<stamp>-provenance-unverified`.
+      AREA_UNRESOLVED:
+        definition: >-
+          Routing is configured and no rule and no default gave this finding an owning area, so it was created
+          with the kit default, `<stamp>-area-unresolved` and `<stamp>-triage`, an owner role and a deadline.
+          A triage state, not a dead end.
+      AREA_UNRESOLVED_OVERDUE:
+        definition: >-
+          An AREA_UNRESOLVED ticket past its deadline: in every reconcile run's output and the scheduled clock's,
+          unasked, as a decision owed to its owner role (exit 1), until a routing rule resolves it.
+      AREA_RESOLVED:
+        definition: >-
+          A later run's routing gave a once-unresolved finding its area; recorded with the rule and the date, and
+          said on the ticket.
+      TAG_PRESERVATION_ESTABLISHED:
+        definition: >-
+          Freshservice: a tag write was re-read and verified, and the activity history shows no one else's tag
+          change was lost (or a concurrent one was reconciled from it and verified). A marker written as a
+          note is established by construction: notes are never replaced.
+      TAG_PRESERVATION_NOT_ESTABLISHED:
+        definition: >-
+          Freshservice: after a whole-list tag write the kit could not prove that no one else's tag change was
+          lost -- the history could not be read, the kit's identity is unknown, a concurrent change could not be
+          parsed, or the retries ran out. A private note asks a person to check; the write is reported failed.
+      TICKET_WRITE_LOCK_HELD:
+        definition: >-
+          Another kit writer held this ticket's per-ticket lock for longer than the bounded wait; nothing was
+          written and the write is owed to the next run.
+      STAMP_FIELD_NOT_CONFIRMED:
+        definition: >-
+          Freshservice: a created ticket's governed stamp field did not read back as the full key. The block's
+          stamp line still carries it; the run records the field's failure rather than assume it.
 
   # ─────────────────────────────────────────────────────────────────────────
   # KDEC-036 PROPOSED (2026-11-03): what a security reviewer could not see from the kit. Each is

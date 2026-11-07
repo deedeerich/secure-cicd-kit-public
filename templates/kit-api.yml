@@ -85,6 +85,7 @@ jobs:
       JIRA_HOST: ${{ secrets.JIRA_HOST }}   # optional: the Jira host as a secret (masked in logs)
       AZDO_PAT: ${{ secrets.AZDO_PAT }}
       GH_TICKET_TOKEN: ${{ secrets.GH_TICKET_TOKEN }}
+      FRESHSERVICE_API_KEY: ${{ secrets.FRESHSERVICE_API_KEY }}   # only when the backend is freshservice (KDEC-043)
       KIT_API_TEAM_READ_TOKEN: ${{ secrets.KIT_API_TEAM_READ_TOKEN }}
 
   # scan.request: the kit's security workflow on the ref this run was dispatched at. Its verdict and

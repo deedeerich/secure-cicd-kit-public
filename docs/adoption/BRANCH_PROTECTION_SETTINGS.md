@@ -218,6 +218,46 @@ exact commands in the repository's checklist (deployment branches limited to `ma
 `security / Security gate` only **after** the repository's first green run: a required check that has never
 passed blocks every pull request at once.
 
+### What the deploy refuses, and why a push to main cannot skip it (KDEC-042, owner 2026-11-06)
+
+"Never a prod deployment without a human approval." Two layers hold it:
+
+1. **GitHub's own wait.** Every kit deploy job declares `environment: ${{ inputs.github_environment }}`
+   from a required input, with nothing conditional on the trigger. A job in an environment with required
+   reviewers does not start until one approves. A push to main and a manual dispatch reach the same job,
+   so they wait on the same reviewers. The kit is pinned by SHA, so a caller cannot remove the
+   declaration. `tests/check_deploy_environment_declared.py` refuses a deploy job without it, a
+   conditional one, and a caller that picks the environment by trigger or passes an empty one.
+2. **The kit's read-back, before any cloud login** (`scripts/environment_protection.py`, the `protection`
+   step). It first **classes** the environment: the strongest of the bound tier (`KIT_ENVIRONMENT_TIER`),
+   the `class` in `.kit/environments.json` and the name (uat, stage, staging, preprod, prod, production or
+   prd gate it; dev, development, sandbox, test or testing do not). An explicit class can class a name
+   the pattern does not know, and can raise one, but **never lowers** a production name, because a push
+   to main can edit that file. A name nothing classes, or an empty one, is `ENVIRONMENT_UNCLASSED` and is
+   refused at every tier until you add it to `.kit/environments.json`. At uat and prod it then refuses:
+
+| refusal | the environment |
+|---|---|
+| `ENVIRONMENT_NOT_FOUND` | does not exist (GitHub would have nobody to wait for) |
+| `ENVIRONMENT_REVIEWERS_ABSENT` / `ENVIRONMENT_REVIEWERS_EMPTY` | has no required-reviewers rule / one naming nobody |
+| `ENVIRONMENT_SELF_REVIEW_ALLOWED` | lets the person who pushed or dispatched approve their own deploy |
+| `ENVIRONMENT_APPROVER_POOL_MISSING` | has no reviewer from the platform or security pool, when pools are named |
+| `ENVIRONMENT_APPROVERS_ALL_APP_TEAM` | can only be approved by the app team, when the team is named |
+| `ENVIRONMENT_PROTECTION_NOT_ESTABLISHED` | rules, class file or settings could not be read: unknown is never a pass |
+
+**Approver pools and the app team.** Name them as repository (or organisation) variables, because a
+push to main cannot edit a variable: `KIT_APPROVER_POOLS` = `{"platform":["@org/platform"],"security":["@org/security"]}`
+and `KIT_APP_TEAM` = `@org/app-team` (or `{"team":"@org/app-team","members":["login",...]}`). When a
+variable is unset, the deploy reads `approver_pools` and `app_team` from `.kit/settings.json` (kit init
+writes both). A reviewer counts as in a pool when it is the pool's team, or a login listed in it. A
+reviewer counts as on the app team when it is the app team itself, or a login on its member list, either
+declared or read from `GET /orgs/{org}/teams/{slug}/members`. When membership cannot be read, the deploy
+records `app_team_check=NOT_ESTABLISHED`, does not guess, and decides on the environment's rules alone.
+**Small teams** (one developer, or two) are fine: the approvers come from the pools, outside the team, and
+self-review prevention stops the person who pushed from approving.
+
+dev and test are not gated: no reviewers needed there.
+
 ## Break-glass, if you must have one
 
 One team, bypass mode "pull requests only" (it can merge a reviewed PR past a failing check, never push

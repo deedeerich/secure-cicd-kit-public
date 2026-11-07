@@ -120,6 +120,19 @@ NOT_VOCABULARY = {
     # and the shim's two environment variables (log path, simulated files-API exit code), and its
     # per-job permission table. Settings and harness names; none is a state.
     "KIT_CONSUMER_PATH_ON_PUSH", "GITHUB_HEAD_REF", "GH_SHIM", "GH_LOG", "FILES_RC", "JOB_PERMS",
+    # Lane tickets (KDEC-043, 2026-11-06): the Freshservice backend's SETTINGS (a host, a key, a custom field's
+    # name, numeric ids, the mark mode notes|tags in lower case, a retry count and a lock directory) and the
+    # registered name->identity map for `via` claims; Python constants referenced across modules (the kit's
+    # block delimiters and line prefixes, Freshservice's own status numbers, the stand-in's keys and agent ids,
+    # the label-verification verdict 'verified', the module's constant naming the tag-change pattern, the
+    # reconciler's env-name constant) and os.open's flags. None is a state; the states are registered under
+    # ticket_governance_state and ticket_template_refusal.
+    "FRESHSERVICE_HOST", "FRESHSERVICE_API_KEY", "FRESHSERVICE_STAMP_FIELD", "FRESHSERVICE_REQUESTER_ID",
+    "FRESHSERVICE_CALIBRATION_TICKET", "FRESHSERVICE_WORKSPACE_ID", "FRESHSERVICE_MARK_MODE",
+    "FRESHSERVICE_TAG_RETRIES", "FRESHSERVICE_LOCK_DIR", "KIT_INTEGRATION_IDENTITIES",
+    "BLOCK_OPEN", "BLOCK_CLOSE", "LINK_PREFIX", "MARKER_PREFIX", "STAMP_FIELD", "STATUS_OPEN", "STATUS_PENDING",
+    "STATUS_RESOLVED", "STATUS_CLOSED", "KIT_KEY", "HUMAN_KEY", "KIT_AGENT", "HUMAN_AGENT", "LABEL_VERIFIED",
+    "TAG_CHANGE", "ENV_STAMP_LABEL", "O_CREAT", "O_EXCL", "O_WRONLY",
     # A Python constant in scripts/reconcile_tickets.py that POINTS AT a registered value rather
     # than being one: `UNCLASSIFIED_DEFAULT = BINDING_UNESTABLISHED`. It exists so that a future
     # branch which forgets to classify its lookup outcome lands on the safe value by construction
@@ -454,6 +467,10 @@ NOT_VOCABULARY = {
     # OF-5 K-6/K-7: the app-setting keys the hand-off assigns to the kit, and the app's own edge endpoint
     # (the purge scope, D-4) -- vended settings whose values are names, never states.
     "KIT_SETTING_KEYS", "KIT_EDGE_ENDPOINT",
+    # KDEC-042 (uat/prod gating): repository or organisation VARIABLES naming the approver pools and the
+    # app team (their outcomes are registered: environment_protection, app_team_check), and a Python
+    # constant name of scripts/environment_protection.py that its proof's mutants quote.
+    "KIT_APPROVER_POOLS", "KIT_APP_TEAM", "PRODUCTION_TIERS",
     # OF-5 K-10: Python constant names referenced as attributes from another module (the deployed scan's
     # rule table and its landing-zone mapping in scripts/promotion.py; the promotion proof's SBOM digest).
     # Containers of values, never states.
