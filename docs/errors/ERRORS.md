@@ -74,11 +74,12 @@ In a run, the same sentence is the title of the annotation at the top of the run
 - [seam_ownership_refusal](#seam_ownership_refusal) (2)
 - [secret_exception_refusal](#secret_exception_refusal) (7)
 - [target_lease](#target_lease) (12)
+- [ticket_governance_state](#ticket_governance_state) (9)
 - [ticket_intake_state](#ticket_intake_state) (3)
 - [ticket_lookup_outcome](#ticket_lookup_outcome) (4)
 - [ticket_reference_outcome](#ticket_reference_outcome) (5)
 - [ticket_template_outcome](#ticket_template_outcome) (4)
-- [ticket_template_refusal](#ticket_template_refusal) (14)
+- [ticket_template_refusal](#ticket_template_refusal) (15)
 - [ticketing_availability](#ticketing_availability) (3)
 - [tier_reality](#tier_reality) (2)
 - [tier_source](#tier_source) (1)
@@ -2987,6 +2988,82 @@ This run's hold on the target was taken over or broken, so its change was not se
 - **Fix:** Re-run the deploy once the target is free.
 - **More:** [docs/architecture/LZ_KIT_SEAM_CONTRACT.md](../architecture/LZ_KIT_SEAM_CONTRACT.md)
 
+## ticket_governance_state
+
+Not failures (nothing to do): `AREA_RESOLVED`, `PROVENANCE_ESTABLISHED`, `TAG_PRESERVATION_ESTABLISHED`.
+
+### AREA_UNRESOLVED (ticket_governance_state)
+
+No routing rule gave this finding an owning area, so it waits in triage with an owner role and a deadline. **[AREA_UNRESOLVED]**
+
+- **Why it matters:** A finding nobody owns is not worked; the triage owner must place it before the deadline.
+- **Fix:** The owner role adds a ticket_routing rule that covers this kind of finding (or records why it has none).
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### AREA_UNRESOLVED_OVERDUE (ticket_governance_state)
+
+A finding with no owning area is past its triage deadline. **[AREA_UNRESOLVED_OVERDUE]**
+
+- **Why it matters:** It is still unowned; every run reports it until it is routed.
+- **Fix:** Add a ticket_routing rule for it (the run names the owner role and the ticket).
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### CORRELATION_LABEL_COLLISION (ticket_governance_state)
+
+A ticket carries this finding's label but its full key belongs to a different finding. **[CORRELATION_LABEL_COLLISION]**
+
+- **Why it matters:** The full key is the only identity; a shared short label is a search ambiguity, not a match.
+- **Fix:** A person checks both tickets; nothing is merged unless a reviewer links them.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### CORRELATION_LABEL_UNVERIFIED (ticket_governance_state)
+
+A ticket carries the finding's label but not its full key, so it was shown to a person instead of being linked. **[CORRELATION_LABEL_UNVERIFIED]**
+
+- **Why it matters:** A label is only a search aid; linking on it alone could attach the finding to the wrong ticket.
+- **Fix:** Confirm the link in a finalized review (link_decisions); the kit then writes the full key into the ticket.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### PROVENANCE_MISMATCH (ticket_governance_state)
+
+The integration named on the ticket (the via label) is not the identity that actually wrote it. **[PROVENANCE_MISMATCH]**
+
+- **Why it matters:** A via label is a claim; a mismatch can mean a misconfigured integration or a ticket made to look automated.
+- **Fix:** Check KIT_INTEGRATION_IDENTITIES and who created the ticket; correct the mapping or investigate the ticket.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### PROVENANCE_NOT_ESTABLISHED (ticket_governance_state)
+
+The kit could not confirm who wrote the ticket. **[PROVENANCE_NOT_ESTABLISHED]**
+
+- **Why it matters:** Without the authenticated identity and the tracker's write record, the via claim is unproven.
+- **Fix:** Give the tracker credential read access to the creator or activity history, and register the integration in KIT_INTEGRATION_IDENTITIES.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### STAMP_FIELD_NOT_CONFIRMED (ticket_governance_state)
+
+The new Freshservice ticket's key field did not save the full key. **[STAMP_FIELD_NOT_CONFIRMED]**
+
+- **Why it matters:** The key field is how the kit finds the ticket again; the description still carries the key.
+- **Fix:** Check FRESHSERVICE_STAMP_FIELD is a single-line text field on the ticket form.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### TAG_PRESERVATION_NOT_ESTABLISHED (ticket_governance_state)
+
+Freshservice replaced the ticket's whole tag list and the kit could not prove nobody else's tag change was lost. **[TAG_PRESERVATION_NOT_ESTABLISHED]**
+
+- **Why it matters:** A person's tag may have been dropped by the kit's write.
+- **Fix:** Check the ticket's tags against its activity history (the kit left a private note saying so).
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### TICKET_WRITE_LOCK_HELD (ticket_governance_state)
+
+Another kit writer was updating the same ticket, so this write waited and then stopped. **[TICKET_WRITE_LOCK_HELD]**
+
+- **Why it matters:** Two writers on one Freshservice ticket can overwrite each other's tags.
+- **Fix:** Nothing to do; the next run makes the write. If it repeats, look for a stuck run.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
 ## ticket_intake_state
 
 Not failures (nothing to do): `TRACKER_INTAKE_COMPLETE`.
@@ -3132,6 +3209,14 @@ A verifier rejected the fix, so the ticket was reopened. **[TEMPLATE_VERIFICATIO
 - **More:** [docs/ticketing/TICKET-TYPES.md](../ticketing/TICKET-TYPES.md)
 
 ## ticket_template_refusal
+
+### CHILD_OBLIGATION_OPEN (ticket_template_refusal)
+
+The multicloud ticket cannot close yet: a child obligation (Azure or AWS) is still open. **[CHILD_OBLIGATION_OPEN]**
+
+- **Why it matters:** Each cloud has its own owner and its own fix; the parent closes only when every child is verified.
+- **Fix:** Close each child ticket first (its owner resolves it; a rescan or another person verifies it); the parent then closes itself.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
 
 ### CLOSURE_NOT_VERIFIED (ticket_template_refusal)
 

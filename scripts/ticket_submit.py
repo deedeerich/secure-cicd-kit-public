@@ -31,6 +31,7 @@ import finding_correlation as fc
 import review_finalize as rf
 import separation_of_duties as sod
 import ticket_intake as ti
+import ticket_governance as tg
 import ticket_model as tm
 import ticket_templates as tt
 
@@ -99,7 +100,9 @@ def dedupe_pending_pass(result, backend, sweep_map, today, apply_changes):
             if state != ti.TRACKER_INTAKE_COMPLETE:
                 done.append({'ref': hit['ref'], 'state': state, 'detail': sdetail})
                 continue
-            pool = [t for t in tickets if str(t['ref']) != str(hit['ref']) and not (t.get('stamp') and t['stamp'] != key)]
+            # Every other ticket: ticket_intake.match itself sets aside one whose full key is another finding's, and
+            # sends a label hit it cannot verify to a person (KDEC-043).
+            pool = [t for t in tickets if str(t['ref']) != str(hit['ref'])]
             m = ti.match({'correlation_key': key, 'rule': ident, 'aliases': [], 'asset_needle': _needle(akey),
                           'title': ''}, pool, _lab(stamp, 'ck-%s' % key), 'secure-cicd-kit-cluster:', 101)
             rec = {'ref': hit['ref'], 'cluster_key': key, 'state': state}
@@ -306,6 +309,8 @@ def submit(ctx, p, dry):
                 backend.comment(pi[0]['ref'], 'DEDUPE PENDING (secure-cicd-kit): the search of every ticket did not '
                                 'complete (%s), so this ticket was created in triage rather than lost; its dedupe is '
                                 're-run on the next run.' % payload)
+        if not dry:
+            _after_create(ctx, p, plan, stamp, data)
         if down:
             # A RECONCILER THAT COULD NOT CREATE IS AN UNREACHABLE TRACKER for those items: the outbox.
             return _outbox(ctx, p, data, plan, down, 'the reconciler could not create: %s' % '; '.join(
@@ -338,6 +343,10 @@ def _base(rec, conf, trust):
 def _plan_findings(ctx, p, plan, live, stamp, ck_prefix, sweep_map, adapter, decisions, prov, trust_ctx, numbers):
     backend, template, settings, today = ctx['backend'], p['template'], ctx['settings'], ctx['today']
     recs = [tt.normalize(template, p['items'][i], prov, i, stamp, settings, today, numbers) for i in live]
+    if p.get('via'):
+        # KDEC-043 rule 2: the via label is a CLAIM, set at creation; _after_create compares it with what was proven.
+        for rec in recs:
+            rec['template_labels'] = sorted(set(rec['template_labels']) | {tg.via_label(stamp, p['via'])})
     groups = {}
     for rec in recs:
         groups.setdefault(rec['correlation_key'], []).append(rec)
@@ -363,7 +372,7 @@ def _plan_findings(ctx, p, plan, live, stamp, ck_prefix, sweep_map, adapter, dec
             else:
                 tickets, state, sdetail = [], ti.TRACKER_INTAKE_NOT_CONFIGURED, adapter.search()['detail']
             if state == ti.TRACKER_INTAKE_COMPLETE:
-                pool = [t for t in tickets if not (t.get('stamp') and t.get('stamp') != ck)]
+                pool = list(tickets)
                 m = ti.match(dict(rec0), pool, ck_prefix + ck, 'secure-cicd-kit-cluster:', settings['fuzzy_title_percent'])
                 cands = [{'ref': t['ref'], 'key': t.get('key'), 'basis': b, 'score': s, 'summary': t.get('summary'),
                           'labels': t.get('labels'), 'state': t.get('state')} for t, b, s in m['candidates']]
@@ -470,7 +479,8 @@ def _plan_updates(ctx, p, plan, live, stamp, ck_prefix, sweep_map, approver, dat
             labels, ok, detail = backend.labels_of(ref) if hasattr(backend, 'labels_of') else ([], False, 'no read')
             if not ok:
                 return tt.refusal(tt.TICKET_NOT_KIT_LINKED, 'item %d: ticket %s could not be read (%s)' % (i, ref, detail), i)
-            mine = stampk or any(str(x).startswith(ck_prefix) for x in labels)
+            # A kit child obligation (KDEC-043 rule 4) names its parent; it carries no stamp of its own.
+            mine = stampk or any(str(x).startswith(ck_prefix) for x in labels) or bool(tg.parent_of(labels, stamp))
             if not mine and not (template == 'triage' and ref == it.get('original_ref')):
                 return tt.refusal(tt.TICKET_NOT_KIT_LINKED, 'item %d: ticket %s carries neither the kit\'s stamp nor a '
                                   'link to a kit finding' % (i, ref), i)
@@ -500,6 +510,11 @@ def _plan_closure(ctx, plan, i, it, labels, stampk, approver, data):
     rt, settings, today, stamp = ctx['rt'], ctx['settings'], ctx['today'], (
         getattr(ctx['backend'], 'stamp_label', '') or 'secure-cicd-kit')
     action, kind = it['action'], it['verification']['kind']
+    if action == 'verify' and (tg.children_of(labels, stamp) or tg.expected_children(labels, stamp)):
+        # KDEC-043 rule 4: THE PARENT CLOSES ONLY WHEN EVERY CHILD OBLIGATION IS CLOSED-VERIFIED.
+        ok_p, _open, why_p = tg.parent_may_close(ctx['backend'], labels, stamp)
+        if not ok_p:
+            return tt.refusal(tg.CHILD_OBLIGATION_OPEN, 'item %d: ticket %s: %s' % (i, it['ref'], why_p), i)
     if action == 'resolve' or (action == 'verify' and kind == 'reviewer' and
                                sod.violations({'fixer': it['fixed_by']}, approver)):
         note = '' if action == 'resolve' else 'the fixer\'s own verification is PENDING, never final'
@@ -594,10 +609,15 @@ def _write(ctx, p, plan, stamp, ck_prefix, approver, approval, dry, data):
                                                 _lab(stamp, 'ev-%s' % (g0['provenance'].get('evidence_sha256') or '')[:16]),
                                                 _lab(stamp, 'sev-%s' % tt._slug(g0.get('severity')))] +
                              ([ck_prefix + g0['correlation_key'], _lab(stamp, 'linked')] if t.get('manual') else []))
+            r3 = (True, '')
+            if t.get('manual'):
+                # KDEC-043: the label is a search aid; the FULL key goes in the kit's own block on the person's
+                # ticket, so the next lookup verifies the label against it instead of trusting the label.
+                r3 = tg.write_link(backend, t['ref'], g0['correlation_key'])
             for pi in plan.items:
                 if pi.get('correlation_key') == g0['correlation_key']:
                     pi['duplicate_ref'] = dref
-            if not ok_all(r1, r2):
+            if not ok_all(r1, r2, r3):
                 failed.append((g0['item'], 'the original %s was not updated' % t['ref']))
         elif kind == 'regression':
             t, g0 = a['target'], a['grp'][0]
@@ -697,6 +717,10 @@ def _write(ctx, p, plan, stamp, ck_prefix, approver, approval, dry, data):
                             '(sha256 %s). The fixer did not verify it.' % (review, a['by'], it['fixed_by'],
                                                                            it['evidence']['ref'], it['evidence']['sha256']))
             backend.mark(it['ref'], labels=[_lab(stamp, 'verified'), _lab(stamp, 'remediated')])
+            child_labels, ok_cl, _d_cl = backend.labels_of(it['ref'])
+            parent = tg.parent_of(child_labels, stamp) if ok_cl else ''
+            if parent:
+                _close_parent_if_done(backend, parent, it['ref'], stamp, review, approval, data)
         elif kind == 'observed':
             it = a['it']
             backend.comment(it['ref'], 'FIX OBSERVED on %s (secure-cicd-kit): run %s no longer reports the finding there. '
@@ -727,6 +751,100 @@ def _write(ctx, p, plan, stamp, ck_prefix, approver, approval, dry, data):
                                                            it['reason']))
                 backend.mark(it['ref'], labels=[_lab(stamp, 'triaged-separate')])
     return failed
+
+
+# ═════════════════════════════════════════════════════════════════════════════════════
+# KDEC-043: PROVENANCE AND CHILD OBLIGATIONS, after the reconciler created
+# ═════════════════════════════════════════════════════════════════════════════════════
+
+_CREATED = (tt.TEMPLATE_TICKET_CREATED, tt.TEMPLATE_POSSIBLE_DUPLICATE, tt.TEMPLATE_DEDUPE_PENDING)
+
+
+def _after_create(ctx, p, plan, stamp, data):
+    recs = {}
+    for r in plan.to_reconcile:
+        recs.setdefault(r['correlation_key'], r)
+    done = {}
+    for pi in plan.items:
+        ref, ck = pi.get('ref'), pi.get('correlation_key')
+        if not ref or pi.get('outcome') not in _CREATED:
+            continue
+        if (ck, ref) not in done:
+            got = {'provenance': _provenance(ctx, p, ref, stamp, data)}
+            rec = recs.get(ck) or {}
+            if rec.get('obligations'):
+                got['children'] = _children(ctx, rec, ref, stamp, data)
+            done[(ck, ref)] = got
+        pi.update(done[(ck, ref)])
+
+
+def _provenance(ctx, p, ref, stamp, data):
+    """KDEC-043 rule 2: the via CLAIM against the authenticated identity and the tracker's own record of the write."""
+    backend = ctx['backend']
+    claimed = p.get('via') or ''
+    ident = backend.authenticated_identity() if hasattr(backend, 'authenticated_identity') else None
+    actor, detail = backend.write_event(ref) if hasattr(backend, 'write_event') else (
+        None, 'this tracker adapter reads no write event')
+    rec = tg.provenance(claimed, ident, actor, ctx.get('integrations') or {})
+    rec['write_event_detail'] = detail
+    if rec['state'] == tg.PROVENANCE_MISMATCH or (claimed and rec['state'] == tg.PROVENANCE_NOT_ESTABLISHED):
+        word = 'provenance-mismatch' if rec['state'] == tg.PROVENANCE_MISMATCH else 'provenance-unverified'
+        backend.comment(ref, '%s (secure-cicd-kit): %s. The via label on this ticket is a claim; a person checks who '
+                             'wrote it.' % (rec['state'], '; '.join(rec['reasons']) or 'not established'))
+        backend.mark(ref, labels=[_lab(stamp, word)])
+        data['alerts'].append('%s on ticket %s: %s' % (rec['state'], ref, '; '.join(rec['reasons'])))
+    return rec
+
+
+def _children(ctx, rec, parent_ref, stamp, data):
+    """KDEC-043 rule 4: one child obligation per cloud asset, under the parent, each with its own owner role."""
+    rt, backend = ctx['rt'], ctx['backend']
+    out = []
+    for ob in rec['obligations']:
+        labels = [tg.obligation_label(stamp, ob['id']), tg.owner_label(stamp, ob['owner_role']),
+                  tg.parent_label(stamp, parent_ref)]
+        body = '\n'.join([
+            'Child obligation %s of %s (secure-cicd-kit, KDEC-043): %s, %s.' % (ob['id'], parent_ref, ob['cloud'],
+                                                                              ob['display']),
+            '', 'Owner role: %s.' % ob['owner_role'],
+            'Closes ONLY by the kit\'s rescan or a verification by someone other than the fixer (template closure,',
+            'on this ticket). The parent closes when every child obligation is closed-verified.', '',
+            'secure-cicd-kit-obligation-of: %s' % rec['correlation_key']])
+        title = rt.bounded_title('[%s obligation %s] %s' % (ob['cloud'], ob['id'], rec.get('title') or rec.get('rule')))
+        cref, d = backend.create_instance(parent_ref, {'identity': '%s:%s' % (rec['identity'], ob['id']),
+                                                       'labels': labels}, body, title)
+        if not cref:
+            data['alerts'].append('CHILD OBLIGATION NOT CREATED: %s of ticket %s (%s); the parent cannot close until '
+                                  'it exists' % (ob['id'], parent_ref, d))
+            out.append({'id': ob['id'], 'cloud': ob['cloud'], 'owner_role': ob['owner_role'], 'ref': None, 'detail': d})
+            continue
+        backend.mark(cref, labels=labels)
+        backend.mark(parent_ref, labels=[tg.child_label(stamp, ob['id'], cref)])
+        out.append({'id': ob['id'], 'cloud': ob['cloud'], 'owner_role': ob['owner_role'], 'ref': cref})
+    return out
+
+
+def _close_parent_if_done(backend, parent, child, stamp, review, approval, data):
+    labels, ok, d = backend.labels_of(parent)
+    if not ok:
+        data['alerts'].append('the parent %s of %s could not be read (%s): it stays open' % (parent, child, d))
+        return
+    ok_p, open_, why = tg.parent_may_close(backend, labels, stamp)
+    if not ok_p:
+        backend.comment(parent, 'CHILD OBLIGATION CLOSED (secure-cicd-kit, review %s): %s is closed-verified. %s.'
+                        % (review, child, why))
+        return
+    if tm.authorise('ticket.close.' + tm.ALL_CHILDREN_RESOLVED, approval):
+        data['alerts'].append('the parent %s was not closed: the closure was not authorised' % parent)
+        return
+    ok_x, d_x = backend.close(parent)
+    if not ok_x:
+        data['alerts'].append('the parent %s could not be closed: %s' % (parent, d_x))
+        return
+    backend.comment(parent, 'CLOSED - EVERY CHILD OBLIGATION VERIFIED (secure-cicd-kit, review %s): %s.'
+                    % (review, why))
+    backend.mark(parent, labels=[_lab(stamp, 'verified'), _lab(stamp, 'remediated')])
+    data.setdefault('parents_closed', []).append(parent)
 
 
 # ═════════════════════════════════════════════════════════════════════════════════════

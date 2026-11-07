@@ -289,6 +289,20 @@ def asset_key(asset):
         _s(asset['engagement_id']).lower(), ''
 
 
+def multicloud_children(f):
+    """-> the child obligations of a multicloud finding (KDEC-043 rule 4), each with its asset's key, or []."""
+    out = []
+    for o in (f or {}).get('obligations') or []:
+        if not isinstance(o, dict):
+            continue
+        k, d, _n, bad = asset_key(o.get('asset'))
+        if bad:
+            continue
+        out.append({'id': _slug(o.get('id')), 'cloud': o.get('cloud'), 'owner_role': str(o.get('owner_role') or ''),
+                    'asset_key': k, 'display': d})
+    return out
+
+
 def identity_of(akey, identifier):
     """THE DURABLE IDENTITY of an external finding: the asset and the identifier, nothing about who
     reported it -- so two sources agreeing are one identity (anchored, automatically)."""
@@ -309,6 +323,11 @@ def _validate_finding(f, where):
     _k, _d, _n, bad = asset_key(f.get('asset'))
     if bad:
         return refusal(TEMPLATE_ASSET_IDENTITY_INVALID, '%s.asset: %s' % (where, bad))
+    if f.get('obligations') is not None:
+        import ticket_governance as tg
+        why = tg.validate_obligations(f.get('obligations'), asset_key, where)
+        if why:
+            return refusal(TEMPLATE_FIELD_INVALID, why)
     return None
 
 
@@ -499,6 +518,12 @@ def normalize(template, item, provenance, index=0, stamp_label='', settings=None
     settings = settings or settings_from({})[0]
     f = item if template == 'finding' else item.get('finding') or {}
     akey, disp, needle, _bad = asset_key(f.get('asset'))
+    obligations = multicloud_children(f)
+    if obligations:
+        # KDEC-043 rule 4: ONE identity across the clouds -- the identifier in this environment -- with one child
+        # obligation per cloud asset. The top-level asset is the one the submitter named first; it does not key.
+        akey = 'multicloud:%s' % (_slug(f.get('environment')) or 'unscoped')
+        disp = 'multicloud: %s' % '; '.join('%s %s' % (o['cloud'], o['display']) for o in obligations)
     ident_f = identity_of(akey or '', f.get('identifier') or '')
     subject = f.get('finding_subject') or _SUBJECT_BY_SCHEME.get((f.get('asset') or {}).get('scheme'), 'SOURCE')
     # THE ANCHOR IS THE IDENTIFIER, alone (two submissions with different alias lists are one finding).
@@ -576,6 +601,15 @@ def normalize(template, item, provenance, index=0, stamp_label='', settings=None
                                                            settings['nofix_review_days']))]
         labels.append('%s-nofix' % (stamp_label or 'secure-cicd-kit'))
     rec['template_facts'] = facts
+    if obligations:
+        import ticket_governance as tg
+        rec['obligations'] = obligations
+        # Set AT CREATION: how many children the parent must see closed-verified before it may close.
+        labels = list(labels) + [tg.expected_label(stamp_label, len(obligations))]
+        facts.append(('multicloud', '%d child obligation(s): %s -- the parent closes only when every child is closed '
+                                    'by a rescan or a second person' % (len(obligations), ', '.join(
+                                        '%s (%s, owner role %s)' % (o['id'], o['cloud'], o['owner_role'])
+                                        for o in obligations))))
     rec['template_labels'] = sorted(set(labels))
     rec['correlation_key'] = fc.cluster_key(subject, rec['where'], rec['what_aliases'][0] or rec['identity'])
     return rec

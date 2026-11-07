@@ -413,8 +413,12 @@ def t3(mods, tmp):
           'T3: the confirmed link did not record a closed duplicate and label the manual ticket: %r %r' % (it, labels))
     res, _s = w.submit(w.finalize('USR-DEDUPE-03', base), 'dedupe-0003')
     it = items_of(res)
-    check(it and it[0].get('outcome') == tt.TEMPLATE_LINKED_EXACT and it[0].get('basis') == 'correlation-label'
-          and len(w.t.issues) == 2, 'T3: a linked manual ticket was not found exact next time: %r' % it)
+    # KDEC-043: the link wrote the FULL key into the kit's own block on the person's ticket; the next lookup is exact
+    # by that key (body-stamp), not by trusting the label, and the person's own sentence is still there.
+    desc = tb.adf_text(w.t.issues[manual].get('description'))
+    check(it and it[0].get('outcome') == tt.TEMPLATE_LINKED_EXACT and it[0].get('basis') == 'body-stamp'
+          and len(w.t.issues) == 2 and ('secure-cicd-kit-correlation-key: %s' % ck) in desc and
+          'Found by the audit' in desc, 'T3: a linked manual ticket was not found exact next time: %r' % it)
     bad = dict(base, link_decisions=[{'correlation_key': ck, 'decision': 'link', 'ref': '99999'}])
     w2 = W(mods, os.path.join(tmp, 'b'))
     manual_ticket(tb, w2.t, 'TLS 1.0 still enabled on acct1', 'audit: %s AZURE-STORAGE-TLS-1-0' % f['asset']['resource_id'])
@@ -695,9 +699,12 @@ def t9(mods, tmp):
     w = W(mods, tmp)
     obs = w.w.findings
     ck_a = [o['cluster_key'] for o in obs if o['identity'] == 'a1' * 16][0]
+    # KDEC-043: ticket 7 carries the label AND the kit's link line (the full key) -- it is linked. Ticket 9 carries
+    # the label alone: a label is a search aid, so it is only a hint, never a link.
     for n in range(230):
-        manual_ticket(tb, w.t, 'manual ticket %d' % n, 'text %d' % n,
-                      labels=['secure-cicd-kit-ck-%s' % ck_a] if n == 7 else ['ops'])
+        manual_ticket(tb, w.t, 'manual ticket %d' % n,
+                      ('text %d\nsecure-cicd-kit-correlation-key: %s' % (n, ck_a)) if n == 7 else 'text %d' % n,
+                      labels=['secure-cicd-kit-ck-%s' % ck_a] if n in (7, 9) else ['ops'])
     manual_ticket(tb, w.t, 'other board', 'x', project='OTHER')
     seen, token, pages = [], None, 0
     while pages < 5:
@@ -715,7 +722,10 @@ def t9(mods, tmp):
           % (len(seen), pages))
     j = [x for x in seen if x.get('linked_cluster_keys')]
     check(len(j) == 1 and j[0]['linked_cluster_keys'] == [ck_a] and j[0].get('manual') is True,
-          'T9: the manual ticket carrying a correlation label was not joined to its finding: %r' % j)
+          'T9: the manual ticket carrying the full key was not joined to its finding: %r' % j)
+    h = [x for x in seen if x.get('label_key_hints')]
+    check(len(h) == 1 and not h[0].get('linked_cluster_keys') and h[0]['label_key_hints'] == [ck_a],
+          'T9: a label with no full key behind it was read as a link (KDEC-043): %r' % h)
     check(all('_text' not in x and 'description' not in x for x in seen), 'T9: ticket text left the run')
     res = w.search({'tracker_query': {'projects': ['OTHER']}})
     check((res.get('refusal') or {}).get('code') == 'API_TRACKER_QUERY_REFUSED', 'T9: another project was %r'

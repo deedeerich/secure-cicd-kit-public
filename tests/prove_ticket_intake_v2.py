@@ -661,10 +661,18 @@ def v11(pt, mods, ti, sod, tmp):
     ck = 'c' * 32
     long_label = 'secure-cicd-kit-ck-%s' % ck
     cut = rt.fit_label(long_label)
+    # KDEC-043: the short form is a SEARCH AID. A hit is exact only when the body carries the full key; with no full
+    # key it is a candidate for a person, never exact.
+    m = ti.match({'correlation_key': ck, 'rule': 'R', 'aliases': [], 'asset_needle': '', 'title': ''},
+                 [{'ref': '9', 'labels': [cut], 'summary': '', '_text': 'secure-cicd-kit-cluster: %s' % ck}],
+                 long_label, 'secure-cicd-kit-cluster:', 85)
+    check(len(long_label) > 50 and len(cut) == 50 and cut != long_label[:50] and len(m['exact']) == 1 and
+          m['exact'][0][1].startswith('body-stamp'),
+          'V11 a GitHub short correlation label with the full key in the body is not an exact match: %r' % m)
     m = ti.match({'correlation_key': ck, 'rule': 'R', 'aliases': [], 'asset_needle': '', 'title': ''},
                  [{'ref': '9', 'labels': [cut], 'summary': '', '_text': ''}], long_label, 'secure-cicd-kit-cluster:', 85)
-    check(len(long_label) > 50 and len(cut) == 50 and [x[1] for x in m['exact']] == ['correlation-label'],
-          'V11 a GitHub-cut correlation label is not an exact match: %r' % m)
+    check(not m['exact'] and [x[1] for x in m['candidates']] == ['correlation-label-unverified'],
+          'V11 a short label with no full key behind it was exact: %r' % m)
     gh = rt.GitHubIssues('o/r', 'placeholder-token', 'secure-cicd-kit', calibration='7')
     sent = []
     gh._req = lambda method, path, payload=None: (sent.append(payload) or ({'number': 5}, 201, None))

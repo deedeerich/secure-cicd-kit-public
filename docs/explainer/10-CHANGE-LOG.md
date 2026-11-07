@@ -5,6 +5,19 @@ Commit ids are on the build trunk `fix/normalization-and-discovery`. Versions 1.
 entries are in `10a-CHANGE-LOG-OCTOBER.md`; 1.11 and earlier in `10b-CHANGE-LOG-EARLIER.md`. A reader whose last copy was v1.10 (`a907dc8`) reads
 `12-CHANGES-SINCE-A907DC8.md` first: it groups every change since by what an integrator must do.
 
+## Unreleased — ticket governance and the Freshservice tracker (KDEC-043 PROPOSED, 2026-11-06)
+
+Proven locally against stand-ins only (`prove_ticket_governance.py` G1-G4, `prove_freshservice_tracker.py` F1-F12 on
+127.0.0.1; 8 mutants killed). No live tracker call; no hosted run yet.
+
+| change | parts affected |
+|---|---|
+| The correlation key is never truncated as identity: a label is a verified search aid (GitHub's 50-character form is a hashed short form); a label hit is exact only when the stamp field or the block carries the full key; a collision or an unverified label goes to a person; a reviewer's link writes the full key into the kit's block on the person's ticket; `tickets.search` links only governed keys (`label_key_hints` for labels) | 06, 11 |
+| `via` is a claim: `tickets.submit` takes `via`; provenance compares it with the authenticated identity and the tracker's write record (`KIT_INTEGRATION_IDENTITIES`); a mismatch is labelled and alerted | 06, 11 |
+| `area-unresolved`: an unrouted finding is created in triage with an owner role and a deadline (`ticket_routing.unresolved`); overdue ones are a decision owed in every reconcile run | 06 |
+| Multicloud findings (`obligations` on a finding): one parent, one owned child per Azure/AWS asset; the parent closes only when every child is verified (`CHILD_OBLIGATION_OPEN`) | 06, 11 |
+| Freshservice, the fourth tracker (`scripts/tracker_freshservice.py`; TICKETING_BACKENDS.md 4A): search-first, tags at creation, markers as notes, read-merge-write-verify under a per-ticket lock, a person's simultaneous tag edit reconciled from the activity history, `TAG_PRESERVATION_NOT_ESTABLISHED` when unprovable; wired through the reusable ticket workflows | 06, 11 |
+
 ## Unreleased — adoption without "a million hoops" (KDEC-041 PROPOSED, 2026-11-06)
 
 Proven locally (`prove_kit_init.py`, `prove_plain_errors.py`, `prove_friction_summary.py`, `prove_adoption_guides.py` R1/N4; 13 mutants killed). No hosted run yet.

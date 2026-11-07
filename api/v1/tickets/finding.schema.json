@@ -239,6 +239,132 @@
       "description": "Who asked for this ticket (recorded; never an approver for it).",
       "type": "string",
       "pattern": "^[A-Za-z0-9 @._+\\[\\]-]{1,100}$"
+    },
+    "obligations": {
+      "description": "KDEC-043 (PROPOSED): a MULTICLOUD finding -- one identity (the identifier in this environment) with one child obligation per cloud asset, each with its own owner role and its own closure. At least two, in Azure AND AWS. The parent ticket closes only when every child is closed by the kit's rescan or a second person's verification.",
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "cloud",
+          "owner_role",
+          "asset"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,39}$"
+          },
+          "cloud": {
+            "type": "string",
+            "enum": [
+              "azure",
+              "aws"
+            ]
+          },
+          "owner_role": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,59}$"
+          },
+          "asset": {
+            "description": "The asset identity scheme. repo-path: repository + path (+ line). azure-resource: cloud + tenant_id + subscription_id + resource_id (the resource id names the subscription). aws-resource: account_id + region + arn (the ARN names the account). github-repo: host + org + repo. engagement: engagement_id + kind + target.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scheme"
+            ],
+            "properties": {
+              "scheme": {
+                "type": "string",
+                "enum": [
+                  "repo-path",
+                  "azure-resource",
+                  "aws-resource",
+                  "github-repo",
+                  "engagement"
+                ]
+              },
+              "repository": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 400
+              },
+              "line": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "cloud": {
+                "type": "string",
+                "enum": [
+                  "azure-commercial",
+                  "azure-government"
+                ]
+              },
+              "tenant_id": {
+                "type": "string",
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+              },
+              "subscription_id": {
+                "type": "string",
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+              },
+              "resource_id": {
+                "type": "string",
+                "pattern": "^/subscriptions/[^\\s]{1,800}$"
+              },
+              "account_id": {
+                "type": "string",
+                "pattern": "^[0-9]{12}$"
+              },
+              "region": {
+                "type": "string",
+                "pattern": "^[a-z]{2}(-gov)?-[a-z]+-[0-9]$|^global$"
+              },
+              "arn": {
+                "type": "string",
+                "pattern": "^arn:aws(-us-gov)?:[a-z0-9-]+:[a-z0-9-]*:[0-9]{0,12}:[^\\s]{1,1000}$"
+              },
+              "host": {
+                "type": "string",
+                "pattern": "^[a-z0-9.-]{3,200}$"
+              },
+              "org": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]{1,100}$"
+              },
+              "repo": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]{1,100}$"
+              },
+              "engagement_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,79}$"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "pentest",
+                  "audit",
+                  "review"
+                ]
+              },
+              "target": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 400
+              }
+            }
+          }
+        }
+      }
     }
   },
   "x-enabled": true

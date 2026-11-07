@@ -59,7 +59,7 @@ on:
         type: string
         default: "ticketing"
       ticket_backend:
-        description: "jira, azdo or github: the repository's ticket backend (KDEC-004)."
+        description: "jira, azdo, github or freshservice: the repository's ticket backend (KDEC-004, KDEC-043)."
         type: string
         default: "jira"
       security_workflow:
@@ -117,6 +117,9 @@ on:
         required: false
       GH_TICKET_TOKEN:
         description: "GitHub Issues: a token with issues read & write on vars.TICKET_REPO. From the ticketing environment."
+        required: false
+      FRESHSERVICE_API_KEY:
+        description: "Freshservice (KDEC-043): the API key (Basic key:X). From the protected environment."
         required: false
       KIT_API_TEAM_READ_TOKEN:
         description: "KDEC-037: a token that can read the members of the approver GitHub team (members:read only), for KIT_API_REVIEW_APPROVER_SOURCE=team:<org>/<slug>. Optional."
@@ -356,6 +359,8 @@ jobs:
           # default branch is prod). Approved tools and evidence stores raise a finding's trust score.
           KIT_API_BRANCH_ENVIRONMENTS: ${{ vars.KIT_API_BRANCH_ENVIRONMENTS }}
           KIT_API_APPROVED_TOOLS: ${{ vars.KIT_API_APPROVED_TOOLS }}
+          # KDEC-043: the identity each `via` integration name is registered as (name=identity,...); not a secret.
+          KIT_INTEGRATION_IDENTITIES: ${{ vars.KIT_INTEGRATION_IDENTITIES }}
           KIT_API_EVIDENCE_STORES: ${{ vars.KIT_API_EVIDENCE_STORES }}
           # KDEC-037: the owner's template numbers; unset is the stated default (ticket_templates.py).
           KIT_API_EXTENSION_DEFAULT_DAYS: ${{ vars.KIT_API_EXTENSION_DEFAULT_DAYS }}
@@ -398,6 +403,15 @@ jobs:
           AZDO_STATE_REOPEN: ${{ vars.AZDO_STATE_REOPEN }}
           AZDO_STATE_DONE: ${{ vars.AZDO_STATE_DONE }}
           AZDO_PAT: ${{ secrets.AZDO_PAT }}
+          # KDEC-043: Freshservice (scripts/tracker_freshservice.py); the key from the protected environment.
+          FRESHSERVICE_HOST: ${{ vars.FRESHSERVICE_HOST }}
+          FRESHSERVICE_API_KEY: ${{ secrets.FRESHSERVICE_API_KEY }}
+          FRESHSERVICE_STAMP_FIELD: ${{ vars.FRESHSERVICE_STAMP_FIELD }}
+          FRESHSERVICE_REQUESTER_ID: ${{ vars.FRESHSERVICE_REQUESTER_ID }}
+          FRESHSERVICE_CALIBRATION_TICKET: ${{ vars.FRESHSERVICE_CALIBRATION_TICKET }}
+          FRESHSERVICE_WORKSPACE_ID: ${{ vars.FRESHSERVICE_WORKSPACE_ID }}
+          FRESHSERVICE_MARK_MODE: ${{ vars.FRESHSERVICE_MARK_MODE }}
+          FRESHSERVICE_TAG_RETRIES: ${{ vars.FRESHSERVICE_TAG_RETRIES }}
           TICKET_REPO: ${{ vars.TICKET_REPO }}
           TICKET_CALIBRATION_REF: ${{ vars.TICKET_CALIBRATION_REF }}
           KIT_API_GH_TICKET_TOKEN: ${{ secrets.GH_TICKET_TOKEN }}

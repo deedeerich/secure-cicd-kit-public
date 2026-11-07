@@ -240,8 +240,10 @@ could not judge because the catalog was unreadable -- **never counted as not exp
 `labels`, `jql`, `page_token`, `max_results` up to 100, `adapter`), `tickets.search` reads EVERY ticket
 in the repository's ticket projects -- manually created ones included -- one page at a time with the
 tracker's own cursor (`data.next_page_token`). Each ticket: `ref`, `key`, `summary`, `labels`, `state`,
-`status_name`, `stamp`, `manual` (true when the kit did not stamp it) and `linked_cluster_keys` (joined to
-the findings of `findings_run_id` when given). No description is returned. A project outside the
+`status_name`, `stamp`, `manual` (true when the kit did not stamp it), `linked_cluster_keys` (FULL keys from
+governed places only -- the stamp field, a stamp or link line -- joined to the findings of `findings_run_id` when
+given) and `label_key_hints` (keys read from correlation labels with no governed key behind them: search aids,
+never links; KDEC-043). No description is returned. A project outside the
 repository's routing and ledger projects, or JQL carrying `ORDER BY`, is `API_TRACKER_QUERY_REFUSED`.
 Jira, Azure DevOps (WIQL inside the project, paged by id, then `workitemsbatch`; `labels` are tags) and
 GitHub Issues (the issues list, paged; text by the search API inside the one repository) are built to
@@ -397,7 +399,15 @@ holds, manual ones included. Version 2 (2026-11-04) carries the owner's answers 
   (the same asset and identifier, or the identifier and a close title): the ticket is CREATED, flagged
   `<stamp>-possible-duplicate` and `<stamp>-triage`, commented with its candidates
   (`TEMPLATE_POSSIBLE_DUPLICATE`); a person decides with the `triage` template, or in the review with
-  `link_decisions` (`link` records a closed duplicate, `new` creates unflagged). A search that did not
+  `link_decisions` (`link` records a closed duplicate and writes the full key into the kit's block on the linked
+  ticket; `new` creates unflagged). A correlation label is a SEARCH AID: a label hit on a ticket whose governed
+  key is another key (`CORRELATION_LABEL_COLLISION`) or that has none (`CORRELATION_LABEL_UNVERIFIED`) is a
+  candidate, never exact (KDEC-043). `via` (optional) names the submitting integration: written as
+  `<stamp>-via-<name>` and compared with the authenticated identity and the tracker's write record; each created
+  item carries `provenance` (`PROVENANCE_ESTABLISHED`, `_MISMATCH` -- labelled and alerted -- or `_NOT_ESTABLISHED`).
+  A finding with `obligations` (multicloud) carries `children`: one owned child ticket per cloud asset; its
+  parent's verification is refused `CHILD_OBLIGATION_OPEN` until every child is verified, then it closes itself
+  (`data.parents_closed`). A search that did not
   complete creates the ticket in triage with `<stamp>-dedupe-pending` (`TEMPLATE_DEDUPE_PENDING`); the
   next run re-runs the dedupe on it (`data.dedupe_rechecked`). A tracker that could not be reached keeps
   every item in the durable outbox -- `outbox.json`, kept as the `kit-ticket-outbox-<correlation id>`

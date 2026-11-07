@@ -128,7 +128,11 @@ USAGE
 THE LIFECYCLE (KDEC-024) is in its own section below `carry_owed`: what each piece adds, and why.
 
 ENVIRONMENT (read, never written, never logged)
-    TICKET_BACKEND      `jira`, `azdo` or `github`. Absent means the control is off.
+    TICKET_BACKEND      `jira`, `azdo`, `github` or `freshservice`. Absent means the control is off.
+    FRESHSERVICE_HOST, FRESHSERVICE_API_KEY, FRESHSERVICE_STAMP_FIELD (cf_<name>, single-line text),
+    FRESHSERVICE_REQUESTER_ID, FRESHSERVICE_CALIBRATION_TICKET, FRESHSERVICE_WORKSPACE_ID,
+    FRESHSERVICE_MARK_MODE (notes|tags), FRESHSERVICE_TAG_RETRIES, FRESHSERVICE_LOCK_DIR
+                        Freshservice (KDEC-043); scripts/tracker_freshservice.py says what each is and why.
     TICKET_CALL_BUDGET  most API calls one run may make (kit default 1000). Every run is bounded.
     TICKET_RETRY_CEILING  retries of a throttled request (kit default 3), no wait over 120 s.
     JIRA_TRANSITION_DONE  the transition that closes (unset: the one into a done status).
@@ -190,6 +194,7 @@ sys.path.insert(0, HERE)
 # deterministic confidence labels. Carried from a prior engagement's ticket engine and re-expressed
 # there; this file is the orchestrator and that one is the model.
 import ticket_model as tm  # noqa: E402 - after the sys.path insert that makes it importable
+import ticket_governance as tg  # noqa: E402 - KDEC-043: key verification, provenance, area, children
 
 # ── THE LOOKUP OUTCOMES (assurance-taxonomy.yaml : ticket_lookup_outcome) ─────────────
 #
@@ -506,6 +511,8 @@ def build_clusters(records):
             # (scripts/ticket_templates.py). Absent for the kit's own scan findings.
             'template_facts': _template_facts(members),
             'template_labels': sorted(set(x for m in members for x in m.get('template_labels') or [])),
+            # KDEC-043 rule 4: a multicloud finding's child obligations (scripts/ticket_templates.py).
+            'obligations': list(members[0].get('obligations') or []),
         })
         print('  ... built cluster %d/%d (%d member(s), %d scanner(s))'
               % (n, len(acting), len(members), len(scanners)), file=sys.stderr)
@@ -654,6 +661,17 @@ class TicketBackend(object):
         superseded half of a cross-scanner merge (D4). Never to clear a finding: the scanner
         clears findings; this only keeps the tracker in step with what the scanner established."""
         return False, '%s cannot close a ticket' % self.name
+
+    # ── KDEC-043 rule 2: PROVENANCE. The identity this credential authenticated as, and the tracker's own
+    # record of who made a write. Either may be unknown, and unknown is said (PROVENANCE_NOT_ESTABLISHED). ──
+    identity = None
+
+    def authenticated_identity(self):
+        return self.identity
+
+    def write_event(self, ref):
+        """-> (actor or None, detail): who the TRACKER records as having made ticket `ref`."""
+        return None, '%s reads no write event' % self.name
 
     def mark(self, ref, labels=(), bump_priority=False):
         """-> (ok, detail, applied). Add kit-owned labels and, for an SLA breach, raise the
@@ -916,6 +934,23 @@ class GitHubIssues(HttpBackend):
                                      {'body': text})
         return (doc is not None), 'comment status %s' % status
 
+    def authenticated_identity(self):
+        # GET /user names a personal token's user; an installation token is refused there (UNVERIFIED for
+        # every token kind), and then the identity is unknown -- said so, never guessed. Read once.
+        if self.identity is None and not getattr(self, '_identity_read', False):
+            self._identity_read = True
+            doc, _status, err = self._req('GET', '/user')
+            if not err and isinstance(doc, dict) and doc.get('login'):
+                self.identity = str(doc['login'])
+        return self.identity
+
+    def write_event(self, ref):
+        doc, status, err = self._req('GET', '/repos/%s/issues/%s' % (self.repo, ref))
+        login = ((doc or {}).get('user') or {}).get('login') if isinstance(doc, dict) else None
+        if err or not login:
+            return None, 'the author of issue %s could not be read (status %s)' % (ref, status)
+        return str(login), 'the issue author'
+
     def labels_of(self, ref):
         doc, status, err = self._req('GET', '/repos/%s/issues/%s' % (self.repo, ref))
         if err or not isinstance(doc, dict):
@@ -974,11 +1009,14 @@ GITHUB_LABEL_MAX = 50
 
 
 def fit_label(name, limit=GITHUB_LABEL_MAX):
-    """A GitHub label is at most 50 characters (the API answers 422 past it). The kit's longer labels -- the
-    correlation key's `<stamp>-ck-<32 hex>` is 51 with the default stamp -- are cut DETERMINISTICALLY to the limit,
-    and every comparison fits both sides the same way (ticket_intake.match, GitHubIntake), so an exact match
-    stays exact. Jira (255) and Azure DevOps tags are never cut."""
-    return str(name)[:limit]
+    """A GitHub label is at most 50 characters (the API answers 422 past it). A longer kit label -- the
+    correlation key's `<stamp>-ck-<32 hex>` is 51 with the default stamp -- is written in a DETERMINISTIC SHORT
+    FORM (ticket_governance.search_label: the head, a dash, 8 hex of its sha256), and every comparison fits both
+    sides the same way. THE SHORT FORM IS A SEARCH AID, NEVER AN IDENTITY (KDEC-043 rule 1): the full key lives
+    in the body's stamp line (or a link line), and ticket_intake.match verifies every label hit against it.
+    Jira (255) and Azure DevOps tags are never shortened."""
+    import ticket_governance as tg
+    return tg.search_label(name, limit)
 
 
 def _project_of_key(key):
@@ -1313,6 +1351,8 @@ class Jira(HttpBackend):
             # THE GATEWAY COULD NOT BE ADDRESSED: nothing was sent to it, nothing may be written.
             return False, why
         me, status, err = self._req('GET', '/rest/api/3/myself')
+        if isinstance(me, dict) and me.get('accountId'):
+            self.identity = str(me['accountId'])          # KDEC-043 rule 2: who this credential is
         if err or not me:
             if status is None or status in (401, 403):
                 return False, first_read_refusal(status, 'JIRA_HOST', self.cred_var,
@@ -1662,6 +1702,13 @@ class Jira(HttpBackend):
         ok_w = err is None and status in (200, 204)
         return ok_w, 'escalation write status %s' % status, applied
 
+    def write_event(self, ref):
+        doc, status, err = self._req('GET', '/rest/api/3/issue/%s?fields=creator' % ref)
+        acc = (((doc or {}).get('fields') or {}).get('creator') or {}).get('accountId') if isinstance(doc, dict) else None
+        if err or not acc:
+            return None, 'the creator of %s could not be read (status %s)' % (ref, status)
+        return str(acc), 'the issue creator'
+
     def labels_of(self, ref):
         """-> (labels, ok, detail). KDEC-037: a ticket's labels are its durable record (extensions,
         links, the no-fix state), read before a template acts on it."""
@@ -1960,6 +2007,24 @@ class AzureDevOps(HttpBackend):
                                      api='7.1-preview.4')
         return (doc is not None), 'comment status %s' % status
 
+    def authenticated_identity(self):
+        # connectionData's authenticatedUser (UNVERIFIED field shape); read once, unknown when it fails.
+        if self.identity is None and not getattr(self, '_identity_read', False):
+            self._identity_read = True
+            doc, _status, err = self._req('GET', '/_apis/connectionData', project=False, api='7.1-preview.1')
+            uid = ((doc or {}).get('authenticatedUser') or {}).get('id') if isinstance(doc, dict) else None
+            if not err and uid:
+                self.identity = str(uid)
+        return self.identity
+
+    def write_event(self, ref):
+        doc, status, err = self._req('GET', '/_apis/wit/workitems/%s?fields=System.CreatedBy' % ref)
+        who = ((doc or {}).get('fields') or {}).get('System.CreatedBy') if isinstance(doc, dict) else None
+        uid = who.get('id') if isinstance(who, dict) else None
+        if err or not uid:
+            return None, 'the creator of work item %s could not be read (status %s)' % (ref, status)
+        return str(uid), 'System.CreatedBy'
+
     def labels_of(self, ref):
         doc, status, err = self._req('GET', '/_apis/wit/workitems/%s?fields=System.Tags' % ref)
         if err or not isinstance(doc, dict):
@@ -2161,6 +2226,12 @@ class RecordingBackend(TicketBackend):
                     return list(r.get('labels') or []), True, 'read'
         return [], False, 'no such ticket'
 
+    writers = None          # {ref: actor} -- a proof sets who the stand-in tracker records
+
+    def write_event(self, ref):
+        w = (self.writers or {}).get(str(ref))
+        return (w, 'recorded writer') if w else (None, 'the in-memory tracker records no writer for %s' % ref)
+
     def mark(self, ref, labels=(), bump_priority=False):
         self.marks.append((str(ref), list(labels), bool(bump_priority)))
         for recs in self.store.values():
@@ -2250,6 +2321,14 @@ def render_body(cluster, existing='', ticket=None, tasks=None):
         lines.append('| exception | %s |' % link)
     if cluster.get('sla'):
         lines.append('| SLA due | %s |' % sla_text(cluster['sla']))
+    if isinstance(cluster.get('area'), dict):
+        # KDEC-043 rule 3: no owning area is a TRIAGE STATE with an owner role and a deadline.
+        lines.append('| area | %s -- owner role %s triages it by %s (routing names no area for it) |' % (
+            cluster['area']['state'], cluster['area']['owner_role'], cluster['area']['due']))
+    for ob in cluster.get('obligations') or []:
+        # KDEC-043 rule 4: one identity, one child obligation per cloud asset, each with its own owner.
+        lines.append('| child obligation %s | %s %s -- owner role %s; closes by a rescan or a second person |' % (
+            ob.get('id'), ob.get('cloud'), ob.get('display') or '', ob.get('owner_role')))
     if ticket is None and cluster.get('confidence'):
         lines.append('| confidence | %s -- %s |' % (cluster['confidence'],
                                                     cluster.get('confidence_basis') or ''))
@@ -2858,6 +2937,21 @@ def note_degraded(result, backend, key, owed):
         result.setdefault('degraded_escalations', []).append({
             'cluster_key': key, 'attempts': owed['attempts'], 'threshold': threshold,
             'first_degraded_at': owed.get('first_degraded_at'), 'cause': owed.get('cause')})
+
+
+def area_sweep(result, ledger, today):
+    """KDEC-043 rule 3, over the WHOLE ledger and unasked: an unresolved area past its deadline is a decision owed to
+    its owner role, in every run's output (the ordinary run and the scheduled clock), until the routing resolves it."""
+    result['area_unresolved'] = tg.area_overdue(ledger, today)
+    for a in result['area_unresolved']:
+        if a['overdue']:
+            result['outcomes'][tg.AREA_UNRESOLVED_OVERDUE] = result['outcomes'].get(tg.AREA_UNRESOLVED_OVERDUE, 0) + 1
+            result['needs_decision'].append({
+                'cluster_key': a['cluster_key'], 'outcome': tg.AREA_UNRESOLVED_OVERDUE,
+                'detail': 'ticket %s has had no owning area since its triage deadline %s (%d day(s) over): the %s '
+                          'role routes it (a ticket_routing rule) or records why it has none'
+                          % (a.get('key') or a.get('ref'), a['due'], a['overdue_days'], a['owner_role']),
+                'candidates': []})
 
 
 def finish_claim(result, backend_note='', backend=None):
@@ -3525,6 +3619,7 @@ def _reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None
     # runs before the backend check, so an unconfigured tracker does not take the review
     # obligation down with it.
     result['past_due'] = sweep_past_due(ledger, today)
+    area_sweep(result, ledger, today)
     if result['past_due']:
         result['outcomes'][tm.DEFERRAL_PAST_DUE] = sum(
             1 for p in result['past_due'] if p['state'] == tm.DEFERRAL_PAST_DUE)
@@ -3684,6 +3779,10 @@ def _reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None
                     'cluster_key': cluster['cluster_key'], 'rule': tgt.get('rule'),
                     'source': tgt.get('source')})
                 continue
+            # KDEC-043 rule 3: routing is configured and nothing in it gave this finding an owning area.
+            unres = tg.area_resolution(tgt, getattr(backend, 'routing', None))
+            if unres:
+                cluster['area'] = tg.area_record(unres, today)
         if outcome == BINDING_ABSENT:
             # THE PARENT AND ITS CHILDREN ARE BUILT WHETHER OR NOT ANYTHING IS WRITTEN. Building
             # is not mutating: the plan is what a reviewer reads before approving, and a dry run
@@ -3697,6 +3796,9 @@ def _reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None
             cluster['extra_labels'] = sorted(set(cluster.get('template_labels') or []) | (
                 set([_label(backend, 'disagreement')]) if cluster.get('contested_by') else set()))
             cluster['extra_labels'] = urgent_labels(backend, cluster)
+            if isinstance(cluster.get('area'), dict):
+                cluster['extra_labels'] = sorted(set(cluster['extra_labels']) | set(
+                    tg.area_labels(getattr(backend, 'stamp_label', '') or DEFAULT_STAMP_LABEL, cluster['area'])))
             ticket, tasks = tm.build_ticket(
                 cluster, 'ticket-%s' % cluster['cluster_key'][:12],
                 channel_degraded=not sweep_complete)
@@ -3789,6 +3891,8 @@ def _reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None
                         # KDEC-028: where the ticket IS. The sweep covers it after a rule change.
                         'project': (cluster.get('route') or {}).get('project'),
                         'route_rule': (cluster.get('route') or {}).get('rule')}
+                    if isinstance(cluster.get('area'), dict):
+                        ledger[cluster['cluster_key']]['area'] = dict(cluster['area'])
                     ledger_members(ledger[cluster['cluster_key']], cluster, commit)
                     # TIER -1: one instance per observation, under the tier-0 item, up to the
                     # owner's per-class threshold; above it the class carries a COUNT, recorded
@@ -3906,6 +4010,15 @@ def _reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None
                     if ok_n:
                         r_entry = dict(r_entry, project=where_now, route_noted=want)
                         ledger[cluster['cluster_key']] = r_entry
+                # KDEC-043 rule 3: an unresolved area LEAVES the triage state when the routing now gives it
+                # one (the owner role's fix is a routing rule), recorded with the rule and the date.
+                if isinstance(r_entry.get('area'), dict) and r_entry['area'].get('state') == tg.AREA_UNRESOLVED                         and not tg.area_resolution(backend.target_for(cluster), backend.routing):
+                    r_entry = dict(r_entry, area=dict(r_entry['area'], state=tg.AREA_RESOLVED, resolved_on=today,
+                                                      resolved_by_rule=(cluster.get('route') or {}).get('rule')))
+                    ledger[cluster['cluster_key']] = r_entry
+                    backend.comment(hit['ref'], 'AREA RESOLVED (secure-cicd-kit, %s): ticket routing now gives this '
+                                    'finding an owning area (rule %s); it leaves the area-unresolved triage state.'
+                                    % (today, (cluster.get('route') or {}).get('rule')))
             # THE DELTA (TC 5.1, 6.1; T-13). What the block last said, from the ledger for free:
             # effective severity, the contributing scanners, those that STOPPED (named, never
             # omitted) and members not observed this run (POTENTIALLY_ABSENT, never "fixed").
@@ -4503,7 +4616,10 @@ def choose_backend(env=None):
         (jira_mode == 'bearer' or bool(env.get('JIRA_EMAIL')))
     azdo_org = (env.get('AZDO_ORG_URL') or env.get('AZDO_ORG') or '').strip()
     azdo_ready = bool(azdo_org) and bool(env.get('AZDO_PAT')) and bool(env.get('AZDO_PROJECT'))
-    ready = [n for n, r in (('github', gh_ready), ('jira', jira_ready), ('azdo', azdo_ready)) if r]
+    # KDEC-043: Freshservice, the fourth backend, to the same contract (scripts/tracker_freshservice.py).
+    fs_ready = bool(env.get('FRESHSERVICE_HOST')) and bool(env.get('FRESHSERVICE_API_KEY'))
+    ready = [n for n, r in (('github', gh_ready), ('jira', jira_ready), ('azdo', azdo_ready),
+                            ('freshservice', fs_ready)) if r]
 
     # TWO BACKENDS CONFIGURED AT ONCE IS A CONFIGURATION DEFECT, refused by name (TC 4.6; C-2).
     # Not "create in both"; not "prefer whichever is listed first" -- and, since KDEC-004, not
@@ -4637,7 +4753,16 @@ def _build_backend(want, env, gh_ready, jira_ready, azdo_ready, azdo_org, retry_
         ab.instance_threshold = instance_threshold
         return ab, 'azdo backend configured'
 
-    return None, 'unrecognised %s value %r; expected jira, azdo or github' % (ENV_BACKEND, want)
+    if want == 'freshservice':
+        if not (env.get('FRESHSERVICE_HOST') and env.get('FRESHSERVICE_API_KEY')):
+            missing = [k for k in ('FRESHSERVICE_HOST', 'FRESHSERVICE_API_KEY') if not env.get(k)]
+            return None, ('CONFIGURATION REFUSED: %s names freshservice and %s is missing'
+                          % (ENV_BACKEND, ', '.join(missing)))
+        import tracker_freshservice as tfs
+        return tfs.build(env, retry_ceiling)
+
+    return None, ('unrecognised %s value %r; expected jira, azdo, github or freshservice'
+                  % (ENV_BACKEND, want))
 
 
 def load_ledger(path):
@@ -4917,6 +5042,15 @@ def render_summary(result):
                                                        r['approval_reason']))
         L.append('')
 
+    if result.get('area_unresolved'):
+        late = [a for a in result['area_unresolved'] if a['overdue']]
+        L.append('### %d ticket(s) with no owning area (area-unresolved triage; %d past the deadline)'
+                 % (len(result['area_unresolved']), len(late)))
+        L.append('')
+        for a in result['area_unresolved']:
+            L.append('- %s `%s` owner role %s, due %s -- %s' % (a.get('key') or a.get('ref'), a['cluster_key'][:12],
+                                                               a['owner_role'], a['due'], a['state']))
+        L.append('')
     if result['needs_decision']:
         L.append('### %d cluster(s) need a human decision' % len(result['needs_decision']))
         L.append('')
@@ -6029,6 +6163,7 @@ def _resurface(ledger, backend, apply_changes, today, numbers=None, approval=Non
     result = blank_result(backend, apply_changes, approval, today, 'resurface')
     result['sla_evaluated'] = numbers is not None
     result['past_due'] = sweep_past_due(ledger, today)
+    area_sweep(result, ledger, today)
     if result['past_due']:
         result['outcomes'][tm.DEFERRAL_PAST_DUE] = sum(
             1 for x in result['past_due'] if x['state'] == tm.DEFERRAL_PAST_DUE)

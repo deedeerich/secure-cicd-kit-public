@@ -5541,6 +5541,12 @@ namespaces:
           A scan verification did not establish the fix: the kit's scan never observed the finding,
           the run still reports it, or its scanners did not cover where it lived.
 
+      CHILD_OBLIGATION_OPEN:
+        definition: >-
+          KDEC-043 (PROPOSED): a verification asked to close a multicloud PARENT while a child obligation
+          (one per cloud asset, each with its own owner role) is not closed-verified, was never created, or
+          cannot be read. The parent closes only when every child is closed by the kit's rescan or a second
+          person; it closes itself when the last child is verified.
       SOD_SELF_APPROVAL:
         definition: >-
           Separation of duties (owner, 2026-11-04; docs/ticketing/SEPARATION-OF-DUTIES.md): the person
@@ -5665,12 +5671,78 @@ namespaces:
           The search did not answer, or ran past its page bound; what was not read is not absent.
       TRACKER_INTAKE_NOT_CONFIGURED:
         definition: >-
-          No intake adapter serves this tracker (FreshService is the seam not yet built; Azure DevOps and
-          GitHub Issues have none: work tickets are Jira only, KDEC-017 item 5).
+          No intake adapter serves this tracker: the adapter asked for is not this run's tracker (a
+          Freshservice search against a Jira run), or no tracker is configured. Jira, Azure DevOps, GitHub
+          Issues and Freshservice (KDEC-043) each have one.
       TRACKER_QUERY_REFUSED:
         definition: >-
           The query named a project outside this repository's ticket projects, or its JQL carried ORDER BY
           or a statement break.
+
+  ticket_governance_state:
+    description: >-
+      KDEC-043 PROPOSED (lane tickets, 2026-11-06): what the ticket governance rules every tracker shares
+      established -- the correlation key's identity, a `via` claim's provenance, an unrouted finding's triage,
+      and Freshservice's whole-list tag write (scripts/ticket_governance.py, scripts/tracker_freshservice.py).
+    consumers: [scripts/ticket_governance.py, scripts/tracker_freshservice.py, scripts/ticket_intake.py,
+                scripts/ticket_submit.py, scripts/reconcile_tickets.py, tests/prove_ticket_governance.py,
+                tests/prove_freshservice_tracker.py]
+    rule: >-
+      NOTHING HERE IS ASSUMED. The full key decides identity and a label never does; a claim is compared, never
+      trusted; a preservation the history cannot show is NOT_ESTABLISHED and goes to a person.
+    values:
+      CORRELATION_LABEL_UNVERIFIED:
+        definition: >-
+          A correlation-key label (or its short search form) is on a ticket that carries no full key in a governed
+          place (the stamp field, a stamp or link line). A candidate for a person, never an exact match.
+      CORRELATION_LABEL_COLLISION:
+        definition: >-
+          A correlation-key label is on a ticket whose governed full key is ANOTHER key: a search ambiguity, for a
+          person. The full key is the sole authority; nothing is merged.
+      PROVENANCE_ESTABLISHED:
+        definition: >-
+          The `via` claim (if any), the identity the kit's credential authenticated as, and the tracker's own
+          record of who made the write all agree.
+      PROVENANCE_MISMATCH:
+        definition: >-
+          Two of the three disagree: the ticket is labelled `<stamp>-provenance-mismatch`, a comment names the
+          sides, and the API answer carries an alert. A person checks who wrote it.
+      PROVENANCE_NOT_ESTABLISHED:
+        definition: >-
+          A side could not be read (the identity at run start, the tracker's write record, or the claim's
+          registered identity in KIT_INTEGRATION_IDENTITIES). With a claim present the ticket is labelled
+          `<stamp>-provenance-unverified`.
+      AREA_UNRESOLVED:
+        definition: >-
+          Routing is configured and no rule and no default gave this finding an owning area, so it was created
+          with the kit default, `<stamp>-area-unresolved` and `<stamp>-triage`, an owner role and a deadline.
+          A triage state, not a dead end.
+      AREA_UNRESOLVED_OVERDUE:
+        definition: >-
+          An AREA_UNRESOLVED ticket past its deadline: in every reconcile run's output and the scheduled clock's,
+          unasked, as a decision owed to its owner role (exit 1), until a routing rule resolves it.
+      AREA_RESOLVED:
+        definition: >-
+          A later run's routing gave a once-unresolved finding its area; recorded with the rule and the date, and
+          said on the ticket.
+      TAG_PRESERVATION_ESTABLISHED:
+        definition: >-
+          Freshservice: a tag write was re-read and verified, and the activity history shows no one else's tag
+          change was lost (or a concurrent one was reconciled from it and verified). A marker written as a
+          note is established by construction: notes are never replaced.
+      TAG_PRESERVATION_NOT_ESTABLISHED:
+        definition: >-
+          Freshservice: after a whole-list tag write the kit could not prove that no one else's tag change was
+          lost -- the history could not be read, the kit's identity is unknown, a concurrent change could not be
+          parsed, or the retries ran out. A private note asks a person to check; the write is reported failed.
+      TICKET_WRITE_LOCK_HELD:
+        definition: >-
+          Another kit writer held this ticket's per-ticket lock for longer than the bounded wait; nothing was
+          written and the write is owed to the next run.
+      STAMP_FIELD_NOT_CONFIRMED:
+        definition: >-
+          Freshservice: a created ticket's governed stamp field did not read back as the full key. The block's
+          stamp line still carries it; the run records the field's failure rather than assume it.
 
   # ─────────────────────────────────────────────────────────────────────────
   # KDEC-036 PROPOSED (2026-11-03): what a security reviewer could not see from the kit. Each is
