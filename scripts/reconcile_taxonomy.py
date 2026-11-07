@@ -213,6 +213,42 @@ NOT_VOCABULARY = {
     # for fetch-metadata's lookups) and the template's suggested repository secret. Names of
     # settings, not states; the triage's own states are lowercase rule ids.
     "METADATA_TOKEN", "DEPENDABOT_METADATA_TOKEN",
+    # The optional secret of reusable-dependabot-keep-current.yml (a token Dependabot accepts
+    # commands from) and the template's suggested repository secret (owner, 2026-11-06). Names of
+    # settings; keep-current's own states are lowercase rule ids.
+    "COMMAND_TOKEN", "DEPENDABOT_COMMAND_TOKEN",
+    # Env-var names: verify-azure-oidc.yml's directory step (the audience the cloud signs in with),
+    # and tools/battery.py's override for the bash it runs step bodies with, and its constant for
+    # the self-test workflow path. Names of settings, not states.
+    "EXPECTED_AUDIENCE", "BATTERY_BASH", "SELF_TEST",
+    # scripts/dependabot_config.py: the env var a caller may set to add path globs to leave out.
+    "DEPENDABOT_CONFIG_EXCLUDE",
+    # Lane kit-adoption (KDEC-041, 2026-11-06). scripts/kit_init.py and its proof: Python constant names that
+    # alias registered kit_init_state values (OK_WRITTEN, STACK_UNKNOWN and friends, read as KI.<name> from the
+    # proof, so the assignment rule cannot see them), the module's containers (KIT_ROOT, SHA_RX, ZERO_SHA,
+    # KNOWN_STACKS, SECRET_SHAPES, DEPLOY_REUSABLES), the stub override KIT_INIT_GH, and secret or variable
+    # NAMES the checklist and the proof name (KIT_INIT_TOKEN, KIT_STATIC_BUILD_COMMAND, ATTESTATIONS_AVAILABLE,
+    # AZURE_CLIENT_SECRET, X_TOKEN). scripts/plain_errors.py: the env names KIT_DOCS_BASE and PE_STATES. And
+    # three DELIBERATELY UNREGISTERED rogue values (SOME_NEW_REFUSAL, SOMETHING_NEW, NOT_A_REAL_STATE) the
+    # mutants feed in to prove an unknown state is refused or shown by name; registering them would disarm
+    # those mutants. None is a state.
+    "OK_WRITTEN", "OK_PR", "OK_UNCHANGED", "STACK_UNKNOWN", "MULTIPLE_IMAGES", "PIN_MISSING", "PIN_NOT_CHECKOUT",
+    "HOST_UNSUPPORTED", "API_NEEDS_CONTAINER", "SECRET_REFUSED", "DIRTY_TREE", "PR_NOT_OPENED",
+    "HUMAN_EDIT_PRESERVED", "KIT_ROOT", "SHA_RX", "ZERO_SHA", "KNOWN_STACKS", "SECRET_SHAPES", "DEPLOY_REUSABLES",
+    "KIT_INIT_GH", "KIT_INIT_TOKEN", "KIT_STATIC_BUILD_COMMAND", "ATTESTATIONS_AVAILABLE", "AZURE_CLIENT_SECRET",
+    "X_TOKEN", "KIT_DOCS_BASE", "PE_STATES", "T_RULE", "SOME_NEW_REFUSAL", "SOMETHING_NEW", "NOT_A_REAL_STATE",
+    # scripts/external_findings_pull.py and its proof: secret and setting NAMES (SONAR_*, AIKIDO_*), Python
+    # constant names that alias registered states (reviewer_signals' KEPT_DEPLOYMENT and friends, the
+    # pull's AUTH_REFUSED / HOST_REFUSED), the template version constant, and SonarQube's own hotspot
+    # status word TO_REVIEW (the vendor's, read, never a state of this kit).
+    "SONAR_TOKEN", "SONAR_HOST_URL", "SONAR_ORGANIZATION", "AIKIDO_API_BASE", "AIKIDO_CLIENT_ID", "AIKIDO_CLIENT_SECRET",
+    "AIKIDO_ID", "AIKIDO_SECRET", "KEPT_DEPLOYMENT", "NOT_KEPT", "NOT_APPROVED", "SELF_APPROVED",
+    "AUTH_REFUSED", "HOST_REFUSED", "TEMPLATE_VERSION", "TO_REVIEW",
+    # scripts/finding_ids.py self-test inputs: spellings of a CVE and a CWE the normaliser must accept
+    # (the format table). Ids of a vulnerability and a weakness, not states of this kit.
+    "CVE_2021_44228", "CWE_79",
+    # scripts/unknown_ids.py constant names (a file name and a schema id), not states.
+    "MAPPINGS_FILE", "MAPPINGS_SCHEMA",
     # Env-var NAMES of .github/workflows/reusable-ticket-reference.yml's step (KDEC-013): a Jira
     # site host and a project key, carried as DATA. Each names a SETTING; nothing branches on its
     # value being one of a fixed set. The gate's states are ticket_reference_outcome.

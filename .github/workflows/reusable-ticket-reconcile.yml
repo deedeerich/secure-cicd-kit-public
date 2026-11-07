@@ -376,6 +376,16 @@ jobs:
           echo "| ticket clock | exit $rc, routing_result **$route**, ${state:-no ticketing state} |" >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
 
+      - name: Say what ticketing did in plain words (docs/errors/ERRORS.md)
+        if: always()
+        env:
+          PE_STATES: ticketing_availability:${{ steps.resurface.outputs.ticketing_state }}
+        run: |
+          # The kit checkout (.kit) carries the catalogue; an older kit commit without it explains nothing.
+          if [ -f .kit/scripts/plain_errors.py ]; then
+            python3 .kit/scripts/plain_errors.py summary --states "$PE_STATES" --source ticketing
+          fi
+
       - name: Keep the clock's run record
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -689,6 +699,16 @@ jobs:
             echo "| controls skipped | ${SKP:-none} |"
             echo "| weakening attribution | $auth |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Say what ticketing did in plain words (docs/errors/ERRORS.md)
+        if: always()
+        env:
+          PE_STATES: ticketing_availability:${{ steps.posture.outputs.ticketing_state }}
+        run: |
+          # The kit checkout (.kit) carries the catalogue; an older kit commit without it explains nothing.
+          if [ -f .kit/scripts/plain_errors.py ]; then
+            python3 .kit/scripts/plain_errors.py summary --states "$PE_STATES" --source ticketing
+          fi
 
       - name: Keep the run record and the ledger proposal
         if: always()

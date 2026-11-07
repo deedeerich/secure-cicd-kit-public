@@ -47,7 +47,8 @@ on:
     inputs:
       tracker_host:
         description: >-
-          The Jira site host, for example yourcompany.atlassian.net. A reference is a URL of the
+          The Jira site host, for example yourcompany.atlassian.net (https://yourcompany.atlassian.net
+          is accepted too, so one JIRA_HOST value serves this gate and the ticket jobs). A reference is a URL of the
           form https://<host>/browse/<KEY>-<number>. Empty means the gate is not configured, and
           the gate fails as a platform problem rather than passing.
         type: string
@@ -117,6 +118,11 @@ jobs:
             exit "$2"
           }
           host="${TRACKER_HOST:-}"
+          # EITHER FORM (2026-11-06): the bare host or https://<host>, a trailing slash allowed, so one
+          # JIRA_HOST value serves this gate and the ticket reconciler. Spaces, the scheme and the slash
+          # are dropped here; what remains is matched as a literal (G7, G11).
+          host="${host#"${host%%[![:space:]]*}"}"; host="${host%"${host##*[![:space:]]}"}"
+          host="${host#https://}"; host="${host%%/}"
           proj="${PROJECT_KEY:-}"
           mind="${MIN_DIGITS:-}"
           maxd="${MAX_DIGITS:-}"

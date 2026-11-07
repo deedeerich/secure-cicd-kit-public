@@ -1,0 +1,307 @@
+# Starter: drop this into a calling repo at .github/workflows/build-deploy-static.yml (a STATIC SITE:
+# HTML, CSS and JavaScript served by Azure Static Web Apps). Replace YOUR_ORG, and replace every
+# 0000000000000000000000000000000000000000 below with the 40-hex commit SHA of the kit you chose.
+# scripts/kit_init.py writes this file for a repository it detects as a static site, already pinned.
+#
+# ONE SECURITY CALLER PER REPOSITORY (KDEC-033): this file's `security` job replaces
+# templates/security.yml, under the same job id, so the required check is still `security / Security gate`.
+#
+# Shape (the container template's, for a site): security + policy -> package the BUILT site by content
+# digest (static-site-package: the marker kit-release.json, the SBOM) -> attest the marker in a job of its
+# own (the only job holding attestations: write) -> on a merge to main, deploy that digest to dev and test
+# in parallel. uat and prod are PROMOTED from a predecessor's verified record by a dispatch with
+# promote_from_run_id: nothing is rebuilt (KDEC-029). docs/adoption/USAGE.md "Static sites".
+#
+# WHAT THE LANDING ZONE VENDS per environment: AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, AZURE_CLIENT_ID
+# (variables: the identity is federated and holds no key), KIT_RESOURCE_GROUP, KIT_APP_NAME (the Static
+# Web App's name), KIT_ENVIRONMENT_TIER, KIT_CLOUD. The deploy binds itself to the environment's values.
+# Unlink the Static Web App from its repository: a site whose own generated workflow can deploy around
+# the kit fails the posture check.
+name: Build & Deploy (static site)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "GitHub Environment to promote into (uat or prod), with promote_from_run_id"
+        type: string
+        default: "uat"
+      promote_from_run_id:
+        description: "PROMOTE (no build): the run whose deploy into promote_from_environment verified the site digest"
+        type: string
+        default: ""
+      promote_from_environment:
+        description: "PROMOTE: the predecessor environment whose record is promoted"
+        type: string
+        default: "test"
+      release_path:
+        description: "normal | hotfix | rollback | break-glass"
+        type: string
+        default: "normal"
+      exception_reason:
+        description: "break-glass / rollback: why (the weakening record)"
+        type: string
+        default: ""
+      exception_authority:
+        description: "break-glass / rollback: who accepted it (a role or a named approver)"
+        type: string
+        default: ""
+      exception_approver:
+        description: "break-glass / rollback: who approved it -- on a registered approver list, never the requester (KDEC-036)"
+        type: string
+        default: ""
+      exception_ref:
+        description: "break-glass / rollback: the ticket or exception id"
+        type: string
+        default: ""
+      exception_expires:
+        description: "break-glass / rollback: YYYY-MM-DD, at most 7 days out for break-glass"
+        type: string
+        default: ""
+      manual_review_by:
+        description: "promotion with no security record: the AppSec reviewer (never you) whose manual review typed the verdict (KDEC-036 G8)"
+        type: string
+        default: ""
+      manual_review_ref:
+        description: "promotion with no security record: the manual review's reference"
+        type: string
+        default: ""
+      manual_review_date:
+        description: "promotion with no security record: the manual review's date, YYYY-MM-DD, at most 30 days old"
+        type: string
+        default: ""
+
+# A superseded pull-request run is cancelled; nothing else is (KDEC-033).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Gate 1: security must pass before anything is packaged ──
+  security:
+    if: inputs.promote_from_run_id == ''
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-security.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    permissions:
+      contents: read
+      security-events: write
+      actions: read   # the CodeQL job reads workflow metadata on private repositories
+    with:
+      environment: prod     # the baseline-ledger environment this run is for
+    secrets:
+      SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+  # ── Gate 2: the repo's own pipelines must satisfy supply-chain policy ──
+  policy:
+    if: inputs.promote_from_run_id == ''
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/workflow-policy-check.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    permissions:
+      contents: read
+
+  # ── Package: build the site (your command), then hash every file into the marker ──
+  # No identity here: the build command is your code, so this job can neither sign nor deploy.
+  package:
+    needs: [security, policy]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      site_digest: ${{ steps.pkg.outputs.site_digest }}
+      artifact_name: ${{ steps.pkg.outputs.artifact_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the site (vars.KIT_STATIC_BUILD_COMMAND; none when the site is committed as built)
+        env:
+          BUILD_COMMAND: ${{ vars.KIT_STATIC_BUILD_COMMAND }}
+        run: |
+          set -euo pipefail
+          if [ -n "$BUILD_COMMAND" ]; then
+            /bin/sh -c "$BUILD_COMMAND"
+          else
+            echo "No KIT_STATIC_BUILD_COMMAND: the site is packaged as committed."
+          fi
+      - name: Package the built site by content digest (the marker and the SBOM)
+        id: pkg
+        uses: YOUR_ORG/secure-cicd-kit/.github/actions/static-site-package@0000000000000000000000000000000000000000   # pin a commit SHA
+        with:
+          path: dist   # kit-init: site-dir (the BUILT site's directory)
+
+  # ── Attest: sign the marker. The only job holding attestations: write. ──
+  attest:
+    needs: [package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.package.outputs.artifact_name }}
+          path: site
+      - name: Attest the marker's build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: site/kit-release.json
+
+  # ── dev and test, IN PARALLEL, from the one package of a merge to main (KDEC-029) ──
+  deploy-dev:
+    needs: [security, package, attest]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-deploy-staticwebapp.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+      deployments: write   # the deploy keeps its durable release record (KDEC-036 G6)
+      pull-requests: read  # the readiness attestation's approving review (KDEC-036 G1)
+      actions: read
+    with:
+      github_environment: dev
+      attestation_signer_workflow: ${{ github.repository }}/.github/workflows/build-deploy-static.yml
+      attestations_available: ${{ vars.ATTESTATIONS_AVAILABLE == 'true' }}
+      environment_tier: ${{ vars.KIT_ENVIRONMENT_TIER }}  # empty here: filled from the dev environment
+      routing_result: ${{ needs.security.outputs.routing_result }}
+      controls_unavailable: ${{ needs.security.outputs.controls_unavailable }}
+      advisory_causes: ${{ needs.security.outputs.advisory_causes }}
+      deploy_approval: ${{ needs.security.outputs.deploy_approval }}
+      max_exception_renewals: ${{ needs.security.outputs.max_exception_renewals }}
+      resource_group: ${{ vars.KIT_RESOURCE_GROUP }}
+      site_name: ${{ vars.KIT_APP_NAME }}
+      site_digest: ${{ needs.package.outputs.site_digest }}
+      cloud: ${{ vars.KIT_CLOUD || 'commercial' }}
+      health_path: /
+      rollback_on_failure: true
+      e2e_test_command: ${{ vars.KIT_E2E_TEST_COMMAND }}
+      dast_command: ${{ vars.KIT_DAST_COMMAND }}
+    secrets:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
+
+  deploy-test:
+    needs: [security, package, attest]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-deploy-staticwebapp.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+      deployments: write   # the deploy keeps its durable release record (KDEC-036 G6)
+      pull-requests: read  # the readiness attestation's approving review (KDEC-036 G1)
+      actions: read
+    with:
+      github_environment: test
+      attestation_signer_workflow: ${{ github.repository }}/.github/workflows/build-deploy-static.yml
+      attestations_available: ${{ vars.ATTESTATIONS_AVAILABLE == 'true' }}
+      environment_tier: ${{ vars.KIT_ENVIRONMENT_TIER }}  # empty here: filled from the test environment
+      routing_result: ${{ needs.security.outputs.routing_result }}
+      controls_unavailable: ${{ needs.security.outputs.controls_unavailable }}
+      advisory_causes: ${{ needs.security.outputs.advisory_causes }}
+      deploy_approval: ${{ needs.security.outputs.deploy_approval }}
+      max_exception_renewals: ${{ needs.security.outputs.max_exception_renewals }}
+      resource_group: ${{ vars.KIT_RESOURCE_GROUP }}
+      site_name: ${{ vars.KIT_APP_NAME }}
+      site_digest: ${{ needs.package.outputs.site_digest }}
+      cloud: ${{ vars.KIT_CLOUD || 'commercial' }}
+      health_path: /
+      rollback_on_failure: true
+      e2e_test_command: ${{ vars.KIT_E2E_TEST_COMMAND }}
+      dast_command: ${{ vars.KIT_DAST_COMMAND }}
+    secrets:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
+
+  # ── PROMOTE the site digest from run Y / environment Y into uat or prod. Nothing is rebuilt. ──
+  # The source job only READS the predecessor's record (actions: read, no identity); the deploy's own
+  # promotion gate re-reads it and refuses, naming the reason, unless it holds.
+  promotion-source:
+    if: github.event_name == 'workflow_dispatch' && inputs.promote_from_run_id != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      site_digest: ${{ steps.read.outputs.site_digest }}
+      routing_result: ${{ steps.read.outputs.routing_result }}
+      controls_unavailable: ${{ steps.read.outputs.controls_unavailable }}
+      advisory_causes: ${{ steps.read.outputs.advisory_causes }}
+    steps:
+      - name: Read the predecessor's promotion record
+        id: read
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ inputs.promote_from_run_id }}
+          SRC: ${{ inputs.promote_from_environment }}
+        run: |
+          set -euo pipefail
+          # KDEC-027: gh's token goes to this run's host only (gh run download defaults to github.com).
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
+          name="kit-promotion-record-$(printf '%s' "$SRC" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-40)"
+          gh run download "$RUN" -R "${GH_HOST}/${GITHUB_REPOSITORY}" -n "$name" -D rec
+          r=rec/promotion-record.json
+          {
+            echo "site_digest=$(jq -r '.artifact.digest // ""' "$r")"
+            echo "routing_result=$(jq -r '.provenance.gate_routing_result // ""' "$r")"
+            echo "controls_unavailable=$(jq -r '(.provenance.controls_unavailable // []) | join(",")' "$r")"
+            echo "advisory_causes=$(jq -r '(.provenance.advisory_causes // []) | join(",")' "$r")"
+          } >> "$GITHUB_OUTPUT"
+
+  promote:
+    needs: [promotion-source]
+    if: github.event_name == 'workflow_dispatch' && inputs.promote_from_run_id != ''
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-deploy-staticwebapp.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+      deployments: write   # the deploy keeps its durable release record (KDEC-036 G6)
+      pull-requests: read  # the readiness attestation's approving review (KDEC-036 G1)
+      actions: read
+    with:
+      github_environment: ${{ inputs.environment }}      # uat or prod; approvals live on the Environment
+      promote_from_run_id: ${{ inputs.promote_from_run_id }}
+      promote_from_environment: ${{ inputs.promote_from_environment }}
+      promotion_predecessor: ${{ inputs.environment == 'uat' && 'test' || vars.KIT_PROMOTION_PREDECESSOR || 'test' }}
+      release_path: ${{ inputs.release_path || 'normal' }}
+      weakening_reason: ${{ inputs.exception_reason }}
+      weakening_authority: ${{ inputs.exception_authority }}
+      weakening_approver: ${{ inputs.exception_approver }}
+      weakening_exception_ref: ${{ inputs.exception_ref }}
+      weakening_expires: ${{ inputs.exception_expires }}
+      manual_review_by: ${{ inputs.manual_review_by }}
+      manual_review_ref: ${{ inputs.manual_review_ref }}
+      manual_review_date: ${{ inputs.manual_review_date }}
+      attestation_signer_workflow: ${{ github.repository }}/.github/workflows/build-deploy-static.yml
+      attestations_available: ${{ vars.ATTESTATIONS_AVAILABLE == 'true' }}
+      environment_tier: ${{ vars.KIT_ENVIRONMENT_TIER }}
+      routing_result: ${{ needs.promotion-source.outputs.routing_result }}
+      controls_unavailable: ${{ needs.promotion-source.outputs.controls_unavailable }}
+      advisory_causes: ${{ needs.promotion-source.outputs.advisory_causes }}
+      resource_group: ${{ vars.KIT_RESOURCE_GROUP }}
+      site_name: ${{ vars.KIT_APP_NAME }}
+      site_digest: ${{ needs.promotion-source.outputs.site_digest }}   # the SAME digest, never rebuilt
+      artifact_run_id: ${{ inputs.promote_from_run_id }}              # the run that uploaded the site
+      cloud: ${{ vars.KIT_CLOUD || 'commercial' }}
+      health_path: /
+      rollback_on_failure: true
+      # uat runs the active checks; prod runs passive checks only and refuses DAST before login.
+      e2e_test_command: ${{ inputs.environment != 'prod' && vars.KIT_E2E_TEST_COMMAND || '' }}
+      dast_command: ${{ inputs.environment != 'prod' && vars.KIT_DAST_COMMAND || '' }}
+    secrets:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}

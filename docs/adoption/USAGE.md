@@ -20,6 +20,12 @@ templates to this rule.
 | `reusable-propose-ledger.yml` | Proposes baseline-ledger changes as a pull request (protected default branch only) | none | `contents: write`, `pull-requests: write` |
 | `reusable-ticket-reconcile.yml` | Findings → Jira or Azure DevOps tickets, post-merge or scheduled | tracker | `contents: read` |
 | `reusable-dependabot-triage.yml` | Dependabot PRs: `--auto --squash` only when nothing can change behaviour (FUTURE_WORK §6); otherwise label, comment why and ask a human; excluded fixture paths closed. Call from `pull_request_target` ([DEPENDABOT_TRIAGE.md](DEPENDABOT_TRIAGE.md)) | none (optional `METADATA_TOKEN`) | `contents: write`, `pull-requests: write`, `issues: write` |
+| `reusable-ticket-reference.yml` | A pull request must carry a well-formed reference to its tracker work item (`tracker_host`, `project_key`, optional digit bounds); empty host or key fails as not configured | none | `contents: read`, `pull-requests: read` |
+| `reusable-kit-api.yml` | The kit API's run side (KDEC-035): intake, refusals by name, tickets through the reconciler, `evidence.export` (KDEC-039), the answer as a check run ([`docs/api/README.md`](../api/README.md)) | tracker (tickets job only) | `contents: read`, `actions: read`, `checks: write`, `pull-requests: read`, `deployments: read` |
+| `reusable-exception-due.yml` | Lists every exception due or expired; on a schedule, reopens or comments its ticket (Jira) | tracker (resurface job only) | `contents: read` |
+| `reusable-deployed-scan.yml` | The daily scan of what each environment is actually serving, with the landing zone's drift vocabulary | OIDC (each environment's reader) | `contents: read`, `actions: read`, `id-token: write` |
+| `reusable-rollback-sequence.yml` | A recorded rollback of a release, one target lease for the whole sequence | OIDC | `contents: read`, `actions: read`, `id-token: write` |
+| `reusable-feed-mirror-refresh.yml` | Refreshes the organisation feed mirrors (KDEC-032, optional; [`FEED_MIRRORS.md`](FEED_MIRRORS.md)) | OIDC (`feed-mirror` environment) | `contents: read`, `id-token: write` |
 | `verify-azure-oidc.yml` | Zero-resource check of the OIDC subject, the session context and the authorization boundary | OIDC | `contents: read`, `id-token: write` |
 
 **Composite actions** (`.github/actions/*` — for repos that build inside their own workflows):
@@ -41,8 +47,9 @@ kit's own runner receives. Per-call-site inlining is what took that file to 608.
 size ceiling, after which it did not fail — it never started.
 
 **Templates** (`templates/`): `security.yml`, `policy.yml`, `build-deploy.yml`, `nvd-cve.yml`,
-`dependabot-triage.yml` — copy into `.github/workflows/`, replace the org, pin the kit by SHA.
-Policy: [`POLICY_REGISTER.md`](POLICY_REGISTER.md).
+`dependabot-triage.yml`, `build-deploy-static.yml` (a static site), `kit-init.yml` — copy into
+`.github/workflows/`, replace the org, pin the kit by SHA. Or let `kit init` do all of it
+([GETTING_STARTED_1_HOUR.md](GETTING_STARTED_1_HOUR.md)). Policy: [`POLICY_REGISTER.md`](POLICY_REGISTER.md).
 
 **Profiles** (`profiles/`): declarative statements of what a class of repo gets. They are intent
 records validated by `profiles/profile.schema.json` — the reusable workflows are the implementation.

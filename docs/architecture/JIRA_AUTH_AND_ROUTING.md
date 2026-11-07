@@ -224,7 +224,7 @@ All of the above is VERIFIED with fakes. The live `PP-8` row in 1.4 is a test-mo
 
 | Name | Kind | Where | Needed |
 |---|---|---|---|
-| `JIRA_HOST` | variable | env `ticketing` / `ticketing-test` (or org) | yes: `https://<site>.atlassian.net` |
+| `JIRA_HOST` | variable (or a secret of the same name, read first) | env `ticketing` / `ticketing-test` (or org) | yes: `https://<site>.atlassian.net` or the bare `<site>.atlassian.net` (either form) |
 | `JIRA_PROJECT` | variable | org, overridden per repo; **the sandbox key in `ticketing-test`** | yes: the kit-default project |
 | `JIRA_TOKEN` | secret | each ticketing environment | yes: the service account's token |
 | `JIRA_EMAIL` | secret | each ticketing environment | basic only; never a person's address |

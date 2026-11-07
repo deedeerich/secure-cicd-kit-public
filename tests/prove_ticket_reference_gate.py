@@ -32,6 +32,9 @@ WHAT IT PROVES
     G10 a malformed key fails closed: letters, digits-run-on or an underscore straight after the
         number, or a leading zero, is not a key, and is named as malformed rather than read as its
         leading digits. Punctuation after the number (a full stop, a bracket, a query) ends the key
+    G11 the host is accepted in either form, bare (`<site>.atlassian.net`) or with the scheme
+        (`https://<site>.atlassian.net`, a trailing slash allowed), so ONE JIRA_HOST value serves
+        this gate and the ticket reconciler; the host stays a literal, and another site still fails
 
 WHAT IT CANNOT PROVE
     That GitHub substitutes the expressions as the env: block says -- a hosted run proves that. And,
@@ -223,6 +226,16 @@ def main():
          {'mind': '3', 'maxd': '4'}, 0, 'WORK-1004', 'REFERENCE_FOUND'),
         ('G10 punctuation ends the key', 'Done (%s-123). Also %s-124?x=1' % (B, B), {}, 0,
          'WORK-123', 'REFERENCE_FOUND'),
+        # G11: THE HOST IN EITHER FORM. The reconciler needs https://<site>; this gate used to need
+        # the bare host, so one JIRA_HOST value could not serve both (a scheme here matched nothing).
+        ('G11 host given with https:// is accepted', 'See %s-1234' % B,
+         {'host': 'https://' + HOST}, 0, 'WORK-1234', 'REFERENCE_FOUND'),
+        ('G11 host with https:// and a slash accepted', 'See %s-1234' % B,
+         {'host': 'https://%s/' % HOST}, 0, 'WORK-1234', 'REFERENCE_FOUND'),
+        ('G11 https:// host still matches literally', 'https://jiraXexampleXnet/browse/WORK-1234',
+         {'host': 'https://' + HOST}, 1, 'NOT FOUND', 'NO_CANDIDATE'),
+        ('G11 https:// host: a link to another site fails', 'See https://other.example/browse/WORK-1234',
+         {'host': 'https://' + HOST}, 1, 'NOT FOUND', 'NO_CANDIDATE'),
     ]
 
     print('%-46s %-4s %s' % ('case', 'rc', 'verdict'))

@@ -1,9 +1,49 @@
 # 10 · Change log
 
 Newest first. On every later delivery, read this file first: it says which parts changed and why.
-Commit ids are on the build trunk `fix/normalization-and-discovery`. Versions 1.11 to the 2026-10-23
-entries are in `10a-CHANGE-LOG-OCTOBER.md`; 1.10 and earlier in `10b-CHANGE-LOG-EARLIER.md`. A reader whose last copy was v1.10 (`a907dc8`) reads
+Commit ids are on the build trunk `fix/normalization-and-discovery`. Versions 1.12 to the 2026-10-28
+entries are in `10a-CHANGE-LOG-OCTOBER.md`; 1.11 and earlier in `10b-CHANGE-LOG-EARLIER.md`. A reader whose last copy was v1.10 (`a907dc8`) reads
 `12-CHANGES-SINCE-A907DC8.md` first: it groups every change since by what an integrator must do.
+
+## Unreleased — adoption without "a million hoops" (KDEC-041 PROPOSED, 2026-11-06)
+
+Proven locally (`prove_kit_init.py`, `prove_plain_errors.py`, `prove_friction_summary.py`, `prove_adoption_guides.py` R1/N4; 13 mutants killed). No hosted run yet.
+
+| change | parts affected |
+|---|---|
+| `kit init` (`scripts/kit_init.py`; the button `templates/kit-init.yml` + `.github/actions/kit-init`): detects the stacks and deploy shape, writes the pinned callers with exact permissions, `dependabot.yml`, a CODEOWNERS block, the environments spec and a settings stub, opens one PR whose body is the person-only checklist; never guesses, never writes a secret, keeps a person's edits | 11 |
+| `templates/build-deploy-static.yml`: the static-site caller (package by content digest, attest, dev/test on merge, promote to uat/prod) | 07, 11 |
+| The plain-English error layer: `docs/errors/ERRORS.md` (from `errors.json`), every refusal in the taxonomy said in plain words with the fix; the gate, deploys, ticketing, triage, API and OIDC preflight annotate each refusal with the plain sentence first; `kit_init_state` registered | 03, 06, 07, 11 |
+| `docs/adoption/GETTING_STARTED_1_HOUR.md`, `ROLLOUT_PLAN.md` (waves, report-only weeks, same-day approver SLA with a backup, never auto-approval), the pilot friction log and `scripts/friction_summary.py` | 11 |
+
+## Unreleased — the consumer experience (KDEC-040 PROPOSED, 2026-11-06)
+
+Local battery `tools/battery.sh`/`.ps1` (08); positive controls and their matrix (08); keep-current
+rebases behind Dependabot PRs, `dependabot_config.py` and its PR check, auto-merge risks and rulesets (11);
+SonarQube/Aikido intake and ONE id normaliser, `finding_ids.py` (06, 11); `verify-azure-oidc` gov and
+directory checks (07); Release 4 in the consumer path, runs paired by correlation id (08, 11); suggested
+mitigations in every register (09). Details: `.context/products/secure-cicd-kit/current-state.md`.
+
+## Unreleased — instructions audit; architecture diagrams (2026-11-06)
+
+Documents only: no gate, output or state word changed.
+
+| change | parts affected |
+|---|---|
+| New `docs/architecture/README.md` and the ARCH-01 to ARCH-07 documents: the pipeline end to end, identities and trust, ticketing, the kit API, the Dependabot triage, the evidence into the harness's per-app bundle, commercial vs Government, as Mermaid, each citing the files it draws | 07, 11 |
+| The caller-permission table gains the kit API and the Dependabot triage | 11 |
+| `docs/adoption/SETUP.md`: the Jira host as a secret (and the variable the reference check still needs), the GHE.com OIDC issuer, the deploy and kit-api caller permissions, the build's required inputs; `USAGE.md`'s table lists every reusable | 11 |
+
+## Unreleased — SAST and secret tickets; evidence.export (KDEC-038, KDEC-039, 2026-11-06)
+
+Proven locally (`prove_sast_secret_tickets.py`, `prove_evidence_export.py`; each failed first, 11 mutants killed).
+
+| change | parts affected |
+|---|---|
+| bandit, semgrep and CodeQL findings keyed: a curated rule-family table (`RULE_FAMILY_UNKNOWN` by name, never a guess) and a code location read from the checked-out commit (symbol, normalised line + ordinal; D-8 closed in code); one ticket per issue across tools | 04, 06 |
+| Secrets ticketed on a non-reversible fingerprint taken before redaction: urgent, ROTATE, never closed on absence; routing matches `rule_family`, `cwe` | 06, 11 |
+| `evidence.export`: the kit's half of the per-app evidence bundle, each section or NOT ESTABLISHED; **API callers grant `deployments: read`** | 11 |
+| The security record carries the KEV verdict, the SBOM digest, the commit author (pseudonym + verification) | 03, 11 |
 
 ## Unreleased — the security review sheets made cloud-agnostic (2026-11-04)
 
@@ -125,24 +165,4 @@ P7); no hosted run yet.
 | `GH_REPO` and `-R`/`--repo` always `HOST/OWNER/REPO`; attestation verify passes `--hostname` | 07, 11 |
 | Dependabot entries only where a manifest is (no more `dependency_file_not_found` at `/`) | 08 |
 | The self-test tools install Trivy as the pinned, sha256-verified binary (not `install.sh`) | 08 |
-
-## Unreleased — CodeQL legs build what they can and report what they did (integrate/r8, 2026-10-28)
-
-Found on the cost runs of the six-language fixture (public mirror, cost/after run 40791360475): the
-C/C++, C# and Java legs ran autobuild at the checkout root, found no build system (the projects sit in
-subdirectories), held an empty database (`database finalize` exit 32), wrote no SARIF, and stayed
-green, so the gate read the CodeQL job as a success. Proven locally, each failed first
-(`prove_codeql_dynamic_matrix.py`, `prove_codeql_build_outcome.py` C4..C6,
-`prove_codeql_rows_read_sarif.py` per-leg and partial, `prove_gate_policy_enforcement.py`
-crawl_codeql_*). Hosted on the public mirror (throwaway branch, deleted): run 40809492962, all six
-CodeQL legs COMPLETE / PASS with their findings, 24/24, the capability floor HELD, the negative
-control blocked.
-
-| change | parts affected |
-|---|---|
-| Each CodeQL leg names its build mode: `none` (buildless) for Python, JavaScript/TypeScript, C#, Java and C/C++; `autobuild` for Go and for Kotlin (not extracted buildless) | 02, 04 |
-| Each leg files its own state (`sarif-codeql-leg-<leg>` artifact); its row reads it, not the job result six legs share | 04 |
-| An autobuild leg whose build did not succeed is `PARTIAL` in its row and in the verdict (`COVERAGE_PARTIAL`, `CODEQL_BUILD_PARTIAL`) | 02, 04, 05 |
-| A leg that initialised and could not analyse fails its job (`COLLECTION_FAILED`); the gate reads it as untrusted evidence. A licence that refused init (`UNAVAILABLE`) still never fails the build | 02, 04, 05 |
-| The six-language fixture's C# compiles: `Fixture.csproj` references `System.Data.SqlClient` 4.9.0 (not vulnerable), which `Vuln.cs` uses. Hosted run 40808064559 showed the buildless C# leg analysing it and reporting compiler errors as error-level notifications, which validity row 5 correctly reads as a failed run (`prove_fixture_dotnet_compiles.py`, failed first: CS1069) | 04 |
 

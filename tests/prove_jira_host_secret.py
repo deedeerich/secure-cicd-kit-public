@@ -23,6 +23,10 @@ WHAT IT PROVES
         with no JIRA_CLOUD_ID, the lookup answering no id) names JIRA_HOST, never its value.
     H6  mutants: a reusable reading `vars.JIRA_HOST` alone fails H1; a caller that drops the
         secret fails H2; an output carrying the host fails H5's scan.
+    H7  EITHER FORM (2026-11-06): the reconciler accepts the bare host (`<site>.atlassian.net`) as
+        well as `https://<site>.atlassian.net` (a trailing slash allowed) and talks to the same https
+        origin; plain http, another scheme, a path, credentials and an empty value stay refused. With
+        the reference gate's G11 this lets ONE JIRA_HOST value serve every reader.
 
 EXIT  0 proven   1 a case failed (named)   2 could not be checked
 """
@@ -188,6 +192,32 @@ def h6():
     check(leaks(json.dumps({'url': HOST + '/rest/api/3/issue/1'})), 'H6 mutant: an output carrying the host is caught by H5')
 
 
+def h7():
+    """Either form: the bare host and the https:// form both reach the same https origin; anything
+    else the reconciler refused before is still refused."""
+    import prove_ticket_backends as ptb
+    import reconcile_tickets as rt
+    bare = '%s.atlassian.net' % SENTINEL
+    for label, value in (('the bare host', bare), ('the https:// form', HOST),
+                         ('the https:// form with a slash', HOST + '/'), ('the bare host with a slash', bare + '/'),
+                         ('the bare host with spaces', '  %s  ' % bare)):
+        env = dict(ptb.JIRA_ENV, JIRA_HOST=value)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            b, note = rt.choose_backend(env)
+        check(b is not None and getattr(b, 'host', None) == HOST,
+              'H7 %s is accepted and becomes the https origin (%s)' % (
+                  label, (note or '').replace(SENTINEL, '<host>')[:80]))
+    for label, value in (('a plain-http host', 'http://%s' % bare), ('a bare host with a path', bare + '/jira'),
+                         ('a bare host with credentials', 'u:p@%s' % bare), ('another scheme', 'ftp://%s' % bare),
+                         ('an empty host', '   ')):
+        env = dict(ptb.JIRA_ENV, JIRA_HOST=value)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            b, note = rt.choose_backend(env)
+        check(b is None, 'H7 %s is still refused (%s)' % (label, (note or '').replace(SENTINEL, '<host>')[:90]))
+
+
 def main():
     try:
         import yaml  # noqa: F401
@@ -198,6 +228,7 @@ def main():
     h3()
     h5()
     h6()
+    h7()
     print()
     if FAILS:
         print('FAIL: %d check(s): the Jira host cannot yet be held as a secret.' % len(FAILS))

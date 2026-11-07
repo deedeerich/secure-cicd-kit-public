@@ -356,6 +356,43 @@ def _aliases(rec):
     return frozenset(str(v).strip().lower() for v in vals if str(v).strip())
 
 
+# KDEC-038: A SECRET IS URGENT. The mutation switch for tests/prove_sast_secret_tickets.py M6; True is correct.
+secret_urgent = True
+SECRET_IDENTITY_PREFIX = 'secret:'
+
+
+def _secret_keyed(rec):
+    """A secret finding the secret-scan job fingerprinted BEFORE redaction (scripts/code_finding_key.py).
+    It has no baseline identity -- the baseline has no authority over secrets -- but it has a TICKET key."""
+    return (str(rec.get('is_secret_finding') or '').strip().lower() in ('1', 'true', 'yes')
+            and rec.get('ticket_key_state') == 'SECRET_KEYED' and bool(str(rec.get('secret_key') or '').strip()))
+
+
+def _secret_view(rec):
+    """The view the correlation and the ticket ledger see: keyed on detector family + path + the
+    non-reversible fingerprint. The member identity is `secret:<key>` -- a hash of a hash, never the value."""
+    key = str(rec['secret_key']).strip()
+    path = rec.get('uri') or rec.get('canonical_path') or ''
+    return dict(rec, identity=SECRET_IDENTITY_PREFIX + key, identity_state='FINGERPRINTED', state='FINGERPRINTED',
+                where='secret:%s' % path, ticket_anchor=key)
+
+
+def secret_absence_gap(entry):
+    """-> the reason a secret ticket never closes on absence, or ''. Removal is not remediation."""
+    if any(str(i).startswith(SECRET_IDENTITY_PREFIX) for i in (entry or {}).get('member_identities') or []):
+        return ('an exposed credential is never closed by the scanner no longer seeing it: removing it does not '
+                'un-leak it. A person closes this ticket on confirming the credential was ROTATED (KDEC-038)')
+    return ''
+
+
+def urgent_labels(backend, cluster):
+    """The cluster's extra labels, with the kit's `<stamp>-urgent` label when the cluster is urgent."""
+    labels = set(cluster.get('extra_labels') or [])
+    if cluster.get('urgent'):
+        labels.add(_label(backend, 'urgent'))
+    return sorted(labels)
+
+
 class ClusterList(list):
     """The acting clusters, carrying the PROPOSALS correlation recorded beside them (a chain, or
     CWE-plus-path agreement). Proposals change no count and get no ticket; they are reported."""
@@ -403,8 +440,12 @@ def build_clusters(records):
         # stage dropped the field, and trusting the label over the value is how an inference
         # overwrites an observation.
         if not ident or state != 'FINGERPRINTED':
-            withheld.append((rec, IDENTITY_NOT_ESTABLISHED,
-                             rec.get('identity_reason') or state or 'no identity on the record'))
+            if _secret_keyed(rec):
+                # KDEC-038: a secret is ticketed on its secret key; the baseline refusal stands.
+                fingerprinted.append(_secret_view(rec))
+            else:
+                withheld.append((rec, IDENTITY_NOT_ESTABLISHED,
+                                 rec.get('identity_reason') or state or 'no identity on the record'))
         else:
             fingerprinted.append(rec)
         # Heartbeat, per iteration. A long record set that dies halfway must not look like a short
@@ -441,6 +482,7 @@ def build_clusters(records):
         # anchored; neither is a heuristic.
         anchor = str(cl.get('anchor') or rec0['identity']).lower()
         scanners = sorted(set(str(m.get('scanner') or '') for m in members))
+        secret = any(_secret_keyed(m) or str(m.get('kit_class') or '').lower() == 'secret' for m in members)
         clusters.append({
             # Every member shares this locus: correlation buckets by (subject, locus). The key is
             # computed by correlation's own function -- one function for the report and the stamp
@@ -453,7 +495,10 @@ def build_clusters(records):
             'members': members,
             'member_identities': sorted(set(m['identity'] for m in members)),
             'scanners': scanners,
-            'severity': _worst(members),
+            'severity': 'critical' if (secret and secret_urgent) else _worst(members),
+            # KDEC-038: an exposed credential is URGENT (Jira: the top of JIRA_PRIORITY_LADDER; Azure
+            # DevOps: priority 1; every tracker: the `<stamp>-urgent` label) and its ticket says ROTATE.
+            'urgent': bool(secret and secret_urgent),
             # What a PERSON has asked for on these findings, if anything. Carried through to
             # `reconcile`, which gates it as a disposition.
             'requested_dispositions': _requested(members),
@@ -978,7 +1023,12 @@ def routing_facts(cluster, repository=''):
             'scanners': list(cluster.get('scanners') or []),
             'category': cluster.get('subject') or '', 'severity': cluster.get('severity') or '',
             'repository': repository or '', 'template': m0.get('template') or '',
-            'source_type': m0.get('source_type') or '', 'environment': m0.get('environment') or ''}
+            'source_type': m0.get('source_type') or '', 'environment': m0.get('environment') or '',
+            # KDEC-038: the SAST rule families and secret detector families, and the CWEs, of the members.
+            'rule_families': sorted(set(str(m.get('rule_family') or m.get('secret_family') or '')
+                                        for m in members) - {''}),
+            'cwes': sorted(set(str(m.get('cwe') or '').upper() for m in members) - {''}),
+            'urgent': bool(cluster.get('urgent'))}
 
 
 def family_of(cluster):
@@ -1467,7 +1517,16 @@ class Jira(HttpBackend):
         epic = tgt.get('epic') or (self.epic_id if project == self.project else '')
         if epic:
             fields['parent'] = {'id': str(epic)}
+        # KDEC-038: an URGENT cluster (an exposed credential) is created at the top of the ladder.
+        if cluster.get('urgent') and self.priority_ladder:
+            fields['priority'] = {'name': self.priority_ladder[-1]}
         doc, status, err = self._req('POST', '/rest/api/3/issue', {'fields': fields})
+        if (err or not doc) and 'priority' in fields and status == 400:
+            # A create screen without the priority field: create without it, and say so -- the urgent
+            # label still marks it. Never a lost ticket for a missing field.
+            fields.pop('priority', None)
+            doc, status, err = self._req('POST', '/rest/api/3/issue', {'fields': fields})
+            self.priority_note = 'the create screen refused the priority field; the urgent label marks it'
         if err or not doc:
             return None, 'create failed (status %s)' % status
         # THE NUMERIC ID is the reference; the key is a label that moves. Never read after write.
@@ -1863,7 +1922,7 @@ class AzureDevOps(HttpBackend):
 
     # ── writes ──────────────────────────────────────────────────────────────────────────
 
-    def _create(self, type_name, title, tags, body, parent_id, stamp=None):
+    def _create(self, type_name, title, tags, body, parent_id, stamp=None, priority=None):
         import html
         import urllib.parse
         ops = [{'op': 'add', 'path': '/fields/System.Title', 'value': title},
@@ -1874,6 +1933,8 @@ class AzureDevOps(HttpBackend):
             ops.append({'op': 'add', 'path': '/fields/System.Tags', 'value': '; '.join(tags)})
         if stamp is not None:
             ops.append({'op': 'add', 'path': '/fields/%s' % self.stamp_field, 'value': stamp})
+        if priority is not None:
+            ops.append({'op': 'add', 'path': '/fields/%s' % AZDO_PRIORITY_FIELD, 'value': int(priority)})
         if parent_id:
             ops.append({'op': 'add', 'path': '/relations/-', 'value': {
                 'rel': 'System.LinkTypes.Hierarchy-Reverse', 'url': self._item_url(parent_id)}})
@@ -1887,7 +1948,7 @@ class AzureDevOps(HttpBackend):
         tags = [self.stamp_label] + ([family_of(cluster)] if family_of(cluster) else []) + \
             list(cluster.get('extra_labels') or [])
         return self._create(self.type_cluster, title, tags, body, self.epic_id,
-                            stamp=cluster['cluster_key'])
+                            stamp=cluster['cluster_key'], priority=1 if cluster.get('urgent') else None)
 
     def create_instance(self, parent_ref, member, body, title):
         return self._create(self.type_instance, title, [], body, parent_ref)
@@ -2173,6 +2234,7 @@ def render_body(cluster, existing='', ticket=None, tasks=None):
     ]
     for k, v in cluster.get('template_facts') or []:
         lines.append('| %s | %s |' % (k, ' '.join(str(v).replace('|', '/').split())))
+    lines += code_finding_rows(cluster)
     # KDEC-024. What raised it, where it came from, what it is linked to, when it is due, and
     # whether the scanners agree -- all from evidence, all inside the machine-owned block.
     if cluster.get('raised_as'):
@@ -2215,6 +2277,9 @@ def render_body(cluster, existing='', ticket=None, tasks=None):
         if cluster.get('reopen_classification'):
             # T-08: why the predecessor needed reopening, in TC 4.2's words.
             lines.append('| why it was reopened | %s |' % cluster['reopen_classification'])
+    if any(_secret_keyed(m) for m in cluster.get('members') or []):
+        import code_finding_key as cfk
+        lines += ['', '### URGENT: an exposed credential -- ROTATE it', '', cfk.secret_remedy]
     lines += [
         '',
         'Member identities:',
@@ -2434,6 +2499,33 @@ def instance_body(parent_ref, member):
         BLOCK_CLOSE])
 
 
+def code_finding_rows(cluster):
+    """KDEC-038: the rule family, the CWE and the code location (path, symbol, the ticket anchor) of a code
+    finding; the detector family and the secret key of a secret. Hashes and names only -- no line text."""
+    rows, seen = [], set()
+    for m in cluster.get('members') or []:
+        if _secret_keyed(m):
+            row = ('| exposed credential | %s at `%s` (secret key `%s`: detector family + path + a non-reversible '
+                   'fingerprint; the value is never stored) |'
+                   % (m.get('secret_family') or 'unnamed detector', m.get('uri') or m.get('canonical_path') or '?',
+                      str(m.get('secret_key'))[:16]))
+        elif m.get('rule_family'):
+            row = ('| rule family | %s (%s%s) |' % (m['rule_family'], m.get('cwe') or 'no CWE',
+                                                   ('; the tool said %s' % m['cwe_reported'])
+                                                   if m.get('cwe_reported') else ''))
+            if m.get('ticket_anchor'):
+                row += '\n| code location | `%s` in %s (anchor `%s`: the normalised line and its ordinal, ' \
+                       'never the line number) |' % (m.get('uri') or m.get('canonical_path') or '?',
+                                                      m.get('symbol_path') or 'file scope',
+                                                      str(m['ticket_anchor'])[:16])
+        else:
+            continue
+        if row not in seen:
+            seen.add(row)
+            rows.extend(row.split('\n'))
+    return rows
+
+
 def render_title(cluster):
     """No finding message text in the title, and nothing the stamp is parsed out of.
 
@@ -2442,6 +2534,10 @@ def render_title(cluster):
     scanner-supplied partial fingerprint.
     """
     m = cluster['members'][0]
+    if _secret_keyed(m):
+        return bounded_title('[%s] exposed secret (%s) in %s -- rotate it' % (
+            cluster['severity'], m.get('secret_family') or 'credential', m.get('uri') or m.get('canonical_path')
+            or 'unknown location'))
     if m.get('template') and m.get('title'):
         # KDEC-037: an external finding's title is the submitter's, after its identifier.
         return bounded_title('[%s] %s: %s' % (cluster['severity'], m.get('rule') or 'finding', m['title']))
@@ -3600,6 +3696,7 @@ def _reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None
             cluster['sla'] = sla_for(cluster.get('severity'), numbers, today, None, today)
             cluster['extra_labels'] = sorted(set(cluster.get('template_labels') or []) | (
                 set([_label(backend, 'disagreement')]) if cluster.get('contested_by') else set()))
+            cluster['extra_labels'] = urgent_labels(backend, cluster)
             ticket, tasks = tm.build_ticket(
                 cluster, 'ticket-%s' % cluster['cluster_key'][:12],
                 channel_degraded=not sweep_complete)
@@ -4158,6 +4255,8 @@ def clearance_pass(result, clusters, withheld, ledger, sweep_map, coverage, back
                 entry.get('ticket_class') not in (None, '', DEFAULT_CLASS):
             continue
         evidence, gaps = clearance_gaps(entry, coverage, withheld_recs)
+        if secret_absence_gap(entry):
+            gaps = list(gaps) + [secret_absence_gap(entry)]
         if gaps:
             result['potentially_absent'].append({'cluster_key': key, 'ref': ref, 'members': ids,
                                                  'why': gaps})
@@ -4371,6 +4470,19 @@ def jira_auth_mode(env):
     return 'basic', 'basic auth (JIRA_EMAIL + JIRA_TOKEN)'
 
 
+def jira_origin(value):
+    """JIRA_HOST in either form -> the https origin the reconciler talks to (2026-11-06).
+
+    The Jira reference gate reads the bare host (`<site>.atlassian.net`) and the reconciler the
+    https origin; one value now serves both. A value with no scheme at all gets `https://`; one
+    with a scheme is left as written, so `http://`, another scheme, a path or credentials are still
+    refused by https_origin_problem. A trailing slash and surrounding spaces are dropped."""
+    v = (value or '').strip()
+    if v and '://' not in v:
+        v = 'https://' + v
+    return v.rstrip('/')
+
+
 def choose_backend(env=None):
     """-> (backend or None, note). Credentials are read from the environment and nowhere else.
 
@@ -4378,6 +4490,9 @@ def choose_backend(env=None):
     the backend instance, and used only as a request header.
     """
     env = env if env is not None else os.environ
+    if env.get('JIRA_HOST'):
+        # Either form (jira_origin): a copy, never the caller's mapping or os.environ.
+        env = dict(env, JIRA_HOST=jira_origin(env.get('JIRA_HOST')))
     want = (env.get(ENV_BACKEND) or '').strip().lower()
 
     gh_ready = bool(env.get('GH_TOKEN') or env.get('GITHUB_TOKEN')) and bool(env.get(ENV_REPO))
@@ -6329,6 +6444,19 @@ def main(argv):
         print('%s is not valid JSON: %s' % (args.findings, exc), file=sys.stderr)
         return 2
     records = doc if isinstance(doc, list) else (doc.get('findings') or [doc])
+    # THE UNKNOWNS LOG beside findings.json (owner ruling 2026-11-06, scripts/unknown_ids.py): each id the
+    # report could not read becomes ONE needs-mapping review item, keyed so the lookup below finds the
+    # item an earlier run made instead of creating another. An unreadable log is a refusal, not "none".
+    try:
+        import unknown_ids
+        unknowns = unknown_ids.load(os.path.join(os.path.dirname(os.path.abspath(args.findings)), unknown_ids.FILENAME))
+    except (IOError, ValueError) as exc:
+        print('REFUSING: the unknown-ids log beside the findings could not be read (%s); an unreadable log is '
+              'not an empty one' % exc, file=sys.stderr)
+        return 2
+    if unknowns:
+        records = list(records) + unknown_ids.review_records(unknowns)
+        print('%d unknown id(s) routed for a person to map (needs-mapping)' % len(unknowns), file=sys.stderr)
 
     ledger, ledger_note = load_ledger(args.ledger)
     if ledger is None:

@@ -153,6 +153,12 @@ def correlate(observations):
                     al = _aliases(observations[by_identity[k][0]])
                     shared = al if shared is None else (shared & al)
                 anchor = min(shared) if shared else part[0]
+                # KDEC-038: a code or secret finding carries its TICKET ANCHOR (repository + path + symbol
+                # + code anchor + family + CWE; or detector family + path + secret fingerprint). Members of
+                # one identity share it, and it puts the repository into the cluster key.
+                ta = set(_s(str(observations[i].get('ticket_anchor') or '')) for i in idx) - {''}
+                if not shared and len(ta) == 1:
+                    anchor = ta.pop()
                 tier = ANCHORED if len(idx) > 1 else SINGLETON
                 clusters.append({
                     'tier': tier, 'identity_established': True, 'subject': subject,

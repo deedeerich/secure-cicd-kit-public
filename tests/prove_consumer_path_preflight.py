@@ -52,6 +52,22 @@ WHAT IT PROVES
         signal only CodeQL flagged fails the grade; a gh call without the tenant host fails the
         preflight by name.
 
+    C5  RELEASE 4 IS IN THE CONSUMER PATH (owner, 2026-11-06). The job `r4-consumer-surface` exists,
+        carries the same opt-in conditions (C1 evaluates it), holds contents: read only, and runs
+        scripts/consumer_surface_check.py. That script PASSES on this tree (rows R1-R8: deploy
+        callers' deployments: write + pull-requests: read, the five weakening fields, the readiness
+        attestation file, typed and manual verdicts, the durable release record, JIRA_HOST as a
+        secret, the kit API's intake, the Dependabot callers) and FAILS, on the named row, in a copy
+        of the tree with one Release 4 change undone: a deploy caller without deployments: write (R1),
+        a promotion without weakening_approver (R2), an attestation whose issuer is not AppSec (R3),
+        the manual-review fields not forwarded (R4), the Deployments API answering no id (R5),
+        JIRA_HOST passed as a variable (R6), the API caller missing pull-requests: read (R7), and the
+        keep-current job removed (R8).
+    C6  ON DEMAND ONLY (owner, 2026-11-06: "the consumer test should only run when we want to check
+        out changes to the whole structure, right?" -- yes). Every job is evaluated: a push to main
+        with KIT_CONSUMER_PATH_ON_PUSH unset starts none; with it 'true' all run; there is no
+        pull_request trigger; a dispatch runs them all.
+
     KIT_PROOF_ROOT=<dir> points C1, C2 and C4 at another tree, so the proof can be shown FAILING
     on the revision before the fix.
 
@@ -233,6 +249,94 @@ def c2():
     check(top == {'contents': 'read'}, 'C2 the workflow-level token is contents: read only (%s)' % top)
 
 
+# ── C5: Release 4 in the consumer path; C6: on demand only ─────────────────────────────────────
+C5_MUTANTS = [
+    ('R1', 'templates/build-deploy.yml', '      deployments: write   # the deploy keeps its durable release record (KDEC-036 G6)\n', ''),
+    ('R2', 'templates/build-deploy.yml', '      weakening_approver: ${{ inputs.exception_approver }}\n', ''),
+    ('R3', 'tests/consumer-fixture/release4/.kit/zone-readiness.json', '"issuer_role": "appsec"', '"issuer_role": "developer"'),
+    ('R4', 'templates/build-deploy.yml', '      manual_review_by: ${{ inputs.manual_review_by }}\n', ''),
+    ('R5', 'scripts/reviewer_signals.py', "        dep_id = dep.get('id')\n", "        dep_id = None\n"),
+    ('R6', 'templates/kit-api.yml', 'JIRA_HOST: ${{ secrets.JIRA_HOST }}', 'JIRA_HOST: ${{ vars.JIRA_HOST }}'),
+    ('R7', 'templates/kit-api.yml', '      pull-requests: read   # tickets.submit reads back who approved a review record\'s pull request\n', ''),
+    ('R8', 'templates/dependabot-triage.yml', 'reusable-dependabot-keep-current.yml@', 'reusable-not-keep-current.yml@'),
+]
+
+
+def surface(root):
+    p = subprocess.run([sys.executable, os.path.join(root, 'scripts', 'consumer_surface_check.py'), '--root', root],
+                       capture_output=True, text=True, encoding='utf-8', errors='replace')
+    rows = {}
+    for line in p.stdout.splitlines():
+        m = re.match(r'^(R\d)\s+(PASS|FAIL)\s', line)
+        if m:
+            rows[m.group(1)] = m.group(2)
+    return p.returncode, rows, p.stdout
+
+
+def c5():
+    if copy_lacks_cpt('C5'):
+        return
+    doc = load_cpt()
+    if doc is None:
+        check(False, 'C5 %s exists' % CPT)
+        return
+    job = (doc.get('jobs') or {}).get('r4-consumer-surface')
+    check(job is not None, 'C5 the consumer path has the r4-consumer-surface job')
+    if job is None:
+        return
+    check((job.get('permissions') or {}) == {'contents': 'read'}, 'C5 r4-consumer-surface holds contents: read only')
+    runs = ' '.join(str(s.get('run', '')) for s in job.get('steps') or [])
+    check('scripts/consumer_surface_check.py' in runs, 'C5 it runs scripts/consumer_surface_check.py')
+    rc, rows, out = surface(TREE)
+    check(rc == 0 and len(rows) == 8 and set(rows.values()) == {'PASS'},
+          'C5 the Release 4 consumer surface PASSES on this tree (%s)' % (rows or out[-300:]))
+    work = tempfile.mkdtemp(prefix='cpt-c5-')
+    try:
+        for d in ('templates', 'scripts', 'api', 'schemas', os.path.join('tests', 'consumer-fixture', 'release4'),
+                  '.github'):
+            src = os.path.join(TREE, d)
+            if os.path.isdir(src):
+                shutil.copytree(src, os.path.join(work, d))
+        for rid, rel, old, new in C5_MUTANTS:
+            path = os.path.join(work, *rel.split('/'))
+            text = io.open(path, encoding='utf-8').read()
+            if old not in text:
+                check(False, 'C5 mutant %s: the text to undo is in %s' % (rid, rel))
+                continue
+            io.open(path, 'w', encoding='utf-8', newline='\n').write(text.replace(old, new, 1))
+            try:
+                rc, rows, out = surface(work)
+            finally:
+                io.open(path, 'w', encoding='utf-8', newline='\n').write(text)
+            check(rc == 1 and rows.get(rid) == 'FAIL',
+                  'C5 with Release 4 undone at %s, row %s FAILS (rc %s, %s)' % (rel, rid, rc, rows.get(rid)))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def c6():
+    if copy_lacks_cpt('C6'):
+        return
+    doc = load_cpt()
+    if doc is None:
+        return
+    on = doc.get('on', doc.get(True)) or {}
+    check('pull_request' not in on and 'pull_request_target' not in on,
+          'C6 the consumer path never runs on a pull request (triggers: %s)' % sorted(on))
+    check(((on.get('push') or {}).get('branches') or []) == ['main'], 'C6 its push trigger is main only')
+    for jid, job in sorted((doc.get('jobs') or {}).items()):
+        cond = job.get('if')
+        try:
+            off = eval_if(cond, {'github.event_name': 'push', 'vars.KIT_CONSUMER_PATH_ON_PUSH': ''})
+            on_ = eval_if(cond, {'github.event_name': 'push', 'vars.KIT_CONSUMER_PATH_ON_PUSH': 'true'})
+        except (ValueError, AssertionError, IndexError) as e:
+            check(False, 'C6 %s: its `if` can be read (%s)' % (jid, e))
+            continue
+        needs = job.get('needs') or []
+        check(not off or (needs and not cond), 'C6 %s: a push to main with KIT_CONSUMER_PATH_ON_PUSH unset starts nothing' % jid)
+        check(on_, 'C6 %s: a push to main with KIT_CONSUMER_PATH_ON_PUSH=true runs it' % jid)
+
+
 # ── C3: the verifier, with and without --not-graded ─────────────────────────────────────────
 def sarif(results):
     return {'version': '2.1.0', 'runs': [{'tool': {'driver': {'name': 'x'}}, 'results': [
@@ -345,29 +449,71 @@ if a[0] == 'api':
     if path.endswith('/jobs'):
         sys.stdout.write(open(os.environ['stub_jobs'], encoding='utf-8').read()); sys.exit(0)
     print('{"message":"Not Found","status":"404"}'); sys.exit(1)
+import subprocess
+def runs(v=None):
+    p = os.path.join(st, 'runs.json')
+    if v is None:
+        return json.load(open(p)) if os.path.exists(p) else []
+    json.dump(v, open(p, 'w'))
+def jq(doc, expr):
+    p = subprocess.run(['jq', '-r', expr], input=json.dumps(doc), capture_output=True, text=True)
+    if p.returncode:
+        sys.stderr.write('stub gh: jq failed: %s\n' % p.stderr); sys.exit(1)
+    sys.stdout.write(p.stdout)
+def opt(name, default=''):
+    for x in a:
+        if x.startswith(name + '='):
+            return x.split('=', 1)[1]
+    return a[a.index(name) + 1] if name in a else default
 if a[:2] == ['run', 'list']:
-    print(counter('rid') or '100'); sys.exit(0)
+    # Newest first, like the API. A decoy (another person's or a scheduled run) can be the newest.
+    wf = opt('--workflow')
+    rows = [r for r in runs() if r['workflow'] == wf and r['branch'] == opt('--branch')
+            and (not opt('--event') or r['event'] == opt('--event'))]
+    rows = sorted(rows, key=lambda r: -r['databaseId'])[:int(opt('--limit', '20'))]
+    jq(rows, opt('--jq', '.')); sys.exit(0)
 if a[:2] == ['workflow', 'run']:
-    rid = int(counter('rid') or '100') + 1
-    counter('rid', rid)
-    counter('scope-%d' % rid, 'php' if 'scope=php' in a else 'full')
+    rs = runs()
+    nxt = lambda: max([r['databaseId'] for r in rs] + [100]) + 1
+    fields = [a[i + 1] for i, x in enumerate(a) if x == '--field']
+    f = dict(x.split('=', 1) for x in fields)
+    scope = f.get('scope', 'full')
+    cid = f.get('correlation_id', '')
+    if os.environ.get('stub_nomatch') == '1':
+        cid = cid + '-x'          # the run never shows the id we asked for
+    def add(c, event='workflow_dispatch', concl=None, sc=scope):
+        rs.append({'databaseId': nxt(), 'workflow': a[2], 'branch': opt('--ref'), 'event': event, 'scope': sc,
+                   'conclusion': concl, 'displayTitle': 'Consumer path negative [%s] scope=%s' % (c or 'uncorrelated', sc)})
+    add(cid)
+    if os.environ.get('stub_dupe') == '1':
+        add(cid)
+    if os.environ.get('stub_decoy') == '1':
+        # A newer run on the same branch: another person's negative run with its own id. It FAILED, as a
+        # negative should, so "the latest run" would read it as this run's proof (item 11).
+        add('someone-else-123', concl=os.environ.get('stub_decoy_conclusion', 'failure'))
+    runs(rs)
     sys.exit(0)
 if a[:2] == ['run', 'view']:
-    rid = a[2]
-    scope = counter('scope-' + rid)
-    j = a[a.index('--json') + 1]
-    if j == 'status':
-        print('completed')
-    elif j == 'conclusion':
-        print('success' if scope == 'php' else 'failure')
-    elif j == 'jobs':
+    rid = int(a[2])
+    r = [x for x in runs() if x['databaseId'] == rid]
+    if not r:
+        sys.stderr.write('run %s not found\n' % rid); sys.exit(1)
+    r = r[0]
+    scope = r['scope']
+    concl = r['conclusion'] or ('success' if scope == 'php' else 'failure')
+    j = opt('--json')
+    if j == 'jobs':
         sys.stdout.write(open(os.path.join(os.environ['stub_art'], 'jobs-' + scope + '.tsv'), encoding='utf-8').read())
-    sys.exit(0)
+        sys.exit(0)
+    doc = {'status': 'completed', 'conclusion': concl, 'displayTitle': r['displayTitle'],
+           'event': os.environ.get('stub_view_event') or r['event'],
+           'headBranch': r['branch']}
+    jq(doc, opt('--jq', '.')); sys.exit(0)
 if a[:2] == ['run', 'download']:
     rid = a[2]
     pat = a[a.index('-p') + 1]
     dest = a[a.index('-D') + 1]
-    src = os.path.join(os.environ['stub_art'], counter('scope-' + rid))
+    src = os.path.join(os.environ['stub_art'], [x for x in runs() if str(x['databaseId']) == rid][0]['scope'])
     hit = 0
     for n in sorted(os.listdir(src)) if os.path.isdir(src) else []:
         if fnmatch.fnmatch(n, pat):
@@ -694,6 +840,8 @@ def main():
     c2()
     c3()
     c4(bash)
+    c5()
+    c6()
     print()
     if FAILS:
         print('FAIL: %d check(s): the consumer path test is not yet a pre-flight a GHAS-off GHE.com host can run.'

@@ -202,7 +202,12 @@ EXEMPT: dict[str, dict] = {
                                         # make the step stricter. Listed here for totality, not
                                         # because any value of them softens anything.
                                         'expect_tenant_id', 'expect_subscription_id',
-                                        'expect_client_id'],
+                                        'expect_client_id',
+                                        # ADDED 2026-11-06 (item 10): which cloud signs in, and
+                                        # whether an unreadable directory check fails the run.
+                                        # false reports NOT_ESTABLISHED rather than failing -- a
+                                        # weakening by omission, listed for totality.
+                                        'cloud', 'require_directory_checks'],
         'closes': 'verify-azure-oidc.yml emits the control posture record over these inputs '
                   '(expect_repository and expect_job_workflow_ref_prefix as weakening-by-omission '
                   'rows), proven by running the shipped step; built with ledger L103. Not a '
@@ -231,6 +236,31 @@ INERT_ONLY: dict[str, dict] = {
     # KDEC-013, 2026-10-16. Every input either names the reference shape or NARROWS what is
     # accepted; none can soften, skip or relax the gate. An empty host or key makes the gate FAIL as
     # unconfigured (tests/prove_ticket_reference_gate.py G5), and a range can only reject more.
+    # Owner 2026-11-06 (no babysitting). Every input NAMES which PRs are kept current or NARROWS what
+    # is done: the base branch, extra excluded paths (a PR touching one is closed, never rebased), and a
+    # per-run cap (the rest wait for the next run). None can soften a check: the gate still decides
+    # every merge (tests/prove_dependabot_keep_current.py).
+    # Owner 2026-11-06: the external findings intake. Every input NAMES a source, a project, a mapping or
+    # a review; none can soften a check: a pull that does not complete fails by name, and nothing is
+    # written except through tickets.submit, which the kit API holds to a finalized review (KDEC-037).
+    'reusable-external-findings.yml': {
+        'source': 'names the vendor read; an unknown one fails the step',
+        'sonar_projects': 'names the projects read; none is SOURCE_NOT_CONFIGURED, never "no findings"',
+        'sonar_organization': 'names the SonarQube Cloud organization',
+        'aikido_api_base': 'names the Aikido region; https only',
+        'repo_map': 'maps project and repository names; an unmapped finding is listed NOT_MAPPED, never dropped',
+        'environment_label': 'the label findings carry',
+        'review_id': 'names the review the batches are cut for; the kit API refuses one not finalized',
+        'submit': 'selects the submit mode, which waits in the review environment',
+        'from_run_id': 'names the pull the review concurred with',
+        'review_environment': 'names the environment whose required reviewers are the gate',
+        'kit_api_workflow': 'names the kit API workflow the batches are sent to',
+    },
+    'reusable-dependabot-keep-current.yml': {
+        'base_branch': 'names the protected branch Dependabot targets; a wrong one finds no PRs',
+        'excluded_paths': 'adds paths whose Dependabot PRs are closed; the fixture default is never removed',
+        'max_pull_requests': 'caps one run; the remainder waits for the next push or schedule',
+    },
     'reusable-ticket-reference.yml': {
         'tracker_host': 'names the Jira site the reference must point at; empty fails the gate as '
                         'unconfigured, it never passes it',

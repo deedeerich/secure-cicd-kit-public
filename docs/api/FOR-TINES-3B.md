@@ -2,11 +2,13 @@
 
 ```
 Status:   PROPOSED (kit KDEC-035, 2026-11-03), amended by the owner (kit KDEC-037: templates and
-          tickets from a finalized review). Built and proven locally in the kit; no hosted call yet.
+          tickets from a finalized review); extended 2026-11-06 (kit KDEC-038: SAST and secret findings
+          keyed and ticketed; kit KDEC-039: evidence.export). Built and proven locally in the kit; no
+          hosted call yet.
 Reads:    this file alone. The full contract is the kit's docs/api/README.md and api/v1/*.schema.json.
 Platform: Tines 3B only -- workflows, steps, spaces, connectors, routes, webpages, volumes, cron,
           GitSync. Nothing here uses any other Tines construct.
-Pack:     NOT part of the Tines pack yet. It reaches the pack only in the owner's one final delivery.
+Pack:     HELD. NOT part of the Tines pack yet. It reaches the pack only in the owner's one final delivery.
 ```
 
 ## 1. What changed for Tines, in one paragraph
@@ -104,6 +106,7 @@ submit-then-poll. Copy status words verbatim; never turn a state into "done".
 | the answer to any call | `status` (client only) | the correlation id | the result |
 | tickets from a finalized review | `tickets.submit` (key required) | `{"template": "finding", "template_version": 1, "review_id": "<id>", "items": [...]}` | `items[]` (outcome, ref, candidates, score), `review` |
 | every ticket, manual too (dashboards) | `tickets.search` | `{"tracker_query": {"labels": ["security"], "max_results": 100}}` | `tickets` (manual, state, linked keys), `next_page_token` |
+| the kit's half of an app's evidence bundle (CAB, adoption review) | `evidence.export` (a read) | `{"commit": "<40 hex>"}` or `{"release": <deployment id>}` | `export` (ten sections, each ESTABLISHED or NOT ESTABLISHED with why), `export_sha256`, `artifact` |
 
 Writes (`tickets.write`, `tickets.submit`, `tickets.comment`, `deploy.request`) work only where the repository has
 turned them on (`vars.KIT_API_OPERATIONS`); otherwise the call is refused
@@ -148,6 +151,27 @@ Azure DevOps or GitHub Issues -- manual ones included -- with `manual`, `state`,
 finding keys. Store ids and states in the volume; follow `next_page_token` in bounded batches.
 FreshService answers `TRACKER_INTAKE_NOT_CONFIGURED`. The labels are a baseline for an
 environment-specific scheme (`docs/ticketing/TAGGING-STRATEGY-PROPOSAL.md`).
+
+## 5b. SAST and secret findings, and the evidence export (KDEC-038, KDEC-039)
+
+**SAST and secrets.** Bandit, semgrep and CodeQL findings now carry `rule_family` and a canonical `cwe`; the same
+weakness on the same line from two tools is ONE finding and one ticket naming both (corroboration raises the
+confidence). A rule the kit's table does not know is `RULE_FAMILY_UNKNOWN` -- record it as "not keyed", never guess a
+family in the workflow. A secret finding is ticketed by the kit's own reconciliation as URGENT (critical, the top
+priority, an `-urgent` label) with ROTATE instructions, and never closes because the scanner stopped seeing it: a
+person confirms the rotation. A 3B dashboard shows "rotate" for these rows; no step, volume or log ever holds a
+secret's value or its fingerprint. `ticket_routing` rules may now match `rule_family` and `cwe` (a register change,
+merged by a person).
+
+**Evidence export.** One `evidence.export` call per repository and commit (or release) returns the kit's half of the
+per-app evidence bundle: security record, review signals, promotion and release records (the durable ones), findings,
+ticket outbox, ticket links, KEV, SBOM digest and the commit author as a pseudonym. Record each section's state WORD
+verbatim: `NOT ESTABLISHED` is "not established, because <why>", never blank, zero or clean; a `kev` section NOT
+ESTABLISHED is "not known", never "not on KEV". The answer is read from the check run as for every call. When
+`data.export.abridged` is true the check run holds each section's state and count only, and the whole export is in
+the run's artifact `kit-evidence-export-<correlation id>`; Tines does not read artifact storage (section 7, item 8),
+so the step records the artifact name and the reviewer downloads it. The calling repository's `kit-api.yml` must
+grant `deployments: read` before its kit pin moves past KDEC-039, or every call fails at startup.
 
 ## 6. States, and what a workflow does with each
 
@@ -219,3 +243,5 @@ timeout or a 5xx is "not read (HTTP <code>)", never 0 or "none".
 | K-API-5 | The approvers, extensions, no-fix clock, taxonomy, tagging, intake adapters (KDEC-037 O-37b..O-37h) | **answered by the owner 2026-11-04** (section 5a); still open: which proposed types to enable (O-37k, default none), the branch mapping (O-37m, default main=prod) |
 | K-API-3 | The connector's credential: a GitHub App per product, or the interim GitHub token | stop and ask; nothing is created |
 | K-API-4 | Which repositories turn on writes and which environments allow API releases | none: reads only |
+| K-API-6 | Who may call `evidence.export` (KDEC-039 O-39a) | any caller of the repository's kit-api (a read, on by default) |
+| K-API-7 | The SAST alias table, secret urgency and fingerprint (KDEC-038 O-38a..O-38e) | as built; unknown rules refuse; secrets never auto-close |

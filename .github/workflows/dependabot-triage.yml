@@ -30,6 +30,15 @@ name: Dependabot triage
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
+  # KEEP CURRENT (owner, 2026-11-06: no babysitting). main requires branches to be up to date, so
+  # when main moves, a Dependabot PR that does not conflict is only BEHIND and waits for
+  # `@dependabot rebase`. The keep-current job asks for it: on every push to main, on a schedule (the
+  # backstop: a merge the run's own token made may not start a push run), and on demand.
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 */3 * * 1-5"
+  workflow_dispatch:
 
 # No job inherits anything; the one job grants exactly what the kit's jobs request
 # (tests/check_caller_permissions.py). Each kit job then holds only its part.
@@ -58,3 +67,18 @@ jobs:
       auto_merge_update_types: "patch,minor"
       excluded_paths: "tests/consumer-fixture/**"
       review_label: "needs-human-review"
+
+  keep-current:
+    # Not on a pull request event: the triage job above owns those. On a push, a schedule or a
+    # dispatch, every open Dependabot PR that is behind gets ONE `@dependabot rebase` per base commit,
+    # a conflicting one ONE `@dependabot recreate`, a fixture one is closed; a human PR is never touched.
+    if: github.event_name != 'pull_request_target'
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/reusable-dependabot-keep-current.yml
+    with:
+      base_branch: main
+      excluded_paths: "tests/consumer-fixture/**"
+    # secrets:
+    #   COMMAND_TOKEN: ${{ secrets.DEPENDABOT_COMMAND_TOKEN }}   # only if Dependabot ignores the run's own token

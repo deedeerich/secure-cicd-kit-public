@@ -289,6 +289,11 @@ def _intake(doc, env, client, raw, cid_in, repo, schemas):
     if op == 'tickets.get' and bool(p.get('ref')) == bool(p.get('cluster_key')):
         return _deny(doc, ka.API_SCHEMA_VIOLATION, 'tickets.get takes exactly one of ref and cluster_key',
                      'params')
+    if op == 'evidence.export':
+        import evidence_export as ee
+        bad = ee.params_problem(p, repo)
+        if bad:
+            return _deny(doc, bad['code'], bad['detail'], bad.get('field') or 'params')
     if op == 'findings.get' and bool(p.get('finding_id')) == bool(p.get('fingerprint')):
         return _deny(doc, ka.API_SCHEMA_VIOLATION, 'findings.get takes exactly one of finding_id and '
                      'fingerprint', 'params')
@@ -585,6 +590,10 @@ def answer(api_state, data=None, notes=None, routing_result='', refusal=None, ne
 
 def findings(intake_doc, env, client, out_dir):
     req = intake_doc['request']
+    if req.get('operation') == 'evidence.export':
+        # KDEC-039: read-only, this repository only, every section or NOT ESTABLISHED by name.
+        import evidence_export as ee
+        return ee.serve(intake_doc, env, client, out_dir)
     p = req['params']
     run, recs, _cov, ref = evidence(client, env, p['run_id'])
     if ref:

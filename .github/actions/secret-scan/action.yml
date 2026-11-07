@@ -458,6 +458,18 @@ runs:
         # Defence in depth behind --redact. The artifact is downloadable by anyone with repo
         # read access, so drop snippets and fingerprints; keep rule, file and line.
         [ -s gitleaks.sarif ] || exit 0
+        # KDEC-038: FIRST, each secret's TICKET KEY -- a non-reversible fingerprint (PBKDF2, salted
+        # with the repository) of the matched region, read from the commit gitleaks named or the
+        # tree, written to the result's properties. The value is never written. Unreadable: the
+        # finding still blocks; its ticket waits on SECRET_FINGERPRINT_NOT_ESTABLISHED.
+        cfk="${GITHUB_ACTION_PATH:-.}/../../../scripts/code_finding_key.py"
+        if [ -s "$cfk" ]; then
+          python3 "$cfk" annotate-secrets --sarif gitleaks.sarif --repo-root . \
+            --repository "${GITHUB_REPOSITORY:-}" \
+            || echo "::warning title=SECRET_FINGERPRINT_NOT_ESTABLISHED::the secret key step failed; the findings still block."
+        else
+          echo "::warning title=SECRET_FINGERPRINT_NOT_ESTABLISHED::scripts/code_finding_key.py is not in the kit delivered by \$/."
+        fi
         python3 - <<'STRIP_PY'
         import json
         d = json.load(open("gitleaks.sarif", encoding="utf-8"))

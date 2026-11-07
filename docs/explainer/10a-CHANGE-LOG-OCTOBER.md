@@ -1,6 +1,26 @@
-# 10a · Change log, October 2026 (versions 1.11 and 1.12, and the entries to 2026-10-23)
+# 10a · Change log, October 2026 (version 1.12 and the entries to 2026-10-28)
 
-Split from `10-CHANGE-LOG.md` on 2026-11-03 when that file passed 20 KB (each part stands alone and is under 20 KB). Newest first. Later entries are in `10-CHANGE-LOG.md`; 1.10 and earlier in `10b-CHANGE-LOG-EARLIER.md`.
+Split from `10-CHANGE-LOG.md` on 2026-11-03 when that file passed 20 KB (each part stands alone and is under 20 KB). Newest first. Later entries are in `10-CHANGE-LOG.md`; 1.11 and earlier in `10b-CHANGE-LOG-EARLIER.md` (1.11 moved there on 2026-11-06, to keep each part under 20 KB).
+
+## Unreleased — CodeQL legs build what they can and report what they did (integrate/r8, 2026-10-28)
+
+Found on the cost runs of the six-language fixture (public mirror, cost/after run 40791360475): the
+C/C++, C# and Java legs ran autobuild at the checkout root, found no build system (the projects sit in
+subdirectories), held an empty database (`database finalize` exit 32), wrote no SARIF, and stayed
+green, so the gate read the CodeQL job as a success. Proven locally, each failed first
+(`prove_codeql_dynamic_matrix.py`, `prove_codeql_build_outcome.py` C4..C6,
+`prove_codeql_rows_read_sarif.py` per-leg and partial, `prove_gate_policy_enforcement.py`
+crawl_codeql_*). Hosted on the public mirror (throwaway branch, deleted): run 40809492962, all six
+CodeQL legs COMPLETE / PASS with their findings, 24/24, the capability floor HELD, the negative
+control blocked.
+
+| change | parts affected |
+|---|---|
+| Each CodeQL leg names its build mode: `none` (buildless) for Python, JavaScript/TypeScript, C#, Java and C/C++; `autobuild` for Go and for Kotlin (not extracted buildless) | 02, 04 |
+| Each leg files its own state (`sarif-codeql-leg-<leg>` artifact); its row reads it, not the job result six legs share | 04 |
+| An autobuild leg whose build did not succeed is `PARTIAL` in its row and in the verdict (`COVERAGE_PARTIAL`, `CODEQL_BUILD_PARTIAL`) | 02, 04, 05 |
+| A leg that initialised and could not analyse fails its job (`COLLECTION_FAILED`); the gate reads it as untrusted evidence. A licence that refused init (`UNAVAILABLE`) still never fails the build | 02, 04, 05 |
+| The six-language fixture's C# compiles: `Fixture.csproj` references `System.Data.SqlClient` 4.9.0 (not vulnerable), which `Vuln.cs` uses. Hosted run 40808064559 showed the buildless C# leg analysing it and reporting compiler errors as error-level notifications, which validity row 5 correctly reads as a failed run (`prove_fixture_dotnet_compiles.py`, failed first: CS1069) | 04 |
 
 ## Unreleased — strictest org, exception history from git, exploited in the wild (lane L-POL, 2026-10-23)
 
@@ -133,15 +153,3 @@ runner's working tree tripped the deny list during the proof's own export). The 
 only gitignored files, so the download would also have shipped. **`904bc7a`**: whatever git does not
 track is neither scanned nor exported (proof E8, failed first); self-test 39622321744 green on it.
 
-## Version 1.11 — 2026-10-16 (trunk `3830edb`, lane `lane/L-G`)
-
-`main` is at Release 1: `ef4b15d` (PR #3, neutral, no overlays, Jira ticketing in core).
-
-| commit / run | change | parts affected |
-|---|---|---|
-| `1c20a0b` | **KDEC-014**: the gate emits `advisory_causes`; at uat/prod both deploy reusables refuse a `PROCEED_WITH_ADVISORY` caused by a proven `VERSION_GAP` unless the weakening record names an accepter, a reason and an unexpired date; an UNVERIFIED-range gap proceeds, recorded; an advisory with no cause is refused. Stub-proven (`prove_version_gap_production.py`); no live run. KDEC-015 recorded: internal tools are released by the kit too | 03, 05, 07, 11 |
-| lane L-G | **documents made true to the code**: advisory mode never covered secrets (START-HERE said it did); the deploy workflows are proven live (START-HERE, USAGE, SETUP, the rollback contract and parts 07/11 said never executed or stub-only); examples no longer set the dead `enable_iac` or narrow `language`; caller permissions stated per reusable; the deploy reusables do not check `artifact_identity` (the template does); report rows 25, routing scenarios 21; the run record and deploy outcome are not workflow outputs. New: `docs/assurance/RELEASE_1_EVIDENCE_MANIFEST.md`. `check_doc_currency.py` now reads the consumer documents and refuses those three classes | 02–09, 11 |
-
-Deferrals: 3, none blocking — attestation-verify, change-detection, toolchain-terraform (all 2026-12-31).
-
-Versions 1.10 and earlier: `10b-CHANGE-LOG-EARLIER.md`.

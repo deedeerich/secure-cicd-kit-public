@@ -47,6 +47,9 @@
 /capability-floor.json                    @YOUR_ORG/pipeline-maintainers @YOUR_ORG/security-approvers
 /scripts/capability_floor.py              @YOUR_ORG/pipeline-maintainers @YOUR_ORG/security-approvers
 /.github/actions/capability-floor/        @YOUR_ORG/pipeline-maintainers @YOUR_ORG/security-approvers
+# Mappings a person made for ids the kit could not read (owner ruling 2026-11-06, scripts/unknown_ids.py):
+# a mapping changes which family a finding joins, so the machinery's owners and security both review it.
+/id-mappings.json                         @YOUR_ORG/pipeline-maintainers @YOUR_ORG/security-approvers
 
 # ── Exceptions: may THIS finding pass ───────────────────────────────────────────
 # Security approves exceptions and NOTHING ELSE. Deliberately no ownership of the gate itself.

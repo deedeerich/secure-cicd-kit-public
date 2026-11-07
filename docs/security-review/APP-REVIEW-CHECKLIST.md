@@ -145,7 +145,7 @@ Read the **security-gate** job's summary and outputs, and the **discover** job's
       credential in a protected environment.
 - [ ] **One federated trust per environment**, subject `repo:<owner>/<repo>:environment:<env>` (or
       the id-qualified form), and proof that the identity reaches only its own scopes
-      (`../CLOUD-CHECKS.md` C2, C1):
+      (`CLOUD-CHECKS.md` C2, C1):
 
       | Azure | AWS | GitHub | Other cloud: how to find the equivalent |
       |---|---|---|---|

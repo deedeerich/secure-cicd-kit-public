@@ -34,6 +34,9 @@ inputs:
   evidence-artifact: {description: "security: the gate's evidence_artifact", required: false, default: ''}
   assurance-result: {description: "security: the run record JSON", required: false, default: ''}
   retention-days: {description: "security: KIT_EVIDENCE_RETENTION_DAYS as set (floored at the audit minimum)", required: false, default: ''}
+  kev-verdict: {description: "security (KDEC-039): the gate's kev_verdict (CLEAR, BLOCKED, EXCEPTED, UNAVAILABLE)", required: false, default: ''}
+  kev-state: {description: "security (KDEC-039): the gate's kev_state", required: false, default: ''}
+  sbom-digest: {description: "security (KDEC-039): the sbom job's sbom_sha256 (the redacted CycloneDX file as uploaded)", required: false, default: ''}
   deployment-outcome: {description: "deploy-post: the report step's deployment_outcome", required: false, default: ''}
   release-approval: {description: "deploy-post: release_approval", required: false, default: ''}
   release-approval-by: {description: "deploy-post: release_approval_by", required: false, default: ''}
@@ -89,6 +92,9 @@ runs:
         S_EVIDENCE_ARTIFACT: ${{ inputs.evidence-artifact }}
         S_ASSURANCE_RESULT: ${{ inputs.assurance-result }}
         S_RETENTION_DAYS: ${{ inputs.retention-days }}
+        S_KEV_VERDICT: ${{ inputs.kev-verdict }}
+        S_KEV_STATE: ${{ inputs.kev-state }}
+        S_SBOM_DIGEST: ${{ inputs.sbom-digest }}
         D_ROUTING_RESULT: ${{ inputs.routing-result }}
         D_DEPLOYMENT_OUTCOME: ${{ inputs.deployment-outcome }}
         D_RELEASE_APPROVAL: ${{ inputs.release-approval }}

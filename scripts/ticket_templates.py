@@ -530,6 +530,7 @@ def normalize(template, item, provenance, index=0, stamp_label='', settings=None
     }
     if f.get('kev'):
         rec['kit_class'] = 'kev'
+    code_facts = _code_finding_facts(f, rec)
     facts = [('template', '%s (version %d)' % (template, TEMPLATE_VERSION)),
              ('source', '%s via %s%s' % (f.get('source_type'), f.get('source_tool'),
                                          (' ' + f['source_tool_version']) if f.get('source_tool_version') else '')),
@@ -543,6 +544,7 @@ def normalize(template, item, provenance, index=0, stamp_label='', settings=None
              ('requested by', rec['provenance']['requested_by'] or 'not stated')]
     if rec['provenance']['review_id']:
         facts.append(('review', '%s (finalized, human-concurred)' % rec['provenance']['review_id']))
+    facts += code_facts
     labels = tag_labels(stamp_label, template, f, finding_ck, rec['provenance']['review_id'])
     if template in COMPLIANCE_TEMPLATES:
         word, cls = COMPLIANCE_MAP[template]
@@ -577,6 +579,29 @@ def normalize(template, item, provenance, index=0, stamp_label='', settings=None
     rec['template_labels'] = sorted(set(labels))
     rec['correlation_key'] = fc.cluster_key(subject, rec['where'], rec['what_aliases'][0] or rec['identity'])
     return rec
+
+
+def _code_finding_facts(f, rec):
+    """KDEC-038: an external SAST finding (bandit, semgrep, CodeQL) carries the kit's rule family and canonical
+    CWE, as the kit's own scan does; an external secret finding (gitleaks, detect-secrets, trufflehog, or a
+    detector the secret table knows) is class `secret` -- urgent, floor, never routed to "none" -- and its ticket
+    says ROTATE. The identity is unchanged (asset + identifier): a submission carries no source line to anchor.
+    Mutates `rec`; -> the facts rows."""
+    import code_finding_key as cfk
+    tool, ident = _s(f.get('source_tool')), _s(f.get('identifier'))
+    out = []
+    if cfk.is_secret_tool(tool) or ident.lower() in cfk.secret_families:
+        fam, _why = cfk.secret_family(ident)
+        rec.update(kit_class='secret', is_secret_finding=True, secret_family=fam)
+        out += [('exposed credential', '%s (detector %s, via %s)' % (fam, ident, tool)), ('remedy', cfk.secret_remedy)]
+    elif cfk.tool_of(tool):
+        fam, canon, why = cfk.resolve_sast_family(tool, tool, ident, f.get('cwe') or '')
+        if fam:
+            rec.update(rule_family=fam, cwe=canon)
+            out.append(('rule family', '%s (%s)' % (fam, canon)))
+        else:
+            out.append(('rule family', 'NOT ESTABLISHED -- %s' % why))
+    return out
 
 
 # ═════════════════════════════════════════════════════════════════════════════════════

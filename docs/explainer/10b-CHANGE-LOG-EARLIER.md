@@ -1,9 +1,22 @@
-# 10b · Change log, earlier versions (1.10 back to 1)
+# 10b · Change log, earlier versions (1.11 back to 1)
 
-The continuation of `10-CHANGE-LOG.md`, which holds version 1.11 onward and says what changed most
+The continuation of `10a-CHANGE-LOG-OCTOBER.md` (1.12 and October) and `10-CHANGE-LOG.md`, which says what changed most
 recently. This part is history: each entry was true at its version and commit, and later versions
 may have changed what it says. Newest first. Commit ids are on the build trunk
 `fix/normalization-and-discovery`.
+
+## Version 1.11 — 2026-10-16 (trunk `3830edb`, lane `lane/L-G`)
+
+`main` is at Release 1: `ef4b15d` (PR #3, neutral, no overlays, Jira ticketing in core).
+
+| commit / run | change | parts affected |
+|---|---|---|
+| `1c20a0b` | **KDEC-014**: the gate emits `advisory_causes`; at uat/prod both deploy reusables refuse a `PROCEED_WITH_ADVISORY` caused by a proven `VERSION_GAP` unless the weakening record names an accepter, a reason and an unexpired date; an UNVERIFIED-range gap proceeds, recorded; an advisory with no cause is refused. Stub-proven (`prove_version_gap_production.py`); no live run. KDEC-015 recorded: internal tools are released by the kit too | 03, 05, 07, 11 |
+| lane L-G | **documents made true to the code**: advisory mode never covered secrets (START-HERE said it did); the deploy workflows are proven live (START-HERE, USAGE, SETUP, the rollback contract and parts 07/11 said never executed or stub-only); examples no longer set the dead `enable_iac` or narrow `language`; caller permissions stated per reusable; the deploy reusables do not check `artifact_identity` (the template does); report rows 25, routing scenarios 21; the run record and deploy outcome are not workflow outputs. New: `docs/assurance/RELEASE_1_EVIDENCE_MANIFEST.md`. `check_doc_currency.py` now reads the consumer documents and refuses those three classes | 02–09, 11 |
+
+Deferrals: 3, none blocking — attestation-verify, change-detection, toolchain-terraform (all 2026-12-31).
+
+Versions 1.10 and earlier: `10b-CHANGE-LOG-EARLIER.md`.
 
 ## Version 1.10 — 2026-10-16 (trunk `af8672c`)
 

@@ -64,7 +64,16 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # The kit's OWN caller of it (owner, 2026-11-04): the same two capabilities, the decision proven
     # locally with THIS caller's inputs (tests/prove_kit_dependabot_triage_caller.py), the GitHub half
     # owed by the same hosted run (DEPENDABOT_TRIAGE.md section 6.0).
-    "dependabot-triage.yml": ["dependabot-triage", "dependabot-merge-hosted"],
+    # Owner 2026-11-06 (no babysitting): the same caller also keeps open Dependabot PRs current.
+    "dependabot-triage.yml": ["dependabot-triage", "dependabot-merge-hosted", "dependabot-keep-current"],
+    "reusable-dependabot-keep-current.yml": ["dependabot-keep-current"],
+    # Owner 2026-11-06: a pull request that leaves a manifest unread, or an entry without a manifest, fails
+    # with the fix (scripts/dependabot_config.py inlined; tests/prove_dependabot_config.py).
+    "reusable-dependabot-config-check.yml": ["dependabot-config-check"],
+    "dependabot-config-check.yml": ["dependabot-config-check"],
+    # Owner 2026-11-06: SonarQube / Aikido findings pulled read-only, submitted only behind the review gate.
+    "reusable-external-findings.yml": ["external-findings-pull"],
+    "external-findings.yml": ["external-findings-pull"],
     "reusable-deploy-appservice.yml": ["deploy-appservice"],
     "reusable-deploy-containerapp.yml": ["deploy-containerapp"],
     # KDEC-019 item 4 (lane L-RB, 2026-10-22): several deployments reversed newest first, the
@@ -205,6 +214,10 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # and the App Service deploy against the stub cloud); the Deployments API on a GHE.com tenant and
     # a real cross-run record read are the live half, owed.
     "action:reviewer-signals": ["reviewer-signals"],
+    # KDEC-041 PROPOSED (lane kit-adoption, 2026-11-06): kit init as a button in a consumer repository, and
+    # the plain-English error layer the gate, deploys, ticketing, triage, API and preflight call.
+    "action:kit-init": ["kit-init"],
+    "action:plain-errors": ["plain-errors"],
 }
 
 # What is actually proven, and how. States:
@@ -527,6 +540,15 @@ VALIDATION_REGISTRY: dict[str, dict] = {
     # case and the recovery, through the composite step as shipped against a recorded API and an HTTP
     # stand-in for the Deployments API. Level `tool`: no hosted run has read a real record cross-run.
     "reviewer-signals": {"probe": "tests/prove_reviewer_signals.py", "state": "observed", "level": "tool"},
+    # OBSERVED 2026-11-06, locally: scripts/kit_init.py run against a fixture repository per stack, its
+    # output held to the caller-permission check, R1, exact least privilege, actionlint and the Dependabot
+    # check, PR mode against a bare remote and a gh stub (tests/prove_kit_init.py). Level `tool`: the
+    # composite has not run on a hosted runner, and no real pull request has been opened by it.
+    "kit-init": {"probe": "tests/prove_kit_init.py", "state": "observed", "level": "tool"},
+    # OBSERVED 2026-11-06, locally: the composite's step run as shipped under bash, the catalogue held to
+    # the taxonomy, every wiring site read from the workflows (tests/prove_plain_errors.py). Level `tool`:
+    # no hosted run has shown the annotations on a run page yet.
+    "plain-errors": {"probe": "tests/prove_plain_errors.py", "state": "observed", "level": "tool"},
     # OBSERVED 2026-10-22, locally, by running the workflow's OWN evidence, decision and action steps
     # extracted from .github/workflows/reusable-dependabot-triage.yml under bash with a gh shim:
     # tests/prove_dependabot_triage.py (D1..D8, 42 decisions). Level `tool`: nothing here has run on
@@ -535,6 +557,22 @@ VALIDATION_REGISTRY: dict[str, dict] = {
     # in every decision as NOT_ESTABLISHED.
     "dependabot-triage": {"probe": "tests/prove_dependabot_triage.py", "state": "observed",
                           "level": "tool"},
+    # OBSERVED 2026-11-06, locally: the keep-current workflow's evidence, decide and act steps run as
+    # shipped under bash with a gh shim (tests/prove_dependabot_keep_current.py K1..K4, N1..N9).
+    # Level `tool`: whether Dependabot honours a command posted by the run's own token is UNVERIFIED
+    # until a hosted run (DEPENDABOT_TRIAGE.md section 3b).
+    "dependabot-keep-current": {"probe": "tests/prove_dependabot_keep_current.py", "state": "observed",
+                                "level": "tool"},
+    # OBSERVED 2026-11-06, locally: the script against constructed repositories and the kit's own tree,
+    # and the workflow's check step run as shipped (tests/prove_dependabot_config.py C1..C4, N1..N9).
+    # Level `tool`: no hosted pull request has run the reusable.
+    "dependabot-config-check": {"probe": "tests/prove_dependabot_config.py", "state": "observed",
+                                "level": "tool"},
+    # OBSERVED 2026-11-06, locally: both adapters against a 127.0.0.1 stand-in answering the documented
+    # shapes (tests/prove_external_findings_pull.py P1-P3, N1-N8) and the workflow's pull step as shipped
+    # (tests/prove_external_findings_workflow.py). Level `tool`: no call to a real SonarQube or Aikido yet.
+    "external-findings-pull": {"probe": "tests/prove_external_findings_pull.py", "state": "observed",
+                               "level": "tool"},
     # OBSERVED 2026-10-22, locally (lane L-FX): scripts/exception_due.py against fixture registers and
     # caller workflows, its Jira path against a RECORDING FAKE (comment, reopen, create once, refuse a
     # non-Jira tracker, NOT_CONFIGURED without credentials), and the workflow's own list step run as

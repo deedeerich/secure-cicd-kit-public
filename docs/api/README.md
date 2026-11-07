@@ -10,7 +10,8 @@ Client:        scripts/kit_api.py (one file, standard library only).
 Run side:      templates/kit-api.yml -> .github/workflows/reusable-kit-api.yml ->
                .github/actions/kit-api -> scripts/kit_api_server.py.
 Proofs:        tests/prove_kit_api_client.py (K1..K9), prove_kit_api_server.py (S1..S8),
-               prove_kit_api_workflow.py (W1..W8), prove_ticket_templates.py (T1..T10, KDEC-037), prove_ticket_intake_v2.py (V1..V11);
+               prove_kit_api_workflow.py (W1..W8), prove_ticket_templates.py (T1..T10, KDEC-037), prove_ticket_intake_v2.py (V1..V11),
+               prove_sast_secret_tickets.py (KDEC-038), prove_evidence_export.py (KDEC-039);
                self-test job kit-api-refuses-by-name.
 ```
 
@@ -76,6 +77,9 @@ can be trusted (queued, running, awaiting approval, not found, failed, cancelled
    `numbers.no_fix_recheck_days`), `KIT_API_NOFIX_REVIEW_DAYS` (90), `KIT_API_EXCEPTION_MAX_DAYS` (90),
    `KIT_API_REVIEW_MAX_AGE_DAYS` (30), `KIT_API_VERIFICATION_REMINDER_DAYS` (7),
    `KIT_API_FUZZY_TITLE_PERCENT` (85). The caller grants `pull-requests: read` (templates/kit-api.yml does).
+7. `evidence.export` (KDEC-039) is a read, served by default. The caller grants **`deployments: read`**
+   (templates/kit-api.yml does): the intake job reads the durable release records. **A kit-api.yml without it fails
+   at startup on every call once its kit pin moves past KDEC-039** -- add the line before bumping the pin.
 
 ## 4. Authentication and least privilege
 
@@ -86,7 +90,7 @@ can be trusted (queued, running, awaiting approval, not found, failed, cancelled
 | a Tines 3B step | a connector whose URL pattern is the API host only; `KIT_API_AUTH=proxy` | as the first row; the step's code never sees the token |
 
 What the **run** holds is the run's own `GITHUB_TOKEN` (`contents: read`, `actions: read`,
-`checks: write`) and, in the `tickets` job only, the tracker credential from the protected
+`checks: write`, `deployments: read` in the intake job for `evidence.export`) and, in the `tickets` job only, the tracker credential from the protected
 `ticketing` environment. The API run holds **no deploy identity**: a release is the repository's own
 `build-deploy.yml`, whose jobs bind their own environments' identities as they always do.
 
@@ -112,8 +116,8 @@ header. Nothing named is `API_HOST_NOT_NAMED` -- never github.com.
 
 - `correlation_id`: made by the caller (the client makes it), unique per call. It is the run's
   name, the check run's name and the result's key.
-- `idempotency_key`: **required for every write** (`tickets.write`, `tickets.comment`,
-  `deploy.request`). The same key twice is `API_DUPLICATE_REQUEST` naming the first call, and
+- `idempotency_key`: **required for every write** (`tickets.write`, `tickets.submit`,
+  `tickets.comment`, `deploy.request`; `scripts/kit_api.py` `OPERATIONS`). The same key twice is `API_DUPLICATE_REQUEST` naming the first call, and
   nothing is done again (a 90-day window: the marker artifact's retention). Calls with one key never
   overlap: the template's concurrency group serialises them. Never a secret: it appears in run names.
 - `on_behalf_of`: what the caller **declares**; recorded and shown, never verified, never used to
@@ -260,6 +264,48 @@ Filters: `fingerprint`, `finding_id`, `cluster_key`, `severity`, `scanner`, `job
 and `ticket` (`ref`, `key` from the ticket ledger, or `null`). **No code content** is returned.
 `data.kev_state`: `AVAILABLE`, `UNAVAILABLE` (the CISA catalog or the organisation mirror could not
 be read -- KDEC-032's rule) or `NOT_NEEDED` (nothing named a CVE).
+
+**SAST and secret findings (KDEC-038).** A bandit, semgrep or CodeQL finding carries `rule_family` (the kit's curated
+alias table, else its CWE through the family table; a rule in neither refuses `RULE_FAMILY_UNKNOWN` by name in
+`reason`/`identity_state`, never a guessed family), the canonical `cwe`, `symbol_path` and `ticket_key_state`
+(`CODE_KEYED`, `SECRET_KEYED`, `SECRET_FINGERPRINT_NOT_ESTABLISHED`). The same weakness reported by two tools on one
+line is ONE identity and one ticket naming both scanners. A secret finding has no baseline identity and is ticketed on
+its secret key (detector family + path + a non-reversible fingerprint); its value is never in any answer.
+
+### 7.5a `evidence.export` -- the kit's half of the per-app evidence bundle (KDEC-039)
+
+```json
+{"commit": "<40 hex>"}
+{"release": 9001}
+```
+
+For **this repository** at one commit, or one release (a GitHub deployment with task `kit-release-record`, read for its
+commit): `data.export`, schema `api/v1/evidence-export.schema.json` (`kit-evidence-export/1`). A read; no idempotency key.
+
+| section | from | when it cannot be read |
+|---|---|---|
+| `security_record` | the newest `kit-security-record-<attempt>` of a run on the commit | NOT ESTABLISHED, with the reason (none kept, expired, unreadable) |
+| `review_signals` | each release record's verdict_provenance, weakening_check, readiness_source, tier_reality, kit_watermark; the security run's own | NOT ESTABLISHED |
+| `promotion_records` | live `kit-promotion-record-<env>` artifacts; the promotion summary the durable release record carries | NOT ESTABLISHED |
+| `release_records` | the **durable** deployment records (task `kit-release-record`) with their latest status -- these survive artifact expiry | NOT ESTABLISHED (the caller grants `deployments: read`) |
+| `findings` | the security report's `findings.json`: identities, keys, rule, path, line, severity, CWE, rule family, ticket | NOT ESTABLISHED |
+| `ticket_outbox` | the repository's `kit-ticket-outbox-*` artifacts: `pending` (correlation id, items held, reason) and `drained` | NOT ESTABLISHED |
+| `ticket_links` | the ticket ledger on the default branch: cluster key, ticket id and key, member identities | NOT ESTABLISHED |
+| `kev` | the gate's KEV verdict (`CLEAR`, `BLOCKED`, `EXCEPTED`) and `on_kev` | NOT ESTABLISHED, `on_kev` null -- never false |
+| `sbom` | the SBOM's `sha256:` digest (the security record, else the live `sbom` artifact) | NOT ESTABLISHED |
+| `author` | the commit author as `person:<10 hex>` (the evidence harness's pseudonym), the committer's, and the commit's verification state | NOT ESTABLISHED; **never an email** |
+
+Every section is `ESTABLISHED` with its `source` (artifact name, run id, sha256; or deployment id) or `NOT ESTABLISHED`
+with `why` -- never an empty list standing in for a record nobody could read; `not_established` names them. A record
+naming another repository is never copied: `excluded_other_repository` counts it. Records are copied through an
+allowlist of their schema's fields: no free text (a weakening's reasons, a finding's message, an outbox's submitted
+params) and no secret-shaped value. The same reads give the same bytes. When the check run cannot hold the whole
+export, `data.export` is abridged (`abridged: true`: each section's state, reason and count) and the artifact
+`kit-evidence-export-<correlation id>` holds all of it: `evidence-export.json` and the records unpacked as the files
+the evidence harness's `src/app_evidence_bundle.py` reads -- pass that folder as `--kit-evidence`. `data.export_sha256`
+binds the whole. Refusals: both or neither of `commit` and `release` (`API_SCHEMA_VIOLATION`); a `repository` other
+than the one served (`API_REPOSITORY_NOT_SERVED`); a release that is not a kit release record or cannot be read
+(`API_EVIDENCE_UNAVAILABLE`).
 
 ### 7.6 `deploy.request`
 
@@ -410,8 +456,8 @@ kit already has: a refusal can only add a "no".
 | `API_IDEMPOTENCY_UNVERIFIED` | intake | the key's history could not be read; a write is never risked |
 | `API_REF_NOT_DEFAULT_BRANCH` | intake | a ticket or release call off the default branch |
 | `API_TRANSPORT_NOT_PERMITTED` | intake | a release by repository_dispatch |
-| `API_REPOSITORY_NOT_SERVED` | intake | a filter named another repository |
-| `API_EVIDENCE_UNAVAILABLE` | operation | no completed default-branch run with evidence |
+| `API_REPOSITORY_NOT_SERVED` | intake | a filter, or an `evidence.export`, named another repository |
+| `API_EVIDENCE_UNAVAILABLE` | operation | no completed default-branch run with evidence; for `evidence.export`, a release that is not a kit release record |
 | `API_FINDING_NOT_KIT_ESTABLISHED` | operation | the run did not establish that finding |
 | `API_DISPOSITION_NOT_VIA_API` | intake | dispositions are pull requests a person approves |
 | `API_TICKET_NOT_KIT_STAMPED` | operation | the ticket is not the kit's |
@@ -445,14 +491,17 @@ kit already has: a refusal can only add a "no".
 | every run-side refusal named and readable by the caller; one ticket per finding across the API and the pipeline on Jira and Azure DevOps, both orders; a subset closes nothing; KEV never false; a release meets every gate | `tests/prove_kit_api_server.py` S1..S8 (documented-shape tracker stand-ins) |
 | the release is the repository's own pipeline, called; the gates run before Azure login; the API holds no deploy identity; one ticket writer at a time; every value read is set; the shipped step answers | `tests/prove_kit_api_workflow.py` W1..W8 |
 | the reusable workflow starts on GitHub and refuses by name | self-test `kit-api-refuses-by-name` (on every self-test run once pushed) |
+| SAST and secret findings keyed: bandit + semgrep on one line one ticket, CodeQL keyed, a line shift keeps identity, unknown rules refused by name; secrets urgent ROTATE tickets on a non-reversible fingerprint, the value nowhere | `tests/prove_sast_secret_tickets.py` S1..S6, N1..N3, M1..M7 (KDEC-038) |
+| `evidence.export` has every section or NOT ESTABLISHED by name; one repository; idempotent; no secret, free text or email; the evidence harness builds a bundle from it; the security record carries KEV, SBOM and the author | `tests/prove_evidence_export.py` E1..E5, N1..N4, M1..M4 (KDEC-039) |
 | every template checked and refused by name; nothing written without a finalized, human-concurred review bound to the evidence set; every ticket (manual ones too) searched before a create, a candidate never merged; closure verified and never self-verified; extensions counted and capped; the no-fix re-check; tracker intake paging; the corroboration score | `tests/prove_ticket_templates.py` T1..T10, T5b (failed 70 checks first; ten mutants killed) |
 
-**Owed:** a hosted armed call per operation on the owner's personal test repository; a live
+**Owed:** a hosted armed call per operation on the owner's personal test repository (an `evidence.export` among
+them, its artifact fed to the evidence harness); a hosted security run showing SAST and secret tickets (KDEC-038); a live
 `tickets.write` / `tickets.search` / `tickets.comment` round trip on the owner's **personal** Jira
 and **personal** Azure DevOps (`tests/live_ticketing_run.py`'s targets; never an employer's); a
 `tickets.submit` with a real review record merged by a real approving reviewer on a personal test
 repository (KDEC-037: the GitHub half; the tracker half -- v1 HELD live on the owner's personal Jira on
-2026-11-04 (`--phase r4`), v2 in `--phase r5`, see docs/decisions.md KDEC-037); a
+2026-11-04 (`--phase r4`), v2 in `--phase r5`, see KDEC-037 in `.context/products/secure-cicd-kit/decisions.md`, kept in the kit's source repository and not in an exported copy); a
 `deploy.request` on the personal sandbox showing `API_AWAITING_APPROVAL`, then a human approval, then
 `API_COMPLETED` with `DEPLOY_HEALTHY`; that a GHE.com tenant's runs are found by `display_title` and
 that `$/` resolves inside the API's reusable workflow there.

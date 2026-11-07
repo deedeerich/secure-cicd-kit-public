@@ -188,6 +188,8 @@ jobs:
           # The kit's own wrapper: every finding fails, except the two exact messages it documents
           # (the `$/` composite form, proven on GitHub; the stale 10-input dispatch rule).
           ACTIONLINT="$PWD/actionlint" python3 tests/check_actionlint.py
+          # What kit init generates passes the same pinned actionlint (tests/prove_kit_init.py P2).
+          ACTIONLINT="$PWD/actionlint" python3 tests/prove_kit_init.py --actionlint
 
   contract-check:
     name: Contract shape
@@ -1140,6 +1142,13 @@ jobs:
           python3 tests/prove_dependency_purl_from_manifest.py
           # The fixtures' deliberately vulnerable pins move only with their registry (Dependabot PR #10 bumped one, 2026-11-06).
           python3 tests/check_fixture_seed_pins.py
+          # Every Dependabot-triage job grants what its GitHub calls need (PR #5 on main, 2026-11-06).
+          python3 tests/prove_triage_job_permissions.py
+          # KDEC-038: SAST (bandit, semgrep, CodeQL) and secret findings are keyed and ticketed: the rule-family
+          # alias table, the code location from the checked-out commit, the secret key from before redaction;
+          # one ticket per issue across tools, urgent rotation tickets for secrets, unknown rules refused by name.
+          python3 scripts/code_finding_key.py --self-test
+          python3 tests/prove_sast_secret_tickets.py
 
       - name: The kit's API -- contract, client, run side and wiring (KDEC-035)
         run: |
@@ -1153,6 +1162,10 @@ jobs:
           python3 tests/prove_kit_api_client.py
           python3 tests/prove_kit_api_server.py
           python3 tests/prove_kit_api_workflow.py
+          # KDEC-039: evidence.export -- the kit's half of the per-app evidence bundle, one repository, every
+          # section or NOT ESTABLISHED by name; no secret, no free text, no email; KEV, SBOM and author recorded.
+          python3 scripts/evidence_export.py --self-test
+          python3 tests/prove_evidence_export.py
           # KDEC-037: ticket templates and external findings; nothing written without a finalized,
           # human-concurred review; every ticket (manual ones too) searched before a create; closure
           # never self-verified; extensions counted and capped; the no-fix re-check; tracker intake.
@@ -1334,6 +1347,57 @@ jobs:
           # G-03: the census also counts PROOFS. An unrun proof, one only mentioned in a comment, an
           # unrun --self-test, and a stale or expired UNWIRED entry are each seeded and refused.
           python3 tests/prove_proof_census.py
+
+      - name: Consumer experience -- the local battery, positive controls, Dependabot, intake (2026-11-06)
+        run: |
+          set -euo pipefail
+          # The local battery reads this workflow, runs each check with its rc, and fails honestly.
+          python3 tests/prove_battery_mirrors_selftest.py
+          # A behind Dependabot PR gets one `@dependabot rebase` per base commit; never a human or fixture PR.
+          python3 tests/prove_dependabot_keep_current.py
+          # verify-azure-oidc signs in to either cloud and checks the identity from the directory side.
+          python3 tests/prove_oidc_directory_checks.py
+          # No developer is bitten by a missing manifest: discover / generate / check, and the PR check.
+          python3 scripts/inline_dependabot_config.py --check
+          python3 tests/prove_dependabot_config.py
+          # Release 4's consumer surface, as the consumer path checks it on a host (rows R1-R8).
+          python3 scripts/consumer_surface_check.py
+          # SonarQube and Aikido findings pulled into the intake, complete or refused by name.
+          python3 tests/prove_external_findings_pull.py
+          python3 tests/prove_external_findings_workflow.py
+          # ONE normaliser for every source's CWE and vulnerability-id spelling; unknown forms refused.
+          python3 scripts/finding_ids.py --self-test
+          python3 tests/prove_finding_ids.py
+          # Unknown ids are logged, routed to a person once, and never guessed (owner ruling 2026-11-06).
+          python3 scripts/unknown_ids.py --self-test
+          python3 tests/prove_unknown_ids.py
+          # A dispatched run is paired by its correlation id, never as the branch's latest run (item 11).
+          python3 tests/prove_dispatch_correlation.py
+          # Every decision, risk and defect suggests mitigations; none is COMPLETED without evidence and a person.
+          python3 scripts/check_register_mitigations.py --self-test
+          python3 scripts/check_register_mitigations.py
+          python3 tests/prove_register_mitigations.py
+          # The auto-merge risks guide and the branch-protection rulesets answer the owner and require only emitted checks.
+          python3 tests/prove_adoption_guides.py
+          # Positive controls (owner: "I see negative testing but no positive testing"): a clean consumer passes the
+          # gate and is admitted to deploy at crawl and walk; every negative control has its positive pair or a reason.
+          python3 tests/prove_positive_clean_release.py
+          python3 tests/check_positive_negative_pairing.py --self-test
+          python3 tests/check_positive_negative_pairing.py
+
+      - name: Adoption -- kit init, the plain-English error layer, the pilot friction log (KDEC-041, 2026-11-06)
+        run: |
+          set -euo pipefail
+          # kit init: one command wires a repository; it never guesses, never writes a secret, keeps edits.
+          python3 scripts/kit_init.py --self-test
+          python3 tests/prove_kit_init.py
+          # Every refusal in the taxonomy has a plain sentence, and the six outputs put it first.
+          python3 scripts/plain_errors.py --self-test
+          python3 scripts/plain_errors.py check
+          python3 tests/prove_plain_errors.py
+          # The pilot friction logs summarise across teams and drop nothing.
+          python3 scripts/friction_summary.py --self-test
+          python3 tests/prove_friction_summary.py
 
       - name: A workflow over the size limit does not fail, it never starts
         run: |
@@ -2252,6 +2316,7 @@ jobs:
       actions: read
       checks: write
       pull-requests: read   # the tickets job reads review records' pull requests (KDEC-037)
+      deployments: read     # the intake job reads release records for evidence.export (KDEC-039)
     uses: ./.github/workflows/reusable-kit-api.yml
     with:
       correlation_id: kapi-20261103T000000Z-5e1f7e570000

@@ -1,0 +1,99 @@
+name: kit-init
+description: >-
+  kit init, run in a consumer repository (templates/kit-init.yml is the thin workflow_dispatch wrapper).
+  Runs scripts/kit_init.py from THIS action's own download of the kit, so the files are generated from
+  exactly the commit the caller pinned (github.action_ref) and no token is needed to read the kit. With a
+  token that may push workflow files (KIT_INIT_TOKEN: Contents, Pull requests and Workflows read and
+  write) it opens ONE branch and ONE pull request; without one it writes the files, uploads them as the
+  artifact kit-init-files and says how to commit them (GITHUB_TOKEN can never push a workflow file).
+  It never writes a secret and never changes a repository setting. tests/prove_kit_init.py.
+inputs:
+  deploy: {description: "auto | container | static | none", required: false, default: auto}
+  with-triage: {description: "true adds the Dependabot triage caller", required: false, default: 'false'}
+  with-api: {description: "true adds the kit API caller (container deploys)", required: false, default: 'false'}
+  automerge: {description: "true: you will turn on auto-merge (the checklist says how)", required: false, default: 'false'}
+  outside-landing-zone: {description: "true: this repository deploys outside a landing zone", required: false, default: 'false'}
+  appsec-team: {description: "@org/team for AppSec", required: false, default: ''}
+  platform-team: {description: "@org/team for platform", required: false, default: ''}
+  token: {description: "KIT_INIT_TOKEN, or empty to upload the files instead of opening a PR", required: false, default: ''}
+outputs:
+  state: {description: "the kit_init_state (KIT_INIT_PR_OPENED, KIT_INIT_WRITTEN, a refusal ...)", value: "${{ steps.init.outputs.state }}"}
+runs:
+  using: composite
+  steps:
+    - name: PyYAML (pinned)
+      shell: bash
+      run: python3 -m pip install --quiet PyYAML==6.0.2
+
+    - name: kit init
+      id: init
+      shell: bash
+      env:
+        # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
+        KIT_REPO: ${{ github.action_repository }}
+        KIT_SHA: ${{ github.action_ref }}
+        I_DEPLOY: ${{ inputs.deploy }}
+        I_TRIAGE: ${{ inputs.with-triage }}
+        I_API: ${{ inputs.with-api }}
+        I_AUTOMERGE: ${{ inputs.automerge }}
+        I_OUTSIDE: ${{ inputs.outside-landing-zone }}
+        I_APPSEC: ${{ inputs.appsec-team }}
+        I_PLATFORM: ${{ inputs.platform-team }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        set -uo pipefail
+        kit_root="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)"
+        args=(--target "$GITHUB_WORKSPACE" --kit-repo "$KIT_REPO" --kit-sha "$KIT_SHA" --deploy "$I_DEPLOY"
+              --json "$RUNNER_TEMP/kit-init.json")
+        [ "$I_TRIAGE" = true ] && args+=(--with-triage)
+        [ "$I_API" = true ] && args+=(--with-api)
+        [ "$I_AUTOMERGE" = true ] && args+=(--automerge)
+        [ "$I_OUTSIDE" = true ] && args+=(--outside-landing-zone)
+        [ -n "$I_APPSEC" ] && args+=(--appsec-team "$I_APPSEC")
+        [ -n "$I_PLATFORM" ] && args+=(--platform-team "$I_PLATFORM")
+        if [ -z "$GH_TOKEN" ]; then
+          args+=(--dry-run)
+          echo "mode=files" >> "$GITHUB_OUTPUT"
+        else
+          # The push authenticates by header, from the environment only: the token is never written to disk.
+          host="${GITHUB_SERVER_URL#*://}"
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://${host}/.extraheader"
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          export GIT_CONFIG_VALUE_0
+          echo "mode=pr" >> "$GITHUB_OUTPUT"
+        fi
+        python3 "$kit_root/scripts/kit_init.py" "${args[@]}"
+        rc=$?
+        state="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("state",""))' "$RUNNER_TEMP/kit-init.json" 2>/dev/null || true)"
+        echo "state=${state:-KIT_INIT_GENERATED_INVALID}" >> "$GITHUB_OUTPUT"
+        python3 "$kit_root/scripts/plain_errors.py" summary --states "${state:-KIT_INIT_GENERATED_INVALID}" --source kit-init || true
+        if [ -f "$GITHUB_WORKSPACE/.kit/ADOPTION_CHECKLIST.md" ]; then
+          cat "$GITHUB_WORKSPACE/.kit/ADOPTION_CHECKLIST.md" >> "$GITHUB_STEP_SUMMARY"
+        fi
+        exit "$rc"
+
+    - name: Upload the files (no KIT_INIT_TOKEN, so no pull request)
+      if: always() && steps.init.outputs.mode == 'files' && steps.init.outputs.state == 'KIT_INIT_WRITTEN'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: kit-init-files
+        include-hidden-files: true
+        path: |
+          .github/workflows/
+          .github/dependabot.yml
+          .github/CODEOWNERS
+          CODEOWNERS
+          .kit/
+        if-no-files-found: error
+
+    - name: How to commit them
+      if: always() && steps.init.outputs.mode == 'files' && steps.init.outputs.state == 'KIT_INIT_WRITTEN'
+      shell: bash
+      run: |
+        {
+          echo "### The files are in the artifact kit-init-files"
+          echo ""
+          echo "No KIT_INIT_TOKEN is set, and the run's own token can never push a workflow file, so no pull request was opened."
+          echo "Download kit-init-files, unzip it at the root of a branch, commit, and open a pull request with"
+          echo "\`.kit/ADOPTION_CHECKLIST.md\` as its body. Or set KIT_INIT_TOKEN and run this workflow again."
+        } >> "$GITHUB_STEP_SUMMARY"

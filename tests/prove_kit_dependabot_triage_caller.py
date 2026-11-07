@@ -99,12 +99,20 @@ def emitted_checks():
 
 def k1(doc):
     on = T.on_of(doc)
-    check(isinstance(on, dict) and set(on) == {'pull_request_target'},
-          'K1 the caller triggers on pull_request_target only (%r)' % (list(on) if isinstance(on, dict) else on))
+    # The TRIAGE job acts only on pull_request_target. The caller also carries push (main), schedule
+    # and dispatch for its keep-current job (owner 2026-11-06; tests/prove_dependabot_keep_current.py),
+    # which the triage job's author guard skips: a push carries no pull request.
+    check(isinstance(on, dict) and 'pull_request_target' in on and
+          set(on) <= {'pull_request_target', 'push', 'schedule', 'workflow_dispatch'},
+          'K1 the caller triggers on pull_request_target (+ push/schedule/dispatch for keep-current only) (%r)'
+          % (list(on) if isinstance(on, dict) else on))
     check(doc.get('permissions') == {}, 'K1 top-level permissions: {}')
     jobs = doc.get('jobs') or {}
-    check(len(jobs) == 1, 'K1 exactly one job (%d)' % len(jobs))
-    job = list(jobs.values())[0] if jobs else {}
+    triage = {k: v for k, v in jobs.items() if str(v.get('uses', '')) == LOCAL}
+    others = set(jobs) - set(triage) - {k for k, v in jobs.items()
+                                        if 'reusable-dependabot-keep-current.yml' in str(v.get('uses', ''))}
+    check(len(triage) == 1 and not others, 'K1 exactly one triage job, plus only keep-current (%r)' % sorted(jobs))
+    job = list(triage.values())[0] if triage else {}
     check(job.get('uses') == LOCAL, 'K1 it calls this repository\'s reusable by `./` (%r)' % job.get('uses'))
     check("github.event.pull_request.user.login == 'dependabot[bot]'" in str(job.get('if', '')),
           'K1 guarded on the PR author being dependabot[bot]')

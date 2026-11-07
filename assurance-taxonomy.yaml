@@ -5271,6 +5271,58 @@ namespaces:
       API_RESULT_UNREADABLE:
         definition: >-
           The run finished and no result that validates against api/v1/result.schema.json and names this correlation id could be read. A finished run is not a finished call.
+  code_finding_key_state:
+    description: >-
+      Whether a SAST or secret finding got its deterministic TICKET key (KDEC-038,
+      scripts/code_finding_key.py): a code finding by rule family + code location, a secret by
+      detector family + path + a non-reversible fingerprint. Carried on every finding of findings.json
+      as ticket_key_state, and in a refusal's detail.
+    consumers: [scripts/code_finding_key.py, scripts/scan_report.py, scripts/reconcile_tickets.py,
+                tests/prove_sast_secret_tickets.py, docs/api/README.md]
+    rule: >-
+      A KEY IS DERIVED OR REFUSED BY NAME, NEVER GUESSED. A rule the alias table does not know is never
+      keyed on its bare id or its namespace prefix; a secret is never keyed on its value or a plain hash
+      of it; a line is never keyed on its number. A refusal is not a clean finding: a secret without a
+      key still blocks at the gate.
+    values:
+      CODE_KEYED:
+        definition: >-
+          A code finding with a durable identity and a code anchor read from the checked-out commit:
+          its ticket anchor is repository + path + symbol + anchor + rule family + canonical CWE.
+        rule: Not a baseline identity of its own; it anchors the ticket cluster beside the identity.
+      SECRET_KEYED:
+        definition: >-
+          A secret finding fingerprinted before redaction (PBKDF2-HMAC-SHA256, repository salt): its ticket
+          key is detector family + path + that fingerprint.
+        rule: Never a baseline identity (the baseline has no authority over secrets); never the value.
+      SECRET_FINGERPRINT_NOT_ESTABLISHED:
+        definition: >-
+          The matched region of a secret finding could not be read before redaction (the file or the
+          commit is not in the checkout), so it has no ticket key.
+        rule: The finding still blocks at every rung; it is not ticketed until its region can be read.
+      RULE_FAMILY_UNKNOWN:
+        definition: >-
+          A bandit, semgrep or CodeQL rule in neither the curated alias table nor, by its CWE, the
+          family table. The refusal names the tool, the rule and its CWE.
+        rule: Never keyed on the bare rule id or its namespace prefix. Remedy - add an alias with its source.
+      SOURCE_NOT_AVAILABLE:
+        definition: >-
+          No checkout to read, or the finding's file is not in it (or too large): the SARIF's own fields
+          stand, and the basis says so.
+        rule: Not a refusal of the finding; the code anchor is absent and the identity is what it was.
+      SOURCE_PATH_REFUSED:
+        definition: >-
+          The finding's path is absolute outside the checkout, climbs out with .., or resolves outside it
+          through a link: it is never read.
+        rule: A path a scanner reports is data; it never reaches a file outside the scanned tree.
+      SOURCE_LINE_OUT_OF_RANGE:
+        definition: >-
+          The reported line is past the end of the file in the checkout: the checkout is not the scanned
+          commit, or the scanner named no line.
+        rule: No anchor is derived from another commit's text.
+      SOURCE_LINE_EMPTY:
+        definition: The reported line is blank or a comment once normalised, so it anchors nothing.
+        rule: No anchor is derived from an empty line.
   kit_api_refusal:
     description: >-
       Why the kit's API refused a call, by name (KDEC-035). The same set as api/v1/refusals.json,
@@ -5757,3 +5809,115 @@ namespaces:
           NO_KIT_ADAPTER:<kind> -- aks, vm, function_app_code, or a vended kind no adapter serves;
           NO_KIT_ADAPTER:UNDETERMINED when the survey could not run.
 
+  dependabot_config:
+    description: >-
+      The Dependabot configuration check (owner, 2026-11-06: no developer bitten by a missing
+      manifest). scripts/dependabot_config.py and reusable-dependabot-config-check.yml: its state,
+      and the rules that leave a directory out of the manifest search.
+    consumers: [reusable-dependabot-config-check, scripts/dependabot_config.py, docs/adoption/DEPENDABOT_IN_YOUR_REPO.md]
+    rule: >-
+      A directory left out is NAMED with its rule; a change the check did not read is never OK.
+    values:
+      NOTHING_TO_CHECK:
+        definition: The pull request touches no manifest and not dependabot.yml, so there was nothing to compare.
+        rule: Never read as OK for the repository as a whole; an unreadable change list checks everything instead.
+      TEST_FIXTURE:
+        definition: A directory named fixtures, testdata or similar; its manifests are HELD (no PRs, every dependency ignored), not updated.
+      BUILD_OUTPUT:
+        definition: A generated directory (dist, build, target, bin, obj, .terraform); its manifests are left out.
+  external_findings_pull:
+    description: >-
+      scripts/external_findings_pull.py (owner, 2026-11-06): SonarQube and Aikido findings pulled,
+      read-only, into the kit's external-findings intake. A pull that did not complete is named; it is
+      never read as "no findings".
+    consumers: [scripts/external_findings_pull.py, reusable-external-findings, docs/adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md]
+    rule: Only SOURCE_PULLED carries items; every other state carries none and fails the run.
+    values:
+      SOURCE_PULLED:
+        definition: Every page of the source was read with an accepted credential; items, duplicates, closed and unmapped are listed.
+        rule: Zero items under SOURCE_PULLED is a result; zero items under any other state is not.
+      SOURCE_NOT_CONFIGURED:
+        definition: A required secret or setting was absent; nothing was requested.
+      SOURCE_AUTH_REFUSED:
+        definition: The source answered 401 or 403, or issued no access token.
+        rule: Never "no findings".
+      SOURCE_UNREACHABLE:
+        definition: The source could not be reached, or answered an error other than 401/403.
+      SOURCE_RESPONSE_INVALID:
+        definition: The answer was not the documented shape (no paging total, no list of issues).
+      SOURCE_TRUNCATED:
+        definition: The source stopped returning pages before its stated total, or the total exceeds the search depth.
+        rule: Never a partial pull presented as complete.
+      SOURCE_HOST_REFUSED:
+        definition: The host was not https (plain http is allowed only to 127.0.0.1), so no credential was sent.
+      NOT_MAPPED:
+        definition: A source finding that cannot become a finding item (no mapped repository, no file, an unknown severity), listed with the reason.
+      DUPLICATE_OF_KIT_FINDING:
+        definition: A source finding the kit's own scan already holds (same path and CVE, or same path, line and CWE); listed, not submitted.
+  finding_id_form:
+    description: >-
+      scripts/finding_ids.py (owner, 2026-11-06): THE normaliser for weakness and vulnerability ids across
+      every source. A form it does not know is refused by name, never guessed.
+    consumers: [scripts/scan_report.py, scripts/code_finding_key.py, scripts/external_findings_pull.py]
+    rule: An unknown form yields no id; the reader records the refusal and never takes the first digits it finds.
+    values:
+      CWE_FORM_UNKNOWN:
+        definition: The value is not a CWE spelling in the format table (and is not a number in a field declared to hold a CWE).
+      VULN_ID_FORM_UNKNOWN:
+        definition: The value is not a CVE, GHSA, OSV or namespaced vendor id in the format table.
+  unknown_id_review:
+    description: >-
+      scripts/unknown_ids.py (owner ruling, 2026-11-06): an id the kit could not read is logged with its count
+      and routed to a person; it is mapped only by a reviewed change.
+    consumers: [scripts/scan_report.py, scripts/reconcile_tickets.py, scripts/external_findings_pull.py,
+                scripts/code_finding_key.py, scripts/finding_ids.py]
+    rule: Never dropped, never guessed into a family; one review item per (kind, tool, rule, raw id).
+    values:
+      NEEDS_MAPPING:
+        definition: An unknown id waiting for a person to map it in id-mappings.json.
+        rule: Not a finding-free state; the finding that carried it is still a finding.
+      MAPPING_NOT_REVIEWED:
+        definition: A mapping without its author, date or review reference; it is refused and maps nothing.
+  kit_init_state:
+    description: >-
+      scripts/kit_init.py and the kit-init composite (owner, 2026-11-06: adoption without "a million
+      hoops"): what one run of kit init did to a repository. It writes the caller workflows, Dependabot
+      configuration, a CODEOWNERS block and the .kit/ stubs, and opens one pull request; it never writes a
+      secret and never changes a repository setting. Each refusal is named and writes nothing.
+    consumers: [scripts/kit_init.py, .github/actions/kit-init, scripts/plain_errors.py, docs/adoption/GETTING_STARTED_1_HOUR.md]
+    rule: >-
+      Only WRITTEN, PR_OPENED and UNCHANGED are done; every other state but HUMAN_EDIT_PRESERVED (a notice) exits 1
+      and leaves the repository as it was, except PR_NOT_OPENED, which leaves the written files in place.
+    values:
+      KIT_INIT_WRITTEN:
+        definition: The files were written (--dry-run, or the wrapper with no token); no branch, commit or pull request.
+      KIT_INIT_PR_OPENED:
+        definition: One branch kit-init/<sha12> was pushed and one pull request opened or updated, its body the checklist.
+      KIT_INIT_UNCHANGED:
+        definition: Every managed file already held what kit init would write; nothing changed.
+      KIT_INIT_STACK_UNKNOWN:
+        definition: No stack kit init recognises (python, node, dotnet, java, php, go, static, container, terraform, bicep) was found.
+        rule: Never a guessed pipeline. Unrecognised languages are named; nothing is written.
+      KIT_INIT_MULTIPLE_IMAGES:
+        definition: More than one Dockerfile outside fixtures and build output, and no --dockerfile chose one.
+      KIT_INIT_PIN_MISSING:
+        definition: No kit repository was named, or the commit to pin is not a 40-hex SHA.
+      KIT_INIT_PIN_NOT_CHECKOUT:
+        definition: The SHA to pin is not the HEAD of the kit checkout the files are generated from.
+      KIT_INIT_HOST_UNSUPPORTED:
+        definition: The repository's host is neither github.com nor a <tenant>.ghe.com host (KDEC-027).
+      KIT_INIT_API_NEEDS_CONTAINER:
+        definition: The kit API caller was asked for a repository whose deploy shape is not container (it calls build-deploy.yml).
+      KIT_INIT_SECRET_REFUSED:
+        definition: A generated file would have carried a secret-shaped value or a secret-named environment variable's value.
+        rule: Nothing is written. kit init takes no secret; this is the second lock.
+      KIT_INIT_GENERATED_INVALID:
+        definition: kit init's own verification of the generated workflows failed (permissions, pins, placeholders, one security caller).
+        rule: A kit defect, never the repository's. Nothing is written.
+      KIT_INIT_DIRTY_TREE:
+        definition: PR mode on a repository with uncommitted changes; nothing is written.
+      KIT_INIT_PR_NOT_OPENED:
+        definition: git or gh refused the branch, the push or the pull request; the files are written and the reason printed.
+      KIT_INIT_HUMAN_EDIT_PRESERVED:
+        definition: A managed file, or the CODEOWNERS block, differed from what kit init last wrote; it was kept and listed.
+        rule: A notice, not a refusal. A person's edit always wins over a re-run.

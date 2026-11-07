@@ -103,6 +103,8 @@ kit's own callers and templates to this):
 | ticket reconciliation (`reusable-ticket-reconcile.yml`) | `contents: read` |
 | the policy gate (`workflow-policy-check.yml`) | `contents: read` |
 | the OIDC / boundary probe (`verify-azure-oidc.yml`) | `contents: read`, `id-token: write` |
+| the kit API (`reusable-kit-api.yml`; `templates/kit-api.yml`) | `contents: read`, `actions: read`, `checks: write`, `pull-requests: read` (KDEC-037), `deployments: read` (`evidence.export`, KDEC-039) |
+| the Dependabot triage (`reusable-dependabot-triage.yml`; `templates/dependabot-triage.yml`, on `pull_request_target`) | `contents: write`, `pull-requests: write`, `issues: write` (each job holds only its part: classify reads, auto-merge writes contents, human-review labels, close writes the PR) |
 
 The ledger proposal is a **separate** reusable workflow so the security scan never needs a write scope.
 
@@ -198,7 +200,9 @@ closes, excepts or deploys around a gate. `docs/api/README.md` (the contract), `
 not produce (USR reviews, cloud tools, pentests, audits) through versioned templates (`tickets.submit`),
 and writes their tickets only after a person's recorded concurrence with the finalized review (the
 review record's pull request, approved by her), having searched every ticket -- manual ones included --
-first; a possible match is a candidate for a person, never merged.
+first; a possible match is a candidate for a person, never merged. **Since KDEC-039** `evidence.export` returns the
+kit's half of an app's evidence bundle for one repository at a commit or release (each section, or NOT ESTABLISHED
+with why), and the caller's `kit-api.yml` must grant `deployments: read` before its kit pin moves past it.
 
 ## 6. What a builder may and must NOT assume (trunk `19b5e1d`)
 

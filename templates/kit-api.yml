@@ -67,6 +67,7 @@ jobs:
       actions: read
       checks: write
       pull-requests: read   # tickets.submit reads back who approved a review record's pull request
+      deployments: read     # evidence.export reads the durable release records (KDEC-039)
     with:
       correlation_id: ${{ inputs.correlation_id || github.event.client_payload.correlation_id }}
       idempotency_key: ${{ inputs.idempotency_key || github.event.client_payload.idempotency_key }}
@@ -135,6 +136,7 @@ jobs:
       actions: read
       checks: write
       pull-requests: read   # the reusable's tickets job requests it (it does not run in this phase)
+      deployments: read     # the reusable's intake job requests it (it does not run in this phase)
     with:
       phase: finish
       correlation_id: ${{ inputs.correlation_id || github.event.client_payload.correlation_id }}

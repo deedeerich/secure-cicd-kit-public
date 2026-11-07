@@ -105,7 +105,9 @@ Further guards:
   a PR whose commits are not all Dependabot's, and that refusal is a `human_review`, not a merge.
 - `permissions: {}` at the top. `classify` holds `contents: read, pull-requests: read`; only
   `auto-merge` holds `contents: write` (enabling auto-merge requires it); `human-review` holds
-  `pull-requests: write, issues: write` (labels); `close` holds `pull-requests: write`. No job runs
+  `contents: read, pull-requests: write, issues: write` (labels; gh's GraphQL lookup of the PR reads
+  its commits, so `contents: read` is needed -- PR #5, 2026-11-06); `close` holds
+  `contents: read, pull-requests: write` (`tests/prove_triage_job_permissions.py`). No job runs
   third-party code with a write token: fetch-metadata (pinned by full SHA, `# v3.1.0`) runs in the
   read-only job.
 - A caller that uses `pull_request` is refused loudly (`wrong_trigger`, the job fails; proof D5).
@@ -172,13 +174,44 @@ update is closed.
    ```
 3. **Branches that must be up to date.** The kit's ruleset is strict ("require branches to be up to
    date"). `rebase-strategy: auto` makes Dependabot rebase a PR that CONFLICTS with `main`; a PR
-   that is merely behind waits, armed, until it is updated: comment `@dependabot rebase` on it (or
-   relax "up to date" for the ruleset).
+   that is merely behind used to wait for a person to comment `@dependabot rebase`. Since 2026-11-06
+   the keep-current job does it (section 3b); nothing to do here.
 4. **Labels** (`needs-human-review`, `urgent-security-review`) are created by the workflow when absent.
    No secret is needed; `DEPENDABOT_METADATA_TOKEN` stays optional (section 3, step 5).
 
 On the public mirror, the same file runs once the mirror's default branch carries it, with the same
 two settings (section 6, step 0b).
+
+### 3b · Keeping Dependabot PRs current with no babysitting (owner, 2026-11-06)
+
+The same caller file carries a second job, `keep-current`
+(`.github/workflows/reusable-dependabot-keep-current.yml`). It runs on every push to `main`, on a
+weekday schedule every three hours, and on demand; never on a pull request event. For each open
+pull request against `main`:
+
+| the PR | what happens |
+|---|---|
+| not opened by `dependabot[bot]`, or its branch is not `dependabot/*` | nothing, ever (it is not even read further) |
+| touches an excluded path (`tests/consumer-fixture/**` by default) | closed with the reason, never asked to rebase |
+| behind `main`, no conflict (`mergeable_state: behind`) | one `@dependabot rebase` comment per `main` commit |
+| conflicts (`dirty`) | one `@dependabot recreate` comment, once per PR; if it still conflicts, a person resolves it |
+| already asked at this `main` commit, clean, draft, or state not yet computed | nothing; the run summary says why |
+
+A comment list or PR list it cannot read posts nothing (an unread fact is never read as "not asked
+yet"). Permissions: `contents: read` and `pull-requests: write` on that one job. Proof:
+`tests/prove_dependabot_keep_current.py` runs the shipped steps against a `gh` stand-in.
+
+**Why the schedule:** a merge made with the run's own token (an auto-merge the triage job armed)
+may not start a push-triggered run (GitHub: events made with `GITHUB_TOKEN` do not start new
+workflow runs), so the schedule is the backstop.
+
+**UNVERIFIED (2026-11-06):** whether Dependabot obeys a command posted by `github-actions[bot]` with
+the run's own token. GitHub documents that Dependabot takes commands from people with write access
+and does not say whether that includes the Actions bot. Watch the first behind PR after enabling. If
+Dependabot ignores the comment, create a fine-grained token for a maintainer (this repository only,
+Pull requests: read and write), store it as the repository secret `DEPENDABOT_COMMAND_TOKEN`, and
+uncomment the `secrets:` lines under `keep-current` in the caller. It is used only to post the
+comment and to close a fixture PR.
 
 ### Inputs (all policy is caller data; every input can only send MORE to a human)
 

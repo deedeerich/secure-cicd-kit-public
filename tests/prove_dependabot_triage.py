@@ -136,8 +136,10 @@ CLASSIFY_PERMS = {'contents': 'read', 'pull-requests': 'read'}
 JOB_PERMS = {
     'classify': CLASSIFY_PERMS,
     'auto-merge': {'contents': 'write', 'pull-requests': 'write'},
-    'human-review': {'pull-requests': 'write', 'issues': 'write'},
-    'close': {'pull-requests': 'write'},
+    # contents: read -- gh's GraphQL PR lookup reads the commits (PR #5 on main, 2026-11-06;
+    # tests/prove_triage_job_permissions.py maps each call to its scopes).
+    'human-review': {'contents': 'read', 'pull-requests': 'write', 'issues': 'write'},
+    'close': {'contents': 'read', 'pull-requests': 'write'},
 }
 DEFAULTS = {
     'critical_packages': '',
@@ -224,8 +226,14 @@ def structure(doc, raw):
 def template_structure(tpl, doc):
     p = []
     on = on_of(tpl)
-    if not isinstance(on, dict) or set(on) != {'pull_request_target'}:
-        p.append('the template must trigger on pull_request_target only, got %r' % (on,))
+    # pull_request_target for the triage job; push/schedule/dispatch only for the keep-current job
+    # (owner 2026-11-06, tests/prove_dependabot_keep_current.py), which the author guard keeps triage off.
+    if not isinstance(on, dict) or 'pull_request_target' not in on or \
+            not set(on) <= {'pull_request_target', 'push', 'schedule', 'workflow_dispatch'}:
+        p.append('the template must trigger triage on pull_request_target (keep-current alone may add '
+                 'push/schedule/dispatch), got %r' % (on,))
+    if 'pull_request' in (on if isinstance(on, dict) else {}):
+        p.append('the template must never trigger on pull_request')
     jobs = tpl.get('jobs') or {}
     union = {}
     for perms in JOB_PERMS.values():

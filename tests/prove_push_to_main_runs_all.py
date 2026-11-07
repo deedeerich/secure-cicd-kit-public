@@ -52,7 +52,8 @@ EXEMPT = {
                              'a push supplies no environment or scopes to assert',
     'nvd-cve.yml': 'the NVD pass needs a dispatch-chosen environment holding NVD_API_KEY; without it the '
                    'database update is rate-limited for 20-40 minutes',
-    'dependabot-triage.yml': 'acts on a Dependabot pull request (pull_request_target); a push has no PR',
+    'external-findings.yml': 'pulls SonarQube / Aikido with secrets this repository does not hold; a push '
+                             'run would only end SOURCE_NOT_CONFIGURED (owner 2026-11-06: dispatch only here)',
 }
 # Workflows whose push trigger is deliberately path-scoped, and why.
 PATH_SCOPED = {
@@ -70,6 +71,9 @@ PUSH_SKIPS = {
         'runs exception-due-lists-on-push instead',
     ('self-test.yml', 'ledger-proposal-refuses-pr'):
         'a hosted NEGATIVE control for a pull request: the ledger proposal must never run from a PR',
+    ('dependabot-triage.yml', 'triage'):
+        'classifies ONE Dependabot pull request (pull_request_target); a push carries none -- the '
+        'keep-current job beside it runs on the push and asks behind Dependabot PRs to rebase',
 }
 
 FAILS = []

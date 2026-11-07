@@ -741,6 +741,22 @@ jobs:
           echo "::notice title=Dependabot triage::$action ($rule)"
           exit "$rc"
 
+      - name: Say the triage decision in plain words, first (docs/errors/ERRORS.md, dependabot_triage_rule)
+        # This job runs only fetch-metadata and upload-artifact (pull_request_target: tests/prove_dependabot_triage.py
+        # D1), so the plain sentence is written here, from the decision, rather than by the plain-errors composite.
+        if: always() && steps.decide.outputs.action != '' && steps.decide.outputs.action != 'auto_merge'
+        env:
+          T_ACTION: ${{ steps.decide.outputs.action }}
+          T_RULE: ${{ steps.decide.outputs.rule }}
+        run: |
+          case "$T_ACTION" in
+            human_review) what="This Dependabot update needs a person to review and merge it." ;;
+            close) what="This Dependabot update was closed because it touches a path excluded from updates." ;;
+            *) what="This Dependabot update was not acted on." ;;
+          esac
+          rule="$(printf '%s' "$T_RULE" | tr -cd 'a-z_')"
+          echo "::warning title=${what}::Why and the fix are in the triage comment on the pull request, and under dependabot_triage_rule in docs/errors/ERRORS.md. [${rule}]"
+
       - name: Keep the decision record
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -798,7 +814,11 @@ jobs:
     if: needs.classify.outputs.action == 'human_review'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # contents: read -- gh pr edit / view / merge --disable-auto look the PR up through GraphQL, and
+    # that lookup reads its commits (PR #5, 2026-11-06: "Resource not accessible by integration
+    # (repository.pullRequest.commits.nodes.0)"). tests/prove_triage_job_permissions.py.
     permissions:
+      contents: read
       pull-requests: write
       issues: write
     steps:
@@ -875,6 +895,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      contents: read          # gh pr close reads the PR's commits through GraphQL (as human-review)
       pull-requests: write
     steps:
       - name: Close with an explanation

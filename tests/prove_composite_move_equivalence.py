@@ -155,8 +155,13 @@ MOVES = {
     # `zricethezav/gitleaks:v8.21.2@sha256:0e99e882...7f46`, redirected to <registry>/zricethezav/gitleaks@<the
     # same digest> when the registry is set. Nothing else in the step or the job changed.
     # The previous pin was 72d388c0...2d9d.
-    'secret-scan': ('secret-scan', '11d1d56',
-                    '4e223f4368a49ea13fe43f92358779bfe75bbd1111b7b4acbf4040fc91f67ee8'),
+    # RE-PINNED 2026-11-06, lane kit-sast-export (KDEC-038), `--repin secret-scan`. Reason: each secret's
+    # TICKET KEY -- a non-reversible fingerprint of the matched region (scripts/code_finding_key.py
+    # annotate-secrets) -- is computed at the start of "Strip residual secret material before persisting",
+    # BEFORE the snippets and partial fingerprints are stripped. The step-level diff against fd7cf43 is
+    # `run` on that one step only. The previous pin was 4e223f43...7ee8.
+    'secret-scan': ('secret-scan', 'fd7cf43',
+                    '656c2581dfc66c51dcaea540a3b952cf990af526c8f1e4c0836b04c2afd69638'),
     # RE-PINNED 2026-10-23, integration lane L-INT1, `--repin sast-cpp`, after the merge pin
     # 7981aba5...99f1. Reason: KDEC-027 -- L-SCAN-B's new `C/C++ build metadata` step wrote
     # scan_state/scan_reason as `$(cat ...)` straight into $GITHUB_OUTPUT; each is now read into a

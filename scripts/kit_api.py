@@ -95,6 +95,8 @@ OPERATIONS = {
     'tickets.search': {'write': False, 'job': 'tickets'},
     'findings.get': {'write': False, 'job': 'findings'},
     'findings.search': {'write': False, 'job': 'findings'},
+    # KDEC-039: the kit's half of the per-app evidence bundle, one repository at a commit or a release.
+    'evidence.export': {'write': False, 'job': 'findings'},
     'deploy.request': {'write': True, 'job': 'deploy'},
     'scan.request': {'write': False, 'job': 'scan'},
     'status.get': {'write': False, 'job': 'client'},
@@ -587,19 +589,25 @@ def submit(client, repo, operation, params, idempotency_key=None, ref=None, on_b
 
 
 def _find_run(client, repo, correlation_id, workflow):
+    """The run named for this correlation id -- EXACTLY one (item 11, 2026-11-06). Two runs carrying the
+    same id (a replayed dispatch, a hand-made run-name) cannot be told apart: NOT_ESTABLISHED, named,
+    never the first one found. tests/prove_dispatch_correlation.py K1-K3."""
     title = run_title(correlation_id)
+    found = []
     for page in (1, 2, 3):
         status, doc, _h, err = client.get('/repos/%s/actions/workflows/%s/runs?per_page=100&page=%d'
                                           % (repo, workflow, page))
         if err or not isinstance(doc, dict):
             return None, 'the runs of %s could not be read (%s)' % (workflow, err or status)
         runs = doc.get('workflow_runs') or []
-        for r in runs:
-            if (r.get('display_title') or r.get('name') or '') == title:
-                return r, ''
+        found += [r for r in runs if (r.get('display_title') or r.get('name') or '') == title]
         if len(runs) < 100:
             break
-    return None, ''
+    ids = {r.get('id') for r in found}
+    if len(ids) > 1:
+        return None, ('NOT_ESTABLISHED: %d runs of %s are named %s; the answer cannot be paired with one'
+                      % (len(ids), workflow, title))
+    return (found[0], '') if found else (None, '')
 
 
 def _read_result(client, repo, run, correlation_id, schemas):

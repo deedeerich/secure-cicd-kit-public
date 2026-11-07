@@ -7171,6 +7171,31 @@ jobs:
           app-url: ${{ steps.serving.outputs.app_url }}
           readiness-source: ${{ steps.zone.outputs.readiness_source }}
 
+      - name: Say the outcome in plain words (docs/errors/ERRORS.md)
+        # The plain sentence first: an annotation per refusal at the top of the run page, and "What
+        # happened, in plain words" in this summary, with the state in brackets.
+        if: always()
+        uses: $/.github/actions/plain-errors
+        with:
+          source: deploy
+          states: >-
+            deployment_outcome:${{ steps.report.outputs.deployment_outcome }}
+            environment_protection:${{ steps.protection.outputs.environment_protection }}
+            release_block:${{ steps.zone.outputs.release_block }}
+            zone_readiness_gate:${{ steps.zone.outputs.zone_readiness_gate }}
+            readiness_source:${{ steps.zone.outputs.readiness_source }}
+            version_gap_ruling:${{ steps.verdict.outputs.version_gap_ruling }}
+            attestation_verification:${{ steps.attestation.outputs.outcome }}
+            rollback_dependency_check:${{ steps.rollback_check.outputs.rollback_check }}
+            promotion_gate:${{ steps.promotion_preflight.outputs.promotion_gate }}
+            promotion_gate:${{ steps.promotion_gate.outputs.promotion_gate }}
+            release_approval:${{ steps.approval.outputs.release_approval }}
+            verdict_provenance:${{ steps.review_pre.outputs.verdict_provenance }}
+            target_lease:${{ steps.lease_acquire.outputs.target_lease }}
+            ${{ steps.seam.outputs.seam_ownership }}
+            release_record:${{ steps.review_post.outputs.release_record }}
+            tier_reality:${{ steps.review_post.outputs.tier_reality }}
+
       - name: Keep the run record (deploy evidence)
         # The snapshot, change manifest, capability, verification, reversal and outcome files are
         # the record a later recovery reads (ROLLBACK_CONTRACT.md: "the run record is the thing a

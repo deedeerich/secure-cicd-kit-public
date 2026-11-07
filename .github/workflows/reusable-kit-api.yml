@@ -166,6 +166,7 @@ jobs:
       contents: read
       actions: read      # the idempotency markers and the runs they name
       checks: write      # the call's check run, where the caller reads the answer
+      deployments: read  # KDEC-039 evidence.export: the durable release records (task kit-release-record)
     outputs:
       accepted: ${{ steps.intake.outputs.accepted }}
       operation: ${{ steps.intake.outputs.operation }}
@@ -228,7 +229,7 @@ jobs:
 
       - name: Read and search the findings
         id: findings
-        if: steps.intake.outputs.accepted == 'true' && startsWith(steps.intake.outputs.operation, 'findings.')
+        if: steps.intake.outputs.accepted == 'true' && (startsWith(steps.intake.outputs.operation, 'findings.') || steps.intake.outputs.operation == 'evidence.export')
         uses: $/.github/actions/kit-api
         with:
           phase: findings
@@ -245,7 +246,7 @@ jobs:
 
       - name: Answer a findings read
         id: findings_answer
-        if: always() && steps.intake.outputs.accepted == 'true' && startsWith(steps.intake.outputs.operation, 'findings.')
+        if: always() && steps.intake.outputs.accepted == 'true' && (startsWith(steps.intake.outputs.operation, 'findings.') || steps.intake.outputs.operation == 'evidence.export')
         uses: $/.github/actions/kit-api
         with:
           phase: finish
@@ -254,6 +255,23 @@ jobs:
           KIT_API_INTAKE: ${{ steps.intake.outputs.intake }}
           KIT_API_OP_RESULT: ${{ runner.temp }}/kit-api/op-result.json
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Say the answer in plain words (docs/errors/ERRORS.md)
+        if: always()
+        uses: $/.github/actions/plain-errors
+        with:
+          source: api
+          states: kit_api_state:${{ steps.findings_answer.outputs.api_state }}
+
+      # KDEC-039: the export unpacked as the files the evidence harness reads (--kit-evidence).
+      - name: Keep the evidence export
+        if: always() && steps.intake.outputs.accepted == 'true' && steps.intake.outputs.operation == 'evidence.export'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kit-evidence-export-${{ steps.intake.outputs.correlation_id || github.run_id }}
+          path: ${{ runner.temp }}/kit-api/evidence-export
+          if-no-files-found: warn
+          retention-days: 90
 
       - name: Answer a refused call
         id: refused
@@ -266,8 +284,15 @@ jobs:
           KIT_API_INTAKE: ${{ steps.intake.outputs.intake }}
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Say the refusal in plain words (docs/errors/ERRORS.md)
+        if: steps.intake.outputs.accepted != 'true'
+        uses: $/.github/actions/plain-errors
+        with:
+          source: api
+          states: kit_api_refusal:${{ steps.intake.outputs.refusal }} kit_api_state:${{ steps.refused.outputs.api_state }}
+
       - name: Keep the result
-        if: always() && (steps.intake.outputs.accepted != 'true' || startsWith(steps.intake.outputs.operation, 'findings.'))
+        if: always() && (steps.intake.outputs.accepted != 'true' || (startsWith(steps.intake.outputs.operation, 'findings.') || steps.intake.outputs.operation == 'evidence.export'))
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kit-api-result-${{ steps.intake.outputs.correlation_id || github.run_id }}
@@ -395,6 +420,13 @@ jobs:
           KIT_API_OP_RESULT: ${{ runner.temp }}/kit-api/op-result.json
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Say the answer in plain words (docs/errors/ERRORS.md)
+        if: always()
+        uses: $/.github/actions/plain-errors
+        with:
+          source: api
+          states: kit_api_state:${{ steps.finish.outputs.api_state }}
+
       - name: Keep the result and the ticket ledger proposal
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -451,6 +483,13 @@ jobs:
           KIT_API_ADVISORY_CAUSES: ${{ inputs.advisory_causes }}
           KIT_API_EVIDENCE_ARTIFACT: ${{ inputs.evidence_artifact }}
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Say the answer in plain words (docs/errors/ERRORS.md)
+        if: always()
+        uses: $/.github/actions/plain-errors
+        with:
+          source: api
+          states: kit_api_state:${{ steps.finish.outputs.api_state }}
 
       - name: Keep the result
         if: always()

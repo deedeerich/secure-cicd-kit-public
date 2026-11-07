@@ -20,6 +20,12 @@ any of those changes on a tool upgrade and would orphan every approval keyed on 
 - **Secrets are outside the baseline**: they block at every rung and are never grandfathered. The only
   way past one found secret is a ticketed, finding-scoped exception in the policy register (part 05),
   which is a dated decision, not a baseline entry.
+- **SAST and secret tickets (KDEC-038, proven locally).** Bandit, semgrep and CodeQL rules resolve through a
+  curated rule-family table (`scripts/code_finding_key.py`; a rule it does not know is `RULE_FAMILY_UNKNOWN`,
+  never guessed), and the report reads the reported line from the checked-out commit -- symbol, an anchor of the
+  normalised line and its ordinal (never the line number), the construct -- so two tools on one line are one
+  identity and one ticket. A secret keeps no baseline identity but is ticketed on detector family + path + a
+  non-reversible fingerprint taken before redaction: urgent, "rotate", never closed by its absence.
 
 ## 2. The baseline ledger (BUILT; read and write paths wired; proven locally, no hosted run)
 

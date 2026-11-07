@@ -100,10 +100,20 @@ on:
         required: false
         default: "westeurope"
       token_audience:
-        description: "Audience requested when minting the inspection token."
+        description: "Audience requested when minting the inspection token. Blank uses the audience the login uses for the cloud (public: api://AzureADTokenExchange; gov: api://AzureADTokenExchangeUSGov or vars.KIT_AZURE_OIDC_AUDIENCE)."
         type: string
         required: false
-        default: "api://AzureADTokenExchange"
+        default: ""
+      cloud:
+        description: "Azure cloud the identity lives in: public (AzureCloud) or gov (AzureUSGovernment). gov signs in with environment AzureUSGovernment and audience api://AzureADTokenExchangeUSGov unless vars.KIT_AZURE_OIDC_AUDIENCE overrides it (a Government credential made with the global audience)."
+        type: string
+        required: false
+        default: "public"
+      require_directory_checks:
+        description: "true: a directory-side check that cannot be ESTABLISHED (the identity cannot read its own app registration, role assignments or federated credentials) fails the run. false (default): it is reported NOT_ESTABLISHED with the reason, and only a FAIL fails the run."
+        type: boolean
+        required: false
+        default: false
       expect_tenant_id:
         description: "Expected tenant ID of the session observed AFTER login. Blank compares the session against the AZURE_TENANT_ID secret the login used (recorded FROM_SECRETS). A value is compared verbatim IN ADDITION (recorded DECLARED), so a declaration can only make the check stricter. A deliberately wrong value is how the refusal path is proven without touching a secret, a variable or Azure. It appears in the run's inputs, so declare a real value only where that is acceptable."
         type: string
@@ -168,10 +178,20 @@ on:
         required: false
         default: "westeurope"
       token_audience:
-        description: "Audience requested when minting the inspection token."
+        description: "Audience requested when minting the inspection token. Blank uses the audience the login uses for the cloud (public: api://AzureADTokenExchange; gov: api://AzureADTokenExchangeUSGov or vars.KIT_AZURE_OIDC_AUDIENCE)."
         type: string
         required: false
-        default: "api://AzureADTokenExchange"
+        default: ""
+      cloud:
+        description: "Azure cloud the identity lives in: public (AzureCloud) or gov (AzureUSGovernment). gov signs in with environment AzureUSGovernment and audience api://AzureADTokenExchangeUSGov unless vars.KIT_AZURE_OIDC_AUDIENCE overrides it (a Government credential made with the global audience)."
+        type: string
+        required: false
+        default: "public"
+      require_directory_checks:
+        description: "true: a directory-side check that cannot be ESTABLISHED (the identity cannot read its own app registration, role assignments or federated credentials) fails the run. false (default): it is reported NOT_ESTABLISHED with the reason, and only a FAIL fails the run."
+        type: boolean
+        required: false
+        default: false
       expect_tenant_id:
         description: "Expected tenant ID of the session observed AFTER login. Blank compares the session against the AZURE_TENANT_ID secret the login used (recorded FROM_SECRETS). A value is compared verbatim IN ADDITION (recorded DECLARED), so a declaration can only make the check stricter. A deliberately wrong value is how the refusal path is proven without touching a secret, a variable or Azure. It appears in the run's inputs, so declare a real value only where that is acceptable."
         type: string
@@ -228,6 +248,12 @@ on:
       assertions:
         description: "JSON evidence: one object per assertion with expected, observed, reason and verdict. Correlating refused scopes across callers is what closes the existence gap a single run cannot."
         value: ${{ jobs.verify.outputs.assertions }}
+      directory_verdict:
+        description: "The directory-side identity checks: PASS (all five established and held), FAIL (one did not hold), or NOT_ESTABLISHED (one could not be read)."
+        value: ${{ jobs.verify.outputs.directory_verdict }}
+      directory_checks:
+        description: "JSON: one object per directory-side check (no_client_secret, one_subscription, issuer, subject, audience) with verdict and reason."
+        value: ${{ jobs.verify.outputs.directory_checks }}
 
 permissions:
   contents: read
@@ -258,6 +284,8 @@ jobs:
       discrimination: ${{ steps.probe.outputs.discrimination }}
       mutation_state: ${{ steps.after.outputs.mutation_state }}
       assertions: ${{ steps.adjudicate.outputs.assertions }}
+      directory_verdict: ${{ steps.directory.outputs.directory_verdict }}
+      directory_checks: ${{ steps.directory.outputs.directory_checks }}
     steps:
 
       # ------------------------------------------------------------- 0. declarations
@@ -367,7 +395,7 @@ jobs:
       - name: Assert the token's OWN claims — subject, repository, environment
         id: claims
         env:
-          AUDIENCE: ${{ inputs.token_audience }}
+          AUDIENCE: ${{ inputs.token_audience || (inputs.cloud == 'gov' && (vars.KIT_AZURE_OIDC_AUDIENCE || 'api://AzureADTokenExchangeUSGov') || 'api://AzureADTokenExchange') }}
           EXPECT_REPO: ${{ steps.preflight.outputs.expect_repository }}
           EXPECT_ENVIRONMENT: ${{ inputs.environment }}
           EXPECT_JWR: ${{ inputs.expect_job_workflow_ref_prefix }}
@@ -501,6 +529,8 @@ jobs:
             echo "job_workflow_ref=$C_JWR"
             echo "resolution=$RESOLUTION"
             echo "jwr_state=$JWR_STATE"
+            echo "claim_issuer=$C_ISS"
+            echo "claim_audience=$C_AUD"
           } >> "$GITHUB_OUTPUT"
 
           if [ "$fail" = "1" ]; then
@@ -538,6 +568,172 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          # Azure Government (KDEC Release 4 Gov audience): the Government cloud and its audience,
+          # overridable for a Government credential made with the global one. Public is unchanged.
+          environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
+          audience: ${{ inputs.cloud == 'gov' && (vars.KIT_AZURE_OIDC_AUDIENCE || 'api://AzureADTokenExchangeUSGov') || 'api://AzureADTokenExchange' }}
+
+      - name: Verify the identity from the directory side -- no secret, one subscription, the credential
+        id: directory
+        env:
+          CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          EXPECTED_SUB_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          CLOUD: ${{ inputs.cloud }}
+          EXPECTED_AUDIENCE: ${{ inputs.cloud == 'gov' && (vars.KIT_AZURE_OIDC_AUDIENCE || 'api://AzureADTokenExchangeUSGov') || 'api://AzureADTokenExchange' }}
+          TOKEN_SUBJECT: ${{ steps.claims.outputs.subject }}
+          TOKEN_ISSUER: ${{ steps.claims.outputs.claim_issuer }}
+          EXPECT_REPO: ${{ steps.preflight.outputs.expect_repository }}
+          EXPECT_ENVIRONMENT: ${{ inputs.environment }}
+          REQUIRE_ALL: ${{ inputs.require_directory_checks }}
+        run: |
+          set -uo pipefail
+          # READ-ONLY. Five checks the owner uses to confirm the OIDC identity she created, each
+          # PASS, FAIL or NOT_ESTABLISHED with the reason in plain words (owner, 2026-11-06):
+          #   no_client_secret       the app registration and its service principal hold NO password
+          #   one_subscription       every role assignment sits inside exactly ONE subscription
+          #   issuer                 the federated credential trusts THIS run's own host issuer
+          #                          (https://token.actions.<subdomain>.ghe.com on GHE.com)
+          #   subject                the credential's subject is repo:<org>/<repo>:environment:<env>
+          #   audience               the credential's audience is the one for this cloud
+          # A read the identity is not allowed to make is NOT_ESTABLISHED, never a pass.
+          # tests/prove_oidc_directory_checks.py runs this step as shipped against a stub az.
+          d="$RUNNER_TEMP/oidc-directory"; mkdir -p "$d"
+          rd() { local name="$1"; shift; local rc=0; "$@" > "$d/$name.json" 2> "$d/$name.err" || rc=$?; echo "$rc" > "$d/$name.rc"; }
+          rd app az ad app show --id "$CLIENT_ID" -o json
+          rd sp az ad sp show --id "$CLIENT_ID" -o json
+          rd fic az ad app federated-credential list --id "$CLIENT_ID" -o json
+          rd accounts az account list --all -o json
+          rd roles az role assignment list --assignee "$CLIENT_ID" --all -o json
+          python3 - "$d" <<'DIR_PY'
+          import json, os, re, sys
+          d = sys.argv[1]
+          E = os.environ.get
+
+          def load(name):
+              try:
+                  rc = open(os.path.join(d, name + '.rc'), encoding='utf-8').read().strip()
+              except OSError:
+                  rc = 'missing'
+              if rc != '0':
+                  err = ''
+                  try:
+                      err = open(os.path.join(d, name + '.err'), encoding='utf-8', errors='replace').read()
+                  except OSError:
+                      pass
+                  return None, re.sub(r'\s+', ' ', err)[:200] or 'no output'
+              try:
+                  return json.load(open(os.path.join(d, name + '.json'), encoding='utf-8')), ''
+              except ValueError:
+                  return None, 'the answer was not JSON'
+
+          def host_issuer():
+              host = re.sub(r'^https?://', '', E('GITHUB_SERVER_URL', '') or '').strip('/').lower()
+              if host.endswith('.ghe.com'):
+                  return 'https://token.actions.%s.ghe.com' % host[:-len('.ghe.com')]
+              if host == 'github.com':
+                  return 'https://token.actions.githubusercontent.com'
+              return 'https://%s/_services/token' % host if host else ''
+
+          res = []
+          def put(check, verdict, why):
+              res.append({'check': check, 'verdict': verdict, 'reason': why})
+
+          app, app_err = load('app')
+          sp, sp_err = load('sp')
+          # 1. no client secret
+          if app is None and sp is None:
+              put('no_client_secret', 'NOT_ESTABLISHED', 'the identity could not read its app registration or service principal (%s). Grant it Microsoft Graph Application.Read.All, or check in the portal: Certificates & secrets must list no client secret.' % (app_err or sp_err))
+          else:
+              pw = len((app or {}).get('passwordCredentials') or []) + len((sp or {}).get('passwordCredentials') or [])
+              if pw:
+                  put('no_client_secret', 'FAIL', 'the identity holds %d client secret(s). OIDC needs none; a secret is a long-lived credential that can be stolen. Delete it under Certificates & secrets.' % pw)
+              elif app is None and str((sp or {}).get('servicePrincipalType', '')).lower() == 'managedidentity':
+                  put('no_client_secret', 'PASS', 'a managed identity: it cannot hold a client secret.')
+              elif app is None:
+                  put('no_client_secret', 'NOT_ESTABLISHED', 'the service principal has no password, but the app registration could not be read (%s), and secrets live there.' % app_err)
+              else:
+                  put('no_client_secret', 'PASS', 'no client secret on the app registration or its service principal.')
+
+          # 2. one subscription
+          roles, roles_err = load('roles')
+          accounts, acc_err = load('accounts')
+          if roles is None:
+              put('one_subscription', 'NOT_ESTABLISHED', 'role assignments could not be listed (%s).' % roles_err)
+          else:
+              subs, broad = set(), []
+              for r in roles:
+                  scope = str(r.get('scope', ''))
+                  m = re.match(r'^/subscriptions/([0-9a-fA-F-]{36})(/|$)', scope)
+                  if m:
+                      subs.add(m.group(1).lower())
+                  else:
+                      broad.append(scope or '(none)')
+              visible = {str(a.get('id', '')).lower() for a in (accounts or []) if a.get('id')}
+              want = (E('EXPECTED_SUB_ID') or '').lower()
+              if broad:
+                  put('one_subscription', 'FAIL', 'a role assignment sits ABOVE a subscription (%s): it reaches every subscription below it. Move it to the one subscription.' % ', '.join(sorted(broad)[:3]))
+              elif len(subs | (visible - {''})) > 1:
+                  put('one_subscription', 'FAIL', 'the identity reaches %d subscriptions; it must be confined to exactly one.' % len(subs | visible))
+              elif not subs:
+                  put('one_subscription', 'FAIL', 'the identity holds no role assignment it can see, so it can deploy nothing; give it a role in its one subscription.')
+              elif want and subs != {want}:
+                  put('one_subscription', 'FAIL', 'its one subscription is not the one AZURE_SUBSCRIPTION_ID names.')
+              else:
+                  put('one_subscription', 'PASS', 'every role assignment it can see is inside its one subscription (seen from the identity itself; ARM lists only scopes it can read).')
+
+          # 3-5. the federated credential the token matched
+          fics, fic_err = load('fic')
+          tok_sub, tok_iss = E('TOKEN_SUBJECT', ''), E('TOKEN_ISSUER', '')
+          want_iss = host_issuer()
+          want_sub = 'repo:%s:environment:%s' % (E('EXPECT_REPO', ''), E('EXPECT_ENVIRONMENT', ''))
+          want_aud = E('EXPECTED_AUDIENCE', '')
+          if fics is None:
+              for c in ('issuer', 'subject', 'audience'):
+                  put(c, 'NOT_ESTABLISHED', 'the federated credentials could not be read (%s). Check them in the portal under Certificates & secrets > Federated credentials.' % fic_err)
+          else:
+              mine = [f for f in fics if f.get('subject') in (tok_sub, want_sub)]
+              if not mine:
+                  put('subject', 'FAIL', 'no federated credential has the subject %r; the sign-in used a different credential or a broader one.' % want_sub)
+                  put('issuer', 'NOT_ESTABLISHED', 'no credential with this run\'s subject to read the issuer from.')
+                  put('audience', 'NOT_ESTABLISHED', 'no credential with this run\'s subject to read the audience from.')
+              else:
+                  f = mine[0]
+                  if f.get('subject') == want_sub:
+                      put('subject', 'PASS', 'the credential\'s subject is %s: this repository, this environment only.' % want_sub)
+                  else:
+                      put('subject', 'PASS', 'the credential\'s subject is the immutable-id form of %s, which the token presented.' % want_sub)
+                  iss = str(f.get('issuer', '')).rstrip('/')
+                  if not want_iss:
+                      put('issuer', 'NOT_ESTABLISHED', 'this run\'s host is unknown, so its issuer cannot be derived.')
+                  elif iss == want_iss.rstrip('/') and (not tok_iss or tok_iss.rstrip('/') == iss):
+                      put('issuer', 'PASS', 'the credential trusts %s, this run\'s own host issuer.' % iss)
+                  else:
+                      put('issuer', 'FAIL', 'the credential trusts %r, but this run\'s host issues tokens as %r. On GHE.com the issuer is https://token.actions.<subdomain>.ghe.com.' % (iss, want_iss))
+                  auds = [str(a) for a in (f.get('audiences') or [])]
+                  if auds == [want_aud]:
+                      put('audience', 'PASS', 'the credential\'s audience is %s, the one the %s cloud uses.' % (want_aud, E('CLOUD', 'public')))
+                  else:
+                      put('audience', 'FAIL', 'the credential\'s audience is %r; the %s cloud signs in with %r.' % (auds, E('CLOUD', 'public'), want_aud))
+
+          verdicts = [r['verdict'] for r in res]
+          overall = 'FAIL' if 'FAIL' in verdicts else ('NOT_ESTABLISHED' if 'NOT_ESTABLISHED' in verdicts else 'PASS')
+          json.dump({'directory_verdict': overall, 'checks': res}, open(os.path.join(d, 'directory.json'), 'w', encoding='utf-8'), indent=1)
+          with open(E('GITHUB_OUTPUT'), 'a', encoding='utf-8') as fh:
+              fh.write('directory_verdict=%s\n' % overall)
+              fh.write('directory_checks=%s\n' % json.dumps(res, separators=(',', ':')))
+          with open(E('GITHUB_STEP_SUMMARY'), 'a', encoding='utf-8') as fh:
+              fh.write('### OIDC identity, checked from the directory side: %s\n\n| check | verdict | why |\n|---|---|---|\n' % overall)
+              for r in res:
+                  fh.write('| %s | %s | %s |\n' % (r['check'], r['verdict'], r['reason'].replace('|', '/')))
+          for r in res:
+              print('%-17s %-16s %s' % (r['check'], r['verdict'], r['reason']))
+          if overall == 'FAIL':
+              print('::error title=OIDC identity check failed::%s' % '; '.join(r['check'] for r in res if r['verdict'] == 'FAIL'))
+              sys.exit(1)
+          if overall == 'NOT_ESTABLISHED' and E('REQUIRE_ALL') == 'true':
+              print('::error title=OIDC identity not established::require_directory_checks is true and %s could not be read' % ', '.join(r['check'] for r in res if r['verdict'] == 'NOT_ESTABLISHED'))
+              sys.exit(1)
+          DIR_PY
 
       - name: Assert context integrity — observed MUST equal declared
         id: context
@@ -967,6 +1163,15 @@ jobs:
             echo "only non-read call is a subscription-scope deployment validate over a template"
             echo "declaring zero resources, which deploys nothing even when it is authorized."
           } | redact >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Say the preflight in plain words (docs/errors/ERRORS.md)
+        if: always()
+        uses: $/.github/actions/plain-errors
+        with:
+          source: preflight
+          states: >-
+            oidc_subject_form:${{ steps.claims.outputs.subject_form }}
+            reusable_workflow_resolution:${{ steps.claims.outputs.resolution }}
 
       - name: Fail the run if the boundary was not established
         if: always()

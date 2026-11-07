@@ -40,6 +40,10 @@ THE SHAPE (on a policy register entry, beside rung/controls; the entry still car
                         account, resource, pentest, review, audit, usr, cloud-tool, other-tool)
         environment     environment / tenant / account label globs (fnmatch, case-insensitive),
                         e.g. azure-government-*
+        rule_family     KDEC-038: a SAST rule family (sql-injection, os-command-injection, ...) or a
+                        secret detector family (aws-access-key, github-token, ...) any member carries
+                        (scripts/code_finding_key.py: sast_families, secret_families)
+        cwe             KDEC-038: a CWE any member carries, canonical (CWE-89)
 
 PRECEDENCE: repository > org+team+product > org+product > org+team > org > enterprise > kit default
 
@@ -82,7 +86,7 @@ ROUTING_KEYS = ('inherit', 'rules', 'default', 'notes')
 TARGET_KEYS = ('project', 'issue_type', 'epic', 'components', 'labels')
 RULE_KEYS = ('id', 'match', 'notes') + TARGET_KEYS
 MATCH_KEYS = ('class', 'scanner_family', 'scanner', 'category', 'severity', 'min_severity',
-              'repository', 'template', 'source_type', 'environment')
+              'repository', 'template', 'source_type', 'environment', 'rule_family', 'cwe')
 # KDEC-037: the templates and source types a rule may name (scripts/ticket_templates.py's own lists).
 TEMPLATES = ('finding', 'false-positive', 'accepted-risk', 'mitigation', 'exemption', 'nofix-recheck')
 SOURCE_TYPES = ('scan-app', 'project', 'subscription', 'account', 'resource', 'pentest', 'review', 'audit',
@@ -169,6 +173,11 @@ def check_routing(obj, where, unreadable_code):
                 bad('%s match.source_type %r: the source types are %s' % (w, v, ', '.join(SOURCE_TYPES)))
             elif k == 'min_severity' and len(vals) != 1:
                 bad('%s match.min_severity is one severity' % w)
+            elif k == 'rule_family' and any(x not in _known_families() for x in vals):
+                bad('%s match.rule_family %r is not a SAST or secret family (scripts/code_finding_key.py)'
+                    % (w, v))
+            elif k == 'cwe' and any(not re.match(r'^CWE-[1-9][0-9]{0,4}$', x) for x in vals):
+                bad('%s match.cwe %r: a canonical CWE id, e.g. CWE-89' % (w, v))
         # THE FLOOR: a rule that names a floor class may not send it to none.
         if rule.get('project') == NONE:
             named = [c for c in _list(m.get('class')) if c in FLOOR_CLASSES]
@@ -189,6 +198,11 @@ def check_routing(obj, where, unreadable_code):
                 bad('%s default names no project' % where)
             _target_problems(d, '%s default' % where, bad)
     return p
+
+
+def _known_families():
+    import code_finding_key as cfk
+    return set(cfk.sast_families) | set(cfk.secret_families.values())
 
 
 # ── resolution: the chain of scopes ──────────────────────────────────────────────────────
@@ -278,6 +292,12 @@ def matches(match, facts):
         elif k == 'environment':
             env = str(facts.get('environment') or '').lower()
             if not env or not any(fnmatch.fnmatchcase(env, x.lower()) for x in vals):
+                return False
+        elif k == 'rule_family':
+            if not set(facts.get('rule_families') or []) & set(vals):
+                return False
+        elif k == 'cwe':
+            if not set(str(c).upper() for c in facts.get('cwes') or []) & set(x.upper() for x in vals):
                 return False
         else:
             return False

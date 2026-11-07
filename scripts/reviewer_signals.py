@@ -515,6 +515,9 @@ def cmd_security(a):
                      'retention_days': days, 'retention': ret_state},
         'run_record': jload(env('s_assurance_result'), {}),
     }
+    # KDEC-039: the KEV verdict, the SBOM digest and the commit author (a pseudonym and the verification state).
+    import rollback_hold as rh
+    rec.update(security_record_additions(rh.api))
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     with io.open(a.out, 'w', encoding='utf-8') as fh:
         json.dump(rec, fh, indent=1, sort_keys=True)
@@ -530,6 +533,10 @@ def cmd_security(a):
             '| leak-gate alarm | `%s` | %s |' % (rec['leak_gate_alarm'] or 'none', 'only the CI scan stands before the default branch' if rec['leak_gate_alarm'] else 'a pre-CI layer is ON'),
             '| policy notices | `%d` | %s |' % (len(rec['policy']['notices']), ', '.join(sorted(set(str(n.get('code')) for n in rec['policy']['notices'] if isinstance(n, dict)))) or '-'),
             '| deploy coverage (G10) | `%s` | %s |' % (','.join(rec['deploy_coverage']['no_kit_adapter']) or 'no gap found', 'deploys outside the kit' if rec['deploy_coverage']['no_kit_adapter'] else '-'),
+            '| KEV / SBOM / author (KDEC-039) | `%s` / `%s` / `%s` | %s |' % (
+                rec['kev'].get('verdict'), (rec['sbom'].get('digest') or rec['sbom']['state'])[:19],
+                rec['author'].get('id') or rec['author']['state'],
+                'verified commit' if (rec['author'].get('verification') or {}).get('verified') else 'commit not verified or not read'),
             '| record | `%s` | machine-readable; kept %d days (`%s`) |' % (RECORD_FILE, days, ret_state)]
     summary('\n### Reviewer signals (KDEC-036)\n\n| signal | value | detail |\n|---|---|---|\n' + '\n'.join(rows))
     if wm['state'] != WM_BOUND:
@@ -541,6 +548,57 @@ def cmd_security(a):
         print('::error title=%s (KDEC-036)::%s. A requester never approves their own exception: the gate '
               'routes BLOCKED in every mode.' % (SELF_APPROVED, '; '.join(check.get('why') or [])))
     return 0
+
+
+# ----------------------------------------------------------------------------- KDEC-039
+# WHAT THE EVIDENCE BUNDLE FOUND MISSING (the harness's prefill: "KEV verdict NOT ESTABLISHED in the record",
+# "SBOM NOT ESTABLISHED", "author NOT ESTABLISHED"). Each is ESTABLISHED with its value, or NOT ESTABLISHED with
+# the reason: an unreadable KEV catalog is never "not on KEV", and an author with no GitHub login is never an email.
+KEV_ON = ('BLOCKED', 'EXCEPTED')
+KEV_OFF = ('CLEAR',)
+
+
+def _person(login):
+    """The evidence harness's pseudonym (person:<10 hex of sha256(login)>): the login is never written."""
+    n = str(login or '').strip().lstrip('@').lower()
+    return ('person:' + hashlib.sha256(n.encode('utf-8')).hexdigest()[:10]) if n else ''
+
+
+def security_record_additions(api_get):
+    """-> {kev, sbom, author} for the security record. `api_get(path)` reads /repos/<repository>/<path>."""
+    ne = 'NOT ESTABLISHED'
+    verdict = env('s_kev_verdict').strip()
+    if verdict in KEV_ON + KEV_OFF:
+        kev = {'state': 'ESTABLISHED', 'verdict': verdict, 'kev_state': env('s_kev_state').strip() or 'AVAILABLE',
+               'on_kev': verdict in KEV_ON}
+    else:
+        kev = {'state': ne, 'verdict': verdict or 'UNAVAILABLE', 'kev_state': env('s_kev_state').strip() or 'UNAVAILABLE',
+               'on_kev': None, 'why': 'the gate\'s KEV check did not establish a verdict (%s): no CVE here has been '
+                                      'shown not to be on CISA KEV' % (verdict or 'not reported')}
+    digest = env('s_sbom_digest').strip().lower()
+    if digest.startswith('sha256:'):
+        digest = digest[len('sha256:'):]
+    if re.match(r'^[0-9a-f]{64}$', digest):
+        sbom = {'state': 'ESTABLISHED', 'digest': 'sha256:' + digest, 'artifact': 'sbom'}
+    else:
+        sbom = {'state': ne, 'why': 'no SBOM digest reached the gate (the sbom job did not run, or wrote no SBOM)'}
+    author = {'state': ne, 'why': 'the commit could not be read'}
+    try:
+        doc = api_get('commits/%s' % env('github_sha'))
+    except Exception:  # noqa: BLE001 -- unreadable is said, never guessed
+        doc = None
+    if isinstance(doc, dict):
+        login = str((doc.get('author') or {}).get('login') or '').strip()
+        ver = ((doc.get('commit') or {}).get('verification') or {})
+        if login:
+            author = {'state': 'ESTABLISHED', 'id': _person(login),
+                      'committer_id': _person((doc.get('committer') or {}).get('login')) or None,
+                      'verification': {'verified': bool(ver.get('verified')), 'reason': str(ver.get('reason') or 'unknown')},
+                      'basis': 'the GitHub login of the commit author, pseudonymised (sha256, 10 hex)'}
+        else:
+            author = {'state': ne, 'why': 'the commit author has no GitHub account linked; the commit email is never '
+                                          'recorded'}
+    return {'kev': kev, 'sbom': sbom, 'author': author}
 
 
 # ----------------------------------------------------------------------------- G8
@@ -924,6 +982,13 @@ def cmd_deploy_post(a):
     seam_state = env('d_seam_ownership') or ('SEAM_OWNERSHIP_NOT_IN_FORCE' if not lease_on else 'not reported')
     promo = os.path.join(env('runner_temp') or '.', 'promotion', 'record', 'promotion-record.json')
     outcome = env('d_deployment_outcome')
+    # KDEC-039: the promotion record's summary rides in the DURABLE release record, so it outlives its artifact.
+    pdoc = jload(io.open(promo, encoding='utf-8').read(), {}) if os.path.exists(promo) else {}
+    promotion = {'record_id': pdoc.get('record_id', ''), 'state': pdoc.get('state', ''),
+                 'release_path': pdoc.get('release_path', ''),
+                 'expires_at': (pdoc.get('validity') or {}).get('expires_at', ''),
+                 'target_resource_id': (pdoc.get('environment') or {}).get('target_resource_id', ''),
+                 'digest': (pdoc.get('artifact') or {}).get('digest', '')} if pdoc else None
     payload = {
         'schema': RELEASE_SCHEMA, 'repository': env('github_repository'), 'run_id': env('github_run_id'),
         'run_attempt': env('github_run_attempt'), 'commit': env('github_sha'), 'environment': env('deploy_environment'),
@@ -942,6 +1007,8 @@ def cmd_deploy_post(a):
         'evidence_artifact': 'deploy-evidence-%s-%s' % (env('github_run_id'), env('github_run_attempt')),
         'retention_days': pre.get('retention_days', AUDIT_FLOOR_DAYS),
     }
+    if promotion:
+        payload['promotion'] = promotion
     if lease_on:
         rr, rr_ref, rr_why = KEPT_LEASE, '', 'the lease is on: the record is kept create-only in the lease store (K-4)'
     else:

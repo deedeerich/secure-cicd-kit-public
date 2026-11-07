@@ -60,7 +60,8 @@ approval. Every action is one API call; every state on screen is a word the API 
 | filters: severity, scanner, job, rule, CVE, KEV, path prefix, text, established only | `findings.search.filters` | KEV filter shows `data.not_judged` |
 | results table: severity, rule, path:line, scanner, CVEs, KEV, ticket, first seen, baseline state | `data.findings[]` | `kev` per section 2.2; `ticket` links to the ticket detail |
 | paging | `limit`, `offset`, `next_offset` | at most 200 per page |
-| action: "ticket these" (selected rows with an identity) | `tickets.write` with `select.identities`, `dry_run: true` first, then for real | a row whose `identity` is null (e.g. a secret) cannot be ticketed by the API; say why |
+| action: "ticket these" (selected rows with an identity) | `tickets.write` with `select.identities`, `dry_run: true` first, then for real | a row whose `identity` is null cannot be ticketed by the API; say why. A secret (`ticket_key_state: SECRET_KEYED`) is ticketed by the pipeline's own reconciliation, urgent, and its row says "rotate" |
+| SAST columns (KDEC-038): rule family, CWE, symbol, scanners that agree | `rule_family`, `cwe`, `symbol_path`; one row per identity | a rule the table does not know shows `RULE_FAMILY_UNKNOWN` and the rule it names -- never a guessed family |
 
 ### 3.2 Triage queue
 
@@ -127,6 +128,16 @@ reject; an **outbox banner** shows `TEMPLATE_OUTBOX` and `data.alerts` until dra
 `tickets.search` with `tracker_query`: every ticket in the repository's projects, manual ones
 flagged, paged with `next_page_token`; a partial or not-configured intake is "not read", never zero.
 
+### 3.6c Evidence export for a review (KDEC-039)
+
+Form: repository, and a commit or a release (a kit release record's deployment id). Call `evidence.export` (a read).
+Show the ten sections as a checklist, each with its state WORD: `ESTABLISHED` with its source (artifact, run, sha256 or
+deployment id), or `NOT ESTABLISHED` with `why` -- never a blank, a zero or a tick for a section nobody could read.
+Show `excluded_other_repository.count` when it is not zero ("records of another repository were found and left out").
+KEV: `on_kev` true / false, or "not known" when NOT ESTABLISHED. Author: the pseudonym and "verified commit" / "not
+verified" -- never a name or an email. Offer the artifact `kit-evidence-export-<correlation id>` for download (it is
+what the evidence harness reads); when `data.export.abridged` is true, say the full export is in the artifact.
+
 ### 3.7 Activity
 
 Every call the UI made: correlation id, operation, repository, who asked (declared), submitted at,
@@ -142,6 +153,7 @@ current `api_state`, link to the run. Re-check any row with `status.get`.
 | 3.4 Ticket detail | `tickets.get`, `tickets.comment` |
 | 3.5 Scan request | `scan.request`, `status.get`, then `findings.search` |
 | 3.6 Release | `deploy.request`, `status.get` |
+| 3.6c Evidence export | `evidence.export`, `status.get` |
 | 3.7 Activity | `status.get` |
 
 ## 5. Acceptance tests for the builder (each a negative as well as a positive)
@@ -158,3 +170,6 @@ current `api_state`, link to the run. Re-check any row with `status.get`.
    `API_DUPLICATE_REQUEST` naming the first call.
 9. No screen shows code content, a ticket description beyond the block facts, or a credential.
 10. Signing out and back in never changes what the API was told (`on_behalf_of` stays a declared hint).
+11. An evidence export section that is `NOT ESTABLISHED` shows its reason and never renders as empty or clean; a
+    `kev` section NOT ESTABLISHED never renders as "not on KEV"; the author is never shown as a name or an email.
+12. A secret finding's row and ticket say "rotate"; no screen shows a secret's value or its fingerprint.

@@ -24,9 +24,17 @@ name: Consumer path — negative (EXPECTED TO FAIL)
 # `php-verdict` job publishes the verdict for consumer-path-test.yml to assert. It blocks only
 # where a register raises this repository above crawl (run: BLOCKED).
 
+# THE RUN CARRIES ITS CORRELATION ID (item 11, 2026-11-06): the consumer path test finds THIS run by the
+# id it dispatched it with, in brackets, never as "the latest run on the branch".
+run-name: "Consumer path negative [${{ inputs.correlation_id || 'uncorrelated' }}] scope=${{ inputs.scope }}"
+
 on:
   workflow_dispatch:
     inputs:
+      correlation_id:
+        description: "Set by the dispatching consumer path test: the id it finds this run by. Leave empty by hand."
+        type: string
+        default: ""
       # ONE REUSABLE CALL PER RUN, ON PURPOSE. Two calls in one run publish artifacts under the
       # same names (sarif-semgrep-1, ...), and the grader downloads this run's sarif-* by name. So
       # the PHP-only proof (lane L-PHP) is its own dispatch of this file, selected here, and the

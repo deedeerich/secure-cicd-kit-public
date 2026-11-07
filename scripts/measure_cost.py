@@ -27,8 +27,9 @@ WHAT "BILLED" MEANS HERE (read this before quoting a number)
 
 SUBCOMMANDS
     dispatch  Dispatch N runs of a workflow on a repository and ref. DRY RUN BY DEFAULT: it prints
-              what it would dispatch. --execute dispatches (gh workflow run), then finds each new
-              run id and appends it to the manifest.
+              what it would dispatch. --execute dispatches (gh workflow run) with a correlation id and
+              pairs each run by that id in its run-name (never "the newest run"), appending it to the
+              manifest; an ambiguous or absent match is NOT_ESTABLISHED and records nothing.
     compute   For every run in a manifest: fetch its jobs (paginated, latest attempt), compute
               billed / raw / wall clock, download the security report artifact and read each
               scanner's state file and SARIF result count; then medians per (class, phase) and the
@@ -347,37 +348,47 @@ def dispatch(a):
     if os.path.exists(a.manifest):
         with io.open(a.manifest, encoding="utf-8") as f:
             manifest = json.load(f)
-    seen = set()
     for i in range(a.runs):
-        before = _list_runs(a)
-        subprocess.run(cmd, check=True)
-        rid = None
+        # PAIRED BY CORRELATION ID, NEVER "THE NEW RUN" (item 11, 2026-11-06): another person's dispatch
+        # or a scheduled run can appear in the same window. The measured workflow must declare a
+        # `correlation_id` dispatch input and put it in its run-name in brackets; GitHub refuses the
+        # dispatch otherwise ("Unexpected inputs provided"), which is the right failure.
+        cid = 'cost-%s-%s-%d-%d' % (a.klass, a.phase, i + 1, int(time.time()))
+        subprocess.run(cmd + ["-f", "correlation_id=" + cid], check=True)
+        rid, why = None, "no run carries [%s]" % cid
         for _ in range(30):
             time.sleep(4)
-            new = [r for r in _list_runs(a) if r not in before and r not in seen]
-            if new:
-                rid = min(new)
+            rid, why = match_correlated(_list_runs(a), cid)
+            if rid is not None or why.startswith("NOT_ESTABLISHED"):
                 break
         if rid is None:
-            print("could not find the run for dispatch %d; nothing recorded for it" % (i + 1))
+            print("NOT_ESTABLISHED: dispatch %d could not be paired (%s); nothing recorded for it" % (i + 1, why))
             return 1
-        seen.add(rid)
         manifest["runs"].append({"class": a.klass, "phase": a.phase, "repo": a.repo,
-                                 "run_id": rid, "workflow": a.workflow, "ref": a.ref})
+                                 "run_id": rid, "workflow": a.workflow, "ref": a.ref, "correlation_id": cid})
         with io.open(a.manifest, "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2)
-        print("dispatched %d/%d: run %s" % (i + 1, a.runs, rid))
+        print("dispatched %d/%d: run %s [%s]" % (i + 1, a.runs, rid, cid))
         # One at a time: concurrent runs compete for the account's runner pool and distort wall clock.
         if i + 1 < a.runs and a.wait:
             subprocess.run(["gh", "run", "watch", str(rid), "-R", a.repo, "--exit-status"])
     return 0
 
 
+def match_correlated(rows, cid):
+    """-> (run id, '') when exactly ONE run's display title carries [cid]; (None, why) otherwise --
+    NOT_ESTABLISHED for two or more, never the newest."""
+    hit = sorted({r.get("databaseId") for r in rows if ("[%s]" % cid) in str(r.get("displayTitle") or "")})
+    if len(hit) > 1:
+        return None, "NOT_ESTABLISHED: %d runs carry [%s]" % (len(hit), cid)
+    return (hit[0], "") if hit else (None, "no run carries [%s] yet" % cid)
+
+
 def _list_runs(a):
     out = subprocess.run(["gh", "run", "list", "-R", a.repo, "-w", a.workflow, "-b", a.ref,
-                          "-e", "workflow_dispatch", "-L", "50", "--json", "databaseId"],
+                          "-e", "workflow_dispatch", "-L", "50", "--json", "databaseId,displayTitle"],
                          capture_output=True, check=True)
-    return {r["databaseId"] for r in json.loads(out.stdout.decode("utf-8"))}
+    return json.loads(out.stdout.decode("utf-8"))
 
 
 # ── self-test ────────────────────────────────────────────────────────────────────────────

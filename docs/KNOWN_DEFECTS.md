@@ -168,6 +168,9 @@ omits both optional arrays, and genuinely read nothing is still `EXAMINED`. This
 that case — only a denominator could. It is the weakest row in `examination_of` and the first to
 revisit against real scanner output.
 
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep prove_hollow_scan.py and the hollow-scan witness required; add any new scanner to the hollow fixtures when it is added.
+
 ---
 
 ## D-2 · The durable finding identity is empty for every finding, from every scanner — **SEVERE** · **FIXED**
@@ -269,6 +272,9 @@ gitleaks, detect-secrets, trufflehog and any secret/credential rule namespace, s
 refuses them with `SECRET_SUBJECT_NOT_BASELINEABLE` instead of `CONTENT_UNDERIVABLE`. This is
 both a better sentence and the precondition for hashing constructs at all — see D-8.
 
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep prove_report_emits_findings.py and the identity proofs required; alert when identity is empty on more than a set share of findings.
+
 ---
 
 ## D-3 · `SOURCE` requires a construct, so no dependency finding can ever be fingerprinted — **SEVERE** · **FIXED**
@@ -356,9 +362,22 @@ identify({'finding_subject': 'SOURCE', 'cwe': 'CWE-89', 'rule_family': 'f',
   -> UNFINGERPRINTABLE / CONTENT_UNDERIVABLE      # still refuses, by design
 ```
 
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep the split subject (SOURCE_DEPENDENCY) proven; review the subject table when a new finding kind is added.
+
 ---
 
-## D-8 · The redactor strips the only carrier of CONTENT before the reporter reads it — **SEVERE** · **DOCUMENTED, NOT FIXED**
+## D-8 · The redactor strips the only carrier of CONTENT before the reporter reads it — **SEVERE** · **FIXED IN CODE (KDEC-038), PROVEN LOCALLY; HOSTED RUN OWED**
+
+**2026-11-06, lane kit-sast-export (KDEC-038).** The report no longer depends on the snippet. The security-gate job
+checks out the scanned commit, and `scan_report` (with `--source-root`, passed by the scan-report composite) reads
+a SOURCE finding's reported line from the file: the construct, the enclosing symbol and a code anchor (the
+normalised line and its ordinal -- never the line number), through `scripts/code_finding_key.py`. Every tool reads
+the same text, so bandit and semgrep on one line are one identity. A path outside the checkout is never read
+(SOURCE_PATH_REFUSED); a file not in the checkout leaves the old behaviour, said in the basis. Proven by
+`tests/prove_sast_secret_tickets.py` on SARIF that carries NO snippet; not yet observed in a hosted report job.
+The rest of this entry is the record as it stood.
+
 
 **What it is.** Two controls in this kit are in direct conflict, and fixing D-2 is what made the
 conflict visible rather than academic.
@@ -397,6 +416,9 @@ finding refuses outright and no secret-derived material can reach a ledger under
 the gate reports a fixed identity model — the worst combination, because the proof is green.
 Dependency and image findings are unaffected: neither has a construct to strip.
 
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep tests/prove_sast_secret_tickets.py required (the line read from the checkout replaces the redacted snippet), and run it hosted once on the public mirror.
+
 ---
 
 ## D-9 · The advisory alias SET had exactly one member by construction — **MODERATE** · **FIXED**
@@ -424,6 +446,9 @@ change — it was always going to happen the first time two aliases appeared in 
 the honest answer to it is a lineage event, not a smaller set. It is registered as
 `ADVISORY_ALIAS_ADDED` and it is the one cause where nothing in the repository and nothing in the
 scanner changed.
+
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep the alias-set proof required; add advisories with three or more aliases to its fixtures.
 
 ---
 
@@ -464,6 +489,9 @@ results from. Git for Windows' bash is named explicitly as a fallback candidate.
 observed: with only the stub reachable the probe rejects it and names the WSL error and the file
 exits 2; with Git Bash present the gate proves itself and exits 0.
 
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Use the shared usable_bash() probe in every harness; the battery puts Git for Windows bash ahead of the WSL stub (tools/battery.ps1).
+
 ---
 
 ## D-5 · Structurally malformed SARIF raises out of the parser instead of returning `UNPARSEABLE` — **MODERATE**
@@ -497,6 +525,9 @@ rather than swallowed, so the behaviour is pinned and a future fix will be visib
 TypeError)` returning `UNPARSEABLE`, and have `batch()` isolate each scanner so one bad document
 costs one row.
 
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep prove_malformed_sarif_isolated.py required and add each new malformed shape found in the wild to its fixtures.
+
 ---
 
 ## D-6 · Five validation deferrals expired 8 days ago and the gate is RED — **MODERATE** · **DELIBERATELY NOT "FIXED"**
@@ -528,6 +559,9 @@ exhaustion**: 10 of 15 slots are used, and a red gate that stays red for weeks i
 eventually works around. That is the same muting dynamic as D-4, on a longer clock.
 
 **State: REPORTED, UNCHANGED.** Needs a dated decision by the owner, not a worker's edit.
+
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep the expired-deferral gate red until each deferral is closed by evidence or re-dated by the owner with a reason.
 
 ---
 
@@ -566,6 +600,9 @@ are owned by another worker mid-change and were not touched. The fix is to give
 it — **the same "one truth in two places" failure the exporter's own `exportable()` docstring
 warns about**, one layer out — and it belongs with whoever owns that surface.
 
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep the export profile excluded from the export it governs, and prove it in prove_export_scope.py.
+
 ---
 
 ## D-10 · The resolve position caps CodeQL on a platform pre-flight the analysis contradicts — **MODERATE** · **DOCUMENTED, NOT FIXED**
@@ -593,6 +630,9 @@ rather than silent, which is why it is MODERATE and not CATASTROPHIC.
 `PLATFORM_UNAVAILABLE` only from *publication*, and let the capability verdict read the job's own
 `cq_state` (COMPLETE / COLLECTION_FAILED / UNAVAILABLE) rather than the pre-flight. It touches
 `tests/test_resolve.py`'s platform rows and was deliberately not folded into the gate fix.
+
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Let CodeQL run when the analysis can read the code even if the platform probe says UNAVAILABLE, recording the probe and the result separately.
 
 ---
 
@@ -651,6 +691,9 @@ four cases, two failing before the rule).
 `tests/prove_ghe_host.py` H8/H9, `tests/check_action_pins.py` P7 (8 refusals before). Local only;
 a hosted run on a ghe.com host is owed.
 
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep the job-token preflight in every job that calls the API, and prove_job_token_named.py required.
+
 ---
 
 ## D-12 · A kit host's copy had no pre-flight, and a licence could pass the grade — **MODERATE** · **FIXED**
@@ -699,6 +742,9 @@ carries the workflow, the negative workflow, every fixture file, the generator a
 its `prove_job_token_named.py` checks the shipped file); `prove_job_token_named.py` T9 (seven cases).
 Local only; the first hosted run on a GHE.com host is the owner's dispatch after import.
 
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep the pre-flight in every kit-host export profile and its GHAS-off proof (prove_consumer_path_preflight.py) required.
+
 ---
 
 ## D-13 · AKS, VMs and code-packaged Functions have no deploy adapter -- **MODERATE** · **NAMED, ADAPTER PLAN SIZED**
@@ -738,6 +784,9 @@ working days for one engineer, built test-first against the stub cloud as K-8 wa
 **Owner decision owed (O-36i):** which of the three to build, in what order. Default: none until asked;
 the gap is named on every run in the meantime.
 
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Size and build an AKS adapter first (the most likely target), then VMs; until then name NO_KIT_ADAPTER in every run.
+
 ---
 
 ## D-14 · A weakening could be approved by the person who asked for it, and need never end -- **SEVERE** · **FIXED**
@@ -765,6 +814,9 @@ refused at uat/prod); the requester, the actor or the released commit's author a
 `tests/prove_reviewer_signals.py` R2, R3 (seen failing on `1567af2`). **Consequence for adopters:** a caller
 with an attributed weakening and no `weakening_approver` or `weakening_exception_ref` now reads
 `WEAKENING_NOT_APPROVED`, and its uat/prod deploys refuse until the record is completed.
+
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep the five-field rule and the self-approval refusal proven (prove_reviewer_signals.py); audit approved weakenings monthly.
 
 ---
 

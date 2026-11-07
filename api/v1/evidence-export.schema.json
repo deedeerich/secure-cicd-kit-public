@@ -1,0 +1,762 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "secure-cicd-kit/api/v1/evidence-export.schema.json",
+ "title": "evidence.export: the kit's half of the per-app evidence bundle (kit-evidence-export/1)",
+ "description": "The data.export of an evidence.export answer (KDEC-039), and evidence-export.json in the artifact kit-evidence-export-<correlation id> beside the records unpacked as the files the evidence harness's src/app_evidence_bundle.py reads (--kit-evidence). ONE repository; every section ESTABLISHED with its sources, or NOT ESTABLISHED with the reason -- never an empty list for a record nobody could read. No secret-shaped value, no free text, no email. `abridged` is true when the check run could not hold the whole export: then each section carries its state, reason and count, and the artifact holds the rest.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "schema",
+  "repository",
+  "commit",
+  "subject",
+  "sections",
+  "not_established",
+  "excluded_other_repository"
+ ],
+ "properties": {
+  "schema": {
+   "type": "string",
+   "const": "kit-evidence-export/1"
+  },
+  "repository": {
+   "type": "string",
+   "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+  },
+  "commit": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{40}$"
+  },
+  "subject": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "kind",
+    "ref"
+   ],
+   "properties": {
+    "kind": {
+     "type": "string",
+     "enum": [
+      "commit",
+      "release"
+     ]
+    },
+    "ref": {
+     "type": "string",
+     "pattern": "^([0-9a-f]{40}|[1-9][0-9]{0,19})$"
+    }
+   }
+  },
+  "sections": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "security_record",
+    "review_signals",
+    "promotion_records",
+    "release_records",
+    "findings",
+    "ticket_outbox",
+    "ticket_links",
+    "kev",
+    "sbom",
+    "author"
+   ],
+   "properties": {
+    "security_record": {
+     "description": "The newest kit-security-record (kit-security-record/1) of a run on the commit, through its field allowlist; `source` names the artifact, run and sha256.",
+     "type": "object",
+     "required": [
+      "state"
+     ],
+     "properties": {
+      "state": {
+       "type": "string",
+       "enum": [
+        "ESTABLISHED",
+        "NOT ESTABLISHED"
+       ]
+      },
+      "why": {
+       "type": "string",
+       "maxLength": 2000
+      },
+      "source": {
+       "type": "object",
+       "properties": {
+        "kind": {
+         "type": "string",
+         "enum": [
+          "artifact",
+          "deployment",
+          "commit"
+         ]
+        },
+        "name": {
+         "type": "string",
+         "maxLength": 200
+        },
+        "run_id": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "id": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "sha256": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{64}$"
+        },
+        "sha": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{40}$"
+        }
+       }
+      }
+     }
+    },
+    "review_signals": {
+     "description": "verdict_provenance, weakening_check, readiness_source, tier_reality and the kit watermark per release record, and the security run's own.",
+     "type": "object",
+     "required": [
+      "state"
+     ],
+     "properties": {
+      "state": {
+       "type": "string",
+       "enum": [
+        "ESTABLISHED",
+        "NOT ESTABLISHED"
+       ]
+      },
+      "why": {
+       "type": "string",
+       "maxLength": 2000
+      },
+      "source": {
+       "type": "object",
+       "properties": {
+        "kind": {
+         "type": "string",
+         "enum": [
+          "artifact",
+          "deployment",
+          "commit"
+         ]
+        },
+        "name": {
+         "type": "string",
+         "maxLength": 200
+        },
+        "run_id": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "id": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "sha256": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{64}$"
+        },
+        "sha": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{40}$"
+        }
+       }
+      }
+     }
+    },
+    "promotion_records": {
+     "description": "Live kit-promotion-record artifacts, and the promotion summary each durable release record carries.",
+     "type": "object",
+     "required": [
+      "state"
+     ],
+     "properties": {
+      "state": {
+       "type": "string",
+       "enum": [
+        "ESTABLISHED",
+        "NOT ESTABLISHED"
+       ]
+      },
+      "why": {
+       "type": "string",
+       "maxLength": 2000
+      },
+      "source": {
+       "type": "object",
+       "properties": {
+        "kind": {
+         "type": "string",
+         "enum": [
+          "artifact",
+          "deployment",
+          "commit"
+         ]
+        },
+        "name": {
+         "type": "string",
+         "maxLength": 200
+        },
+        "run_id": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "id": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "sha256": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{64}$"
+        },
+        "sha": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{40}$"
+        }
+       }
+      },
+      "records": {
+       "type": "array",
+       "items": {
+        "type": "object"
+       }
+      }
+     }
+    },
+    "release_records": {
+     "description": "The DURABLE GitHub deployment records (task kit-release-record) for the commit with their latest status; a deploy-evidence artifact still live is added when no deployment record holds it.",
+     "type": "object",
+     "required": [
+      "state"
+     ],
+     "properties": {
+      "state": {
+       "type": "string",
+       "enum": [
+        "ESTABLISHED",
+        "NOT ESTABLISHED"
+       ]
+      },
+      "why": {
+       "type": "string",
+       "maxLength": 2000
+      },
+      "source": {
+       "type": "object",
+       "properties": {
+        "kind": {
+         "type": "string",
+         "enum": [
+          "artifact",
+          "deployment",
+          "commit"
+         ]
+        },
+        "name": {
+         "type": "string",
+         "maxLength": 200
+        },
+        "run_id": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "id": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "sha256": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{64}$"
+        },
+        "sha": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{40}$"
+        }
+       }
+      },
+      "records": {
+       "type": "array",
+       "items": {
+        "type": "object"
+       }
+      }
+     }
+    },
+    "findings": {
+     "description": "The security report's findings.json: identities, ticket keys, rule, path, line, severity, CWE, rule family -- never a message, snippet or detail.",
+     "type": "object",
+     "required": [
+      "state"
+     ],
+     "properties": {
+      "state": {
+       "type": "string",
+       "enum": [
+        "ESTABLISHED",
+        "NOT ESTABLISHED"
+       ]
+      },
+      "why": {
+       "type": "string",
+       "maxLength": 2000
+      },
+      "source": {
+       "type": "object",
+       "properties": {
+        "kind": {
+         "type": "string",
+         "enum": [
+          "artifact",
+          "deployment",
+          "commit"
+         ]
+        },
+        "name": {
+         "type": "string",
+         "maxLength": 200
+        },
+        "run_id": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "id": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "sha256": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{64}$"
+        },
+        "sha": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{40}$"
+        }
+       }
+      },
+      "count": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "by_severity": {
+       "type": "object"
+      },
+      "findings": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "identity": {
+          "type": [
+           "string",
+           "null"
+          ]
+         },
+         "severity": {
+          "type": "string"
+         },
+         "ticket": {
+          "type": "object",
+          "required": [
+           "cluster_key",
+           "ref"
+          ]
+         }
+        }
+       }
+      }
+     }
+    },
+    "ticket_outbox": {
+     "description": "The repository's ticket outbox: pending entries (correlation id, items held, reason) and drained correlation ids. Submitted params are never copied.",
+     "type": "object",
+     "required": [
+      "state"
+     ],
+     "properties": {
+      "state": {
+       "type": "string",
+       "enum": [
+        "ESTABLISHED",
+        "NOT ESTABLISHED"
+       ]
+      },
+      "why": {
+       "type": "string",
+       "maxLength": 2000
+      },
+      "source": {
+       "type": "object",
+       "properties": {
+        "kind": {
+         "type": "string",
+         "enum": [
+          "artifact",
+          "deployment",
+          "commit"
+         ]
+        },
+        "name": {
+         "type": "string",
+         "maxLength": 200
+        },
+        "run_id": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "id": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "sha256": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{64}$"
+        },
+        "sha": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{40}$"
+        }
+       }
+      },
+      "pending": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "required": [
+         "correlation_id",
+         "items_held"
+        ]
+       }
+      },
+      "drained": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       }
+      }
+     }
+    },
+    "ticket_links": {
+     "description": "Each finding's ticket from the ticket ledger on the default branch: cluster key, ticket id and key, member identities.",
+     "type": "object",
+     "required": [
+      "state"
+     ],
+     "properties": {
+      "state": {
+       "type": "string",
+       "enum": [
+        "ESTABLISHED",
+        "NOT ESTABLISHED"
+       ]
+      },
+      "why": {
+       "type": "string",
+       "maxLength": 2000
+      },
+      "source": {
+       "type": "object",
+       "properties": {
+        "kind": {
+         "type": "string",
+         "enum": [
+          "artifact",
+          "deployment",
+          "commit"
+         ]
+        },
+        "name": {
+         "type": "string",
+         "maxLength": 200
+        },
+        "run_id": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "id": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "sha256": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{64}$"
+        },
+        "sha": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{40}$"
+        }
+       }
+      },
+      "links": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "required": [
+         "cluster_key",
+         "ref",
+         "member_identities"
+        ]
+       }
+      }
+     }
+    },
+    "kev": {
+     "description": "The gate's KEV verdict (CLEAR, BLOCKED, EXCEPTED) and on_kev; an unreadable catalog is NOT ESTABLISHED, never on_kev false.",
+     "type": "object",
+     "required": [
+      "state"
+     ],
+     "properties": {
+      "state": {
+       "type": "string",
+       "enum": [
+        "ESTABLISHED",
+        "NOT ESTABLISHED"
+       ]
+      },
+      "why": {
+       "type": "string",
+       "maxLength": 2000
+      },
+      "source": {
+       "type": "object",
+       "properties": {
+        "kind": {
+         "type": "string",
+         "enum": [
+          "artifact",
+          "deployment",
+          "commit"
+         ]
+        },
+        "name": {
+         "type": "string",
+         "maxLength": 200
+        },
+        "run_id": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "id": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "sha256": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{64}$"
+        },
+        "sha": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{40}$"
+        }
+       }
+      },
+      "verdict": {
+       "type": "string",
+       "enum": [
+        "CLEAR",
+        "BLOCKED",
+        "EXCEPTED",
+        "UNAVAILABLE"
+       ]
+      },
+      "on_kev": {
+       "type": [
+        "boolean",
+        "null"
+       ]
+      }
+     }
+    },
+    "sbom": {
+     "description": "The SBOM's sha256 (sha256:<64 hex>).",
+     "type": "object",
+     "required": [
+      "state"
+     ],
+     "properties": {
+      "state": {
+       "type": "string",
+       "enum": [
+        "ESTABLISHED",
+        "NOT ESTABLISHED"
+       ]
+      },
+      "why": {
+       "type": "string",
+       "maxLength": 2000
+      },
+      "source": {
+       "type": "object",
+       "properties": {
+        "kind": {
+         "type": "string",
+         "enum": [
+          "artifact",
+          "deployment",
+          "commit"
+         ]
+        },
+        "name": {
+         "type": "string",
+         "maxLength": 200
+        },
+        "run_id": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "id": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "sha256": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{64}$"
+        },
+        "sha": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{40}$"
+        }
+       }
+      },
+      "digest": {
+       "type": "string",
+       "pattern": "^sha256:[0-9a-f]{64}$"
+      }
+     }
+    },
+    "author": {
+     "description": "The commit author as a pseudonym (person:<10 hex>) and the committer verification state. Never an email.",
+     "type": "object",
+     "required": [
+      "state"
+     ],
+     "properties": {
+      "state": {
+       "type": "string",
+       "enum": [
+        "ESTABLISHED",
+        "NOT ESTABLISHED"
+       ]
+      },
+      "why": {
+       "type": "string",
+       "maxLength": 2000
+      },
+      "source": {
+       "type": "object",
+       "properties": {
+        "kind": {
+         "type": "string",
+         "enum": [
+          "artifact",
+          "deployment",
+          "commit"
+         ]
+        },
+        "name": {
+         "type": "string",
+         "maxLength": 200
+        },
+        "run_id": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "id": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "sha256": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{64}$"
+        },
+        "sha": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{40}$"
+        }
+       }
+      },
+      "id": {
+       "type": "string",
+       "pattern": "^person:[0-9a-f]{10}$"
+      },
+      "committer_id": {
+       "type": [
+        "string",
+        "null"
+       ],
+       "pattern": "^person:[0-9a-f]{10}$"
+      },
+      "verification": {
+       "type": "object",
+       "additionalProperties": false,
+       "properties": {
+        "verified": {
+         "type": "boolean"
+        },
+        "reason": {
+         "type": "string",
+         "maxLength": 80
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "not_established": {
+   "type": "array",
+   "uniqueItems": true,
+   "items": {
+    "type": "string",
+    "enum": [
+     "security_record",
+     "review_signals",
+     "promotion_records",
+     "release_records",
+     "findings",
+     "ticket_outbox",
+     "ticket_links",
+     "kev",
+     "sbom",
+     "author"
+    ]
+   }
+  },
+  "excluded_other_repository": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "count",
+    "kinds"
+   ],
+   "description": "Records found that name another repository: counted, never copied.",
+   "properties": {
+    "count": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "kinds": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "security record",
+       "release record",
+       "promotion record",
+       "ticket outbox"
+      ]
+     }
+    }
+   }
+  },
+  "abridged": {
+   "type": "boolean"
+  }
+ }
+}

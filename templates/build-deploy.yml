@@ -76,6 +76,18 @@ on:
         description: "break-glass / rollback: YYYY-MM-DD, at most 7 days out for break-glass"
         type: string
         default: ""
+      manual_review_by:
+        description: "promotion with no security record: the AppSec reviewer (a login on the AppSec approver list, never you) whose manual review typed the verdict (KDEC-036 G8)"
+        type: string
+        default: ""
+      manual_review_ref:
+        description: "promotion with no security record: the manual review's reference (ticket or review id)"
+        type: string
+        default: ""
+      manual_review_date:
+        description: "promotion with no security record: the manual review's date, YYYY-MM-DD, at most 30 days old"
+        type: string
+        default: ""
   # THE KIT'S API ASKS FOR A RELEASE BY CALLING THIS WORKFLOW (KDEC-035; templates/kit-api.yml). Called,
   # not re-dispatched: the release runs through exactly these jobs and gates, and the API's caller is
   # the run's actor -- the requester the approval check (K-1) refuses as an approver. The inputs are the
@@ -123,6 +135,18 @@ on:
         description: "break-glass / rollback: YYYY-MM-DD, at most 7 days out for break-glass"
         type: string
         default: ""
+      manual_review_by:
+        description: "promotion with no security record: the AppSec reviewer (a login on the AppSec approver list, never you) whose manual review typed the verdict (KDEC-036 G8)"
+        type: string
+        default: ""
+      manual_review_ref:
+        description: "promotion with no security record: the manual review's reference (ticket or review id)"
+        type: string
+        default: ""
+      manual_review_date:
+        description: "promotion with no security record: the manual review's date, YYYY-MM-DD, at most 30 days old"
+        type: string
+        default: ""
 
 # A SUPERSEDED PULL-REQUEST RUN IS CANCELLED; NOTHING ELSE IS (cost redesign step 2, KDEC-033). Only
 # pull_request runs share a group (one per PR), so a new push to the PR cancels the run it replaced. Every
@@ -147,8 +171,11 @@ jobs:
       security-events: write
       actions: read   # the CodeQL job reads workflow metadata on private repositories
     # The defaults ARE the baseline (language: auto, iac_mode: auto, soft_fail_sast: false): change
-    # nothing to get PROCEED on a clean run. Softening any control is a weakening -- attribute it
-    # (weakening_reason, weakening_authority, weakening_expires) or it routes DECISION_REQUIRED.
+    # nothing to get PROCEED on a clean run. Softening any control is a weakening. It is APPROVED only
+    # with all FIVE fields (KDEC-036): weakening_reason, weakening_authority (the owner),
+    # weakening_approver (on a registered approver list, never the requester), weakening_exception_ref
+    # (the evidence) and weakening_expires (within the ceiling); a missing one is WEAKENING_NOT_APPROVED,
+    # no reason or owner routes DECISION_REQUIRED, and naming yourself is WEAKENING_SELF_APPROVED.
     with:
       environment: prod     # the baseline-ledger environment this run is for
     secrets:
@@ -353,9 +380,9 @@ jobs:
       routing_result: ${{ needs.verdict.outputs.deploy_routing_result }}
       controls_unavailable: ${{ needs.security.outputs.controls_unavailable }}
       # WHY the verdict is advisory. At uat/prod a VERSION_GAP established by READ ranges is
-      # refused unless a named person accepts it (KDEC-014) through the weakening record --
-      # weakening_authority (the accepter), weakening_reason, weakening_expires (YYYY-MM-DD) --
-      # and this job's GitHub environment requires reviewers. A gap on an UNVERIFIED range is
+      # refused unless a named person accepts it (KDEC-014) through the weakening record's five
+      # fields -- weakening_reason, weakening_authority, weakening_approver, weakening_exception_ref,
+      # weakening_expires (KDEC-036) -- and this job's GitHub environment requires reviewers. A gap on an UNVERIFIED range is
       # recorded and proceeds until a seeded corpus proves the range.
       advisory_causes: ${{ needs.security.outputs.advisory_causes }}
       # What the policy register demands of this environment's reviewers (named groups, self-review
@@ -535,6 +562,13 @@ jobs:
       weakening_approver: ${{ inputs.exception_approver }}
       weakening_exception_ref: ${{ inputs.exception_ref }}
       weakening_expires: ${{ inputs.exception_expires }}
+      # A TYPED VERDICT (owner ruling 2026-11-03, KDEC-036 G8): when the source run kept no security
+      # record, the deploy accepts the typed verdict only as an attributed manual review -- an AppSec
+      # reviewer on the AppSec list (not the requester or the release's author), a reference and a date
+      # at most 30 days old: MANUAL_REVIEW_VERDICT. Without them it is TYPED_VERDICT, refused at uat/prod.
+      manual_review_by: ${{ inputs.manual_review_by }}
+      manual_review_ref: ${{ inputs.manual_review_ref }}
+      manual_review_date: ${{ inputs.manual_review_date }}
       attestation_signer_workflow: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-build-docker.yml
       attestations_available: ${{ vars.ATTESTATIONS_AVAILABLE == 'true' }}
       environment_tier: ${{ vars.KIT_ENVIRONMENT_TIER }}

@@ -1,0 +1,386 @@
+#!/usr/bin/env python3
+"""Keep a repository's Dependabot configuration matched to its manifests (owner, 2026-11-06).
+
+WHY THIS EXISTS
+    The owner: "How can we keep people from being bitten by a missing manifest, because this is a
+    whole new way of them working?" Two mistakes bite, and both are silent:
+
+      a manifest no `.github/dependabot.yml` entry reads   that dependency is never updated, and
+                                                            nothing says so
+      an entry whose directory holds no manifest           Dependabot fails that update job with
+                                                            dependency_file_not_found, every week
+                                                            (the kit's own work copy, 2026-11-02)
+
+    So this script FINDS every manifest, WRITES a correct dependabot.yml, and CHECKS one, saying in
+    plain words what is wrong and the exact fix.
+
+COMMANDS
+    discover   every manifest by Dependabot ecosystem, and every directory left out, with the rule
+    generate   a dependabot.yml: one entry per ecosystem listing every directory, minor+patch grouped,
+               `rebase-strategy: auto`, the github-actions entry, test fixtures held still
+               (`--write` writes .github/dependabot.yml; without it, prints)
+    check      every manifest is read by an entry of its ecosystem, every entry's directory holds a
+               manifest of its ecosystem; each problem names the file and the fix
+
+    python3 scripts/dependabot_config.py check                 # what is wrong, and how to fix it
+    python3 scripts/dependabot_config.py generate --write      # the one-command fix
+
+EXCLUSION RULES (a directory whose NAME is one of these, anywhere in the tree)
+    VENDORED       vendor, third_party, third-party, node_modules, bower_components, .venv, venv,
+                   site-packages, Pods, Carthage -- someone else's code, updated where it comes from
+    TEST_FIXTURE   fixtures, __fixtures__, test-fixtures, testdata, test-data, consumer-fixture --
+                   deliberately pinned test inputs: generate HOLDS them (no PRs, every dependency
+                   ignored, so an alert-driven security update cannot "fix" them either)
+    BUILD_OUTPUT   dist, build, out, target, bin, obj, .terraform -- generated, not authored
+    TOOLING        .git, and .github (github-actions is handled on its own)
+    --exclude GLOB, or DEPENDABOT_CONFIG_EXCLUDE (comma/newline separated), adds path globs (CALLER).
+
+EXIT  0 nothing wrong   1 problems found (each printed with its fix)   2 could not check
+"""
+import argparse
+import fnmatch
+import json
+import os
+import re
+import sys
+
+EXCLUDED_NAMES = {
+    'VENDORED': {'vendor', 'third_party', 'third-party', 'node_modules', 'bower_components', '.venv',
+                 'venv', 'site-packages', 'Pods', 'Carthage'},
+    'TEST_FIXTURE': {'fixtures', '__fixtures__', 'test-fixtures', 'testdata', 'test-data',
+                     'consumer-fixture'},
+    'BUILD_OUTPUT': {'dist', 'build', 'out', 'target', 'bin', 'obj', '.terraform'},
+    'TOOLING': {'.git', '.github'},
+}
+
+# Exact file name -> Dependabot `package-ecosystem`.
+MANIFEST_NAMES = {
+    'package.json': 'npm',
+    'requirements.txt': 'pip', 'requirements.in': 'pip', 'pyproject.toml': 'pip', 'Pipfile': 'pip',
+    'setup.py': 'pip', 'setup.cfg': 'pip',
+    'go.mod': 'gomod', 'pom.xml': 'maven',
+    'build.gradle': 'gradle', 'build.gradle.kts': 'gradle', 'settings.gradle': 'gradle',
+    'settings.gradle.kts': 'gradle',
+    'packages.config': 'nuget', 'Directory.Packages.props': 'nuget', 'global.json': 'nuget',
+    'composer.json': 'composer', 'Gemfile': 'bundler', 'Cargo.toml': 'cargo', 'mix.exs': 'mix',
+    'pubspec.yaml': 'pub', 'Package.swift': 'swift', 'Chart.yaml': 'helm',
+    'docker-compose.yml': 'docker-compose', 'docker-compose.yaml': 'docker-compose',
+    'compose.yml': 'docker-compose', 'compose.yaml': 'docker-compose',
+    'devcontainer.json': 'devcontainers', '.devcontainer.json': 'devcontainers',
+}
+SUFFIX_RULES = [
+    (re.compile(r'^requirements[\w.-]*\.(txt|in)$'), 'pip'),
+    (re.compile(r'.*\.(csproj|fsproj|vbproj)$'), 'nuget'),
+    (re.compile(r'.*\.tf(\.json)?$'), 'terraform'),
+    (re.compile(r'^Dockerfile([.-][\w.-]+)?$|.*\.Dockerfile$', re.I), 'docker'),
+]
+ECOSYSTEMS = sorted(set(MANIFEST_NAMES.values()) | {e for _, e in SUFFIX_RULES} | {'github-actions'})
+GROUPED = {'npm', 'pip', 'gomod', 'maven', 'gradle', 'nuget', 'composer', 'bundler', 'cargo',
+           'github-actions', 'mix', 'pub', 'swift'}
+CONFIG = '.github/dependabot.yml'
+KIT_GENERATE = 'python3 scripts/dependabot_config.py generate --write'
+
+
+def ecosystem_of(name):
+    if name in MANIFEST_NAMES:
+        return MANIFEST_NAMES[name]
+    for rx, eco in SUFFIX_RULES:
+        if rx.match(name):
+            return eco
+    return None
+
+
+def rel_dir(root, d):
+    r = os.path.relpath(d, root).replace(os.sep, '/')
+    return '/' if r == '.' else '/' + r
+
+
+def excluded_rule(rel_path, extra):
+    parts = [p for p in rel_path.strip('/').split('/') if p]
+    for rule, names in EXCLUDED_NAMES.items():
+        if any(p in names for p in parts):
+            return rule
+    for g in extra:
+        g = g.strip().strip('/')
+        if g and (fnmatch.fnmatchcase(rel_path.strip('/'), g) or
+                  (g.endswith('/**') and (rel_path.strip('/') + '/').startswith(g[:-2]))):
+            return 'CALLER:' + g
+    return None
+
+
+def extra_excludes(cli):
+    env = os.environ.get('DEPENDABOT_CONFIG_EXCLUDE', '')
+    return [x.strip() for x in re.split(r'[,\n]', env) if x.strip()] + list(cli or [])
+
+
+def discover(root, extra=()):
+    """-> dict(manifests=[{ecosystem, directory, file}], excluded=[{path, rule}], held=[...])."""
+    manifests, excluded, held = [], [], []
+    seen_excl = set()
+    for d, dirs, files in os.walk(root):
+        rel = rel_dir(root, d)
+        rule = excluded_rule(rel, extra) if rel != '/' else None
+        if rule:
+            if rule == 'TEST_FIXTURE':
+                for f in sorted(files):
+                    eco = ecosystem_of(f)
+                    if eco:
+                        held.append({'ecosystem': eco, 'directory': rel, 'file': f})
+                dirs.sort()
+                continue  # walk on: a fixture tree's manifests are HELD, not updated
+            if rel not in seen_excl:
+                excluded.append({'path': rel, 'rule': rule})
+                seen_excl.add(rel)
+            dirs[:] = []
+            continue
+        dirs.sort()
+        for f in sorted(files):
+            eco = ecosystem_of(f)
+            if eco:
+                manifests.append({'ecosystem': eco, 'directory': rel, 'file': f})
+    wf = os.path.join(root, '.github', 'workflows')
+    if os.path.isdir(wf) and any(n.endswith(('.yml', '.yaml')) for n in os.listdir(wf)):
+        manifests.append({'ecosystem': 'github-actions', 'directory': '/', 'file': '.github/workflows'})
+    acts = os.path.join(root, '.github', 'actions')
+    if os.path.isdir(acts):
+        for n in sorted(os.listdir(acts)):
+            if any(os.path.isfile(os.path.join(acts, n, a)) for a in ('action.yml', 'action.yaml')):
+                manifests.append({'ecosystem': 'github-actions', 'directory': '/.github/actions/' + n,
+                                  'file': 'action.yml'})
+    # one directory may hold several manifests of one ecosystem (requirements.txt + pyproject.toml)
+    return {'manifests': manifests, 'excluded': excluded, 'held': held}
+
+
+def _dirs_by_eco(items):
+    out = {}
+    for m in items:
+        out.setdefault(m['ecosystem'], [])
+        if m['directory'] not in out[m['ecosystem']]:
+            out[m['ecosystem']].append(m['directory'])
+    return out
+
+
+def generate(root, extra=(), interval='weekly', also=()):
+    """`also`: manifests about to exist that are not on disk yet (kit init adds .github/workflows/)."""
+    found = discover(root, extra)
+    by = _dirs_by_eco(found['manifests'] + list(also))
+    held = _dirs_by_eco(found['held'])
+    fixture_globs = sorted({'/'.join(h['directory'].strip('/').split('/')[:_fixture_depth(h['directory'])]) + '/**'
+                            for h in found['held']})
+    lines = [
+        '# Generated by scripts/dependabot_config.py generate (the secure CI/CD kit).',
+        '# Re-run it after adding or moving a manifest; `check` says when it is out of date.',
+        '# Every manifest below is kept current; minor and patch updates arrive as one grouped PR per',
+        '# ecosystem; `rebase-strategy: auto` rebases a PR that conflicts with the default branch.',
+        'version: 2',
+        '',
+        'updates:',
+    ]
+    for eco in sorted(by):
+        dirs = sorted(by[eco])
+        if eco == 'github-actions':
+            # `/` reads .github/workflows; composites are listed by glob.
+            dirs = ['/'] + (['/.github/actions/*'] if any(x.startswith('/.github/actions/') for x in dirs) else [])
+        lines.append('  - package-ecosystem: %s' % eco)
+        lines.append('    directories:')
+        for d in dirs:
+            lines.append('      - "%s"' % d)
+        if fixture_globs:
+            lines.append('    exclude-paths:')
+            for g in fixture_globs:
+                lines.append('      - "%s"' % g)
+        lines.append('    schedule:')
+        lines.append('      interval: %s' % interval)
+        lines.append('    open-pull-requests-limit: 5')
+        lines.append('    rebase-strategy: auto')
+        lines.append('    labels: [dependencies]')
+        lines.append('    commit-message:')
+        lines.append('      prefix: "deps(%s)"' % eco)
+        if eco in GROUPED:
+            lines.append('    groups:')
+            lines.append('      %s-minor-and-patch:' % eco)
+            lines.append('        update-types: [minor, patch]')
+        lines.append('')
+    if held:
+        lines.append('  # TEST FIXTURES, HELD STILL: deliberately pinned test inputs. No version PRs, and every')
+        lines.append('  # dependency ignored, so an alert-driven security update cannot "fix" them either.')
+        for eco in sorted(held):
+            for d in sorted(held[eco]):
+                lines.append('  - package-ecosystem: %s' % eco)
+                lines.append('    directory: "%s"' % d)
+                lines.append('    schedule: {interval: monthly}')
+                lines.append('    open-pull-requests-limit: 0')
+                lines.append('    ignore: [{dependency-name: "*"}]')
+    if not by and not held:
+        lines.append('  []  # no manifest found')
+    return '\n'.join(lines).rstrip() + '\n'
+
+
+def _fixture_depth(d):
+    parts = d.strip('/').split('/')
+    for i, p in enumerate(parts):
+        if p in EXCLUDED_NAMES['TEST_FIXTURE']:
+            return i + 1
+    return len(parts)
+
+
+def _entry_dirs(u):
+    return [str(x) for x in (list(u.get('directories') or []) + ([u['directory']] if u.get('directory') else []))]
+
+
+def _covers(pattern, rel):
+    p = pattern.rstrip('/') or '/'
+    return rel == p or fnmatch.fnmatchcase(rel, p)
+
+
+def check(root, extra=(), config=CONFIG):
+    """-> (problems, warnings, state). Each problem is a dict(what, fix)."""
+    problems, warnings = [], []
+    path = os.path.join(root, *config.split('/'))
+    found = discover(root, extra)
+    if not os.path.isfile(path):
+        if found['manifests']:
+            problems.append({'what': 'this repository has %d manifest(s) and no %s, so Dependabot updates nothing.'
+                             % (len(found['manifests']), config),
+                             'fix': 'run `%s` and commit %s.' % (KIT_GENERATE, config)})
+        return problems, warnings, 'checked'
+    try:
+        import yaml
+    except ImportError:
+        return [], [], 'UNKNOWN: PyYAML is needed to read %s (python3 -m pip install pyyaml)' % config
+    try:
+        with open(path, encoding='utf-8') as fh:
+            doc = yaml.safe_load(fh) or {}
+    except Exception as e:  # noqa: BLE001 -- any parse failure is a problem with the file itself
+        problems.append({'what': '%s is not valid YAML (%s); Dependabot ignores the whole file.' % (config, str(e).splitlines()[0]),
+                         'fix': 'fix the syntax, or regenerate it with `%s`.' % KIT_GENERATE})
+        return problems, warnings, 'checked'
+    entries = doc.get('updates') or []
+    if doc.get('version') != 2:
+        problems.append({'what': '%s does not say `version: 2`.' % config, 'fix': 'add `version: 2` at the top.'})
+    for m in found['manifests']:
+        hit = any(u.get('package-ecosystem') == m['ecosystem'] and any(_covers(d, m['directory']) for d in _entry_dirs(u))
+                  for u in entries)
+        if hit:
+            continue
+        where = (m['directory'].rstrip('/') + '/' + m['file']).lstrip('/') if m['ecosystem'] != 'github-actions' \
+            else m['file'] if m['directory'] == '/' else m['directory'].lstrip('/') + '/action.yml'
+        same = [u for u in entries if u.get('package-ecosystem') == m['ecosystem'] and u.get('open-pull-requests-limit') != 0]
+        if same:
+            fix = 'add "%s" to the `directories:` list of the %s entry in %s (or run `%s`).' % (
+                m['directory'], m['ecosystem'], config, KIT_GENERATE)
+        else:
+            fix = 'add a `package-ecosystem: %s` entry with `directories: ["%s"]` to %s (or run `%s`).' % (
+                m['ecosystem'], m['directory'], config, KIT_GENERATE)
+        problems.append({'what': '%s is not read by any %s entry, so Dependabot never updates it.' % (where, m['ecosystem']),
+                         'fix': fix})
+    present = {}
+    for m in found['manifests'] + found['held']:
+        present.setdefault(m['directory'], set()).add(m['ecosystem'])
+    for u in entries:
+        eco = u.get('package-ecosystem')
+        if eco not in ECOSYSTEMS:
+            problems.append({'what': 'an entry names the ecosystem %r, which this check does not know.' % eco,
+                             'fix': 'use one of: %s.' % ', '.join(ECOSYSTEMS)})
+            continue
+        for d in _entry_dirs(u):
+            if any(c in d for c in '*?['):
+                continue  # Dependabot expands a glob itself
+            if eco == 'github-actions':
+                ok = d.rstrip('/') in ('', '/') and os.path.isdir(os.path.join(root, '.github', 'workflows')) or \
+                    any(os.path.isfile(os.path.join(root, *d.strip('/').split('/'), a)) for a in ('action.yml', 'action.yaml'))
+            else:
+                full = os.path.join(root, *[x for x in d.split('/') if x])
+                ok = eco in present.get(d.rstrip('/') or '/', set()) or any(
+                    ecosystem_of(n) == eco for n in (os.listdir(full) if os.path.isdir(full) else []))
+            if not ok:
+                problems.append({'what': 'the %s entry reads "%s", where there is no %s manifest; Dependabot fails that '
+                                 'update job with dependency_file_not_found every run.' % (eco, d, eco),
+                                 'fix': 'remove "%s" from that entry (the manifest moved or was deleted), or run `%s`.'
+                                        % (d, KIT_GENERATE)})
+        if u.get('open-pull-requests-limit') != 0 and u.get('rebase-strategy') not in (None, 'auto'):
+            warnings.append('the %s entry sets rebase-strategy %r: a PR that conflicts with the default branch waits '
+                            'for a person.' % (eco, u.get('rebase-strategy')))
+        if u.get('open-pull-requests-limit') != 0:
+            fx = [d for d in _entry_dirs(u) if excluded_rule(d, ()) == 'TEST_FIXTURE']
+            for d in fx:
+                warnings.append('the %s entry updates "%s", a test-fixture directory; if its pins are deliberate, hold it '
+                                '(open-pull-requests-limit: 0, ignore every dependency).' % (eco, d))
+    return problems, warnings, 'checked'
+
+
+def touches_manifests(changed):
+    for f in changed:
+        f = f.strip()
+        if not f:
+            continue
+        if f == CONFIG or f == '.github/dependabot.yaml' or f.startswith('.github/workflows/') or \
+                f.startswith('.github/actions/') or ecosystem_of(os.path.basename(f)):
+            return True
+    return False
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description='Keep .github/dependabot.yml matched to the manifests.')
+    ap.add_argument('command', choices=['discover', 'generate', 'check'])
+    ap.add_argument('--root', default='.')
+    ap.add_argument('--exclude', action='append', default=[], help='an extra path glob to leave out')
+    ap.add_argument('--write', action='store_true', help='generate: write .github/dependabot.yml')
+    ap.add_argument('--interval', default='weekly', choices=['daily', 'weekly', 'monthly'])
+    ap.add_argument('--json', action='store_true')
+    ap.add_argument('--changed-files', help='check: a file listing changed paths; nothing to check if none is a manifest')
+    a = ap.parse_args(argv)
+    root = os.path.abspath(a.root)
+    extra = extra_excludes(a.exclude)
+    if not os.path.isdir(root):
+        print('UNKNOWN: %s is not a directory' % root)
+        return 2
+    if a.command == 'discover':
+        found = discover(root, extra)
+        if a.json:
+            print(json.dumps(found, indent=1))
+        else:
+            for m in found['manifests']:
+                print('%-15s %-40s %s' % (m['ecosystem'], m['directory'], m['file']))
+            for m in found['held']:
+                print('%-15s %-40s %s  (held: TEST_FIXTURE)' % (m['ecosystem'], m['directory'], m['file']))
+            for x in found['excluded']:
+                print('%-15s %-40s left out: %s' % ('-', x['path'], x['rule']))
+        return 0
+    if a.command == 'generate':
+        text = generate(root, extra, a.interval)
+        if a.write:
+            os.makedirs(os.path.join(root, '.github'), exist_ok=True)
+            with open(os.path.join(root, '.github', 'dependabot.yml'), 'w', encoding='utf-8', newline='\n') as fh:
+                fh.write(text)
+            print('wrote %s; review it and commit it.' % CONFIG)
+        else:
+            sys.stdout.write(text)
+        return 0
+    if a.changed_files:
+        try:
+            changed = open(a.changed_files, encoding='utf-8').read().splitlines()
+        except OSError:
+            changed = None  # unreadable: check everything rather than nothing
+        if changed is not None and not touches_manifests(changed):
+            print('NOTHING_TO_CHECK: this change touches no manifest and not %s.' % CONFIG)
+            return 0
+    problems, warnings, state = check(root, extra)
+    if state.startswith('UNKNOWN'):
+        print(state)
+        return 2
+    if a.json:
+        print(json.dumps({'problems': problems, 'warnings': warnings}, indent=1))
+    for w in warnings:
+        print('note: %s' % w)
+    if problems:
+        print('Dependabot configuration: %d problem(s).' % len(problems))
+        for i, p in enumerate(problems, 1):
+            print('  %d. %s\n     Fix: %s' % (i, p['what'], p['fix']))
+        return 1
+    print('OK: every manifest is read by a Dependabot entry, and every entry reads a manifest.')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
