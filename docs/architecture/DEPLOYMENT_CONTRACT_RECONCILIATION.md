@@ -33,7 +33,7 @@ what the implementation work had to satisfy.
 > | 8 `PARTIAL_APPLY` / `STATUS_UNTRUSTED` | built, registered | stub only (gap8; matrix B and D not induced live) |
 > | 9 `rollback_capability` before the point of no return | built; UNAVAILABLE refuses at uat/prod | stub only (gap9); computed on every live run, never refused live |
 > | 10 push as the point of no return | built in `reusable-build-docker.yml` | live: 38857011286, 38857017667, 38857024014. The `docker-build-push` composite has no push-capability step |
-> | 11 promotion verified | report shape only; can never read "verified" | blocked on owner decision O-11 |
+> | 11 promotion verified | built (KDEC-029, 2026-10-26): every condition has a source; the promotion record and the promotion gate (`scripts/promotion.py`) | stub only (`prove_deploy_outcome` gap11, `prove_promotion`); the hosted promotion is owed |
 >
 > Gate 1 is therefore implemented and proven live for the reversal cases the acceptance matrix calls
 > A and C and for the second-actor refusal (§8); B, D, E and ROLLBACK_TO_EMPTY are not live (§7.8).

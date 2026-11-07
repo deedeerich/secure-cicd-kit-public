@@ -1,0 +1,39 @@
+{
+  "api_version": "v1",
+  "client": {
+    "name": "tines-3b-step",
+    "version": "1.0.0"
+  },
+  "correlation_id": "kapi-20261103T101500Z-000000000010",
+  "idempotency_key": "usr-review:2026-11-03:submit-1",
+  "on_behalf_of": "analyst@example.invalid",
+  "operation": "tickets.submit",
+  "params": {
+    "items": [
+      {
+        "asset": {
+          "cloud": "azure-government",
+          "resource_id": "/subscriptions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/resourceGroups/rg-app/providers/Microsoft.Storage/storageAccounts/acct1",
+          "scheme": "azure-resource",
+          "subscription_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+          "tenant_id": "11111111-2222-3333-4444-555555555555"
+        },
+        "environment": "azure-government-prod",
+        "evidence": {
+          "ref": "usr-reviews/USR-2026-11-03-001/evidence/item-1.json",
+          "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        },
+        "fix_status": "FIX_AVAILABLE",
+        "identifier": "AZURE-STORAGE-TLS-1-0",
+        "requested_by": "usr-review-board",
+        "severity": "high",
+        "source_tool": "usr-review",
+        "source_type": "usr",
+        "title": "Storage account allows TLS 1.0"
+      }
+    ],
+    "review_id": "USR-2026-11-03-001",
+    "template": "finding",
+    "template_version": 1
+  }
+}

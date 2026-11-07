@@ -7,5 +7,7 @@
     <!-- Known-vulnerable versions with published advisories -->
     <PackageReference Include="Newtonsoft.Json" Version="9.0.1" />
     <PackageReference Include="System.Text.Encodings.Web" Version="4.5.0" />
+    <!-- Not vulnerable: Vuln.cs needs it to compile, and CodeQL reads C# it cannot compile as a failed run -->
+    <PackageReference Include="System.Data.SqlClient" Version="4.9.0" />
   </ItemGroup>
 </Project>

@@ -67,7 +67,7 @@ so and was not re-derived), **INFERRED** (reasoned).
 | 59 | Deploy posture record; serialised per target | PROVEN-LOCAL | `prove_deploy_posture.py`, `prove_deploy_concurrency.py` | — | per repository only. Trunk `078ef90`: an empty KDEC-014 ruling routes EVIDENCE_UNTRUSTED (`prove_version_gap_production`) | VERIFIED (proofs run at 078ef90) |
 | 60 | Starter template: identity + verdict branching, stamp, deploy | PROVEN-LOCAL | `prove_template_branches_on_verdict.py` (the `decide` step) | an unproven identity or non-proceed verdict refuses a requested deploy | **never run on a runner**; passes the security verdict, not the combined one, and hard-codes `prod` (ledger P-01) | READ |
 | 61 | Scan → verdict → build → deploy in one run | DESIGNED | — | — | every live deploy used a typed verdict | VERIFIED (ledger S-15) |
-| 62 | Promotion verified as its own outcome (DCR-11) | BLOCKED | O-11 | — | the report can never read "verified" | READ |
+| 62 | Promotion verified as its own outcome (DCR-11) | PROVEN-STUB | `tests/prove_promotion.py`, `tests/prove_deploy_outcome.py` gap11 (KDEC-029, 2026-10-26) | a healthy, tested deploy reads verified-for-promotion; every promotion refusal is named before login | stub cloud and recorded API; the hosted promotion run is owed | READ |
 | 63 | Harness teardown (zero before, zero after) | PROVEN-STUB | `prove_harness_teardown.py` | — | no live run | READ |
 | 64 | Scheduled revalidation of what is running (PROV V3) | DESIGNED | — | — | NVD rescans a caller-supplied SBOM/image only | READ |
 

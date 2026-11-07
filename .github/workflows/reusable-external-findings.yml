@@ -1,0 +1,242 @@
+# SonarQube and Aikido findings into the kit's intake: pulled read-only, written only behind the review gate.
+#
+# THE OWNER (2026-11-06): SonarQube org secrets and Aikido API secrets are set at work "so we can test the
+# SonarQube stuff ... and pull those vulns and findings down." Two jobs, never in the same run:
+#
+#   pull    (scheduled or dispatched; contents read) runs scripts/external_findings_pull.py: every page of
+#           the source, each open finding mapped into a `finding` template item (KDEC-037), deduplicated
+#           against the kit's own findings, refused BY NAME when it cannot complete (SOURCE_AUTH_REFUSED,
+#           SOURCE_TRUNCATED ... -- never "no findings"). With review_id set it also cuts tickets.submit
+#           batches and prints each batch's evidence_sha256, the hash the review record must concur with.
+#           Artifact: external-findings-<source>.
+#   submit  (dispatch with submit: true, review_id and from_run_id) waits in the GitHub environment
+#           `review_environment` -- its required reviewers are the human gate -- then sends each batch of
+#           that pull, unchanged, to this repository's kit API workflow as tickets.submit. The API then
+#           applies KDEC-037 in full: the review must be FINALIZED with a concurrence bound to that exact
+#           evidence set, separation of duties, and a search of every ticket before one is created.
+#           It never re-pulls: the review concurred with THAT pull.
+#
+# SECRETS (set by the owner; names are the vendors' and this kit's): SONAR_TOKEN (a user token),
+# SONAR_HOST_URL (https://sonarcloud.io or your server), AIKIDO_CLIENT_ID and AIKIDO_CLIENT_SECRET (an
+# Aikido workspace admin creates them on the integrations page). Masked, passed only through env:, never
+# printed (tests/prove_external_findings_pull.py N3).
+# PROOF: tests/prove_external_findings_pull.py (the script); tests/prove_external_findings_workflow.py (this file).
+name: "Kit: external findings intake (reusable)"
+
+on:
+  workflow_call:
+    inputs:
+      source:
+        description: "sonar or aikido."
+        type: string
+        required: true
+      sonar_projects:
+        description: "Sonar project keys, comma separated (required for sonar)."
+        type: string
+        default: ""
+      sonar_organization:
+        description: "SonarQube Cloud organization key. Empty for SonarQube Server."
+        type: string
+        default: ""
+      aikido_api_base:
+        description: "Aikido public API base: https://app.aikido.dev/api/public/v1 (EU, default) or https://app.us.aikido.dev/api/public/v1 (US)."
+        type: string
+        default: "https://app.aikido.dev/api/public/v1"
+      repo_map:
+        description: >-
+          JSON object: Sonar project key or Aikido repository name -> "org/repo". "*": "org/{}" maps every
+          name. A finding with no mapped repository is listed NOT_MAPPED, never dropped.
+        type: string
+        default: "{}"
+      environment_label:
+        description: "The environment label findings carry (the finding template's `environment`)."
+        type: string
+        default: "code"
+      review_id:
+        description: "The review that will concur with the batches (pull: cut batches for it; submit: required)."
+        type: string
+        default: ""
+      submit:
+        description: "false: pull. true: submit the batches of from_run_id behind the review environment."
+        type: boolean
+        default: false
+      from_run_id:
+        description: "submit: the run id of the pull the review concurred with."
+        type: string
+        default: ""
+      review_environment:
+        description: "submit: the GitHub environment whose required reviewers are the human gate."
+        type: string
+        default: "external-findings-review"
+      kit_api_workflow:
+        description: "submit: this repository's kit API workflow file (templates/kit-api.yml)."
+        type: string
+        default: "kit-api.yml"
+    secrets:
+      SONAR_TOKEN:
+        description: "SonarQube / SonarQube Cloud user token (Bearer). Read access to the projects."
+        required: false
+      SONAR_HOST_URL:
+        description: "https://sonarcloud.io, or your SonarQube Server URL."
+        required: false
+      AIKIDO_CLIENT_ID:
+        description: "Aikido client-credentials client id (issues:read)."
+        required: false
+      AIKIDO_CLIENT_SECRET:
+        description: "Aikido client-credentials client secret."
+        required: false
+    outputs:
+      state:
+        description: "The pull's state: SOURCE_PULLED or the named refusal (assurance-taxonomy.yaml external_findings_pull)."
+        value: ${{ jobs.pull.outputs.state }}
+      items:
+        description: "How many findings are ready for the intake."
+        value: ${{ jobs.pull.outputs.items }}
+
+permissions: {}
+
+jobs:
+  pull:
+    name: Pull ${{ inputs.source }} findings (read-only)
+    if: ${{ !inputs.submit }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      state: ${{ steps.pull.outputs.state }}
+      items: ${{ steps.pull.outputs.items }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pull
+        id: pull
+        shell: bash
+        env:
+          SOURCE: ${{ inputs.source }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_ORGANIZATION: ${{ inputs.sonar_organization }}
+          IN_PROJECTS: ${{ inputs.sonar_projects }}
+          AIKIDO_CLIENT_ID: ${{ secrets.AIKIDO_CLIENT_ID }}
+          AIKIDO_CLIENT_SECRET: ${{ secrets.AIKIDO_CLIENT_SECRET }}
+          AIKIDO_API_BASE: ${{ inputs.aikido_api_base }}
+          IN_REPO_MAP: ${{ inputs.repo_map }}
+          IN_ENVIRONMENT: ${{ inputs.environment_label }}
+          IN_REVIEW_ID: ${{ inputs.review_id }}
+        run: |
+          set -uo pipefail
+          for s in SONAR_TOKEN AIKIDO_CLIENT_ID AIKIDO_CLIENT_SECRET; do
+            [ -n "${!s:-}" ] && echo "::add-mask::${!s}"
+          done
+          out="$RUNNER_TEMP/external-findings"; mkdir -p "$out"
+          printf '%s' "$IN_REPO_MAP" > "$out/repo-map.json"
+          args=()
+          case "$SOURCE" in
+            sonar)
+              IFS=',' read -r -a projects <<< "$IN_PROJECTS"
+              for p in "${projects[@]}"; do p="$(printf '%s' "$p" | tr -d ' ')"; [ -n "$p" ] && args+=(--project "$p"); done
+              [ -n "$SONAR_ORGANIZATION" ] && args+=(--organization "$SONAR_ORGANIZATION")
+              args=(sonar --host "$SONAR_HOST_URL" "${args[@]}") ;;
+            aikido)
+              args=(aikido --base "$AIKIDO_API_BASE") ;;
+            *) echo "::error title=Unknown source::source must be sonar or aikido"; exit 1 ;;
+          esac
+          rc=0
+          python3 scripts/external_findings_pull.py "${args[@]}" --repo-map "$out/repo-map.json" \
+            --environment "$IN_ENVIRONMENT" --out "$out/pulled.json" > "$out/pull.txt" 2>&1 || rc=$?
+          cat "$out/pull.txt"
+          state="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("state",""))' "$out/pulled.json" 2>/dev/null || echo UNKNOWN)"
+          items="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("items") or []))' "$out/pulled.json" 2>/dev/null || echo 0)"
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          echo "items=$items" >> "$GITHUB_OUTPUT"
+          { echo "### External findings: $SOURCE -- $state"; echo ""; echo '```'; cat "$out/pull.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" != 0 ]; then
+            echo "::error title=$state::the $SOURCE pull did not complete; this is not \"no findings\" (see the summary)"
+            exit 1
+          fi
+          if [ -n "$IN_REVIEW_ID" ]; then
+            python3 scripts/external_findings_pull.py batch --in "$out/pulled.json" --review-id "$IN_REVIEW_ID" \
+              --out-dir "$out/batches" | tee "$out/batches.txt"
+            { echo ""; echo "Batches for review \`$IN_REVIEW_ID\` (the review record concurs with each evidence_sha256):";
+              echo '```'; cat "$out/batches.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          rm -f "$out/repo-map.json"
+      - name: Keep the pull
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: external-findings-${{ inputs.source }}
+          path: ${{ runner.temp }}/external-findings
+          if-no-files-found: warn
+          retention-days: 30
+
+  submit:
+    name: Submit ${{ inputs.source }} findings through the kit API (behind the review gate)
+    if: ${{ inputs.submit }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # THE HUMAN GATE: this environment's required reviewers approve before any step runs. The kit API
+    # then refuses anything a finalized review did not concur with (API_REVIEW_NOT_FINALIZED).
+    environment: ${{ inputs.review_environment }}
+    permissions:
+      contents: read
+      actions: write        # dispatch the kit API workflow; read the pull run's artifact
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The pull the review concurred with
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: external-findings-${{ inputs.source }}
+          run-id: ${{ inputs.from_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/external-findings
+      - name: Send each batch as tickets.submit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IN_REVIEW_ID: ${{ inputs.review_id }}
+          IN_FROM_RUN: ${{ inputs.from_run_id }}
+          KIT_API_WORKFLOW: ${{ inputs.kit_api_workflow }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -uo pipefail
+          # KDEC-027: gh's token goes to this run's host only (gh api / -R default to github.com).
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
+          export GH_REPO="${GH_HOST}/${GITHUB_REPOSITORY}"
+          case "$IN_FROM_RUN" in ''|*[!0-9]*) echo "::error title=No pull named::from_run_id must be the pull's run id"; exit 1 ;; esac
+          [ -n "$IN_REVIEW_ID" ] || { echo "::error title=No review::review_id is required to submit"; exit 1; }
+          dir="$RUNNER_TEMP/external-findings/batches"
+          ls "$dir"/batch-*.params.json > /dev/null 2>&1 || {
+            echo "::error title=No batches::that pull cut no batches; run the pull again with review_id set"; exit 1; }
+          fail=0
+          for f in "$dir"/batch-*.params.json; do
+            python3 - "$f" "$IN_REVIEW_ID" > "$RUNNER_TEMP/inputs.json" <<'SUBMIT_PY' || { fail=1; continue; }
+          import json, sys
+          sys.path.insert(0, 'scripts')
+          import kit_api as ka
+          import ticket_templates as tt
+          params = json.load(open(sys.argv[1], encoding='utf-8'))
+          if params.get('review_id') != sys.argv[2]:
+              sys.stderr.write('the batch was cut for review %r, not %r\n' % (params.get('review_id'), sys.argv[2]))
+              sys.exit(1)
+          h = tt.evidence_set_sha256(params)
+          req = ka.build_request('tickets.submit', params, idempotency_key='xf-' + h[:40])
+          bad = ka.check_request(req)
+          if bad:
+              sys.stderr.write('refused before sending: %s %s\n' % (bad['code'], bad['detail']))
+              sys.exit(1)
+          json.dump({'correlation_id': req['correlation_id'], 'idempotency_key': req['idempotency_key'],
+                     'request': json.dumps(req, sort_keys=True)}, sys.stdout)
+          sys.stderr.write('%s evidence_sha256 %s correlation %s\n' % (sys.argv[1].rsplit('/', 1)[-1], h, req['correlation_id']))
+          SUBMIT_PY
+            if gh workflow run "$KIT_API_WORKFLOW" --ref "${DEFAULT_BRANCH:-main}" --json < "$RUNNER_TEMP/inputs.json"; then
+              echo "- sent $(basename "$f"): read the answer with scripts/kit_api.py status --correlation-id $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["correlation_id"])' "$RUNNER_TEMP/inputs.json")" >> "$GITHUB_STEP_SUMMARY"
+            else
+              fail=1; echo "::error title=Dispatch refused::$(basename "$f") could not be sent to $KIT_API_WORKFLOW"
+            fi
+          done
+          exit "$fail"

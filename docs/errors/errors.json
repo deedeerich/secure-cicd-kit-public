@@ -1,0 +1,2752 @@
+{
+ "schema": "kit-plain-errors/1",
+ "about": "The plain-English error layer (owner, 2026-11-06): every refusal or failure state the kit can show a developer, with what happened, why it matters, the exact fix and a link. Source of truth for docs/errors/ERRORS.md (python3 scripts/plain_errors.py render --write regenerates it) and for the step summaries and annotations (.github/actions/plain-errors). scripts/plain_errors.py check holds it to assurance-taxonomy.yaml: every namespace is scoped, every value of a developer namespace has an entry or is listed as not a failure.",
+ "extra_namespaces": {
+  "dependabot_triage_rule": "The rule that sent a Dependabot pull request to a person or closed it (.github/workflows/reusable-dependabot-triage.yml); lowercase rule ids, not taxonomy states."
+ },
+ "scope": {
+  "routing_result": "developer",
+  "advisory_cause": "developer",
+  "control_weakening": "developer",
+  "policy_resolution": "developer",
+  "policy_notice": "developer",
+  "policy_source": "developer",
+  "secret_exception_refusal": "developer",
+  "known_exploited": "developer",
+  "known_exploited_exception_refusal": "developer",
+  "exception_lifecycle": "developer",
+  "feed_mirror": "developer",
+  "feed_mirror_refresh": "developer",
+  "scanner_state": "developer",
+  "execution_unavailable_reason": "developer",
+  "prerequisite_readiness": "developer",
+  "capability_floor_state": "developer",
+  "api_token_preflight": "developer",
+  "scan_partial_reason": "developer",
+  "scan_examination": "developer",
+  "artifact_identity": "developer",
+  "leak_gate_state": "developer",
+  "leak_gate_setup_refusal": "developer",
+  "platform_applicability": "developer",
+  "execution_state": "developer",
+  "deploy_coverage": "developer",
+  "publication_state": "developer",
+  "discovery_state": "developer",
+  "coverage_state": "developer",
+  "version_applicability": "developer",
+  "api_boundary": "developer",
+  "finding_baseline_state": "developer",
+  "remediation_track_state": "developer",
+  "human_control_availability": "developer",
+  "deployment_outcome": "developer",
+  "rollback_capability": "developer",
+  "previous_state": "developer",
+  "rollback_state": "developer",
+  "attestation_verification": "developer",
+  "environment_protection": "developer",
+  "release_block": "developer",
+  "zone_readiness": "developer",
+  "zone_readiness_gate": "developer",
+  "readiness_source": "developer",
+  "release_approval": "developer",
+  "version_gap_ruling": "developer",
+  "verdict_provenance": "developer",
+  "promotion_gate": "developer",
+  "promotion_revocation": "developer",
+  "promotion_check": "developer",
+  "target_lease": "developer",
+  "rollback_dependency_check": "developer",
+  "seam_ownership_refusal": "developer",
+  "seam_ownership_check": "developer",
+  "release_record": "developer",
+  "edge_purge": "developer",
+  "tier_source": "developer",
+  "tier_reality": "developer",
+  "kit_watermark": "developer",
+  "evidence_retention": "developer",
+  "rollback_sequence": "developer",
+  "rollback_sequence_step": "developer",
+  "rollback_dependency_outcome": "developer",
+  "ticketing_availability": "developer",
+  "ticket_lookup_outcome": "developer",
+  "ticket_reference_outcome": "developer",
+  "ticket_intake_state": "developer",
+  "review_finalize_state": "developer",
+  "ticket_template_refusal": "developer",
+  "ticket_template_outcome": "developer",
+  "code_finding_key_state": "developer",
+  "exception_resurfacing": "developer",
+  "kit_api_state": "developer",
+  "kit_api_refusal": "developer",
+  "oidc_subject_form": "developer",
+  "authorization_probe_outcome": "developer",
+  "reusable_workflow_resolution": "developer",
+  "external_findings_pull": "developer",
+  "dependabot_config": "developer",
+  "finding_id_form": "developer",
+  "unknown_id_review": "developer",
+  "kit_init_state": "developer",
+  "dependabot_triage_rule": "developer",
+  "projection": "internal: a rule about how consumers reduce evidence, with no values of its own",
+  "epistemic_property": "internal: words for dashboards and reports about coverage, never a run outcome",
+  "suppression_reason": "internal: recorded per error-suppressing line of kit code, read by kit maintainers",
+  "observation_quality": "internal: what a kit control knows about its own channel, read by the kit and its proofs",
+  "corpus_family_outcome": "internal: the outcome of a kit scanner-corpus probe, run by kit maintainers only",
+  "toolchain_currency": "internal: declared but not implemented; no run emits it",
+  "finding_subject": "internal: what a finding is about, a field of the evidence model, not an outcome",
+  "identity_refusal": "internal: why a durable finding identity was not computed, read by the ledger and its proofs",
+  "identity_scope": "internal: how far a finding identity may be trusted, a field of the evidence model",
+  "content_normalisation_policy": "internal: how a matched construct is normalised before hashing, internal to identity",
+  "lineage_relation": "internal: how finding identities relate across an identity change, internal to the ledger",
+  "lineage_resolution": "internal: what an identity resolves to now, internal to the ledger",
+  "lineage_cause": "internal: why an identity moved, recorded on ledger events for maintainers",
+  "lineage_attribution": "internal: who asserted a lineage link, recorded on ledger events for maintainers",
+  "lineage_ledger_integrity": "internal: whether the lineage ledger chain verifies, checked by kit maintainers",
+  "disposition_carry": "internal: how an approved exception reached a finding, internal to the register reader",
+  "identity_proof_failure": "internal: the failure words of one kit proof, seen only by kit maintainers",
+  "lineage_proof_failure": "internal: the failure words of one kit proof, seen only by kit maintainers",
+  "finding_identity_match": "internal: matching a finding against the baseline ledger, internal to the gate",
+  "change_artefact": "internal: the records a deploy keeps about a change, a field of the rollback model",
+  "release_ownership": "internal: per-object attribution read during a reversal, internal to the rollback contract",
+  "reversal_conflict": "internal: why one reversal entry could not be actioned, internal to the rollback contract",
+  "reversal_disposition": "internal: what recovery may do to one object, internal to the rollback contract",
+  "transition_reason": "internal: why a release moved, recorded on the transition for audit",
+  "selftest_reach": "internal: how the kit's own CI exercises a workflow, read by kit maintainers",
+  "capability_maturity": "internal: how far a kit capability is proven, read by kit maintainers and reviewers",
+  "capability_metadata": "internal: capability-specific facts carried beside the shared vocabulary, not outcomes",
+  "finding_classification": "internal: how a maintainer classifies a red kit result before changing anything",
+  "disposition_type": "internal: the four kinds of approved decision about a finding, a field of the register",
+  "ticket_class": "internal: what a ticket asks for, a field of the ticket model",
+  "ticket_trigger": "internal: why a ticket was raised, a field of the ticket model",
+  "ticket_state": "internal: the lifecycle of a parent ticket inside the tracker, not a run outcome",
+  "task_state": "internal: the lifecycle of a child task inside the tracker, not a run outcome",
+  "ticket_closure_rule": "internal: how ticket closure is evaluated, a field of the ticket model",
+  "human_approval": "internal: whether a person permitted one ticket mutation, internal to the reconciler",
+  "mutation_class": "internal: which ticket mutations need a person, internal to the reconciler",
+  "deferral_obligation": "internal: whether a recorded deferral is in force, reported inside ticket records",
+  "compliance_review_type": "internal: the compliance review a finding class implies, a field of the ticket model",
+  "finding_confidence": "internal: how strongly evidence supports a ticket cluster, a field of the ticket model",
+  "rollback_step_eligibility": "internal: why a rollback step was eligible, an explanation not a refusal",
+  "rollback_resource_class": "internal: how a rollback treats one Azure resource type, a registry field",
+  "handoff_write_refusal": "internal: the landing zone's own refusal, which the kit cites and never emits",
+  "lz_drift_dimension": "internal: the landing zone's drift vocabulary, emitted by the deployed scan for the platform team",
+  "lz_drift_class": "internal: the landing zone's drift severity, emitted by the deployed scan for the platform team",
+  "seam_field_drift": "internal: a CANDIDATE vocabulary of the landing zone's seam detector, not emitted by the kit",
+  "evidence_confidence": "internal: how strongly a capability claim is supported, read by kit maintainers",
+  "validation_debt_state": "internal: how an unproven kit capability is held, read by kit maintainers",
+  "policy_mode": "internal: derived from the rung, never set or seen as a refusal (lowercase mode names)",
+  "iac_mode": "internal: an input value (auto, disabled, required); a disabled one is reported as discovery_state.DISABLED",
+  "capability_origin": "internal: where a kit capability came from, read by kit maintainers",
+  "environment_tier": "internal: the tier names themselves (sandbox to prod), configuration rather than an outcome",
+  "team_pattern": "internal: team-size names, configuration rather than an outcome",
+  "enforcement_rung": "internal: the rung names (crawl, walk, run), configuration rather than an outcome",
+  "fix_availability": "internal: whether a finding can be fixed, a field of the remediation record",
+  "scan_depth": "internal: how hard a scan looks by trigger (pr, merge, nightly ...), configuration rather than an outcome",
+  "untrusted_input_transport": "internal: how a value reaches a script body, checked by the kit's own lint",
+  "credential_redaction": "internal: a rule about redaction with no values of its own",
+  "provenance_identity": "internal: a rule about binding identity at capture, with no values of its own",
+  "promotion_record_state": "internal: a field inside the promotion record, explained by promotion_gate refusals",
+  "promotion_approval": "internal: a field inside the promotion record, explained by release_approval refusals",
+  "cost_measurement_state": "internal: what the kit's cost measurement can say, read by kit maintainers",
+  "kit_api_data": "internal: words the API writes inside result data, not refusals"
+ },
+ "not_a_failure": {
+  "routing_result": [
+   "PROCEED"
+  ],
+  "control_weakening": [
+   "EXCEPTION_ATTRIBUTION",
+   "NOT_A_CONTROL_SURFACE",
+   "WEAKENING_ATTRIBUTED",
+   "WEAKENING_AT_BASELINE"
+  ],
+  "policy_resolution": [
+   "POLICY_RESOLVED",
+   "RUNG_EFFECTIVE_BELOW_DECLARED"
+  ],
+  "policy_source": [
+   "KIT_DEFAULT",
+   "REGISTER"
+  ],
+  "known_exploited": [
+   "AVAILABLE",
+   "CLEAR"
+  ],
+  "feed_mirror": [
+   "MIRROR_CURRENT",
+   "NOT_CONFIGURED"
+  ],
+  "feed_mirror_refresh": [
+   "MIRROR_PUBLISHED"
+  ],
+  "scanner_state": [
+   "FINDINGS",
+   "NOT_APPLICABLE",
+   "PASS"
+  ],
+  "prerequisite_readiness": [
+   "ACQUIRED_AND_READY",
+   "READY"
+  ],
+  "capability_floor_state": [
+   "HELD"
+  ],
+  "api_token_preflight": [
+   "TOKEN_ACCEPTED"
+  ],
+  "scan_examination": [
+   "EXAMINED"
+  ],
+  "artifact_identity": [
+   "CONTENT_DIGEST_PROVEN",
+   "LOCAL_BUILD_ONLY",
+   "REGISTRY_IDENTITY_PROVEN"
+  ],
+  "leak_gate_state": [
+   "ON"
+  ],
+  "platform_applicability": [
+   "APPLICABLE",
+   "NOT_APPLICABLE"
+  ],
+  "execution_state": [
+   "COMPLETE"
+  ],
+  "publication_state": [
+   "ANALYSIS_COMPLETE",
+   "PERSISTED",
+   "REPORT_PRODUCED",
+   "REPORT_STRUCTURALLY_VALID"
+  ],
+  "discovery_state": [
+   "ARTIFACT_PRESENT",
+   "CAPABILITY_REQUIRED",
+   "NOT_APPLICABLE",
+   "RUN"
+  ],
+  "coverage_state": [
+   "FULL"
+  ],
+  "version_applicability": [
+   "NOT_SELECTED",
+   "SCANNER_SUPPORTS",
+   "VERSION_DISCOVERED"
+  ],
+  "api_boundary": [
+   "ALLOWED",
+   "BOUND",
+   "CANONICAL",
+   "COMPLETE",
+   "NOT_ATTEMPTED",
+   "PUBLISHED"
+  ],
+  "finding_baseline_state": [
+   "NEW",
+   "PRE_EXISTING_AGE_NOT_ESTABLISHED",
+   "PRE_EXISTING_BASELINED",
+   "PRE_EXISTING_BY_DETECTION_CHANGE"
+  ],
+  "remediation_track_state": [
+   "BREACHED_ACCEPTED",
+   "CLOSED_VERIFIED",
+   "ON_TRACK"
+  ],
+  "human_control_availability": [
+   "HUMAN_CONTROL_AVAILABLE"
+  ],
+  "deployment_outcome": [
+   "DEPLOY_HEALTHY",
+   "ROLLBACK_TO_EMPTY"
+  ],
+  "rollback_capability": [
+   "AVAILABLE",
+   "NO_PRIOR_STATE"
+  ],
+  "previous_state": [
+   "EMPTY",
+   "EXISTING_DEPLOYMENT"
+  ],
+  "rollback_state": [
+   "AUTO_ROLLBACK_ALLOWED",
+   "ROLLBACK_VERIFIED"
+  ],
+  "attestation_verification": [
+   "ATTESTATION_VERIFIED"
+  ],
+  "environment_protection": [
+   "ENVIRONMENT_PROTECTION_NOT_REQUIRED",
+   "ENVIRONMENT_PROTECTION_VERIFIED"
+  ],
+  "release_block": [
+   "RELEASE_BLOCK_NOT_VENDED",
+   "RELEASE_NOT_BLOCKED"
+  ],
+  "zone_readiness": [
+   "READY"
+  ],
+  "zone_readiness_gate": [
+   "ZONE_READINESS_NOT_REQUIRED",
+   "ZONE_READINESS_PERMITTED"
+  ],
+  "readiness_source": [
+   "READINESS_SOURCE_APPSEC_ATTESTATION",
+   "READINESS_SOURCE_LZ_HANDOFF"
+  ],
+  "release_approval": [
+   "RELEASE_APPROVAL_NOT_REQUIRED",
+   "RELEASE_APPROVAL_VERIFIED"
+  ],
+  "version_gap_ruling": [
+   "VERSION_GAP_EXCEPTION_ACCEPTED",
+   "VERSION_GAP_NOT_ENGAGED",
+   "VERSION_GAP_RECORDED",
+   "VERSION_GAP_UNVERIFIED_RECORDED"
+  ],
+  "verdict_provenance": [
+   "MANUAL_REVIEW_VERDICT",
+   "VERDICT_FROM_GATE"
+  ],
+  "promotion_gate": [
+   "PREFLIGHT_PASSED",
+   "PROMOTION_ALLOWED"
+  ],
+  "promotion_check": [
+   "DAST_PASSED",
+   "NOT_APPLICABLE_PASSIVE",
+   "POSTURE_PASSED"
+  ],
+  "target_lease": [
+   "LEASE_ACQUIRED",
+   "LEASE_BROKEN",
+   "LEASE_FENCE_PASSED",
+   "LEASE_MUTATION_MARKED",
+   "LEASE_NOT_IN_FORCE",
+   "LEASE_RELEASED",
+   "LEASE_STATUS",
+   "MUTATED_UNDER_LEASE"
+  ],
+  "rollback_dependency_check": [
+   "DEPLOY_NO_ROLLBACK_DEPENDENCY",
+   "ROLLBACK_CHECK_NOT_REQUIRED"
+  ],
+  "seam_ownership_check": [
+   "SEAM_OWNERSHIP_HELD",
+   "SEAM_OWNERSHIP_NOT_IN_FORCE"
+  ],
+  "release_record": [
+   "RELEASE_RECORD_KEPT",
+   "RELEASE_RECORD_KEPT_DEPLOYMENT"
+  ],
+  "edge_purge": [
+   "EDGE_PURGED",
+   "EDGE_PURGE_NOT_APPLICABLE"
+  ],
+  "tier_source": [
+   "TIER_VENDED"
+  ],
+  "tier_reality": [
+   "TIER_CONSISTENT"
+  ],
+  "kit_watermark": [
+   "WATERMARK_ABSENT",
+   "WATERMARK_BOUND"
+  ],
+  "evidence_retention": [
+   "EVIDENCE_RETENTION_DEFAULT",
+   "EVIDENCE_RETENTION_SET"
+  ],
+  "rollback_sequence": [
+   "ROLLBACK_SEQUENCE_VERIFIED"
+  ],
+  "rollback_sequence_step": [
+   "ROLLBACK_STEP_NOT_REACHED",
+   "ROLLBACK_STEP_VERIFIED"
+  ],
+  "rollback_dependency_outcome": [
+   "ROLLBACK_DEPENDENCY_CLEAR",
+   "ROLLBACK_SCOPED_TO_PRODUCT_CONFIG"
+  ],
+  "ticketing_availability": [
+   "TICKETING_AVAILABLE"
+  ],
+  "ticket_lookup_outcome": [
+   "BACKEND_BOUND",
+   "BINDING_ABSENT",
+   "LEDGER_BOUND"
+  ],
+  "ticket_reference_outcome": [
+   "REFERENCE_FOUND"
+  ],
+  "ticket_intake_state": [
+   "TRACKER_INTAKE_COMPLETE"
+  ],
+  "review_finalize_state": [
+   "REVIEW_FINALIZED"
+  ],
+  "ticket_template_outcome": [
+   "TEMPLATE_CLOSED_DUPLICATE",
+   "TEMPLATE_FIX_OBSERVED",
+   "TEMPLATE_LINKED_EXACT",
+   "TEMPLATE_PENDING_VERIFICATION",
+   "TEMPLATE_POSSIBLE_DUPLICATE",
+   "TEMPLATE_REGRESSION",
+   "TEMPLATE_REOPENED_AS_REMEDIATION",
+   "TEMPLATE_TICKET_BOUND",
+   "TEMPLATE_TICKET_CLOSED",
+   "TEMPLATE_TICKET_CREATED",
+   "TEMPLATE_TICKET_PLANNED",
+   "TEMPLATE_TICKET_UPDATED",
+   "TEMPLATE_TRIAGED_SEPARATE"
+  ],
+  "code_finding_key_state": [
+   "CODE_KEYED",
+   "SECRET_KEYED"
+  ],
+  "exception_resurfacing": [
+   "CHECKED",
+   "NOTHING_DUE",
+   "NOTHING_TO_RESURFACE",
+   "NOT_REQUESTED",
+   "PLANNED",
+   "RESURFACED"
+  ],
+  "kit_api_state": [
+   "API_ACCEPTED",
+   "API_COMPLETED",
+   "API_IN_PROGRESS",
+   "API_QUEUED"
+  ],
+  "oidc_subject_form": [
+   "ID_QUALIFIED",
+   "PLAIN"
+  ],
+  "authorization_probe_outcome": [
+   "REFUSED"
+  ],
+  "reusable_workflow_resolution": [
+   "CROSS_REPO",
+   "MATCHED",
+   "SAME_REPO",
+   "UNASSERTED"
+  ],
+  "external_findings_pull": [
+   "DUPLICATE_OF_KIT_FINDING",
+   "SOURCE_PULLED"
+  ],
+  "dependabot_config": [
+   "BUILD_OUTPUT",
+   "NOTHING_TO_CHECK",
+   "TEST_FIXTURE"
+  ],
+  "kit_init_state": [
+   "KIT_INIT_PR_OPENED",
+   "KIT_INIT_UNCHANGED",
+   "KIT_INIT_WRITTEN"
+  ],
+  "dependabot_triage_rule": [
+   "all_conditions_met",
+   "not_dependabot",
+   "wrong_trigger"
+  ]
+ },
+ "entries": {
+  "routing_result.PROCEED_WITH_ADVISORY": {
+   "what": "The security scan passed with notes: it found things worth knowing that do not stop this change.",
+   "why": "Nothing is blocked, but each note is a real item someone should look at before it piles up; the run summary lists them.",
+   "fix": "Open the run summary, read \"Advisory causes\", and fix or ticket each one. No action is needed to merge.",
+   "link": "docs/security-review/READING-THE-RUN-SUMMARY.md"
+  },
+  "routing_result.DECISION_REQUIRED": {
+   "what": "A person has to make a decision before this can deploy: a control was weakened without a recorded reason and owner, or an exception has expired.",
+   "why": "The kit will not guess whether a weaker control is acceptable; an unexplained weakening is a decision nobody made.",
+   "fix": "Either remove the weakening input from your workflow, or add all five fields (weakening_reason, weakening_authority, weakening_approver, weakening_exception_ref, weakening_expires) with a named approver who is not you.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "routing_result.BLOCKED": {
+   "what": "The security scan stopped this change: a check found something that must be fixed first (for example a committed secret or a known-exploited vulnerability).",
+   "why": "Merging or deploying it would ship a problem the organisation has decided must never reach production.",
+   "fix": "Open the run summary, find the blocking finding (file and line), fix it in your branch and push. A committed secret must also be revoked and rotated, not just deleted.",
+   "link": "docs/security-review/READING-THE-RUN-SUMMARY.md"
+  },
+  "routing_result.EVIDENCE_UNTRUSTED": {
+   "what": "The security scan could not finish properly, so its result cannot be trusted either way.",
+   "why": "A scanner that did not run is not a scanner that found nothing; treating it as clean would hide real problems.",
+   "fix": "Re-run the workflow (Actions > the run > Re-run failed jobs). If it fails the same way, the summary names the scanner and the cause; send that to the platform team.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "advisory_cause.VERSION_GAP": {
+   "what": "No scanner the kit carries can read the language or framework version this code targets, so part of the code was not checked.",
+   "why": "Unchecked code is allowed in dev and test, but uat and prod refuse it unless a named person accepts the gap.",
+   "fix": "Move to a version the kit's scanners support (the summary names it), or ask AppSec to record an attributed exception before you promote to uat/prod.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "advisory_cause.VERSION_GAP_UNVERIFIED": {
+   "what": "A scanner may not be able to read the version this code targets; nobody has measured it yet.",
+   "why": "The gap is recorded and shown, not enforced, until the kit proves the scanner's range.",
+   "fix": "Nothing to do now; if you can, move to a version listed as supported in docs/adoption/USAGE.md.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "advisory_cause.COVERAGE_PARTIAL": {
+   "what": "A scanner checked most of the code but could not read some files (for example files with syntax it could not parse).",
+   "why": "The files it skipped were not checked, so the result covers less than the whole repository.",
+   "fix": "Open the scanner's job summary: it lists the files it could not read. Fix their syntax, or accept the gap; it does not block.",
+   "link": "docs/security-review/READING-THE-RUN-SUMMARY.md"
+  },
+  "advisory_cause.WEAKENING_ATTRIBUTED": {
+   "what": "A control is running weaker than the kit's baseline, and a named person approved that with a reason and an expiry date.",
+   "why": "Approved weakenings are allowed, but they expire; when they do, the run asks for a decision again.",
+   "fix": "Nothing now. Before the expiry date, fix the cause or ask the approver to renew it.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "advisory_cause.FINDINGS_NOT_BLOCKED": {
+   "what": "The scan found issues that do not block at this repository's current enforcement level (crawl or walk).",
+   "why": "They are real findings; at a stricter level the same findings would stop the merge.",
+   "fix": "Read the findings in the run summary and fix or ticket them while they are cheap to fix.",
+   "link": "docs/security-review/READING-THE-RUN-SUMMARY.md"
+  },
+  "advisory_cause.SECRET_EXCEPTION_ATTRIBUTED": {
+   "what": "The scan found secrets, and every one is covered by an approved, ticketed exception that has not expired.",
+   "why": "This is never a clean result: the secrets exist; a person accepted them for a time.",
+   "fix": "Rotate and remove the secrets before the exceptions expire; the exception tickets name the owner.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "advisory_cause.KNOWN_EXPLOITED_EXCEPTION_ATTRIBUTED": {
+   "what": "A dependency has a vulnerability that attackers are known to exploit, and an approved, ticketed exception covers it for now.",
+   "why": "Known-exploited vulnerabilities block by default; this one passes only because a named person accepted it until a date.",
+   "fix": "Upgrade the dependency to a fixed version before the exception expires.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "advisory_cause.WEAKENING_NOT_APPROVED": {
+   "what": "A control is weakened, but the record approving it is missing a field (reason, owner, approver, reference or expiry).",
+   "why": "Below uat this is recorded; a uat or prod deploy is refused until the record is complete.",
+   "fix": "Fill in all five weakening fields in the workflow inputs, with an approver who is not you.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "advisory_cause.KEV_UNAVAILABLE": {
+   "what": "The list of known-exploited vulnerabilities (the CISA KEV catalog) could not be read on this run, so that check did not happen.",
+   "why": "The run still passes, but nobody confirmed your dependencies are free of actively exploited vulnerabilities.",
+   "fix": "Re-run later; if it persists, the platform team checks the network path to the catalog or the organisation feed mirror.",
+   "link": "docs/adoption/FEED_MIRRORS.md"
+  },
+  "control_weakening.GATE_SOFTENED": {
+   "what": "A workflow input lets a scanner report without blocking (for example soft_fail_sast: true).",
+   "why": "The scanner still looks, but its findings can no longer stop a bad change.",
+   "fix": "Remove the soft-fail input from your workflow, or record why with the five weakening fields.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "control_weakening.CONTROL_DISABLED": {
+   "what": "A workflow input switched a security check off, so it did not run.",
+   "why": "Nothing looked at that part of the code, so problems there go unseen.",
+   "fix": "Remove the input that disables it (the summary names it); the kit ships every check on.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "control_weakening.TARGET_NOT_SUPPLIED": {
+   "what": "A check needs something to look at (an image or an SBOM path) and the workflow did not give it one.",
+   "why": "The check could not run; that part was not examined.",
+   "fix": "Pass the missing input the summary names, or leave it if this repository has no such artefact.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "control_weakening.SCOPE_NARROWED": {
+   "what": "A workflow input narrowed what a check looks at (fewer paths, languages or ecosystems).",
+   "why": "Code outside the narrowed scope was not checked.",
+   "fix": "Remove the narrowing input, or record why with the five weakening fields.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "control_weakening.SEVERITY_RAISED": {
+   "what": "A workflow input raised the severity at which a finding counts, so fewer findings act.",
+   "why": "Findings below the new threshold were seen and ignored.",
+   "fix": "Restore the default threshold, or record why with the five weakening fields.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "control_weakening.CONTROL_SURFACE_DEAD": {
+   "what": "A workflow input you set is not read by anything, so setting it has no effect.",
+   "why": "You may believe a check is configured when it is not.",
+   "fix": "Remove the input (the summary names it) and use the one docs/adoption/USAGE.md lists.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "control_weakening.WEAKENING_IN_FORCE": {
+   "what": "A control runs weaker than the kit's baseline on this run.",
+   "why": "A weaker control lets more through; the run records it and asks who decided.",
+   "fix": "Remove the weakening input, or add the five weakening fields with a named approver.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "control_weakening.CONTROL_RECONFIGURED": {
+   "what": "A control's settings differ from the kit's baseline in a way the kit cannot rank as weaker or stronger.",
+   "why": "The change may weaken the check; a person should say whether it is intended.",
+   "fix": "Remove the custom setting, or record the decision with the five weakening fields.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "control_weakening.WEAKENING_UNATTRIBUTED": {
+   "what": "A control is weakened and nobody recorded why or who decided.",
+   "why": "An unexplained weakening is a decision nobody made, so the run asks for one (DECISION_REQUIRED).",
+   "fix": "Add weakening_reason and weakening_authority (and the other three fields) to the workflow inputs, or remove the weakening.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "control_weakening.WEAKENING_EXCEPTION_EXPIRED": {
+   "what": "An approved weakening has passed its expiry date.",
+   "why": "Approvals never renew by silence; the run asks for a decision again.",
+   "fix": "Fix the cause and remove the weakening, or ask the approver for a new expiry date.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "control_weakening.WEAKENING_NOT_APPROVED": {
+   "same_as": "advisory_cause.WEAKENING_NOT_APPROVED"
+  },
+  "control_weakening.WEAKENING_SELF_APPROVED": {
+   "what": "The person named as approver of a weakening is the person who asked for it (or the author of the change).",
+   "why": "Approving your own exception is never accepted: the gate blocks and every deploy refuses.",
+   "fix": "Ask someone on the approver list who is not you to approve it, and put their name in weakening_approver.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "policy_resolution.POLICY_REGISTER_CONFLICT": {
+   "what": "Two policy entries disagree about the same thing, so the kit cannot tell which one applies.",
+   "why": "Picking one by file order would be an accident, not a decision.",
+   "fix": "Ask the policy owner to remove one of the two entries the summary names (in .security/policy-registration.json or the central register).",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "policy_resolution.POLICY_DECISION_UNATTRIBUTED": {
+   "what": "A policy entry has no recorded owner, reason, decision date or expiry.",
+   "why": "Every policy is a decision by a named person; an unsigned one is refused.",
+   "fix": "Ask the policy owner to add the decision fields (authority, reason, decided_on, expires) to the entry the summary names.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "policy_resolution.POLICY_DECISION_EXPIRED": {
+   "what": "A policy entry that applies to this run has passed its expiry date.",
+   "why": "Any loosening it gave is withdrawn until someone renews or replaces it.",
+   "fix": "Ask the policy owner to renew the entry (new expires date) or remove it.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "policy_resolution.REPOSITORY_FILE_SOFTENING": {
+   "what": "This repository's own policy file tries to make a check weaker than the organisation's policy allows.",
+   "why": "A repository may make its policy stricter, never looser; the loosening is ignored and the run blocks.",
+   "fix": "Remove the loosening from .security/policy-registration.json, or ask the central policy owner for the change.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "policy_resolution.POLICY_BELOW_AUTHORITY_FLOOR": {
+   "what": "A policy entry for a narrower scope (team, product, repository) tries to go below what a broader scope set.",
+   "why": "Narrower scopes may only tighten; the floor holds and the run blocks.",
+   "fix": "Ask the policy owner to raise the entry to at least the floor the summary names.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "policy_resolution.ORG_NOT_UNDER_ENTERPRISE": {
+   "what": "This refusal is retired and no longer emitted.",
+   "why": "It is kept only because older records name it.",
+   "fix": "Nothing to do; if you see it, the kit version is old: update the pinned kit SHA.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "policy_resolution.EXCEPTION_RENEWAL_LIMIT": {
+   "what": "An exception has been renewed more times than the policy allows.",
+   "why": "Endless renewals hide a problem; the exception is refused and the finding is treated normally again.",
+   "fix": "Fix the underlying finding; a further exception needs the policy owner to decide, not another renewal.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "policy_resolution.EXCEPTION_HISTORY_TAMPERED": {
+   "what": "An exception claims fewer renewals than the git history of the policy file shows.",
+   "why": "The recorded history must match what actually happened; the exception is refused and the run blocks.",
+   "fix": "Correct the exception's renewal history to match git (the summary shows the count) and have it re-approved.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "policy_resolution.EXCEPTION_HISTORY_UNVERIFIED": {
+   "what": "The kit could not read the git history of the policy file, so it cannot check how often an exception was renewed.",
+   "why": "An unreadable history is never treated as zero renewals; the exception does not apply.",
+   "fix": "Check out with full history (actions/checkout fetch-depth: 0) or ask the platform team; then re-run.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "policy_resolution.POLICY_MODE_SUPPLIED": {
+   "what": "The workflow passed a policy mode as an input; the kit derives it and never accepts it from a caller.",
+   "why": "A derived value that a caller can override is not a control.",
+   "fix": "Remove the policy_mode input from your workflow; set enforcement through the policy register instead.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "policy_resolution.TICKET_ROUTING_BELOW_FLOOR": {
+   "what": "A policy entry routes secrets, known-exploited or malicious-package findings to \"no ticket\".",
+   "why": "Those findings must always be ticketed somewhere; switching them off is refused.",
+   "fix": "Route them to a real project in the policy entry the summary names.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "policy_resolution.CHERRY_PICK_BELOW_FLOOR": {
+   "what": "The policy (or a workflow input) asks for less than the kit's minimum: a secret check below blocking, or a required scan switched off.",
+   "why": "Secret, known-exploited and malicious-package checks always block; nobody can switch them off.",
+   "fix": "Remove the setting the summary names (for example enable_malicious_pkg_scan: false) from the policy or the workflow.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "policy_resolution.CELLS_NOT_MONOTONE": {
+   "what": "The policy makes a lower environment stricter than a higher one (for example dev stricter than prod).",
+   "why": "Enforcement must grow along the promotion path, or problems are found weeks later at the last gate.",
+   "fix": "Ask the policy owner to order the rungs so dev <= test <= uat = prod.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "policy_resolution.CELL_NOT_REGISTERED": {
+   "what": "The policy file has no entry for the environment this run is checked for.",
+   "why": "Without an entry there is no floor to apply, so the result cannot be trusted.",
+   "fix": "Add an entry for the environment the summary names, or map the environment name to a tier in environment_names.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "policy_resolution.REGISTRATION_UNAVAILABLE": {
+   "what": "The policy file could not be read (invalid JSON, wrong schema, or the protected branch could not be reached).",
+   "why": "An unreadable policy is not the default policy; the run cannot decide.",
+   "fix": "Validate .security/policy-registration.json against the schema (python3 scripts/policy_registration.py --validate .security/policy-registration.json --origin repository) and fix the error it names.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "policy_resolution.POLICY_NUMBER_NOT_CONFIGURED": {
+   "what": "A number the policy needs (a count, a period, a grace time) is missing from the policy file.",
+   "why": "The kit never invents a number on the owner's behalf.",
+   "fix": "Ask the policy owner to add the number the summary names to the register's numbers block.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "policy_notice.ORG_UNMAPPED_RAN_AT_ENTERPRISE_FLOOR": {
+   "what": "This organisation is not named in the central policy, so the run used the enterprise minimum.",
+   "why": "You are checked at the safe floor; your organisation's own policy was not applied.",
+   "fix": "Ask the policy owner to add this organisation to the central register's orgs map.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "policy_notice.ORG_UNMAPPED_RAN_AT_STRICTEST_ORG": {
+   "what": "This organisation is not known to the central policy, so the run used the strictest registered organisation's rules.",
+   "why": "You are checked strictly until someone registers your organisation.",
+   "fix": "Ask the policy owner to register this organisation in the central register.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "secret_exception_refusal.SECRET_EXCEPTION_NOT_FINDING_SCOPED": {
+   "what": "A secret exception does not name exactly one finding (its 12-character fingerprint).",
+   "why": "An exception must cover one known secret, never a pattern; the secret still blocks.",
+   "fix": "Put the finding's fingerprint (fp in the scan report) in the exception.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "secret_exception_refusal.SECRET_EXCEPTION_UNTICKETED": {
+   "what": "A secret exception has no valid work-item ticket (PROJECT-1234).",
+   "why": "Every exception must be traceable to a ticket; the secret still blocks.",
+   "fix": "Add the ticket key to the exception's ticket field.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "secret_exception_refusal.SECRET_EXCEPTION_UNATTRIBUTED": {
+   "what": "A secret exception is missing its explanation, approver or expiry (or, at uat/prod, the environment reviewers).",
+   "why": "An exception nobody explained or approved is not an exception; the secret still blocks.",
+   "fix": "Fill in explanation, approver, expires (and environment_reviewers for uat/prod).",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "secret_exception_refusal.SECRET_EXCEPTION_EXPIRED": {
+   "what": "A secret exception has passed its expiry date.",
+   "why": "Exceptions never renew by silence; the secret blocks again.",
+   "fix": "Rotate and remove the secret, or ask the approver for a new expiry.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "secret_exception_refusal.EXCEPTION_RENEWAL_LIMIT": {
+   "same_as": "policy_resolution.EXCEPTION_RENEWAL_LIMIT"
+  },
+  "secret_exception_refusal.EXCEPTION_HISTORY_TAMPERED": {
+   "same_as": "policy_resolution.EXCEPTION_HISTORY_TAMPERED"
+  },
+  "secret_exception_refusal.EXCEPTION_HISTORY_UNVERIFIED": {
+   "same_as": "policy_resolution.EXCEPTION_HISTORY_UNVERIFIED"
+  },
+  "known_exploited.UNAVAILABLE": {
+   "what": "The known-exploited vulnerability check could not run: the catalog could not be fetched or read.",
+   "why": "Nobody confirmed your dependencies are free of actively exploited vulnerabilities on this run.",
+   "fix": "Re-run later; if it persists, the platform team checks the network path to the catalog or the feed mirror.",
+   "link": "docs/adoption/FEED_MIRRORS.md"
+  },
+  "known_exploited.EXCEPTED": {
+   "what": "A dependency has a known-exploited vulnerability that an approved, ticketed exception covers for now.",
+   "why": "It is not clean: attackers use this vulnerability; a named person accepted it until a date.",
+   "fix": "Upgrade the dependency to a fixed version before the exception expires.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "known_exploited.FINDING_KNOWN_EXPLOITED": {
+   "what": "A dependency or image contains a vulnerability that attackers are actively exploiting (it is on the CISA KEV list).",
+   "why": "This always blocks, at every enforcement level: it is the kind of flaw used in real attacks today.",
+   "fix": "Upgrade the package to the fixed version the finding names (Dependabot may already have a pull request), then push.",
+   "link": "docs/security-review/READING-THE-RUN-SUMMARY.md"
+  },
+  "known_exploited_exception_refusal.KEV_EXCEPTION_NOT_FINDING_SCOPED": {
+   "what": "A known-exploited exception does not name exactly one finding and one CVE.",
+   "why": "A blanket exception is never accepted; the vulnerability still blocks.",
+   "fix": "Name the finding fingerprint and the CVE in the exception.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "known_exploited_exception_refusal.KEV_EXCEPTION_UNTICKETED": {
+   "what": "A known-exploited exception has no valid work-item ticket.",
+   "why": "Every exception must be traceable; the vulnerability still blocks.",
+   "fix": "Add the ticket key (PROJECT-1234) to the exception.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "known_exploited_exception_refusal.KEV_EXCEPTION_UNATTRIBUTED": {
+   "what": "A known-exploited exception is missing its explanation, approver, expiry or reviewers, or its history cannot be read.",
+   "why": "An unexplained exception is refused; the vulnerability still blocks.",
+   "fix": "Fill in the missing fields the summary names.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "known_exploited_exception_refusal.KEV_EXCEPTION_EXPIRED": {
+   "what": "A known-exploited exception has passed its expiry date.",
+   "why": "The vulnerability blocks again.",
+   "fix": "Upgrade the dependency, or ask the approver for a new expiry.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "known_exploited_exception_refusal.EXCEPTION_RENEWAL_LIMIT": {
+   "same_as": "policy_resolution.EXCEPTION_RENEWAL_LIMIT"
+  },
+  "known_exploited_exception_refusal.EXCEPTION_HISTORY_TAMPERED": {
+   "same_as": "policy_resolution.EXCEPTION_HISTORY_TAMPERED"
+  },
+  "known_exploited_exception_refusal.EXCEPTION_HISTORY_UNVERIFIED": {
+   "same_as": "policy_resolution.EXCEPTION_HISTORY_UNVERIFIED"
+  },
+  "exception_lifecycle.EXCEPTION_RENEWAL_LIMIT": {
+   "same_as": "policy_resolution.EXCEPTION_RENEWAL_LIMIT"
+  },
+  "exception_lifecycle.EXCEPTION_HISTORY_TAMPERED": {
+   "same_as": "policy_resolution.EXCEPTION_HISTORY_TAMPERED"
+  },
+  "exception_lifecycle.EXCEPTION_HISTORY_UNVERIFIED": {
+   "same_as": "policy_resolution.EXCEPTION_HISTORY_UNVERIFIED"
+  },
+  "feed_mirror.MIRROR_STALE": {
+   "what": "The organisation's copy of a vulnerability database has not been refreshed recently enough.",
+   "why": "Old data cannot show your dependencies are free of newly published vulnerabilities, so it is not used.",
+   "fix": "Tell the platform team: the feed-mirror refresh workflow has stopped (they re-run reusable-feed-mirror-refresh.yml).",
+   "link": "docs/adoption/FEED_MIRRORS.md"
+  },
+  "feed_mirror.MIRROR_UNREACHABLE": {
+   "what": "The organisation's copy of a vulnerability database could not be reached from this runner.",
+   "why": "A database that cannot be read is not a clean result.",
+   "fix": "Run the job on a runner with access to the mirror (vars.KIT_FEED_MIRROR_RUNNER), or ask the platform team to check the private endpoint.",
+   "link": "docs/adoption/FEED_MIRRORS.md"
+  },
+  "feed_mirror.MIRROR_INTEGRITY_FAILED": {
+   "what": "The organisation's copy of a vulnerability database failed its integrity check (a file does not match its checksum).",
+   "why": "Corrupt or tampered data is never used.",
+   "fix": "Tell the platform team; they re-run the mirror refresh and investigate the mismatch.",
+   "link": "docs/adoption/FEED_MIRRORS.md"
+  },
+  "feed_mirror.MIRROR_FALLBACK_UPSTREAM": {
+   "what": "The organisation's mirror was refused, and the public feed was read instead because the repository allows that fallback.",
+   "why": "This is an approved exception to the private-only rule; it is recorded so it gets reviewed.",
+   "fix": "Nothing to do now; the platform team fixes the mirror (the summary names its cause).",
+   "link": "docs/adoption/FEED_MIRRORS.md"
+  },
+  "feed_mirror_refresh.MIRROR_UPSTREAM_STALE": {
+   "what": "The public vulnerability database itself is older than allowed, so the mirror was not updated from it.",
+   "why": "Publishing old data would reset the freshness clock over stale content.",
+   "fix": "Re-run the refresh later; if it persists, check the upstream feed's status page.",
+   "link": "docs/adoption/FEED_MIRRORS.md"
+  },
+  "feed_mirror_refresh.MIRROR_UPSTREAM_UNREACHABLE": {
+   "what": "The public vulnerability database could not be downloaded.",
+   "why": "The mirror keeps its last good copy, which will go stale if this continues.",
+   "fix": "Re-run the refresh; if it persists, check the runner's outbound network access.",
+   "link": "docs/adoption/FEED_MIRRORS.md"
+  },
+  "feed_mirror_refresh.MIRROR_UPSTREAM_INTEGRITY_FAILED": {
+   "what": "The downloaded vulnerability database does not match its own published checksums.",
+   "why": "Corrupt data is never published to the mirror.",
+   "fix": "Re-run the refresh; if it persists, report it to the platform team.",
+   "link": "docs/adoption/FEED_MIRRORS.md"
+  },
+  "feed_mirror_refresh.MIRROR_PUBLISH_UNVERIFIED": {
+   "what": "The mirror was uploaded, but reading it back did not show a current, intact copy.",
+   "why": "A publish nobody could read back is not a working mirror.",
+   "fix": "Check the storage account and the private endpoint, then re-run the refresh.",
+   "link": "docs/adoption/FEED_MIRRORS.md"
+  },
+  "scanner_state.PARTIAL": {
+   "what": "A scanner ran but something it needed was missing, so it could not check everything.",
+   "why": "What it skipped is unchecked; the result is not a clean bill of health.",
+   "fix": "Open the scanner's job summary for the missing prerequisite (a build file, a lockfile, a version) and add it.",
+   "link": "docs/security-review/READING-THE-RUN-SUMMARY.md"
+  },
+  "scanner_state.FAILED": {
+   "what": "A scanner crashed or exited with an error.",
+   "why": "Its findings were not established, so the run cannot be trusted as clean.",
+   "fix": "Re-run the failed job; if it fails again, send the job log to the platform team.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "scanner_state.COLLECTION_FAILED": {
+   "what": "A scanner ran, but its results could not be collected (the report was empty or unreadable).",
+   "why": "An empty report looks exactly like a clean scan, so the kit refuses to treat it as one.",
+   "fix": "Re-run the job; if it repeats, it is a pipeline defect: send the job log to the platform team.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "scanner_state.UNAVAILABLE": {
+   "what": "A scanner never ran on this run.",
+   "why": "Nothing was checked by it, so the run cannot say the code is clean.",
+   "fix": "The summary gives the reason (a download failure, a timeout, a licence); re-run, or pass the reason to the platform team.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "execution_unavailable_reason.BILLING_EXECUTION_REFUSED": {
+   "what": "GitHub refused to run the job because of a spending limit or a payment problem.",
+   "why": "No scanner ran, so nothing was checked.",
+   "fix": "Ask an organisation owner to check Settings > Billing (Actions spending limit), then re-run.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "execution_unavailable_reason.ACTION_ACQUISITION_FAILURE": {
+   "what": "The runner could not download an action the job needs.",
+   "why": "The job never started its checks.",
+   "fix": "Re-run; if it persists, check that the organisation allows the action (Settings > Actions > General) and that the kit repository is accessible to this one.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "execution_unavailable_reason.POLICY_REFUSED": {
+   "what": "An environment protection rule refused to run the job on this branch or ref.",
+   "why": "The job was stopped before it ran.",
+   "fix": "Run it from a branch the environment allows (usually main), or ask an admin to check the environment's deployment branch policy.",
+   "link": "docs/adoption/SETUP.md"
+  },
+  "execution_unavailable_reason.EXECUTION_TIMEOUT": {
+   "what": "The job ran out of time and was stopped.",
+   "why": "The scan did not finish, so its result is unknown.",
+   "fix": "Re-run; if it times out again, the repository may be very large: ask the platform team about the timeout or the scan scope.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "execution_unavailable_reason.DEPENDENCY_ACQUISITION_UNAVAILABLE": {
+   "what": "A tool the scanner needs could not be downloaded or did not work.",
+   "why": "The scanner could not run.",
+   "fix": "Re-run; if it persists, send the job log to the platform team (often a blocked download or a changed checksum).",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "execution_unavailable_reason.DISCOVERY_UNAVAILABLE": {
+   "what": "The kit could not work out which languages and files this repository has.",
+   "why": "Without that, every scanner runs, which is slower but safe; nothing is skipped as \"not applicable\".",
+   "fix": "Re-run; if it persists, send the discover job's log to the platform team.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "execution_unavailable_reason.INFRASTRUCTURE_UNKNOWN": {
+   "what": "A scanner never ran, for a reason the kit could not identify.",
+   "why": "Nothing was checked by it.",
+   "fix": "Re-run; if it repeats, send the job log to the platform team.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "prerequisite_readiness.PREREQUISITE_UNAVAILABLE": {
+   "what": "A tool a check needs is missing on this runner, and the kit has no way to install it.",
+   "why": "The check cannot run here.",
+   "fix": "Run on a GitHub-hosted runner (ubuntu-latest) or ask the platform team to add the tool to your runner.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "prerequisite_readiness.ACQUISITION_UNAVAILABLE": {
+   "what": "The kit tried to install a tool a check needs and could not.",
+   "why": "The check cannot run.",
+   "fix": "Re-run; if it persists, check the runner's network access to the tool's download site.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "prerequisite_readiness.FITNESS_FAILED": {
+   "what": "A tool is installed but does not work (it failed its self-check).",
+   "why": "A broken tool would give a meaningless result, so the check does not run.",
+   "fix": "Re-run on a fresh runner; if it persists, report the tool and version in the log to the platform team.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "prerequisite_readiness.REMEDIATION_FAILED": {
+   "what": "The kit installed a missing tool, but it still does not work.",
+   "why": "The check cannot run.",
+   "fix": "Send the job log to the platform team.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "capability_floor_state.GAP_DECIDED": {
+   "what": "A required scanner was removed under an approved, time-limited decision, and nothing replaces it yet.",
+   "why": "That coverage is missing on purpose for now; it does not block.",
+   "fix": "Nothing for you; the platform team owns the replacement before the decision expires.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "capability_floor_state.BREACHED": {
+   "what": "A scanner that every run must include produced no result, or was removed without a recorded decision.",
+   "why": "The kit refuses to report on a run missing a required check.",
+   "fix": "Re-run; if it persists, the kit copy may be broken or out of date: update the pinned kit SHA or tell the platform team.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "api_token_preflight.JOB_TOKEN_REJECTED": {
+   "what": "GitHub rejected the workflow's own token (401 Bad credentials).",
+   "why": "Every check that reads GitHub (branch protection, environments, alerts) cannot run.",
+   "fix": "If the error URL names api.github.com on a <tenant>.ghe.com host, update the pinned kit SHA (KDEC-027); otherwise an organisation owner checks the IP allow list and Actions permissions.",
+   "link": "docs/adoption/SETUP.md"
+  },
+  "api_token_preflight.ORG_IP_ALLOW_LIST_BLOCKS_RUNNER": {
+   "what": "The organisation's IP allow list blocks this runner from calling GitHub.",
+   "why": "The checks that read GitHub cannot run; it is a platform setting, not your code.",
+   "fix": "An organisation owner allows GitHub-hosted runners (Settings > Security > IP allow list > allow GitHub Actions) or uses a listed runner.",
+   "link": "docs/adoption/SETUP.md"
+  },
+  "api_token_preflight.ORG_SSO_BLOCKS_TOKEN": {
+   "what": "Single sign-on blocked a token, which means a step used a personal or app token instead of the workflow's own token.",
+   "why": "The workflow's own token is exempt from SSO; a personal token needs SSO authorisation.",
+   "fix": "Remove the personal token from GH_TOKEN/GITHUB_TOKEN in your workflow, or authorise it for SSO.",
+   "link": "docs/adoption/SETUP.md"
+  },
+  "api_token_preflight.RATE_LIMITED": {
+   "what": "GitHub rate-limited the workflow's API calls.",
+   "why": "Checks it stopped are unknown, never passed.",
+   "fix": "Wait for the limit to reset (the log shows when) and re-run.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "api_token_preflight.API_UNREACHABLE": {
+   "what": "The runner could not reach the GitHub API at all (DNS, connection or timeout).",
+   "why": "No check that reads GitHub could run.",
+   "fix": "Re-run; if it persists on a self-hosted runner, its administrator checks outbound access to the API host.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "api_token_preflight.TOKEN_PREFLIGHT_UNCLASSIFIED": {
+   "what": "GitHub refused the workflow's token for a reason the kit does not recognise (a missing scope, a 404, a server error).",
+   "why": "The checks that read GitHub cannot be trusted.",
+   "fix": "Read the step log for the HTTP status; most often the job's permissions: block lacks a scope. Compare it with the template.",
+   "link": "docs/adoption/SETUP.md"
+  },
+  "scan_partial_reason.PARSE_PARTIAL_PHP_SYNTAX": {
+   "what": "Semgrep could not parse some PHP files, so those files were not checked; everything else was.",
+   "why": "Syntax it cannot read may hide a vulnerability.",
+   "fix": "Open the sast-semgrep summary for the file list; fix the syntax or accept the gap (it does not block).",
+   "link": "docs/security-review/READING-THE-RUN-SUMMARY.md"
+  },
+  "scan_partial_reason.CPP_ANALYSIS_PARTIAL": {
+   "what": "Some C/C++ files could not be analysed because the kit found no build information for them.",
+   "why": "The kit never invents a build system, so those files were not checked.",
+   "fix": "Commit a compile_commands.json, or a top-level CMakeLists.txt or Makefile the kit can read.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "scan_partial_reason.CODEQL_BUILD_PARTIAL": {
+   "what": "CodeQL's automatic build did not fully succeed, so part of the code may not have been analysed.",
+   "why": "An unknown part of the code went unchecked.",
+   "fix": "Make the project build with its standard command on ubuntu-latest (the CodeQL job log shows the build error).",
+   "link": "docs/security-review/READING-THE-RUN-SUMMARY.md"
+  },
+  "scan_examination.EXAMINED_NOTHING": {
+   "what": "A scanner reported success but, by its own account, examined nothing.",
+   "why": "Zero findings from a scanner that read nothing is not a clean result.",
+   "fix": "Open the scanner's summary: usually the files could not be parsed or no file matched; fix that and re-run.",
+   "link": "docs/security-review/READING-THE-RUN-SUMMARY.md"
+  },
+  "scan_examination.NOT_DECLARED": {
+   "what": "A scanner's report does not say what it examined.",
+   "why": "The kit cannot count it as a clean scan.",
+   "fix": "Re-run; if it repeats, report the scanner and its version to the platform team.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "artifact_identity.IDENTITY_UNVERIFIED": {
+   "what": "The image was pushed, but the kit could not prove the pushed image is the one it scanned.",
+   "why": "Deploying an image nobody can tie to its scan would ship unchecked bytes; deploys are refused.",
+   "fix": "Re-run the build; if it repeats, check the registry login and that nothing else pushes the same tag.",
+   "link": "docs/architecture/PROVENANCE_AND_ATTESTATION.md"
+  },
+  "artifact_identity.NOT_ESTABLISHED": {
+   "what": "The build never got far enough to establish which image it produced.",
+   "why": "There is nothing to deploy.",
+   "fix": "Fix the earlier failure in the build job and re-run.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "artifact_identity.SITE_DIGEST_MISMATCH": {
+   "what": "The static site about to be released is not byte-for-byte the one that was checked and approved.",
+   "why": "A changed, added or renamed file is a different release; nothing was deployed.",
+   "fix": "Re-run the workflow from the merge so the package, attestation and deploy come from the same build.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "leak_gate_state.OFF": {
+   "what": "One of the layers that stop a committed secret reaching main is switched off.",
+   "why": "Secrets get one fewer chance to be caught before they land.",
+   "fix": "Turn the named layer on (push protection or the push ruleset); docs/adoption/LEAK_GATES.md has the exact steps.",
+   "link": "docs/adoption/LEAK_GATES.md"
+  },
+  "leak_gate_state.UNKNOWN": {
+   "what": "The kit could not read whether a secret-protection layer is on (this token cannot see it).",
+   "why": "Unknown is neither on nor off; nobody knows.",
+   "fix": "Ask a repository admin to confirm the layer in Settings > Code security, or grant the read the summary names.",
+   "link": "docs/adoption/LEAK_GATES.md"
+  },
+  "leak_gate_state.NO_LEAK_GATE_SHOWN": {
+   "what": "Only the CI secret scan stands between a committed secret and main: no other protection could be shown on.",
+   "why": "A secret is caught only after it is already pushed.",
+   "fix": "Turn on push protection or apply the kit's push ruleset (docs/adoption/LEAK_GATES.md steps 1-3).",
+   "link": "docs/adoption/LEAK_GATES.md"
+  },
+  "leak_gate_setup_refusal.NOT_APPLIED": {
+   "what": "GitHub refused to create the push ruleset (no admin rights, or the plan does not support rulesets).",
+   "why": "The layer is not in place.",
+   "fix": "Run apply-push-ruleset.sh as a repository admin; on a personal or unlicensed repository, rulesets are not available.",
+   "link": "docs/adoption/LEAK_GATES.md"
+  },
+  "leak_gate_setup_refusal.REPO_NOT_READABLE": {
+   "what": "The ruleset helper could not read the repository (wrong name, wrong host, or no access).",
+   "why": "Nothing was attempted.",
+   "fix": "Check OWNER/REPO and GH_HOST (a <tenant>.ghe.com repository needs GH_HOST set), and that your token can read it.",
+   "link": "docs/adoption/LEAK_GATES.md"
+  },
+  "leak_gate_setup_refusal.RULESET_LOOKUP_FAILED": {
+   "what": "The helper could not list the repository's rulesets, so it does not know whether the kit's ruleset exists.",
+   "why": "Creating one blindly could duplicate it; nothing was done.",
+   "fix": "Re-run with a token that can read rulesets (repository administration read).",
+   "link": "docs/adoption/LEAK_GATES.md"
+  },
+  "leak_gate_setup_refusal.TEMPLATE_UNREADABLE": {
+   "what": "The kit's push-ruleset file next to the helper is missing or broken.",
+   "why": "There is nothing to apply; the kit copy is damaged.",
+   "fix": "Re-fetch the kit at its pinned SHA and run again.",
+   "link": "docs/adoption/LEAK_GATES.md"
+  },
+  "leak_gate_setup_refusal.BASELINE_UNREADABLE": {
+   "what": "The kit's baseline .gitignore next to the helper is missing or empty.",
+   "why": "There is nothing to merge; the kit copy is damaged.",
+   "fix": "Re-fetch the kit at its pinned SHA and run again.",
+   "link": "docs/adoption/LEAK_GATES.md"
+  },
+  "leak_gate_setup_refusal.REPO_DIR_MISSING": {
+   "what": "The directory given to merge-baseline.sh does not exist.",
+   "why": "Nothing was written.",
+   "fix": "Pass the path of your repository's root folder.",
+   "link": "docs/adoption/LEAK_GATES.md"
+  },
+  "leak_gate_setup_refusal.NOT_A_GIT_REPO": {
+   "what": "The directory given to merge-baseline.sh is not a git repository.",
+   "why": "A .gitignore outside a repository protects nothing.",
+   "fix": "Pass the root folder of a git clone.",
+   "link": "docs/adoption/LEAK_GATES.md"
+  },
+  "leak_gate_setup_refusal.TARGET_NOT_WRITABLE": {
+   "what": "The repository's .gitignore could not be written.",
+   "why": "The baseline patterns are not (all) in place.",
+   "fix": "Make .gitignore writable (check its permissions or a lock) and re-run; the merge completes without duplicates.",
+   "link": "docs/adoption/LEAK_GATES.md"
+  },
+  "leak_gate_setup_refusal.MERGE_NOT_VERIFIED": {
+   "what": "After writing .gitignore, at least one baseline pattern is still missing.",
+   "why": "Success is claimed only for what the file really contains.",
+   "fix": "Re-run merge-baseline.sh; it names each missing pattern on stderr.",
+   "link": "docs/adoption/LEAK_GATES.md"
+  },
+  "platform_applicability.UNAVAILABLE": {
+   "what": "A check is not available to this repository (not licensed, or the feature is off for the organisation).",
+   "why": "That check could not run; it is a platform decision, not something your code did.",
+   "fix": "Nothing for you; the platform team decides whether to license or replace it (on GHE.com with GHAS off, CodeQL is not graded).",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "platform_applicability.NOT_CONFIGURED": {
+   "what": "A check is available but switched off for this repository.",
+   "why": "It did not run; someone chose that, or never chose.",
+   "fix": "Ask a repository admin whether it should be on (the summary names the setting).",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "platform_applicability.UNKNOWN": {
+   "what": "The kit could not tell whether a check applies here (the token could not see the setting).",
+   "why": "The check runs anyway, and the result says so.",
+   "fix": "Nothing for you; an admin can confirm the setting.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "execution_state.FAILED": {
+   "what": "A scanner job did not finish.",
+   "why": "Its findings are unknown.",
+   "fix": "Re-run the job; if it fails again, send its log to the platform team.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "execution_state.COLLECTION_FAILED": {
+   "same_as": "scanner_state.COLLECTION_FAILED"
+  },
+  "execution_state.NOT_RUN": {
+   "what": "A scanner job never started (skipped, cancelled or gated off earlier in the run).",
+   "why": "Nothing was checked by it.",
+   "fix": "Look for the earlier job that failed or was cancelled, fix it, and re-run.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "execution_state.NOT_DECLARED": {
+   "what": "A scanner job did not say whether it completed.",
+   "why": "The kit never assumes a job completed.",
+   "fix": "Re-run; if it repeats, report the job name to the platform team.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "deploy_coverage.NO_KIT_ADAPTER": {
+   "what": "This repository deploys to a kind of hosting the kit has no deploy step for (for example AKS, VMs or code-packaged Functions).",
+   "why": "The kit scans the code, but its deploy safety checks do not cover that hosting.",
+   "fix": "Deploy as a container (Container Apps or App Service) or a static site, or ask the platform team about your hosting.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "publication_state.PUBLICATION_DEGRADED": {
+   "what": "A place results are shown (such as the Security tab) was not available, so results were not published there.",
+   "why": "The scan itself still counts; only the display is missing. An empty Security tab is not a clean codebase.",
+   "fix": "Read the results in the run summary and the evidence artifact instead.",
+   "link": "docs/security-review/READING-THE-RUN-SUMMARY.md"
+  },
+  "publication_state.NO_FINDINGS_COUNT": {
+   "what": "The report job finished but published no count of blocking findings.",
+   "why": "No count is not a count of zero; the run cannot pass.",
+   "fix": "Re-run; if it repeats, send the report job's log to the platform team.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "discovery_state.EXCLUDED_BY_SELECTOR": {
+   "what": "Code of a kind the kit scans is present, but a workflow input excluded it.",
+   "why": "That code was not checked.",
+   "fix": "Remove the exclusion input, or record why with the five weakening fields.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "discovery_state.DISABLED": {
+   "what": "A check was explicitly turned off for this repository.",
+   "why": "It is an exception, and it is reported every run.",
+   "fix": "Turn it back on, or make sure the exception is recorded with an owner and expiry.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "discovery_state.MISSING_BUT_REQUIRED": {
+   "what": "Something this repository is declared to have (for example infrastructure code) is missing.",
+   "why": "The absence itself is the finding.",
+   "fix": "Add the missing part, or correct the declaration (for example iac_mode) in the workflow.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "discovery_state.SCANNER_UNAVAILABLE": {
+   "what": "The kit has no scanner for a kind of file found in this repository.",
+   "why": "That code was not checked by anything.",
+   "fix": "Nothing for you; the platform team owns adding a scanner (the summary names the kind).",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "discovery_state.COVERAGE_GAP": {
+   "what": "Code is present that needs a check, and no scanner looked at it.",
+   "why": "This is neither clean nor not-applicable: it is unchecked.",
+   "fix": "Tell the platform team which kind of file it is (the summary names it); consider a scanner or a manual review.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "discovery_state.UNDETERMINED_PRESENT": {
+   "what": "The kit could not tell whether code of one kind is present, so it scans for it anyway.",
+   "why": "An unknown is never treated as absent.",
+   "fix": "Nothing for you; re-run if the discover job failed.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "discovery_state.DISCOVERY_PARTIAL": {
+   "what": "Some of the kit's file-type probes failed; the rest worked.",
+   "why": "The probes that failed are treated as present, so those scanners run anyway.",
+   "fix": "Re-run; if it persists, send the discover job's log to the platform team.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "discovery_state.DISCOVERY_UNAVAILABLE": {
+   "same_as": "execution_unavailable_reason.DISCOVERY_UNAVAILABLE"
+  },
+  "coverage_state.UNSUPPORTED_PRESENT": {
+   "what": "This repository has code in a language the kit has no scanner for, and it was not scanned.",
+   "why": "That code is unchecked.",
+   "fix": "Ask the platform team whether a scanner exists for it; until then, review it by hand.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "coverage_state.COVERAGE_UNDETERMINED": {
+   "what": "The kit could not work out how much of the code it can check.",
+   "why": "Coverage is unknown, not complete.",
+   "fix": "Re-run; if it persists, send the discover job's log to the platform team.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "version_applicability.VERSION_UNSUPPORTED": {
+   "what": "A scanner cannot read the language version this code targets.",
+   "why": "That scanner's part was not checked; another may substitute.",
+   "fix": "Move to a supported version (docs/adoption/USAGE.md lists them) or accept the advisory.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "version_applicability.VERSION_SUPPORT_UNDETERMINED": {
+   "what": "The kit could not tell whether a scanner can read the language version this code targets.",
+   "why": "The result for that part is uncertain.",
+   "fix": "Pin the version explicitly (for example .python-version, global.json, go.mod's go line) so the kit can read it.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "version_applicability.VERSION_GAP": {
+   "same_as": "advisory_cause.VERSION_GAP"
+  },
+  "version_applicability.PLATFORM_UNAVAILABLE": {
+   "what": "A scanner that could read this code was withdrawn by the platform on this repository (for example code scanning unavailable).",
+   "why": "That check did not run; it is a platform decision.",
+   "fix": "Nothing for you; the platform team decides.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "api_boundary.UNDETERMINED": {
+   "what": "The kit could not establish the security posture: something it needed did not run or could not be collected.",
+   "why": "Undetermined is not a pass.",
+   "fix": "Re-run; the summary names what was unavailable.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "api_boundary.BLOCKED": {
+   "same_as": "routing_result.BLOCKED"
+  },
+  "api_boundary.ADVISORY": {
+   "what": "Findings existed and were deliberately not blocked at this enforcement level.",
+   "why": "They are real; at a stricter level they would block.",
+   "fix": "Read and fix or ticket them.",
+   "link": "docs/security-review/READING-THE-RUN-SUMMARY.md"
+  },
+  "api_boundary.UNBOUND": {
+   "what": "The evidence could not be tied to the exact commit and run that produced it.",
+   "why": "Unbound evidence must not be merged or compared with other runs.",
+   "fix": "Re-run; if it repeats, report it to the platform team.",
+   "link": "docs/operations/FAILURE_MODES.md"
+  },
+  "finding_baseline_state.BASELINE_UNAVAILABLE": {
+   "what": "The record of findings that already existed (the baseline ledger) could not be read.",
+   "why": "The kit cannot tell new findings from old ones, so it treats them all as new.",
+   "fix": "Check the ledger file on the default branch is valid JSON; re-run.",
+   "link": "docs/operations/FINDING_CLASSIFICATION.md"
+  },
+  "remediation_track_state.BREACHED_UNDECIDED": {
+   "what": "A known finding is past its fix deadline and nobody has decided what to do.",
+   "why": "Overdue findings owe a decision; after the grace period they block.",
+   "fix": "Fix it, or ask its owner to record a dated decision.",
+   "link": "docs/operations/FINDING_CLASSIFICATION.md"
+  },
+  "remediation_track_state.TRACK_STALLED": {
+   "what": "No known finding in this repository has been fixed in the configured period.",
+   "why": "A schedule nobody follows is not remediation.",
+   "fix": "Fix at least the oldest findings; the promotion review asks for a decision.",
+   "link": "docs/operations/FINDING_CLASSIFICATION.md"
+  },
+  "remediation_track_state.TRACK_NOT_ADMITTED": {
+   "what": "A known finding is not on a fix schedule (no fix status, severity or deadline recorded).",
+   "why": "It cannot be tracked to closure.",
+   "fix": "Ask the finding's owner to record its fix availability and deadline.",
+   "link": "docs/operations/FINDING_CLASSIFICATION.md"
+  },
+  "human_control_availability.HUMAN_CONTROL_UNVALIDATED": {
+   "what": "A control needs a second person, and this repository has only one.",
+   "why": "The control cannot exist here; it is recorded as unvalidated.",
+   "fix": "Name an approver from platform or security outside the team (docs/adoption/ROLLOUT_PLAN.md, small teams).",
+   "link": "docs/adoption/ROLLOUT_PLAN.md"
+  },
+  "human_control_availability.HUMAN_CONTROL_NO_SEPARATION": {
+   "what": "Two people can review each other here, but nobody independent approves exceptions.",
+   "why": "Exceptions lack separation of duties.",
+   "fix": "Use an approver from platform or security for exceptions and uat/prod.",
+   "link": "docs/adoption/ROLLOUT_PLAN.md"
+  },
+  "deployment_outcome.DEPLOY_REFUSED": {
+   "what": "The deploy was refused before it changed anything; the reason is the first refusal listed below it.",
+   "why": "Nothing in the environment was touched, so there is nothing to clean up.",
+   "fix": "Read the refusal named in the deploy summary (each has its own entry in this catalogue), fix it, and re-run the deploy.",
+   "link": "docs/security-review/READING-THE-RUN-SUMMARY.md"
+  },
+  "deployment_outcome.PARTIAL_APPLY": {
+   "what": "The deploy started changing the environment and could not confirm it finished.",
+   "why": "Things may exist that no record knows about.",
+   "fix": "Do not re-run blindly: ask the platform team to inspect the target (the summary names it) before another deploy.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "deployment_outcome.MANUAL_RECOVERY_REQUIRED": {
+   "what": "The deploy failed its checks and could not undo itself automatically; the failed version is still live.",
+   "why": "A person has to decide how to recover.",
+   "fix": "Follow the escalation in the deploy summary (owner and allowed actions), or contact the platform team now.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "deployment_outcome.ROLLBACK_TO_PRIOR": {
+   "what": "The new version failed its checks and the deploy put the previous version back.",
+   "why": "Your change is not live; the previous version is.",
+   "fix": "Read why the new version failed (health or tests in the summary), fix it and deploy again.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "deployment_outcome.ROLLBACK_PARTIAL": {
+   "what": "The deploy undid part of the change but not all of it.",
+   "why": "The environment is in a mixed state.",
+   "fix": "Ask the platform team to review the residue listed in the summary before deploying again.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "deployment_outcome.STATUS_UNTRUSTED": {
+   "what": "The deploy changed the environment and then lost track of what it changed.",
+   "why": "Nobody knows the current state; it is neither success nor clean failure.",
+   "fix": "Stop deploying to this target and ask the platform team to inspect it.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "rollback_capability.UNAVAILABLE": {
+   "what": "If this deploy failed, it could not be undone (no usable previous version or no reversal mechanism).",
+   "why": "At uat and prod a deploy that cannot be undone is refused.",
+   "fix": "Enable multiple revisions (Container Apps) or a staging slot (App Service), or keep the previous artefact; then re-run.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "previous_state.UNKNOWN": {
+   "what": "The deploy could not read what was running before it, so it did not change anything.",
+   "why": "Without a known starting point, a safe rollback is impossible.",
+   "fix": "Re-run; if it repeats, check the deploy identity can read the target (Reader on its resource group).",
+   "link": "docs/adoption/SETUP.md"
+  },
+  "rollback_state.ROLLBACK_REQUIRES_VALIDATION": {
+   "what": "The change can be undone, but the restored state must be proven correct before anyone calls it done.",
+   "why": "A rollback that exits 0 is not a working service.",
+   "fix": "Watch the verification in the summary; if it fails, escalate to the platform team.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "rollback_state.ROLLBACK_REQUIRES_HUMAN_DECISION": {
+   "what": "Undoing this change needs a person to decide: the previous state is unknown or reversal has consequences.",
+   "why": "A machine should not weigh those consequences.",
+   "fix": "Contact the platform team with the run link; do not re-run the deploy.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "rollback_state.ROLLBACK_PROHIBITED": {
+   "what": "This change must not be undone; it can only be fixed forward.",
+   "why": "Reversing it would be worse than the failure (for example a data migration).",
+   "fix": "Fix forward: correct the code and deploy a new version.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "attestation_verification.ATTESTATION_ABSENT": {
+   "what": "No signed build record (attestation) exists for this image.",
+   "why": "Nobody can prove where the image came from; advisory at crawl, a decision above it.",
+   "fix": "Build the image through the kit's build workflow (it signs every image) instead of pushing it by hand.",
+   "link": "docs/architecture/PROVENANCE_AND_ATTESTATION.md"
+  },
+  "attestation_verification.ATTESTATION_CONTRADICTED": {
+   "what": "The image's signed build record does not match (wrong signature, image, builder or type).",
+   "why": "This may mean the image was tampered with; it always blocks.",
+   "fix": "Do not deploy it. Rebuild from main through the kit's build workflow and tell AppSec about the mismatch.",
+   "link": "docs/architecture/PROVENANCE_AND_ATTESTATION.md"
+  },
+  "attestation_verification.ATTESTATION_NOT_ESTABLISHABLE": {
+   "what": "The image's signed build record could not be checked (the service was unreachable or the verifier missing).",
+   "why": "An unchecked signature is not a pass.",
+   "fix": "Re-run; if it persists, check the runner can reach the GitHub attestations API.",
+   "link": "docs/architecture/PROVENANCE_AND_ATTESTATION.md"
+  },
+  "attestation_verification.ATTESTATION_HELD_BY_PLAN": {
+   "what": "This private repository's GitHub plan does not offer attestations, so the signature check was skipped.",
+   "why": "It is recorded as a known gap of the plan, not a failure.",
+   "fix": "Nothing for you. On Enterprise Cloud, set the repository variable ATTESTATIONS_AVAILABLE to true.",
+   "link": "docs/architecture/PROVENANCE_AND_ATTESTATION.md"
+  },
+  "environment_protection.ENVIRONMENT_REVIEWERS_ABSENT": {
+   "what": "The uat or prod environment has no required reviewers, so anyone who can run the workflow could deploy.",
+   "why": "A production deploy must be approved by someone other than the deployer; the deploy is refused.",
+   "fix": "A repository admin adds required reviewers (platform or security) in Settings > Environments > <env>; .kit/ADOPTION_CHECKLIST.md has the gh api command.",
+   "link": "docs/adoption/SETUP.md"
+  },
+  "environment_protection.ENVIRONMENT_SELF_REVIEW_ALLOWED": {
+   "what": "The environment lets the person who started the deploy approve it themselves.",
+   "why": "Self-approval is not an independent check; the deploy is refused.",
+   "fix": "Tick \"Prevent self-review\" in Settings > Environments > <env> (or prevent_self_review: true in the gh api call).",
+   "link": "docs/adoption/SETUP.md"
+  },
+  "environment_protection.ENVIRONMENT_APPROVER_GROUP_MISSING": {
+   "what": "The environment's reviewers are not from the approver groups the policy names.",
+   "why": "Someone outside the named groups could approve a production release; refused.",
+   "fix": "Set the environment's required reviewers to the groups the summary names (for example platform or security).",
+   "link": "docs/adoption/SETUP.md"
+  },
+  "environment_protection.ENVIRONMENT_PROTECTION_NOT_ESTABLISHED": {
+   "what": "The deploy could not read the environment's protection rules (or the tier is not registered).",
+   "why": "Unknown protection is not protection; refused at uat and prod.",
+   "fix": "Check the deploy job has actions: read and that KIT_ENVIRONMENT_TIER is one of sandbox, dev, test, uat, prod.",
+   "link": "docs/adoption/SETUP.md"
+  },
+  "release_block.RELEASE_BLOCKED_BY_PLATFORM": {
+   "what": "The landing zone has paused releases to this workload (halted, expired, or over budget).",
+   "why": "Releases resume only when the platform lifts the stop; nothing was deployed.",
+   "fix": "Ask the platform team why (the summary shows the value of KIT_RELEASE_BLOCK); do not change the variable yourself.",
+   "link": "docs/architecture/LZ_KIT_HANDOFF_CONTRACT.md"
+  },
+  "zone_readiness.READY_WITH_EXCEPTIONS": {
+   "what": "The landing zone is ready with recorded exceptions; uat and prod releases proceed with a warning.",
+   "why": "Some readiness checks have approved exceptions.",
+   "fix": "Nothing for you; the platform team owns the exceptions.",
+   "link": "docs/architecture/LZ_KIT_HANDOFF_CONTRACT.md"
+  },
+  "zone_readiness.NOT_READY": {
+   "what": "The landing zone for this environment failed a readiness check.",
+   "why": "The zone may take nothing beyond dev until it is fixed.",
+   "fix": "Ask the platform team which readiness gate failed.",
+   "link": "docs/architecture/LZ_KIT_HANDOFF_CONTRACT.md"
+  },
+  "zone_readiness.UNKNOWN": {
+   "what": "Nobody has established whether the landing zone is ready (the value is unset or unrecognised).",
+   "why": "uat and prod releases are refused until it is known.",
+   "fix": "Inside a landing zone, ask the platform team to vend KIT_ZONE_READINESS; outside one, AppSec writes .kit/zone-readiness.json.",
+   "link": "docs/adoption/ZONE_READINESS_ATTESTATION.md"
+  },
+  "zone_readiness_gate.RELEASE_REFUSED_ZONE_NOT_READY": {
+   "what": "A uat or prod release was refused because the target zone is not ready, or its readiness is unknown.",
+   "why": "Production releases need a zone that passed its readiness checks.",
+   "fix": "Inside a landing zone, ask the platform team; outside one, AppSec adds .kit/zone-readiness.json (docs/adoption/ZONE_READINESS_ATTESTATION.md).",
+   "link": "docs/adoption/ZONE_READINESS_ATTESTATION.md"
+  },
+  "readiness_source.READINESS_ATTESTATION_REFUSED": {
+   "what": "The readiness attestation file exists, but one of its checks failed (expired, wrong environment, or not approved by AppSec).",
+   "why": "Only a valid AppSec attestation lets a repository outside a landing zone reach uat or prod.",
+   "fix": "Ask AppSec to correct .kit/zone-readiness.json (the summary names the failed check) and approve it in a pull request.",
+   "link": "docs/adoption/ZONE_READINESS_ATTESTATION.md"
+  },
+  "readiness_source.READINESS_SOURCE_SELF_SET_REFUSED": {
+   "what": "KIT_ZONE_READINESS was set by the deploying team itself, with no landing-zone marker and no AppSec attestation.",
+   "why": "A team cannot certify its own platform; refused at uat and prod.",
+   "fix": "Delete the variable you set; ask AppSec for .kit/zone-readiness.json instead.",
+   "link": "docs/adoption/ZONE_READINESS_ATTESTATION.md"
+  },
+  "readiness_source.READINESS_SOURCE_TEST_FIXTURE": {
+   "what": "The readiness value is a labelled test fixture, not a real readiness.",
+   "why": "Allowed for testing, never an issued readiness.",
+   "fix": "Nothing in a test repository; remove KIT_ZONE_READINESS_TEST_FIXTURE in a real one.",
+   "link": "docs/adoption/ZONE_READINESS_ATTESTATION.md"
+  },
+  "readiness_source.READINESS_NOT_SET": {
+   "what": "No readiness is set and there is no attestation file.",
+   "why": "uat and prod releases are refused until readiness is established.",
+   "fix": "Inside a landing zone, the platform team vends it; outside one, AppSec writes .kit/zone-readiness.json.",
+   "link": "docs/adoption/ZONE_READINESS_ATTESTATION.md"
+  },
+  "release_approval.RELEASE_APPROVAL_ABSENT": {
+   "what": "Nobody approved this production deploy (an admin bypassed the review, or the environment has no reviewers).",
+   "why": "A uat or prod release needs a recorded approval by someone else; refused.",
+   "fix": "Re-run the deploy and ask a reviewer from platform or security to approve it in the run page (Review deployments).",
+   "link": "docs/adoption/SETUP.md"
+  },
+  "release_approval.SELF_DEPLOYMENT_APPROVAL": {
+   "what": "The person who approved this release is the one who requested it, or the author of the change.",
+   "why": "Approving your own release is never accepted.",
+   "fix": "Re-run and have a reviewer who is neither the requester nor the author approve it.",
+   "link": "docs/ticketing/SEPARATION-OF-DUTIES.md"
+  },
+  "release_approval.RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST": {
+   "what": "The approval did not quote the image digest being released, so it is not shown to be for these exact bytes.",
+   "why": "Production approvals must name what they approve.",
+   "fix": "Re-run and approve with a comment that contains the digest (or its first 12 hex characters); the summary shows it under \"For the approver\".",
+   "link": "docs/adoption/SETUP.md"
+  },
+  "release_approval.RELEASE_APPROVAL_NOT_ESTABLISHED": {
+   "what": "The deploy could not read who approved it, who requested it or who wrote the change.",
+   "why": "An approval nobody can read is not an approval; refused.",
+   "fix": "Check the deploy job has actions: read and that the commit author's email is linked to a GitHub account; re-run.",
+   "link": "docs/adoption/SETUP.md"
+  },
+  "version_gap_ruling.VERSION_GAP_REFUSED": {
+   "what": "A uat or prod deploy was refused because part of the code could not be scanned at its version, and nobody accepted that gap.",
+   "why": "Production gets only code the scanners could read, or a named person's accepted exception.",
+   "fix": "Upgrade to a supported version, or deploy with all five weakening fields filled in by an approver who is not you.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "version_gap_ruling.ADVISORY_CAUSE_UNKNOWN": {
+   "what": "A uat or prod deploy was given an advisory verdict without the reason for it.",
+   "why": "The deploy cannot judge an advisory it cannot read.",
+   "fix": "Pass advisory_causes from the security job to the deploy job (the template passes needs.security.outputs.advisory_causes).",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "verdict_provenance.TYPED_VERDICT": {
+   "what": "The deploy was handed a verdict that no security scan produced (it was typed in).",
+   "why": "A typed verdict is refused at uat and prod unless AppSec recorded a manual review.",
+   "fix": "Deploy from a run that ran the security scan, or have AppSec fill manual_review_by, manual_review_ref and manual_review_date.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "verdict_provenance.VERDICT_CONTRADICTED": {
+   "what": "The verdict handed to the deploy is more permissive than what the security scan actually decided.",
+   "why": "A deploy cannot be told \"pass\" when the scan said otherwise; refused at every tier.",
+   "fix": "Pass the security job's own routing_result and advisory_causes to the deploy, unchanged.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "verdict_provenance.VERDICT_RECORD_UNREADABLE": {
+   "what": "The deploy could not read the security scan's record for the run its verdict came from.",
+   "why": "An unreadable record is not \"no record\"; refused at uat and prod.",
+   "fix": "Check the security run still has its kit-security-record artifact (retention) and the deploy job has actions: read.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.PROMOTION_REFUSED_SOURCE_UNREADABLE": {
+   "what": "The run you promoted from has no readable promotion record for that environment.",
+   "why": "Without the record nobody can show the build was tested there.",
+   "fix": "Check promote_from_run_id and promote_from_environment name a successful test (or uat) deploy run.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.PROMOTION_REFUSED_DIGEST_MISMATCH": {
+   "what": "The image you are promoting is not the one the earlier environment verified.",
+   "why": "Promotion must move the exact same bytes; a substitute is refused.",
+   "fix": "Promote by run id with the template's promote job (it reads the digest from the record); do not type a digest.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.PROMOTION_REFUSED_WRONG_PREDECESSOR": {
+   "what": "The run you promoted from deployed to the wrong environment (for example dev instead of test).",
+   "why": "uat and prod accept only builds verified in their predecessor.",
+   "fix": "Promote from the test deploy (or uat for prod, if your policy says so).",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.PROMOTION_REFUSED_NOT_VERIFIED": {
+   "what": "The earlier deploy did not pass everything needed to be promoted (health, e2e tests, posture).",
+   "why": "Only a fully tested build moves on; the summary names what was missing.",
+   "fix": "Fix what the record lists as missing (often KIT_E2E_TEST_COMMAND is unset), redeploy to test, then promote that run.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.PROMOTION_REFUSED_NOT_FROM_MAIN": {
+   "what": "The build you are promoting was not built from the default branch.",
+   "why": "Only merged, reviewed code reaches uat and prod.",
+   "fix": "Merge your change to main, let it deploy to test, and promote that run.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.PROMOTION_REFUSED_SIGNATURE": {
+   "what": "The image's signed build record did not verify during promotion.",
+   "why": "Production gets only images whose origin is proven.",
+   "fix": "Rebuild through the kit's build workflow from main; see the attestation entries in this catalogue.",
+   "link": "docs/architecture/PROVENANCE_AND_ATTESTATION.md"
+  },
+  "promotion_gate.PROMOTION_REFUSED_REVOKED": {
+   "what": "This build was revoked (listed in the revocation register, or a new critical or known-exploited issue was found).",
+   "why": "A revoked build is never promoted.",
+   "fix": "Build and test a fixed version; the summary names the revocation reason.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.PROMOTION_REFUSED_NEW_FINDING": {
+   "what": "A fresh scan of the build found a high-severity issue that was not there at build time.",
+   "why": "New vulnerabilities are published daily; the build is no longer what was approved.",
+   "fix": "Upgrade the affected package, rebuild, test, and promote the new run.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.PROMOTION_REFUSED_RECHECK_INCOMPLETE": {
+   "what": "The re-check at promotion could not finish (SBOM scan, KEV list, history or revocations unreadable).",
+   "why": "An unfinished check is not a pass.",
+   "fix": "Re-run the promotion; if it persists, check the source run's artifacts still exist.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.PROMOTION_REFUSED_STALE": {
+   "what": "The build was verified more than 14 days ago.",
+   "why": "Old builds miss newer fixes and findings.",
+   "fix": "Deploy a fresh build to test and promote that one (or record a rollback/hotfix decision).",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.PROMOTION_REFUSED_SUPERSEDED": {
+   "what": "A newer build has been verified in the same environment since this one.",
+   "why": "Promoting an older build would skip the newer one.",
+   "fix": "Promote the newest verified run instead.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.PROMOTION_REFUSED_NO_PREDECESSOR": {
+   "what": "A uat or prod deploy named no run to promote from.",
+   "why": "uat and prod are only promoted, never built for.",
+   "fix": "Dispatch the workflow with promote_from_run_id (the test deploy run) and promote_from_environment.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.PROMOTION_REFUSED_PATH_UNKNOWN": {
+   "what": "release_path is not one of normal, hotfix, rollback or break-glass.",
+   "why": "The deploy cannot pick rules for an unknown path.",
+   "fix": "Set release_path to normal (or hotfix, rollback, break-glass with an exception record).",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.DAST_REFUSED_PRODUCTION_TARGET": {
+   "what": "Active DAST (attack testing) was configured against prod.",
+   "why": "DAST runs against the environment before prod, never prod itself.",
+   "fix": "Leave dast_command empty for prod (the template already does).",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.TEST_PERIOD_REFUSED_OUT_OF_BOUNDS": {
+   "what": "The end-to-end test period is not between 1 and 240 minutes.",
+   "why": "A test period must be real and bounded.",
+   "fix": "Set e2e_test_period_minutes to a value from 1 to 240.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.BREAK_GLASS_REFUSED_NO_EXCEPTION": {
+   "what": "An emergency (break-glass) release was requested without a reason, authority, ticket and expiry.",
+   "why": "Break-glass is allowed only with a full exception record.",
+   "fix": "Fill exception_reason, exception_authority, exception_approver, exception_ref and exception_expires.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.BREAK_GLASS_REFUSED_EXPIRED": {
+   "what": "The break-glass exception's expiry date has passed.",
+   "why": "An expired emergency approval is not an approval.",
+   "fix": "Get a new exception with a future expiry (at most 7 days).",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.BREAK_GLASS_REFUSED_TOO_LONG": {
+   "what": "The break-glass exception expires more than 7 days out.",
+   "why": "Emergency exceptions are short by rule.",
+   "fix": "Set exception_expires within 7 days.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_revocation.DIGEST_REVOKED": {
+   "what": "This exact image is on the revocation list.",
+   "why": "A revoked image is never promoted.",
+   "fix": "Build, test and promote a new version.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_revocation.SIGNING_IDENTITY_REVOKED": {
+   "what": "The build workflow that signed this image has been revoked.",
+   "why": "Nothing it signed is trusted any more.",
+   "fix": "Rebuild with the current kit build workflow and promote the new run.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_revocation.APPROVAL_REVOKED": {
+   "what": "An approval behind the earlier deploy was revoked.",
+   "why": "The release lost its approval.",
+   "fix": "Redeploy to the predecessor with a fresh approval, then promote.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_revocation.TEST_EVIDENCE_INVALIDATED": {
+   "what": "The test results behind this build were declared invalid.",
+   "why": "Untested builds are not promoted.",
+   "fix": "Re-run the tests by redeploying to test, then promote that run.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_revocation.NEW_KNOWN_EXPLOITED": {
+   "what": "A package in this build is now on the known-exploited vulnerability list.",
+   "why": "It blocks at every level.",
+   "fix": "Upgrade the package, rebuild and promote the new run.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_revocation.NEW_CRITICAL_FINDING": {
+   "what": "A fresh scan found a critical vulnerability the build did not have before.",
+   "why": "A critical issue blocks promotion.",
+   "fix": "Upgrade the package, rebuild and promote the new run.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_check.DAST_BLOCKING_FINDINGS": {
+   "what": "The attack test (DAST) found an error-level issue in the running app.",
+   "why": "The build is not marked tested, so it cannot be promoted.",
+   "fix": "Read the DAST SARIF in the deploy evidence, fix the issue, redeploy.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_check.DAST_INCOMPLETE": {
+   "what": "The attack test (DAST) left no readable report.",
+   "why": "An unfinished test is never a pass.",
+   "fix": "Check KIT_DAST_COMMAND writes SARIF to $PROMOTION_DAST_SARIF and finishes within 30 minutes.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_check.POSTURE_FAILED": {
+   "what": "A security setting on the running app does not hold (the summary names it).",
+   "why": "The app is live with a weaker setting than required.",
+   "fix": "Fix the named setting (for example HTTPS only, minimum TLS) in your infrastructure code and redeploy.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_check.POSTURE_UNREADABLE": {
+   "what": "The deploy could not read the running app's security settings.",
+   "why": "An unreadable setting is not a passing one.",
+   "fix": "Check the deploy identity can read the target (Reader); re-run.",
+   "link": "docs/adoption/SETUP.md"
+  },
+  "target_lease.LEASE_HELD": {
+   "what": "Another pipeline (the landing zone or another run) is changing this target right now.",
+   "why": "Two writers at once could break it; this deploy stopped before changing anything.",
+   "fix": "Wait for the other run to finish (the summary names it) and re-run.",
+   "link": "docs/architecture/LZ_KIT_SEAM_CONTRACT.md"
+  },
+  "target_lease.STALE_LEASE_HOLDER": {
+   "what": "This run's hold on the target was taken over or broken, so its change was not sent.",
+   "why": "Another writer owns the target now.",
+   "fix": "Re-run the deploy once the target is free.",
+   "link": "docs/architecture/LZ_KIT_SEAM_CONTRACT.md"
+  },
+  "target_lease.LEASE_EXPIRED_HOLDER": {
+   "what": "This run's hold on the target expired, so its change was not sent.",
+   "why": "Another writer could take over at any moment.",
+   "fix": "Re-run the deploy.",
+   "link": "docs/architecture/LZ_KIT_SEAM_CONTRACT.md"
+  },
+  "target_lease.LEASE_ABANDONED_MID_MUTATION": {
+   "what": "A previous run stopped in the middle of changing this target.",
+   "why": "The target's state is unknown; a person must decide before anyone deploys.",
+   "fix": "Contact the platform team (the break authority) with the run link.",
+   "link": "docs/architecture/LZ_KIT_SEAM_CONTRACT.md"
+  },
+  "target_lease.RELEASE_MID_MUTATION": {
+   "what": "A run tried to let go of the target while still changing it; refused.",
+   "why": "The hold never reads clean over a half-done change.",
+   "fix": "Contact the platform team with the run link.",
+   "link": "docs/architecture/LZ_KIT_SEAM_CONTRACT.md"
+  },
+  "target_lease.BREAK_NOT_AUTHORISED": {
+   "what": "Someone outside the break authority tried to break the target's hold.",
+   "why": "Only the named break authority may do that, with a recorded reason.",
+   "fix": "Ask the break authority (platform team) to do it.",
+   "link": "docs/architecture/LZ_KIT_SEAM_CONTRACT.md"
+  },
+  "target_lease.LEASE_STORE_UNREACHABLE": {
+   "what": "The deploy could not reach the store that coordinates deploys to this target.",
+   "why": "It fails closed: nothing was changed.",
+   "fix": "Run on a runner that reaches the lease storage account (runner_label), or ask the platform team; re-run.",
+   "link": "docs/architecture/LZ_KIT_SEAM_CONTRACT.md"
+  },
+  "target_lease.LEASE_TARGET_NOT_VENDED": {
+   "what": "The coordination record for this target does not exist; the landing zone creates it with the target.",
+   "why": "Nothing was changed.",
+   "fix": "Ask the platform team to vend the target's lease container.",
+   "link": "docs/architecture/LZ_KIT_SEAM_CONTRACT.md"
+  },
+  "target_lease.LEASE_LOST": {
+   "what": "The deploy lost its hold on the target during a long step, so it stopped.",
+   "why": "Continuing without the hold could collide with another writer.",
+   "fix": "Re-run; if it repeats, the platform team checks the lease store.",
+   "link": "docs/architecture/LZ_KIT_SEAM_CONTRACT.md"
+  },
+  "target_lease.LEASE_NOT_HELD": {
+   "what": "The deploy tried to change the target without holding it; refused.",
+   "why": "Coordination is on for this environment and every change must hold the target.",
+   "fix": "Re-run the whole deploy (it takes the hold first).",
+   "link": "docs/architecture/LZ_KIT_SEAM_CONTRACT.md"
+  },
+  "target_lease.MUTATED_WITHOUT_LEASE": {
+   "what": "The deploy lost its hold while a change was in flight; the change may have landed.",
+   "why": "A person must decide whether to roll back.",
+   "fix": "Contact the platform team with the run link.",
+   "link": "docs/architecture/LZ_KIT_SEAM_CONTRACT.md"
+  },
+  "target_lease.MUTATION_FAILED": {
+   "what": "A change to the target failed while the deploy held it.",
+   "why": "The target is marked as mid-change so nobody takes it over automatically.",
+   "fix": "Contact the platform team with the run link.",
+   "link": "docs/architecture/LZ_KIT_SEAM_CONTRACT.md"
+  },
+  "rollback_dependency_check.DEPLOY_REFUSED_ROLLBACK_DEPENDENCY": {
+   "what": "This deploy is built on something that was rolled back (a commit, an image or a dependency).",
+   "why": "Deploying it would bring back what the rollback removed.",
+   "fix": "Rebase onto the current main (after the rollback), rebuild and deploy; the report names each dependency.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "rollback_dependency_check.ROLLBACK_DEPENDENCY_CHECK_INCOMPLETE": {
+   "what": "The deploy could not check whether it depends on a recent rollback.",
+   "why": "Refused before changing anything.",
+   "fix": "Re-run; if it persists, check the deploy job has actions: read.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "seam_ownership_refusal.SEAM_SETTING_OWNERSHIP_CONFLICT": {
+   "what": "The deploy would change an app setting the landing zone owns (or both sides claim it).",
+   "why": "Each setting has one owner; nothing was written.",
+   "fix": "Remove the key from KIT_SETTING_KEYS or ask the platform team to hand it over (the summary names the key).",
+   "link": "docs/architecture/LZ_KIT_SEAM_CONTRACT.md"
+  },
+  "seam_ownership_refusal.SEAM_SWAP_MOVES_LZ_SETTING": {
+   "what": "An App Service slot swap would carry a landing-zone setting from one slot to the other.",
+   "why": "That would change platform configuration; the swap is refused.",
+   "fix": "Ask the platform team to make the setting sticky to its slot.",
+   "link": "docs/architecture/LZ_KIT_SEAM_CONTRACT.md"
+  },
+  "seam_ownership_check.SEAM_OWNERSHIP_NOT_ESTABLISHED": {
+   "what": "The deploy could not read the target's settings to check who owns them.",
+   "why": "Unknown ownership is not clear ownership; refused.",
+   "fix": "Check the deploy identity can read app settings, and that KIT_SETTING_KEYS is a list of names; re-run.",
+   "link": "docs/architecture/LZ_KIT_SEAM_CONTRACT.md"
+  },
+  "release_record.RELEASE_RECORD_NOT_KEPT": {
+   "what": "The deploy could not save its durable release record.",
+   "why": "Without it, the release cannot be audited later; the step fails.",
+   "fix": "Check the deploy job grants deployments: write (lease off) or that the lease store is reachable (lease on); re-run.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "edge_purge.EDGE_PURGE_REFUSED": {
+   "what": "The edge endpoint the environment names is not a Front Door endpoint, so its cache was not cleared.",
+   "why": "Users may see the old version until the cache expires.",
+   "fix": "Ask the platform team to correct KIT_EDGE_ENDPOINT.",
+   "link": "docs/architecture/LZ_KIT_SEAM_CONTRACT.md"
+  },
+  "edge_purge.EDGE_PURGE_FAILED": {
+   "what": "Clearing the edge cache failed after a good release.",
+   "why": "Users may see the old version until the cache expires; the release itself stands.",
+   "fix": "Purge the endpoint by hand or wait for the cache to expire; check the deploy identity's rights on Front Door.",
+   "link": "docs/architecture/LZ_KIT_SEAM_CONTRACT.md"
+  },
+  "tier_source.TIER_SELF_DECLARED": {
+   "what": "The environment's tier (dev, test, uat, prod) was set by the team, not by the landing zone.",
+   "why": "The tier decides how strict the deploy is; a self-declared tier is recorded so reviewers can see it.",
+   "fix": "Inside a landing zone, ask the platform team to vend KIT_ENVIRONMENT_TIER.",
+   "link": "docs/architecture/LZ_KIT_HANDOFF_CONTRACT.md"
+  },
+  "tier_reality.TIER_MISMATCH_SUSPECTED": {
+   "what": "An environment marked dev or test looks like production (a custom domain, or production-like scale).",
+   "why": "Production traffic may be getting dev-level checks.",
+   "fix": "Check KIT_ENVIRONMENT_TIER for this environment; if it serves real users, mark it uat or prod.",
+   "link": "docs/architecture/LZ_KIT_HANDOFF_CONTRACT.md"
+  },
+  "tier_reality.TIER_REALITY_UNREAD": {
+   "what": "The deploy could not read whether the target looks like production.",
+   "why": "A missing signal, recorded so a reviewer knows.",
+   "fix": "Nothing usually; it follows an earlier refusal in the same run.",
+   "link": "docs/architecture/LZ_KIT_HANDOFF_CONTRACT.md"
+  },
+  "kit_watermark.WATERMARK_DIRTY": {
+   "what": "The kit copy you call was exported from uncommitted changes.",
+   "why": "Nobody can say exactly which kit code ran.",
+   "fix": "Ask the platform team to re-export the kit from a clean commit and repin.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "kit_watermark.WATERMARK_UNREADABLE": {
+   "what": "The kit copy you call has a damaged version marker.",
+   "why": "Nobody can tie the pinned SHA to the kit source.",
+   "fix": "Ask the platform team to re-export the kit.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "evidence_retention.EVIDENCE_RETENTION_RAISED_TO_FLOOR": {
+   "what": "KIT_EVIDENCE_RETENTION_DAYS was below the audit minimum (or not a number), so the minimum was used.",
+   "why": "Evidence must be kept long enough for audit.",
+   "fix": "Set KIT_EVIDENCE_RETENTION_DAYS to at least the floor (90 by default), or remove it.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "evidence_retention.EVIDENCE_RETENTION_CAPPED": {
+   "what": "KIT_EVIDENCE_RETENTION_DAYS was above GitHub's 400-day maximum, so 400 was used.",
+   "why": "GitHub cannot keep artifacts longer.",
+   "fix": "Set it to 400 or less.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "rollback_sequence.ROLLBACK_SEQUENCE_REFUSED_NO_TEST_PERIOD": {
+   "what": "A rollback sequence was requested with an end-to-end test period of 0.",
+   "why": "Each step must be tested over a real period before the next; nothing was touched.",
+   "fix": "Set the e2e test period (1-240 minutes) and re-run.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "rollback_sequence.ROLLBACK_SEQUENCE_REFUSED_NO_E2E": {
+   "what": "A rollback sequence was requested without an end-to-end test command.",
+   "why": "Untested reversals can break the user path; nothing was touched.",
+   "fix": "Pass e2e_test_command (or set KIT_E2E_TEST_COMMAND) and re-run.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "rollback_sequence.ROLLBACK_SEQUENCE_REFUSED_INPUT": {
+   "what": "The rollback sequence or a step's deploy evidence could not be read, or did not fit together.",
+   "why": "Nothing was touched.",
+   "fix": "Check the run ids in the sequence (the summary names the bad one) and re-run.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "rollback_sequence.ROLLBACK_SEQUENCE_STOPPED_INELIGIBLE": {
+   "what": "The sequence stopped before a step that is not safe to roll back.",
+   "why": "Earlier steps are rolled back and verified; that step and later ones are untouched.",
+   "fix": "Ask the platform team to decide on the ineligible step (the summary names it).",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "rollback_sequence.ROLLBACK_SEQUENCE_HALTED_ROLLBACK_UNVERIFIED": {
+   "what": "A step's rollback did not complete cleanly, so the sequence stopped.",
+   "why": "A partial rollback is never treated as done.",
+   "fix": "Contact the platform team with the run link.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "rollback_sequence.ROLLBACK_SEQUENCE_HALTED_HEALTH_FAILED": {
+   "what": "After a step was rolled back, the app's health check failed, so the sequence stopped.",
+   "why": "Rolling back further could make it worse.",
+   "fix": "Contact the platform team with the run link.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "rollback_sequence.ROLLBACK_SEQUENCE_HALTED_E2E_FAILED": {
+   "what": "After a step was rolled back, the end-to-end tests failed, so the sequence stopped.",
+   "why": "A person decides the next step.",
+   "fix": "Contact the platform team with the run link and the failing test.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "rollback_sequence.ROLLBACK_SEQUENCE_STOPPED_DEPENDENCY_CONFLICT": {
+   "what": "A step's resources were changed by someone else since the release, so a full rollback was refused.",
+   "why": "Undoing them would overwrite another team's change.",
+   "fix": "Ask the platform team to resolve the conflict the summary names.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "rollback_sequence_step.ROLLBACK_STEP_HALTED": {
+   "what": "This rollback step ran and did not hold (rollback, health or tests).",
+   "why": "The sequence stopped here.",
+   "fix": "Contact the platform team with the run link.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "rollback_sequence_step.ROLLBACK_STEP_INELIGIBLE": {
+   "what": "This step was judged unsafe to roll back and was not touched.",
+   "why": "A person must decide.",
+   "fix": "Contact the platform team with the run link.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "rollback_sequence_step.ROLLBACK_STEP_PARTIAL": {
+   "what": "Only the parts of this step that nobody else changed were rolled back.",
+   "why": "The rest is left for a person.",
+   "fix": "Ask the platform team to review the remaining items.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "rollback_dependency_outcome.ROLLBACK_PARTIAL_DEPENDENCY_CONFLICT": {
+   "what": "Someone else changed part of what this release changed, so only the independent parts were rolled back.",
+   "why": "The rest is left as it is, each with its reason.",
+   "fix": "Ask the platform team to review the remaining items.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "rollback_dependency_outcome.ROLLBACK_REFUSED_DEPENDENCY_CONFLICT": {
+   "what": "Everything this release changed was also changed by someone else, so nothing was rolled back.",
+   "why": "Undoing it would overwrite another change.",
+   "fix": "Ask the platform team to decide.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "rollback_dependency_outcome.ROLLBACK_REFUSED_PLATFORM_OWNED": {
+   "what": "The rollback would change a resource the landing zone owns (DNS, Front Door, network rules).",
+   "why": "The kit never reverts platform resources.",
+   "fix": "Ask the platform team; they own that change.",
+   "link": "docs/architecture/LZ_KIT_SEAM_CONTRACT.md"
+  },
+  "rollback_dependency_outcome.ROLLBACK_REFUSED_FOREIGN_EVIDENCE": {
+   "what": "The evidence for a rollback step is not from a kit deploy of this target.",
+   "why": "The kit only rolls back its own releases.",
+   "fix": "Check the run id in the sequence names a kit deploy of this target.",
+   "link": "docs/architecture/ROLLBACK_CONTRACT.md"
+  },
+  "ticketing_availability.TICKETING_TEST_TARGETS_REAL_PROJECT": {
+   "what": "A test ticketing run (from a branch other than main) was pointed at a real Jira project, so nothing was sent.",
+   "why": "Test runs must never create tickets in real projects.",
+   "fix": "Point the sandbox environment's JIRA_PROJECT at a test project, or run from main.",
+   "link": "docs/architecture/JIRA_AUTH_AND_ROUTING.md"
+  },
+  "ticketing_availability.TICKETING_UNAVAILABLE": {
+   "what": "The ticket tracker could not be reached, refused the credentials, or a write failed.",
+   "why": "Tickets owed this run are carried forward; nothing is concluded from what was not read.",
+   "fix": "Check JIRA_EMAIL, JIRA_TOKEN and JIRA_HOST in the ticketing environment (a token may have expired), then re-run.",
+   "link": "docs/architecture/JIRA_AUTH_AND_ROUTING.md"
+  },
+  "ticketing_availability.TICKETING_NOT_CONFIGURED": {
+   "what": "No ticket tracker is configured (or two are), so no tickets were created or checked.",
+   "why": "Findings that need tickets did not get them.",
+   "fix": "Set the tracker secrets in the ticketing environment (docs/adoption/SETUP.md, ticketing) and the backend input to jira.",
+   "link": "docs/adoption/SETUP.md"
+  },
+  "ticket_lookup_outcome.BINDING_AMBIGUOUS": {
+   "what": "More than one ticket claims the same finding, so the kit updated none of them.",
+   "why": "Picking one would be a guess.",
+   "fix": "Close the duplicate tickets (each is named in the summary) so one remains.",
+   "link": "docs/architecture/TICKETING_CONTRACT.md"
+  },
+  "ticket_lookup_outcome.BINDING_DANGLING": {
+   "what": "A ticket the kit recorded for a finding could not be found (deleted, moved or no access).",
+   "why": "A missing ticket is not proof the work is done; nothing new was created.",
+   "fix": "Restore or re-link the ticket, or check the credential can see that project.",
+   "link": "docs/architecture/TICKETING_CONTRACT.md"
+  },
+  "ticket_lookup_outcome.BINDING_UNESTABLISHED": {
+   "what": "The ticket search did not finish (rate limit, outage or expired credential).",
+   "why": "Without a complete search the kit cannot tell whether a ticket exists, so it creates none.",
+   "fix": "Re-run later; check the tracker credential if it repeats.",
+   "link": "docs/architecture/TICKETING_CONTRACT.md"
+  },
+  "ticket_lookup_outcome.IDENTITY_NOT_ESTABLISHED": {
+   "what": "A finding has no stable identity, so no ticket can be looked up or created for it.",
+   "why": "A ticket on an unstable identity would be duplicated every run.",
+   "fix": "Nothing for you; the summary lists the finding for a person to triage.",
+   "link": "docs/architecture/TICKETING_CONTRACT.md"
+  },
+  "ticket_reference_outcome.NO_CANDIDATE_PASSED": {
+   "what": "The pull request mentions a ticket, but its number is outside the allowed range.",
+   "why": "The check accepts only references that look like your tracker's real keys.",
+   "fix": "Edit the pull request description to use the full ticket key (for example PROJ-1234).",
+   "link": "docs/architecture/JIRA_AUTH_AND_ROUTING.md"
+  },
+  "ticket_reference_outcome.NO_CANDIDATE": {
+   "what": "The pull request description does not mention a ticket.",
+   "why": "Every change must link to its work item.",
+   "fix": "Add the ticket key (for example PROJ-1234) to the pull request description.",
+   "link": "docs/architecture/JIRA_AUTH_AND_ROUTING.md"
+  },
+  "ticket_reference_outcome.NO_TEXT": {
+   "what": "The pull request description is empty.",
+   "why": "There was nothing to search for a ticket key.",
+   "fix": "Write a description that includes the ticket key.",
+   "link": "docs/architecture/JIRA_AUTH_AND_ROUTING.md"
+  },
+  "ticket_reference_outcome.POLICY_MISCONFIGURED": {
+   "what": "The ticket-number range in the workflow is set up wrongly (one bound missing, not a number, or reversed).",
+   "why": "The check could not run; this is a platform setting, not your pull request.",
+   "fix": "Ask the workflow owner to fix the min/max digit inputs of the ticket-reference job.",
+   "link": "docs/architecture/JIRA_AUTH_AND_ROUTING.md"
+  },
+  "ticket_reference_outcome.NOT_A_PULL_REQUEST": {
+   "what": "The ticket-reference check ran on something that is not a pull request, so it checked nothing.",
+   "why": "Not assessed is not passed.",
+   "fix": "Nothing; it only applies to pull requests.",
+   "link": "docs/architecture/JIRA_AUTH_AND_ROUTING.md"
+  },
+  "ticket_intake_state.TRACKER_INTAKE_PARTIAL": {
+   "what": "The search of existing tickets did not finish.",
+   "why": "Tickets not read are not absent; new tickets are created in triage to be checked again.",
+   "fix": "Re-run later; check the tracker credential if it repeats.",
+   "link": "docs/architecture/TICKETING_CONTRACT.md"
+  },
+  "ticket_intake_state.TRACKER_INTAKE_NOT_CONFIGURED": {
+   "what": "The kit cannot search this tracker for existing tickets.",
+   "why": "Duplicates cannot be found before creating.",
+   "fix": "Use Jira for work tickets (the kit's supported tracker).",
+   "link": "docs/architecture/TICKETING_CONTRACT.md"
+  },
+  "ticket_intake_state.TRACKER_QUERY_REFUSED": {
+   "what": "A ticket search named a project outside this repository's projects, or used a forbidden query clause.",
+   "why": "Searches are limited to this repository's projects.",
+   "fix": "Search only this repository's ticket projects, without ORDER BY.",
+   "link": "docs/api/README.md"
+  },
+  "review_finalize_state.REVIEW_NOT_FINALIZED": {
+   "what": "The security review behind these tickets is not finalized with a recorded approval by a second person.",
+   "why": "Tickets are written only from a finalized, approved review; nothing was read or written.",
+   "fix": "Have the concurring reviewer approve the review record's pull request and merge it; the summary lists each missing rule.",
+   "link": "docs/ticketing/TICKET-TYPES.md"
+  },
+  "ticket_template_refusal.TEMPLATE_UNKNOWN": {
+   "what": "The ticket template named is not one the kit serves.",
+   "why": "Unknown templates are refused.",
+   "fix": "Use a template listed in docs/ticketing/TICKET-TYPES.md.",
+   "link": "docs/ticketing/TICKET-TYPES.md"
+  },
+  "ticket_template_refusal.TEMPLATE_VERSION_UNSUPPORTED": {
+   "what": "The ticket template version is not supported (version 2 is current).",
+   "why": "Old versions are superseded.",
+   "fix": "Set template_version to 2.",
+   "link": "docs/ticketing/TICKET-TYPES.md"
+  },
+  "ticket_template_refusal.TEMPLATE_FIELD_INVALID": {
+   "what": "A ticket item breaks its template (a missing field, a bad value, or an expiry in the past).",
+   "why": "Only complete, valid items are written.",
+   "fix": "Correct the field the refusal names.",
+   "link": "docs/ticketing/TICKET-TYPES.md"
+  },
+  "ticket_template_refusal.TEMPLATE_ASSET_IDENTITY_INVALID": {
+   "what": "The asset named in a ticket item is not a valid identity (wrong subscription, account or a missing field).",
+   "why": "Tickets must point at a real, owned asset.",
+   "fix": "Correct the asset id the refusal names.",
+   "link": "docs/ticketing/TICKET-TYPES.md"
+  },
+  "ticket_template_refusal.NOFIX_EXEMPTION_TOO_LONG": {
+   "what": "A no-fix re-check asked for an automatic exemption longer than allowed.",
+   "why": "Longer exemptions need a person to accept the risk.",
+   "fix": "Shorten the exemption, or request an accepted risk.",
+   "link": "docs/ticketing/TICKET-TYPES.md"
+  },
+  "ticket_template_refusal.LINK_DECISION_INVALID": {
+   "what": "A link decision names a finding, ticket or candidate that does not exist in the request.",
+   "why": "Links must point at real candidates.",
+   "fix": "Link only tickets the search returned.",
+   "link": "docs/ticketing/TICKET-TYPES.md"
+  },
+  "ticket_template_refusal.TICKET_NOT_KIT_LINKED": {
+   "what": "An extension or closure names a ticket the kit does not own or link.",
+   "why": "The kit changes only its own tickets.",
+   "fix": "Update that ticket in the tracker directly.",
+   "link": "docs/ticketing/TICKET-TYPES.md"
+  },
+  "ticket_template_refusal.EXTENSION_COUNT_MISMATCH": {
+   "what": "The number of extensions claimed differs from what the ticket's labels show.",
+   "why": "History is never shortened.",
+   "fix": "Use the count the ticket shows.",
+   "link": "docs/ticketing/TICKET-TYPES.md"
+  },
+  "ticket_template_refusal.EXTENSION_LIMIT_REACHED": {
+   "what": "The ticket has had the maximum number of extensions.",
+   "why": "It cannot be extended again.",
+   "fix": "Fix the finding, or ask the owner for an accepted-risk decision.",
+   "link": "docs/ticketing/TICKET-TYPES.md"
+  },
+  "ticket_template_refusal.EXTENSION_CEILING_EXCEEDED": {
+   "what": "The requested new expiry is further out than one extension allows.",
+   "why": "Each extension is limited.",
+   "fix": "Request an expiry within the ceiling.",
+   "link": "docs/ticketing/TICKET-TYPES.md"
+  },
+  "ticket_template_refusal.CLOSURE_NOT_VERIFIED": {
+   "what": "A closure was requested but the kit's scan does not show the finding fixed.",
+   "why": "Tickets close only on verified fixes.",
+   "fix": "Merge the fix to the mapped branch and let the scan run, then close.",
+   "link": "docs/ticketing/TICKET-TYPES.md"
+  },
+  "ticket_template_refusal.SOD_SELF_APPROVAL": {
+   "what": "The person approving is the author of what is being approved.",
+   "why": "Nobody approves their own exception, triage or fix.",
+   "fix": "Have another approver from the list approve it.",
+   "link": "docs/ticketing/SEPARATION-OF-DUTIES.md"
+  },
+  "ticket_template_refusal.EXCEPTION_TOO_LONG": {
+   "what": "An exception asked for longer than the maximum (90 days).",
+   "why": "Exceptions are always time-limited.",
+   "fix": "Request 90 days or less.",
+   "link": "docs/ticketing/TICKET-TYPES.md"
+  },
+  "ticket_template_refusal.TEMPLATE_NOT_ENABLED": {
+   "what": "The template is proposed and not enabled yet.",
+   "why": "Disabled templates are refused.",
+   "fix": "Use an enabled template, or ask the owner to enable it.",
+   "link": "docs/ticketing/TICKET-TYPES.md"
+  },
+  "ticket_template_outcome.TEMPLATE_DEDUPE_PENDING": {
+   "what": "The duplicate search did not finish, so the ticket was created in triage marked dedupe-pending.",
+   "why": "It is never lost; the next run checks it again.",
+   "fix": "Nothing; a person triages it if the next run still cannot.",
+   "link": "docs/ticketing/TICKET-TYPES.md"
+  },
+  "ticket_template_outcome.TEMPLATE_OUTBOX": {
+   "what": "The tracker could not be written, so the item was kept in the outbox for the next run.",
+   "why": "Nothing is lost; a person was alerted.",
+   "fix": "Check the tracker credential; the next run retries first.",
+   "link": "docs/ticketing/TICKET-TYPES.md"
+  },
+  "ticket_template_outcome.TEMPLATE_SENT_BACK": {
+   "what": "The concurring reviewer disagreed with this item, so nothing was written for it.",
+   "why": "Their dissent is recorded.",
+   "fix": "Discuss with the reviewer and resubmit if agreed.",
+   "link": "docs/ticketing/TICKET-TYPES.md"
+  },
+  "ticket_template_outcome.TEMPLATE_VERIFICATION_REJECTED": {
+   "what": "A verifier rejected the fix, so the ticket was reopened.",
+   "why": "The fix did not hold.",
+   "fix": "Read the verifier's reason on the ticket and fix again.",
+   "link": "docs/ticketing/TICKET-TYPES.md"
+  },
+  "code_finding_key_state.SECRET_FINGERPRINT_NOT_ESTABLISHED": {
+   "what": "A secret finding's location could not be read, so it has no ticket key yet.",
+   "why": "It still blocks; it is ticketed once it can be read.",
+   "fix": "Make sure the checkout is the scanned commit (the default template does); re-run.",
+   "link": "docs/architecture/TICKETING_CONTRACT.md"
+  },
+  "code_finding_key_state.RULE_FAMILY_UNKNOWN": {
+   "what": "A scanner rule is not in the kit's rule-family table, so its finding has no ticket key.",
+   "why": "The kit never guesses a family; the rule is routed to a person to map.",
+   "fix": "Nothing for you; the platform team adds the alias (the refusal names the tool and rule).",
+   "link": "docs/architecture/TICKETING_CONTRACT.md"
+  },
+  "code_finding_key_state.SOURCE_NOT_AVAILABLE": {
+   "what": "The file a finding names is not in the checkout, so its code anchor could not be read.",
+   "why": "The finding stands; only its location anchor is missing.",
+   "fix": "Nothing usually; check the scanned path exists in the repository.",
+   "link": "docs/architecture/TICKETING_CONTRACT.md"
+  },
+  "code_finding_key_state.SOURCE_PATH_REFUSED": {
+   "what": "A finding names a path outside the repository, so the kit refused to read it.",
+   "why": "A scanner's path is data and never reaches outside the scanned tree.",
+   "fix": "Report the scanner and rule to the platform team.",
+   "link": "docs/architecture/TICKETING_CONTRACT.md"
+  },
+  "code_finding_key_state.SOURCE_LINE_OUT_OF_RANGE": {
+   "what": "A finding names a line past the end of the file, so the checkout is not the scanned commit.",
+   "why": "No anchor is taken from another commit's text.",
+   "fix": "Re-run on the same commit the scan ran on.",
+   "link": "docs/architecture/TICKETING_CONTRACT.md"
+  },
+  "code_finding_key_state.SOURCE_LINE_EMPTY": {
+   "what": "A finding points at a blank or comment line, so it anchors nothing.",
+   "why": "An empty line cannot identify code.",
+   "fix": "Nothing; the finding keeps its other identity.",
+   "link": "docs/architecture/TICKETING_CONTRACT.md"
+  },
+  "exception_resurfacing.EXCEPTION_DUE_SOON": {
+   "what": "An exception expires within the next 14 days.",
+   "why": "When it lapses, the finding blocks or routes again.",
+   "fix": "Fix the finding, or ask the approver about renewal before the date.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "exception_resurfacing.EXCEPTION_OVERDUE": {
+   "what": "An exception has expired, or its expiry date cannot be read.",
+   "why": "An unreadable date has not \"not arrived\"; the finding is treated normally.",
+   "fix": "Fix the finding, or get a new dated approval.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "exception_resurfacing.EXCEPTIONS_DUE": {
+   "what": "At least one exception is due or overdue.",
+   "why": "Each is listed with its ticket.",
+   "fix": "Work through the list in the run summary.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "exception_resurfacing.NOT_ATTEMPTED": {
+   "what": "Resurfacing was asked for but not attempted because a source could not be read.",
+   "why": "Nothing was raised on any ticket.",
+   "fix": "Check the register files are readable and re-run.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "exception_resurfacing.NOT_CONFIGURED": {
+   "what": "No Jira credential is configured, so due exceptions were listed but not raised on tickets.",
+   "why": "The list is still accurate; only the ticket comments are missing.",
+   "fix": "Set JIRA_EMAIL, JIRA_TOKEN and JIRA_HOST in the ticketing environment.",
+   "link": "docs/architecture/JIRA_AUTH_AND_ROUTING.md"
+  },
+  "exception_resurfacing.RESURFACE_FAILED": {
+   "what": "Raising a due exception on its ticket failed.",
+   "why": "The ticket owner may not see it is due.",
+   "fix": "Check the Jira credential and that the tracker is Jira; re-run.",
+   "link": "docs/architecture/JIRA_AUTH_AND_ROUTING.md"
+  },
+  "exception_resurfacing.EXCEPTION_TICKET_MISMATCH": {
+   "what": "An exception's Jira ticket does not exist or does not match the register (approver or renewal).",
+   "why": "Reported, never blocking: the register decides; the ticket should agree.",
+   "fix": "Correct the ticket (approver, renewal comment) to match the register.",
+   "link": "docs/adoption/POLICY_REGISTER.md"
+  },
+  "kit_api_state.API_NOT_FOUND": {
+   "what": "No run for this API call has appeared yet.",
+   "why": "A dispatch can take seconds to appear; not found is not refused.",
+   "fix": "Wait a few seconds and check the status again (status.get).",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_state.API_AWAITING_APPROVAL": {
+   "what": "The API call is waiting for a person to approve a release in its environment.",
+   "why": "The API never approves anything itself.",
+   "fix": "A reviewer approves it in the run page (Review deployments).",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_state.API_REFUSED": {
+   "what": "The API call was refused by name before anything was done.",
+   "why": "The refusal (an API_ code) says exactly why.",
+   "fix": "Read the refusal code; each has its own entry in this catalogue.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_state.API_FAILED": {
+   "what": "The API call was accepted but could not be carried out.",
+   "why": "It is never a success.",
+   "fix": "Read the result's reason (tracker unreachable, a release that did not report) and retry with the same idempotency key.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_state.API_CANCELLED": {
+   "what": "The API run was cancelled before it answered.",
+   "why": "Nothing is known about the outcome.",
+   "fix": "Resubmit with the same idempotency key.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_state.API_RESULT_UNREADABLE": {
+   "what": "The API run finished, but no valid result for this call could be read.",
+   "why": "A finished run is not a finished call.",
+   "fix": "Read the run's log and summary; retry with the same idempotency key.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_HOST_NOT_NAMED": {
+   "what": "The API client was not told which GitHub host to call.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Set GH_HOST (for example <tenant>.ghe.com) or KIT_API_URL.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_HOST_INSECURE": {
+   "what": "The API address is not https.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Use the https API URL.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_CREDENTIAL_ABSENT": {
+   "what": "The API client has no token.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Set GH_TOKEN (or KIT_API_TOKEN), or KIT_API_AUTH=proxy behind a credential proxy.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_REQUEST_UNPARSEABLE": {
+   "what": "The API request is not a JSON object.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Send the envelope in api/v1/request.schema.json.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_REQUEST_TOO_LARGE": {
+   "what": "The API request is over 60,000 characters.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Select fewer findings or page the search.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_VERSION_UNSUPPORTED": {
+   "what": "The API request names a version the kit does not serve.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Send api_version v1.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_OPERATION_UNKNOWN": {
+   "what": "The API request names an operation that does not exist.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Use an operation listed in docs/api/README.md.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_OPERATION_NOT_ENABLED": {
+   "what": "This repository has not turned on the requested API operation.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "The repository owner adds it to vars.KIT_API_OPERATIONS, or call another repository.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_SCHEMA_VIOLATION": {
+   "what": "A field in the API request is invalid.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Correct the field the refusal names.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_CORRELATION_MISMATCH": {
+   "what": "The correlation id in the dispatch and in the request differ.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Send the same id in both; let scripts/kit_api.py make it.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_IDEMPOTENCY_KEY_REQUIRED": {
+   "what": "A write request came without an idempotency key (or with two different ones).",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Send one key per intended write, the same in both places.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_DUPLICATE_REQUEST": {
+   "what": "This idempotency key was already used; nothing was done again.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Read the first call's result with status.get.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_IDEMPOTENCY_UNVERIFIED": {
+   "what": "The kit could not check whether this key was used before, so it did not risk a write.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Retry with the same key.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_REF_NOT_DEFAULT_BRANCH": {
+   "what": "A ticket or deploy call was dispatched on a branch other than the default branch.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Dispatch on the default branch.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_TRANSPORT_NOT_PERMITTED": {
+   "what": "A release was requested by repository_dispatch, which the API does not accept for releases.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Send it by workflow_dispatch.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_REPOSITORY_NOT_SERVED": {
+   "what": "The request names another repository; each API instance serves only its own.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Call that repository's kit-api.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_EVIDENCE_UNAVAILABLE": {
+   "what": "The named security run is not a completed default-branch run, or its evidence has expired.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Name a completed default-branch run within the artifact retention.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_FINDING_NOT_KIT_ESTABLISHED": {
+   "what": "A selected finding is not one the kit's scan established.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Select from that run's findings (findings.search).",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_DISPOSITION_NOT_VIA_API": {
+   "what": "An exception, false positive or risk acceptance was requested through the API.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Open a pull request to the policy register; dispositions are merged under CODEOWNERS.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_TICKET_NOT_KIT_STAMPED": {
+   "what": "The ticket does not carry the kit's stamp, so the kit does not own it.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Comment on it in the tracker directly.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_FILTER_NEEDS_FINDINGS_RUN": {
+   "what": "A CVE, KEV or text filter needs a findings run id.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Add findings_run_id (or \"latest\").",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_RELEASE_PATH_NOT_PERMITTED": {
+   "what": "Rollback and break-glass cannot be requested through the API.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "A person dispatches the release workflow with the exception record.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_ENVIRONMENT_NOT_PERMITTED": {
+   "what": "The environment is not in this repository's API deploy list, or a build was asked for uat/prod.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Use a listed environment (vars.KIT_API_DEPLOY_ENVIRONMENTS); reach uat and prod by promotion.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_PROMOTION_SOURCE_REQUIRED": {
+   "what": "A promotion was requested without the run and environment to promote from.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Name promote_from_run_id and promote_from_environment.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_DEPLOY_NEEDS_HUMAN_APPROVAL": {
+   "what": "The target environment does not require a human approver with self-review prevented.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Protect the environment with required reviewers and prevent self-review.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_TEMPLATE_INVALID": {
+   "what": "A ticket template item is invalid; data.template_refusal names the rule.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Correct the named item; nothing was read or written.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_REVIEW_NOT_FINALIZED": {
+   "what": "The review behind the tickets is not finalized with a recorded second-person approval.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Have the concurring reviewer approve and merge the review record.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_TEMPLATE_RULE_REFUSED": {
+   "what": "A ticket rule that reads the tracker refused an item before anything was written.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Read data.template_refusal and correct the item.",
+   "link": "docs/api/README.md"
+  },
+  "kit_api_refusal.API_TRACKER_QUERY_REFUSED": {
+   "what": "A tracker query named a project outside this repository's, or a forbidden clause.",
+   "why": "The API refuses by name before doing anything, so nothing changed.",
+   "fix": "Query only this repository's projects, without ORDER BY.",
+   "link": "docs/api/README.md"
+  },
+  "oidc_subject_form.UNMATCHED": {
+   "what": "The identity GitHub presented does not match the federated credential's expected subject.",
+   "why": "Azure will refuse the sign-in (AADSTS700213); nothing was attempted.",
+   "fix": "Add a federated credential whose subject is exactly repo:<org>/<repo>:environment:<env> (case-sensitive), with this host's issuer.",
+   "link": "docs/adoption/SETUP.md"
+  },
+  "authorization_probe_outcome.REACHED": {
+   "what": "The identity could act on a scope it should have been refused (its rights are wider than declared).",
+   "why": "This is the loudest failure: the boundary does not hold.",
+   "fix": "Ask the identity's owner to remove the role assignment on the scope the summary names.",
+   "link": "docs/adoption/SETUP.md"
+  },
+  "authorization_probe_outcome.NOT_FOUND": {
+   "what": "A scope the check was told to probe does not exist.",
+   "why": "It proves nothing about the identity's rights either way.",
+   "fix": "Correct the scope id in the check's inputs.",
+   "link": "docs/adoption/SETUP.md"
+  },
+  "authorization_probe_outcome.UNAVAILABLE": {
+   "what": "The access check never got an answer (throttling, network or an expired sign-in).",
+   "why": "Unknown is never treated as refused.",
+   "fix": "Re-run verify-azure-oidc.yml; check the runner's network if it repeats.",
+   "link": "docs/adoption/SETUP.md"
+  },
+  "reusable_workflow_resolution.MISMATCHED": {
+   "what": "The workflow code that produced this evidence is not the code the caller said it expected.",
+   "why": "A supply-chain mismatch: the kit pin or the caller is not what it claims.",
+   "fix": "Check the uses: line pins the kit repository and SHA you intended.",
+   "link": "docs/adoption/SETUP.md"
+  },
+  "external_findings_pull.SOURCE_NOT_CONFIGURED": {
+   "what": "A SonarQube or Aikido secret or setting is missing, so nothing was pulled.",
+   "why": "No pull is not \"no findings\".",
+   "fix": "Set the SONAR_* or AIKIDO_* secrets the summary names.",
+   "link": "docs/adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md"
+  },
+  "external_findings_pull.SOURCE_AUTH_REFUSED": {
+   "what": "SonarQube or Aikido refused the credentials (401/403).",
+   "why": "Nothing was read; it is never \"no findings\".",
+   "fix": "Renew the token and update the secret.",
+   "link": "docs/adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md"
+  },
+  "external_findings_pull.SOURCE_UNREACHABLE": {
+   "what": "SonarQube or Aikido could not be reached or answered with an error.",
+   "why": "Nothing was read.",
+   "fix": "Re-run later; check the host secret and the runner's network.",
+   "link": "docs/adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md"
+  },
+  "external_findings_pull.SOURCE_RESPONSE_INVALID": {
+   "what": "SonarQube or Aikido answered in an unexpected shape.",
+   "why": "The answer cannot be trusted as complete.",
+   "fix": "Check the host is the right product and version; report it to the platform team.",
+   "link": "docs/adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md"
+  },
+  "external_findings_pull.SOURCE_TRUNCATED": {
+   "what": "SonarQube or Aikido stopped returning pages before all findings were read.",
+   "why": "A partial pull is never presented as complete.",
+   "fix": "Narrow the project or raise the search depth; re-run.",
+   "link": "docs/adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md"
+  },
+  "external_findings_pull.SOURCE_HOST_REFUSED": {
+   "what": "The SonarQube or Aikido host is not https, so no credential was sent.",
+   "why": "Credentials go only over https.",
+   "fix": "Use the https URL of the service.",
+   "link": "docs/adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md"
+  },
+  "external_findings_pull.NOT_MAPPED": {
+   "what": "A pulled finding could not be turned into a kit finding (no repository, file or known severity).",
+   "why": "It is listed with the reason, not dropped.",
+   "fix": "Map the project to this repository, or triage the listed item by hand.",
+   "link": "docs/adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md"
+  },
+  "finding_id_form.CWE_FORM_UNKNOWN": {
+   "what": "A finding carries a weakness id (CWE) in a form the kit does not recognise.",
+   "why": "The kit never guesses an id; the finding is routed to a person.",
+   "fix": "Nothing for you; the platform team adds the form if it is valid.",
+   "link": "docs/operations/FINDING_CLASSIFICATION.md"
+  },
+  "finding_id_form.VULN_ID_FORM_UNKNOWN": {
+   "what": "A finding carries a vulnerability id the kit does not recognise (not CVE, GHSA or OSV).",
+   "why": "The kit never guesses an id; the finding is routed to a person.",
+   "fix": "Nothing for you; the platform team maps it in id-mappings.json.",
+   "link": "docs/operations/FINDING_CLASSIFICATION.md"
+  },
+  "unknown_id_review.NEEDS_MAPPING": {
+   "what": "An id the kit could not read is waiting for a person to map it.",
+   "why": "The finding is still a finding; only its id is unmapped.",
+   "fix": "The platform team maps it in id-mappings.json with a review reference.",
+   "link": "docs/operations/FINDING_CLASSIFICATION.md"
+  },
+  "unknown_id_review.MAPPING_NOT_REVIEWED": {
+   "what": "An id mapping has no author, date or review reference, so it was refused.",
+   "why": "Mappings change how findings are grouped; each must be reviewed.",
+   "fix": "Add author, date and review_ref to the mapping in id-mappings.json.",
+   "link": "docs/operations/FINDING_CLASSIFICATION.md"
+  },
+  "kit_init_state.KIT_INIT_STACK_UNKNOWN": {
+   "what": "kit init did not recognise any language or deploy type in this repository, so it wrote nothing.",
+   "why": "It never guesses a pipeline: a wrong one would scan the wrong things and look green.",
+   "fix": "Add the missing manifest (requirements.txt, package.json, pom.xml, go.mod, a .csproj, composer.json, a Dockerfile, *.tf or *.bicep), or copy templates/security.yml by hand.",
+   "link": "docs/adoption/GETTING_STARTED_1_HOUR.md"
+  },
+  "kit_init_state.KIT_INIT_MULTIPLE_IMAGES": {
+   "what": "This repository has more than one Dockerfile and kit init will not pick which one deploys.",
+   "why": "Picking the wrong image would deploy the wrong thing.",
+   "fix": "Re-run with --dockerfile path/to/Dockerfile (in the workflow: re-run kit init locally with that flag).",
+   "link": "docs/adoption/GETTING_STARTED_1_HOUR.md"
+  },
+  "kit_init_state.KIT_INIT_PIN_MISSING": {
+   "what": "kit init was not told which kit repository and commit to pin.",
+   "why": "Every kit reference must be pinned to one exact commit.",
+   "fix": "Pass --kit-repo OWNER/REPO and --kit-sha <40-hex commit>; the workflow wrapper takes both from its own uses: line.",
+   "link": "docs/adoption/GETTING_STARTED_1_HOUR.md"
+  },
+  "kit_init_state.KIT_INIT_PIN_NOT_CHECKOUT": {
+   "what": "The commit you asked kit init to pin is not the kit commit it is running from.",
+   "why": "The files would describe one kit version and pin another.",
+   "fix": "Check out the kit at the commit you want (git checkout <sha>) and run again, or omit --kit-sha.",
+   "link": "docs/adoption/GETTING_STARTED_1_HOUR.md"
+  },
+  "kit_init_state.KIT_INIT_HOST_UNSUPPORTED": {
+   "what": "The repository's host is neither github.com nor a <tenant>.ghe.com host.",
+   "why": "The kit supports only those two hosts.",
+   "fix": "Pass --host github.com or --host <tenant>.ghe.com.",
+   "link": "docs/adoption/GETTING_STARTED_1_HOUR.md"
+  },
+  "kit_init_state.KIT_INIT_API_NEEDS_CONTAINER": {
+   "what": "The kit API caller was requested, but this repository is not a container deploy.",
+   "why": "The API's release path calls build-deploy.yml, which exists only for container deploys.",
+   "fix": "Drop --with-api for now (scans and findings need no API).",
+   "link": "docs/adoption/GETTING_STARTED_1_HOUR.md"
+  },
+  "kit_init_state.KIT_INIT_SECRET_REFUSED": {
+   "what": "kit init found a secret-looking value in what it was about to write, so it wrote nothing.",
+   "why": "Generated files are committed; a secret in them would leak.",
+   "fix": "Remove the secret from the path or variable the message names (and rotate it), then run again.",
+   "link": "docs/adoption/GETTING_STARTED_1_HOUR.md"
+  },
+  "kit_init_state.KIT_INIT_GENERATED_INVALID": {
+   "what": "kit init's own check of the files it generated failed, so it wrote nothing.",
+   "why": "This is a kit defect, not a problem with your repository.",
+   "fix": "Send the output to the platform team; pin a different kit commit meanwhile.",
+   "link": "docs/adoption/GETTING_STARTED_1_HOUR.md"
+  },
+  "kit_init_state.KIT_INIT_DIRTY_TREE": {
+   "what": "The repository has uncommitted changes, so kit init did not open its pull request.",
+   "why": "It commits only its own files, from a clean tree.",
+   "fix": "Commit or stash your changes and run again, or use --dry-run to write files only.",
+   "link": "docs/adoption/GETTING_STARTED_1_HOUR.md"
+  },
+  "kit_init_state.KIT_INIT_PR_NOT_OPENED": {
+   "what": "kit init wrote the files but git or gh refused to push the branch or open the pull request.",
+   "why": "Nothing was lost; the files are in your working tree.",
+   "fix": "Check the token can push (Contents, Pull requests and Workflows: write) and GH_HOST is your host; then commit and open the PR yourself.",
+   "link": "docs/adoption/GETTING_STARTED_1_HOUR.md"
+  },
+  "kit_init_state.KIT_INIT_HUMAN_EDIT_PRESERVED": {
+   "what": "kit init kept a file (or the CODEOWNERS block) exactly as a person left it, instead of updating it.",
+   "why": "A person's edit always wins; that file did not get the kit's newest version.",
+   "fix": "Nothing, if your edit is intended. To take the kit's version, delete the file (or the block's marker lines) and run kit init again.",
+   "link": "docs/adoption/GETTING_STARTED_1_HOUR.md"
+  },
+  "dependabot_triage_rule.policy_misconfigured": {
+   "what": "The triage settings in the caller workflow are invalid, so every update goes to a person.",
+   "why": "A broken policy must never auto-merge.",
+   "fix": "Fix the triage inputs the comment names in .github/workflows/dependabot-triage.yml.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.excluded_path": {
+   "what": "This update touches a path excluded from updates (for example test fixtures), so it was closed.",
+   "why": "Fixtures are pinned on purpose.",
+   "fix": "If the path should take updates, remove it from excluded_paths.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.metadata_unverified": {
+   "what": "The update's Dependabot metadata could not be verified.",
+   "why": "Unverified updates are never auto-merged.",
+   "fix": "Review and merge it yourself.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.files_unknown": {
+   "what": "The list of files this update changes could not be read.",
+   "why": "Nobody can show it changes only dependencies.",
+   "fix": "Review the diff and merge it yourself.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.security_critical": {
+   "what": "This is a security update for a protected package.",
+   "why": "Security updates to critical packages get a person first, urgently.",
+   "fix": "Review it first and merge it today.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.critical_package": {
+   "what": "The package is on the protected list (runtime-critical).",
+   "why": "Critical packages always get a person.",
+   "fix": "Review the changelog and merge it yourself.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.critical_ecosystem": {
+   "what": "The update is in a protected ecosystem (docker, terraform, helm ...).",
+   "why": "Infrastructure updates can change runtime behaviour.",
+   "fix": "Review and merge it yourself.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.triage_chain": {
+   "what": "The update changes the triage workflow or the kit pin itself.",
+   "why": "An update must not decide its own merge.",
+   "fix": "Review and merge it yourself.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.major_update": {
+   "what": "This is a major version update.",
+   "why": "Major versions may break behaviour.",
+   "fix": "Read the release notes, test, and merge it yourself.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.update_type_unknown": {
+   "what": "The update type (major, minor, patch) could not be read.",
+   "why": "Unknown is never treated as safe.",
+   "fix": "Review and merge it yourself.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.update_type_not_allowed": {
+   "what": "The update type is not one this repository auto-merges.",
+   "why": "Only allowed types merge on their own.",
+   "fix": "Review and merge it yourself.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.actions_major_unknown": {
+   "what": "A GitHub Actions update's version jump could not be read.",
+   "why": "Unknown is never treated as safe.",
+   "fix": "Review and merge it yourself.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.actions_pin_not_sha": {
+   "what": "A GitHub Actions update is not pinned to a full commit SHA.",
+   "why": "Actions must be pinned by SHA.",
+   "fix": "Pin the action by SHA in the PR, then merge.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.non_dependency_file": {
+   "what": "The update changes a file that is not a manifest or lockfile.",
+   "why": "Only dependency files may auto-merge.",
+   "fix": "Review the extra file and merge it yourself.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.non_dependency_change": {
+   "what": "The update changes something other than a dependency version.",
+   "why": "Only version changes may auto-merge.",
+   "fix": "Review and merge it yourself.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.breaking_change_signal": {
+   "what": "The release notes mention a breaking change.",
+   "why": "A breaking change needs a person.",
+   "fix": "Read the notes, test, and merge it yourself.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.maintainer_changed": {
+   "what": "The package's maintainer changed since the last version.",
+   "why": "A new maintainer is a supply-chain signal.",
+   "fix": "Check the new maintainer and merge it yourself.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.lockfile_churn": {
+   "what": "The lockfile changes more lines than this repository auto-merges.",
+   "why": "Large lockfile changes can hide unrelated moves.",
+   "fix": "Review the lockfile diff and merge it yourself.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.lockfile_unparsed": {
+   "what": "The lockfile change could not be read package by package.",
+   "why": "Nobody can show only the named packages moved.",
+   "fix": "Review the lockfile diff and merge it yourself.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.lockfile_unrelated_moves": {
+   "what": "The lockfile also changes packages this update does not name.",
+   "why": "Unrelated moves are not covered by the update.",
+   "fix": "Review the extra packages and merge it yourself.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.compatibility_unknown": {
+   "what": "No compatibility score is available and this repository requires one.",
+   "why": "Unknown compatibility is not safe.",
+   "fix": "Review and merge it yourself.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.compatibility_low": {
+   "what": "The compatibility score is below this repository's minimum.",
+   "why": "Low-scoring updates often break.",
+   "fix": "Test it and merge it yourself.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.required_checks_unknown": {
+   "what": "The branch protection of the base branch could not be read.",
+   "why": "Nobody can show the required checks would decide the merge.",
+   "fix": "Give the triage token read access, or review and merge yourself.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.no_required_checks": {
+   "what": "The base branch requires no status checks, so an auto-merge would merge untested code.",
+   "why": "Auto-merge is safe only behind required checks.",
+   "fix": "Require \"security / Security gate\" on main (docs/adoption/BRANCH_PROTECTION_SETTINGS.md).",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.scan_gate_unnamed": {
+   "what": "The triage caller names no required_checks.",
+   "why": "Nothing shows the tests and scan decide the merge.",
+   "fix": "Set required_checks in dependabot-triage.yml (for example \"security / Security gate\").",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  },
+  "dependabot_triage_rule.scan_gate_not_required": {
+   "what": "A check the triage relies on is not required on the base branch.",
+   "why": "The merge would not wait for it.",
+   "fix": "Make the named check required in the branch ruleset.",
+   "link": "docs/adoption/DEPENDABOT_TRIAGE.md"
+  }
+ }
+}

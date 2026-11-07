@@ -1,0 +1,78 @@
+# Starter: drop this into the repository that holds your SonarQube / Aikido secrets (the kit host, or a
+# central security repository), at .github/workflows/external-findings.yml. Replace YOUR_ORG, pin the kit
+# by COMMIT SHA, and fill the project keys and the repository map. Guide:
+# docs/adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md (with the testing-at-work checklist).
+#
+# WHAT IT DOES. Weekday mornings (and on demand) it PULLS SonarQube and Aikido findings, read-only, into
+# the kit's finding model and keeps them as an artifact. Nothing reaches a tracker until a person
+# dispatches the SUBMIT mode with a finalized review id, and the `external-findings-review` environment's
+# required reviewers approve.
+name: External findings
+
+on:
+  schedule:
+    - cron: "17 6 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      review_id:
+        description: "pull: cut batches for this review. submit: the finalized review that concurs."
+        type: string
+        default: ""
+      submit:
+        description: "true: send the batches of from_run_id through the kit API (behind the review environment)"
+        type: boolean
+        default: false
+      from_run_id:
+        description: "submit: the run id of the pull the review concurred with"
+        type: string
+        default: ""
+      source:
+        description: "submit: which source's batches (sonar or aikido)"
+        type: string
+        default: "sonar"
+
+permissions: {}
+
+jobs:
+  sonar:
+    if: ${{ !inputs.submit }}
+    permissions:
+      contents: read
+      actions: write
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-external-findings.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    with:
+      source: sonar
+      sonar_projects: "YOUR_PROJECT_KEY"
+      sonar_organization: ""            # SonarQube Cloud only: your organization key
+      repo_map: '{"*": "YOUR_ORG/{}"}'  # project key or repo name -> org/repo
+      review_id: ${{ inputs.review_id || '' }}
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+  aikido:
+    if: ${{ !inputs.submit }}
+    permissions:
+      contents: read
+      actions: write
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-external-findings.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    with:
+      source: aikido
+      aikido_api_base: "https://app.aikido.dev/api/public/v1"   # US workspaces: https://app.us.aikido.dev/api/public/v1
+      repo_map: '{"*": "YOUR_ORG/{}"}'
+      review_id: ${{ inputs.review_id || '' }}
+    secrets:
+      AIKIDO_CLIENT_ID: ${{ secrets.AIKIDO_CLIENT_ID }}
+      AIKIDO_CLIENT_SECRET: ${{ secrets.AIKIDO_CLIENT_SECRET }}
+
+  submit:
+    if: ${{ inputs.submit }}
+    permissions:
+      contents: read
+      actions: write
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-external-findings.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    with:
+      source: ${{ inputs.source }}
+      submit: true
+      review_id: ${{ inputs.review_id }}
+      from_run_id: ${{ inputs.from_run_id }}

@@ -205,10 +205,17 @@ def main():
             if symlink:
                 os.symlink(symlink[1], os.path.join(staging, symlink[0]))
             before = snapshot(scope)
-            ctx = {'inputs.paths': 'scope', 'runner.temp': os.path.join(ws, 'rt').replace('\\', '/'),
+            # The secret scan's scope is ALWAYS the repository root (KDEC-018, lane L-FX: the job
+            # hands the composite `paths: "."`), so the step runs with the scope as its working
+            # directory, and the staging directory (runner.temp) sits outside it.
+            ctx = {'inputs.paths': '.', 'runner.temp': os.path.join(ws, 'rt').replace('\\', '/'),
                    'inputs.%s' % INPUT: 'test-only-seeds-1'}
-            r = H.run(bash, place, ctx, ws)
-            after = snapshot(scope)
+            r = H.run(bash, place, ctx, scope)
+            # The step harness writes its own scratch files (.step_N.sh, .github_*_N) into the
+            # working directory; they are the harness's, never placed by the step (which refuses
+            # hidden files outright), so they are left out of the comparison.
+            after = dict((k, v) for k, v in snapshot(scope).items()
+                         if not re.match(r'^\.(step_\d+\.sh|github_[a-z_]+_\d+)$', k))
             touched = [k for k, v in before.items() if after.get(k) != v]
             added = sorted(set(after) - set(before))
             return r, touched, added

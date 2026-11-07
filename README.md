@@ -80,9 +80,9 @@ from the `routing_result` output, never from the job's colour.
 | `reusable-build-docker.yml` | **Proven live**: build once, Trivy gate before push, SBOM, push to a cloud registry over OIDC, digest read back (`REGISTRY_IDENTITY_PROVEN`) (runs 38857011286, 38857017667, 38857024014) |
 | `reusable-deploy-containerapp.yml`, `reusable-deploy-appservice.yml` | **Proven live** on a sandbox subscription: verdict refusal before login, healthy deploy of a kit-built digest, verified rollback, a second actor's change refused, App Service slot swap |
 | `reusable-ticket-reconcile.yml` | reconciler proven live on a personal Jira; the armed workflow itself has no hosted run; Azure DevOps against stubs only |
-| `reusable-nvd-cve.yml` | Trivy and Dependency-Check detection proven locally with the real tools; a keyed hosted run against the live NVD feed is owed. `fail_on_cvss` defaults to 11 (never blocks) |
+| `reusable-nvd-cve.yml` | Trivy and Dependency-Check detection proven locally with the real tools; its NVD data comes by default from the Dependency-Check project's public datafeed, a third-party host the runner must reach (no organisation-hosted mirror unless the optional Release 4 organisation mirror is configured -- KDEC-032, built, not yet run live), and a sustained hosted run showing that data current is owed. `fail_on_cvss` defaults to 11 (never blocks) |
 | attestation signing and verification | built; held — needs a public repository or Enterprise Cloud |
-| SHA-pinning of the kit's own third-party actions | **not done** — the dogfood policy check runs with `require_sha_pinning: false` under a weakening that expires 2026-10-31 ([docs/assurance/PINNING.md](docs/assurance/PINNING.md)) |
+| SHA-pinning of the kit's own third-party actions | **pinned locally**: all 166 remote `uses:` (workflows, composites and the overlay) carry a commit SHA and its exact release; the dogfood policy check runs `require_sha_pinning: true`, `soft_fail: false`, no weakening. A hosted self-test run on the pinned tree is owed ([docs/assurance/PINNING.md](docs/assurance/PINNING.md)) |
 
 Every row, its run or proof and its scope: [docs/assurance/RELEASE_1_EVIDENCE_MANIFEST.md](docs/assurance/RELEASE_1_EVIDENCE_MANIFEST.md).
 What the kit still lacks: [docs/assurance/COMPLETION_LEDGER.md](docs/assurance/COMPLETION_LEDGER.md).
@@ -103,9 +103,12 @@ provider to execute or validate it.
                        live-deploy-acceptance · validate-scanners · nvd-cve
 .github/actions/       composites: setup-python/node/terraform, azure-login-oidc, docker-build-push,
                        render-version-metadata, determine-changes, verify-attestation, and the
-                       flagship's own discover, resolve, scan-report, propose-ledger (called via $/)
+                       flagship's own discover, resolve, resolve-policy, scan-report, propose-ledger
+                       (called via $/)
 templates/             consumer starters: security.yml · policy.yml · build-deploy.yml · nvd-cve.yml
-                       · policy-registration.example.json
+                       · policy-registration.example.json (a repository's own policy) ·
+                       policy-register.central.example.json (org/team/product policy; see
+                       docs/adoption/POLICY_REGISTER.md)
 profiles/              repo-class intent records + profile.schema.json (inert: nothing reads them yet)
 schemas/               JSON schemas (dispositions, policy registration, expected signals, run record)
 assurance-taxonomy.yaml  every state word the workflows emit
@@ -137,6 +140,6 @@ so a repo gets "all the security scans" from a single `uses:` line — the thing
 | Secret | Phase | Purpose |
 |---|---|---|
 | `SEMGREP_APP_TOKEN` | 1 (optional) | Semgrep managed rules/dashboard |
-| `NVD_API_KEY` | 1b (recommended) | `reusable-nvd-cve.yml`; without it the NVD update is rate-limited |
+| `NVD_API_KEY` | 1b (only if the datafeed is emptied) | `reusable-nvd-cve.yml` builds its NVD database from the Dependency-Check project's public datafeed (https://dependency-check.github.io/DependencyCheck_Builder/nvd_cache/) by default and does not use the key. The key is used only when `nvd_datafeed_url` is set to `""` (the NVD API directly). Unless the optional Release 4 organisation mirror is configured (KDEC-032, `docs/adoption/FEED_MIRRORS.md`; built, not yet run live), the runner needs egress to that third-party host |
 | `AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID` / `AZURE_CLIENT_ID` | 2–3 | OIDC federated login, passed explicitly to the build and deploy reusables (identifiers, not credentials; the partition is the `cloud` input, `commercial` or `gov`) |
 | `JIRA_EMAIL` + `JIRA_TOKEN`, or `AZDO_PAT` | ticketing | `reusable-ticket-reconcile.yml`, one backend per run |

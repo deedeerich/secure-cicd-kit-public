@@ -4,22 +4,48 @@
 #   ./scripts/pin-actions.sh            # dry run — show the rewrites
 #   ./scripts/pin-actions.sh --apply    # rewrite files in place
 #
-# Searches all of .github, composites included. Skips ./-relative and $/ self-repository
-# references, docker:// references, already-pinned SHAs, and any owner
-# listed in TRUSTED_ORGS. Requires: curl, jq, and GITHUB_TOKEN (public repo read is enough).
+# Searches all of .github, composites included (SEARCH_PATHS widens it, e.g. ".github overlays").
+# Skips ./-relative and $/ self-repository references, docker:// references, already-pinned SHAs,
+# and any owner listed in TRUSTED_ORGS -- EMPTY by default: the kit pins every owner
+# (docs/assurance/PINNING.md); exempting one is a decision you set, not a default you inherit.
+#
+# The comment written beside each SHA is the EXACT release at that commit (`# v7.0.1`), found among
+# the repository's tags -- never the moving major that was resolved (`@v7`). A commit with no
+# vX.Y.Z tag is refused and its line left alone: pin it by hand, with a reviewed comment.
+# tests/prove_pin_actions_names_release.py; the output must pass tests/check_action_pins.py.
+#
+# Requires: curl, jq and Python (PYTHON, else python3). GITHUB_TOKEN (public repo read is enough)
+# lifts the 60-an-hour unauthenticated limit.
+#
+# WHICH HOST, WHICH TOKEN (KDEC-027). Third-party actions are PUBLIC github.com repositories, so they
+# are read from PIN_ACTIONS_API (default https://api.github.com) on every host, a GHE.com tenant
+# included. GITHUB_TOKEN is sent there ONLY when the host that issued it -- GITHUB_API_URL, and
+# PIN_CHECK_TOKEN_HOST when set; unset means github.com -- is that same host. A GHE.com token
+# (api.<tenant>.ghe.com) is never sent to api.github.com; the run proceeds unauthenticated instead.
 set -euo pipefail
 
 APPLY=0
 [ "${1:-}" = "--apply" ] && APPLY=1
 
-TRUSTED_ORGS="${TRUSTED_ORGS:-actions,github,azure,docker,hashicorp}"
+TRUSTED_ORGS="${TRUSTED_ORGS:-}"
+PY="${PYTHON:-python3}"
 SEARCH_PATHS="${SEARCH_PATHS:-.github}"
-API="${GITHUB_API_URL:-https://api.github.com}"
+API="${PIN_ACTIONS_API:-https://api.github.com}"
 
-if [ -z "${GITHUB_TOKEN:-}" ]; then
-  echo "GITHUB_TOKEN is not set — the API will rate-limit almost immediately." >&2
-  echo "  export GITHUB_TOKEN=<token with public repo read>" >&2
-  exit 1
+host_of() { local u="${1#*://}"; u="${u%%/*}"; printf '%s' "${u,,}"; }
+AUTH=()
+token_host_ok=1
+for issuer in "${GITHUB_API_URL:-}" "${PIN_CHECK_TOKEN_HOST:-}"; do
+  if [ -n "$issuer" ] && [ "$(host_of "$issuer")" != "$(host_of "$API")" ]; then token_host_ok=0; fi
+done
+if [ -n "${GITHUB_TOKEN:-}" ] && [ "$token_host_ok" = "1" ]; then
+  AUTH=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+elif [ -n "${GITHUB_TOKEN:-}" ]; then
+  echo "GITHUB_TOKEN was not issued by $(host_of "$API"), so it is not sent there (KDEC-027)." >&2
+  echo "  Reading unauthenticated (60 requests an hour)." >&2
+else
+  echo "GITHUB_TOKEN is not set: reading unauthenticated (60 requests an hour)." >&2
+  echo "  export GITHUB_TOKEN=<github.com token with public repo read>" >&2
 fi
 command -v jq >/dev/null || { echo "jq is required." >&2; exit 1; }
 
@@ -35,9 +61,27 @@ is_trusted() {
 resolve_sha() {
   # /commits/<ref> dereferences lightweight tags, annotated tags, and branches alike.
   local repo="$1" ref="$2"
-  curl -sS -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+  curl -sS ${AUTH[@]+"${AUTH[@]}"} \
        -H "Accept: application/vnd.github+json" \
-       "${API}/repos/${repo}/commits/${ref}" | jq -r '.sha // empty'
+       "${API}/repos/${repo}/commits/${ref}" | jq -r '.sha // empty' | tr -d '\r'
+}
+
+exact_release() {
+  # The highest vX.Y.Z tag whose commit is this SHA. An exact ref names itself: it is what was
+  # resolved. Otherwise every page of tags is read (a major's release is rarely on page one).
+  local repo="$1" sha="$2" ref="$3" page=1 body n found=""
+  if [[ "$ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "$ref"; return 0; fi
+  while [ "$page" -le 50 ]; do
+    body="$(curl -sS ${AUTH[@]+"${AUTH[@]}"} \
+                 -H "Accept: application/vnd.github+json" \
+                 "${API}/repos/${repo}/tags?per_page=100&page=${page}")" || return 0
+    n="$(printf '%s' "$body" | jq -r 'if type == "array" then length else 0 end' | tr -d '\r')"
+    [ "${n:-0}" -gt 0 ] 2>/dev/null || break
+    found="${found}$(printf '%s' "$body" \
+      | jq -r --arg s "$sha" '.[] | select(.commit.sha == $s) | .name' | tr -d '\r')"$'\n'
+    page=$((page+1))
+  done
+  printf '%s' "$found" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true
 }
 
 changes=0
@@ -76,30 +120,40 @@ for file in "${files[@]}"; do
       continue
     fi
 
+    ver="$(exact_release "$api_repo" "$sha" "$ref")"
+    if [ -z "$ver" ]; then
+      echo "  !! $file: ${api_repo}@${ref} is commit ${sha}, and no vX.Y.Z tag names that commit"
+      echo "     -- not written with a moving-major comment; pin it by hand"
+      failed=$((failed+1))
+      continue
+    fi
+
     echo "  $file"
     echo "      - $uses"
-    echo "      + ${repo}@${sha}   # ${ref}"
+    echo "      + ${repo}@${sha} # ${ver}"
     changes=$((changes+1))
 
     if [ "$APPLY" = "1" ]; then
-      # Replace the reference and append the version comment, unless one is already present.
-      python3 - "$file" "$uses" "${repo}@${sha}" "$ref" <<'PYEOF'
+      # Replace the reference on its own `uses:` lines only, and write ` # vX.Y.Z` after it. Any
+      # comment the line already had is kept AFTER the version, which must come first. Line
+      # endings are preserved (newline=''), so a CRLF checkout is not rewritten wholesale.
+      "$PY" - "$file" "$uses" "${repo}@${sha}" "$ver" <<'PYEOF'
 import re, sys
 path, old, new, ver = sys.argv[1:5]
-src = open(path, encoding="utf-8").read()
+src = open(path, encoding="utf-8", newline="").read()
+pat = re.compile(r"^(?P<pre>[ \t-]*uses:[ \t]*)" + re.escape(old)
+                 + r"(?P<sp>[ \t]*)(?:#(?P<c>[^\r\n]*))?(?P<cr>\r?)$", re.M)
 def sub(m):
-    line = m.group(0)
-    line = line.replace(old, new)
-    return line if "#" in line.split(new, 1)[-1] else f"{line}   # {ver}"
-src = re.sub(rf"^.*uses:\s*{re.escape(old)}\s*$", sub, src, flags=re.M)
-open(path, "w", encoding="utf-8").write(src)
+    c = (m.group("c") or "").strip()
+    return m.group("pre") + new + " # " + ver + ((" " + c) if c else "") + m.group("cr")
+open(path, "w", encoding="utf-8", newline="").write(pat.sub(sub, src))
 PYEOF
     fi
   done
 done
 
 echo
-echo "${changes} reference(s) to pin · ${skipped} skipped (trusted or already pinned) · ${failed} unresolved"
+echo "${changes} reference(s) to pin · ${skipped} skipped (trusted or already pinned) · ${failed} unresolved or without an exact release"
 if [ "$APPLY" = "1" ]; then
   echo "Files rewritten. Review the diff before committing."
 else

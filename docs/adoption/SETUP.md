@@ -134,6 +134,18 @@ JSON
 The run pauses as *Waiting* until approved. Note that **you cannot approve your own deployment** in
 organization-owned repos, though you can in a personal one.
 
+**At `uat` and `prod` they are not optional.** The deploy reads the environment's reviewers back and
+refuses without one (self-review prevented). It also reads the run's own approval (OF-5 K-1): the
+approver may be neither the person who started the run nor the author of the commit being released,
+and the approval **comment must quote the digest** being released (the full `sha256:...`, or at least
+its first 12 hex characters, as shown in the run summary) -- otherwise `RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST`.
+Unset `KIT_ZONE_READINESS` is refused at `uat` and `prod` (`RELEASE_REFUSED_ZONE_NOT_READY`). Outside a
+landing zone, setting it to `READY` on those environments yourself is a **TEST FIXTURE ONLY**: in
+production that lets the deploy side certify the platform's readiness to itself. The value is issued by
+the landing zone when the app is in a connected one; otherwise AppSec issues it manually, as a recorded
+attestation (owner ruling 2026-11-03, refining O-34a). The app or deploy team never sets it for itself
+(`docs/security-review/STOP-AND-ASK.md`, S7).
+
 ---
 
 ## 1.5 · Let other repositories consume the kit
@@ -179,6 +191,43 @@ This is a GitHub boundary, not a limitation of the kit. A private repository's r
 > A **public** consumer *can* call a **private** kit within the same account, but not the reverse:
 > the constraint is on where the *workflow* lives, not the caller.
 
+### The host's pre-flight: run the consumer path test once, before wiring any repository
+
+A copy exported for a kit host (a profile with `INCLUDE_PATH .github/workflows/consumer-path-test.yml`;
+the neutral export withholds it) carries **Consumer path test**. Run it by hand on the host repository
+right after the import (Actions → Consumer path test → Run workflow, on the import branch), before any
+consumer repository is wired. It calls the kit by `./` against the shipped fixtures and proves, on *your*
+GitHub host, runners and licence: the clean fixture passes; inapplicable scanners skip visibly; a seeded
+negative run (it dispatches **Consumer path — negative**, which ends red at the gate by design) blocks
+the caller at the gate; and every seeded signal is detected by the open-source scanner that owns it.
+
+- **Green** means the scan-and-gate chain works on this host. It does not prove deployment, rollback,
+  tickets or any external service.
+- **Without GitHub Advanced Security** (a private repository with no GHAS licence) it still runs and
+  still asserts everything above. Security-tab publication and CodeQL are written as
+  `UNAVAILABLE` rows under "GHAS-dependent rows (recorded, never graded)"; they are never a pass and
+  never fail the test, and CodeQL's findings are never counted as detection (`--not-graded codeql`).
+- **It is dispatch-only by default.** Its weekly schedule starts no job unless the repository variable
+  `KIT_CONSUMER_PATH_SCHEDULE` is `true`, and a push to `main` starts none unless
+  `KIT_CONSUMER_PATH_ON_PUSH` is `true`. Once it is green, disable the workflow (Actions → … → Disable
+  workflow); re-enable it to troubleshoot, or after each kit import.
+- **The kit's own repository runs it on every push to `main`** (owner, 2026-11-04: "full running on
+  push to main"). Owner step, once: `gh variable set KIT_CONSUMER_PATH_ON_PUSH --body true -R
+  <owner>/<kit-repo>`. Every other workflow that can run on a push to `main` already does, with no
+  path filter; what does not is named with its reason in `tests/prove_push_to_main_runs_all.py`.
+- **Concurrent runs are safe; you no longer need to avoid them** (2026-11-06). Each negative run the
+  test dispatches carries a correlation id unique to that run, attempt and step, in its run-name
+  (`Consumer path negative [<id>] scope=…`), and the test pairs the run only by that id: exactly one
+  run, dispatched on this branch, read back. Another person's run, or a scheduled one, is never taken
+  for this one; an id it cannot match exactly once is `NOT_ESTABLISHED` and the test fails, never
+  passes (`tests/prove_dispatch_correlation.py`).
+- **A red names its cause:** a `JOB_TOKEN_REJECTED` (or other) preflight row before any API call;
+  `Job absent` / `Wrong outcome` for a job that did not behave as documented; `Gate did not block` if
+  the negative run succeeded; `Seeded signals NOT detected` with each file named.
+
+`tests/prove_consumer_path_preflight.py` runs its assertion jobs on a simulated GHE.com host with GHAS
+off; `docs/KNOWN_DEFECTS.md` D-12 has the history.
+
 ---
 
 ## 2 · Secret inventory
@@ -188,9 +237,10 @@ This is a GitHub boundary, not a limitation of the kit. A private repository's r
 | `AZURE_CLIENT_ID` | deploy + build, `azure-login-oidc` | Yes for Azure | App registration (client) ID. An identifier, not a credential — stored as a secret to keep it out of logs. |
 | `AZURE_TENANT_ID` | same | Yes | Entra tenant ID |
 | `AZURE_SUBSCRIPTION_ID` | same | Yes | Target subscription |
-| `NVD_API_KEY` | `reusable-nvd-cve.yml` | Strongly recommended | Free NIST key. Without it the DB update is rate-limited and may take 30+ min. |
+| `NVD_API_KEY` | `reusable-nvd-cve.yml` | Only if you empty the datafeed | Free NIST key. Not used by default: the NVD database is built from the Dependency-Check project's public datafeed (§9). Used only when `nvd_datafeed_url` is `""`. |
 | `SEMGREP_APP_TOKEN` | `reusable-security.yml` | Optional | Managed rules / dashboard only. Everything works without it. |
-| `JIRA_EMAIL` + `JIRA_TOKEN`, or `AZDO_PAT` | `reusable-ticket-reconcile.yml` | Only for ticketing | One backend per run. Held in the protected environment named by the workflow's `environment` input. |
+| `JIRA_TOKEN` (and `JIRA_EMAIL` for basic auth only), or `AZDO_PAT` | `reusable-ticket-reconcile.yml`, `reusable-kit-api.yml`, `reusable-exception-due.yml` | Only for ticketing | One backend per run. Held in the protected environment named by the workflow's `environment` input. With bearer auth (`JIRA_AUTH_MODE=bearer`) `JIRA_EMAIL` stays empty. |
+| `JIRA_HOST` | the same three | Optional, as a secret | The Jira site. Read as `secrets.JIRA_HOST` first, then `vars.JIRA_HOST`, so it is masked in the ticket jobs' logs (`tests/prove_jira_host_secret.py`). **Either form works everywhere** (2026-11-06): the bare host (`<site>.atlassian.net`) or the https origin (`https://<site>.atlassian.net`), a trailing slash allowed. The reconciler adds `https://` to a bare host; the ticket-reference check (`reusable-ticket-reference.yml`, `tracker_host`) drops it (`prove_jira_host_secret.py` H7, `prove_ticket_reference_gate.py` G11). Plain `http://`, a path or credentials are refused. The reference check reads the variable; keep the variable for it and, if you want the host masked, the same value as a secret in the ticketing environments. |
 
 **No client secret exists anywhere in this kit, by design.** If you are creating one for Azure auth,
 stop — you are on the wrong path.
@@ -275,7 +325,8 @@ you with nothing while you are still assuming you have something.
    secret resolves through `secrets: inherit`.
 4. **Run it and verify from evidence, not assumption.** For `NVD_API_KEY` the tell is specific: the
    *"no NVD API key is configured"* warning must **not** fire, and the database update must succeed.
-   A silent fall-through to the un-keyed path looks like success and takes 20–40 minutes.
+   A silent fall-through to the un-keyed path looks like success and takes 20–40 minutes. (This
+   applies only where `nvd_datafeed_url` is set to `""`; by default the key is not used, §9.)
 5. **Only now delete the environment secret**, and confirm the next run still passes.
 6. **Record the change.** Which secrets moved, when, and who owns rotation.
 
@@ -444,6 +495,11 @@ az ad app federated-credential create --id "$APP_ID" --parameters "{
 }"
 ```
 
+**The issuer is your GitHub host's.** `https://token.actions.githubusercontent.com` is github.com's. A repository
+on a GHE.com host (`<SUBDOMAIN>.ghe.com`) presents tokens from `https://token.actions.<SUBDOMAIN>.ghe.com`: use
+that issuer in every federated credential it signs in with, or Entra finds no matching credential. The subject and
+the audience do not change with the host.
+
 **One credential per subject.** Deploying from both `main` and a `prod` environment needs two. Max 20
 per app.
 
@@ -451,6 +507,48 @@ per app.
 > environment from `dev` to `prod` leaves you with a working `prod` and a **broken `dev`**, which then
 > fails `AADSTS700213` the next time anything runs against it. Verified the hard way. Use *Add
 > credential* for each environment; confirm the count with the `list` command in §4.1.
+
+### 4.2 · Azure Government: the audience
+
+For a Government tenant (`cloud: gov`, the repository variable `KIT_CLOUD=gov`), Microsoft documents
+the federated credential's audience as **`api://AzureADTokenExchangeUSGov`**, with
+`environment: AzureUSGovernment`. Every kit `azure/login` step that serves Government now asks for that
+audience (`tests/prove_azure_gov_audience.py`); commercial sign-in is unchanged
+(`api://AzureADTokenExchange`).
+
+- Create the Government credential with `"audiences": ["api://AzureADTokenExchangeUSGov"]`.
+- A Government credential made with the global audience instead: set the repository variable
+  `KIT_AZURE_OIDC_AUDIENCE=api://AzureADTokenExchange` (it applies to `cloud: gov` only). Callers of
+  the `azure-login-oidc` composite pass it as the `audience` input.
+- The issuer for your GitHub host is set by the owner on the credential; this section does not change it.
+
+> **UNVERIFIED:** a live Government sign-in has not run. What is proven is what each step asks for;
+> that a Government tenant accepts it is owed to a Government sandbox run.
+
+### 4.3 · Checking the identity you created (`verify-azure-oidc.yml`, either cloud)
+
+Run **Verify Azure OIDC authorization boundary** with `cloud: gov` for a Government identity
+(`environment: AzureUSGovernment`, audience `api://AzureADTokenExchangeUSGov`, or
+`KIT_AZURE_OIDC_AUDIENCE` when set) or `cloud: public` (the default). After it signs in, it checks
+the identity **from the directory side**, read-only, and prints one line per check in the run
+summary:
+
+| check | PASS means | FAIL means |
+|---|---|---|
+| `no_client_secret` | the app registration and its service principal hold no client secret (a managed identity cannot) | a secret exists: delete it under Certificates & secrets |
+| `one_subscription` | every role assignment it can see is inside its one subscription, the one `AZURE_SUBSCRIPTION_ID` names | a role sits at a management group or the root, it reaches a second subscription, or it has no role |
+| `issuer` | the federated credential trusts this run's own host issuer (`https://token.actions.<subdomain>.ghe.com` on GHE.com) | it trusts another host's issuer (for example the github.com one) |
+| `subject` | a credential's subject is `repo:<org>/<repo>:environment:<env>` for this run | only a broader or different credential exists (a branch or pull-request subject) |
+| `audience` | that credential's audience is exactly the one this cloud signs in with | it carries the other cloud's audience |
+
+`NOT_ESTABLISHED` means the identity was not allowed to read that fact (reading its own app
+registration needs Microsoft Graph `Application.Read.All`), and the reason is printed; it is never
+read as a pass. A `FAIL` fails the run. A `NOT_ESTABLISHED` fails it only with
+`require_directory_checks: true`. The outputs `directory_verdict` and `directory_checks` carry the
+same result. `tests/prove_oidc_directory_checks.py` runs the step as shipped against a stub `az`.
+
+The issuer lines on each federated credential stay yours to edit by hand; this workflow only reads
+them. **UNVERIFIED:** a hosted run of these checks against a real identity in either cloud.
 
 ### Do not use the credential subject to restrict branches
 
@@ -511,7 +609,12 @@ permissions:
 ```
 
 The job that calls `reusable-build-docker.yml` additionally grants `attestations: write` (its attest
-job signs build provenance). A caller must grant **everything** a called workflow's jobs request, or
+job signs build provenance). A job that calls a deploy reusable (`reusable-deploy-containerapp.yml`,
+`reusable-deploy-appservice.yml`, `reusable-deploy-staticwebapp.yml`) also grants **`deployments: write`** (the
+durable release record) and **`pull-requests: read`** (the readiness attestation's approving review), besides
+`attestations: read` and `actions: read` (Release 4 migration impact; `templates/build-deploy.yml` does). A
+`kit-api.yml` caller grants **`deployments: read`** for `evidence.export` (KDEC-039) and `pull-requests: read`
+(`templates/kit-api.yml` does); add them before moving a kit pin past KDEC-039. A caller must grant **everything** a called workflow's jobs request, or
 GitHub refuses the whole run before any job starts (`startup_failure`, no log); the full table per
 reusable workflow is in [`USAGE.md`](USAGE.md) → *What's in it*, and `tests/check_caller_permissions.py`
 enforces it on the kit's own callers and templates.
@@ -545,14 +648,14 @@ Required inputs, all of which name pre-existing resources:
 |---|---|
 | `reusable-deploy-appservice` | `github_environment` · `routing_result` · `environment_tier` · `resource_group` · `webapp_name` · `acr_login_server` · `image_repository` · `image_digest` |
 | `reusable-deploy-containerapp` | `github_environment` · `routing_result` · `environment_tier` · `resource_group` · `containerapp_name` · `acr_login_server` · `image_repository` · `image_digest` |
-| `reusable-build-docker` | `image_repository`; plus `acr_login_server` and `github_environment` whenever `push` is true (the default) |
+| `reusable-build-docker` | `image_repository`, `acr_login_server` and `attestations_available` (all three required); plus `github_environment` whenever `push` is true (the default) |
 
 So from a **zero-resource** subscription you still need:
 
 | # | Thing | Why | Missing role |
 |---|---|---|---|
 | 1 | A **resource group** | everything lands in one | **Contributor** on it (or create in portal) |
-| 2 | An **Azure Container Registry** | `acr_login_server` is required by both deploys and by a pushing build | **AcrPush** to push · **Contributor** to create |
+| 2 | An **Azure Container Registry** | `acr_login_server` is required by both deploys and by the build | **AcrPush** to push · **Contributor** to create |
 | 3 | A **Linux App Service** (container-based) | `webapp_name` target | Website Contributor covers *deploy*, not *create* |
 | 4 | A **Container Apps environment + app** | `containerapp_name` target | ContainerApp Contributor covers *deploy*, not *create* |
 | 5 | **Pull rights from ACR to the apps** | otherwise deploy succeeds and the app fails to start | app's managed identity needs **AcrPull** on the registry |
@@ -585,12 +688,27 @@ the vending creates the empty target and the deploy identity, and the kit only r
 
 ---
 
-## 9 · NVD API key
+## 9 · NVD data source and API key
 
-Free: **https://nvd.nist.gov/developers/request-an-api-key**
+**Where the NVD data comes from.** By default `reusable-nvd-cve.yml` builds Dependency-Check's NVD
+database from the Dependency-Check project's **public datafeed**,
+`https://dependency-check.github.io/DependencyCheck_Builder/nvd_cache/` (input
+`nvd_datafeed_url`). That is a third-party host. **Unless the organisation runs the Release 4 mirror** (below), there
+is no organisation-hosted mirror: the runner needs outbound access to that host, and the database is only as current and as available as
+that feed. The kit does not claim NVD coverage beyond that. The Release 4 mirror (below) is optional, built and proven locally, and not yet
+run live. The CISA KEV catalog and Trivy's vulnerability database are likewise fetched from their
+public publishers unless that mirror is configured.
 
-A missing key does **not** fail the workflow — it degrades to unauthenticated and rate-limited with a
-warning. *"The scan ran"* and *"the scan had current data"* are different claims.
+**The API key is used only if the datafeed is emptied.** With `nvd_datafeed_url: ""` the workflow
+uses the NVD API directly, and then `NVD_API_KEY` matters. Free:
+**https://nvd.nist.gov/developers/request-an-api-key**. In that mode a missing key does **not** fail
+the workflow — it degrades to unauthenticated and rate-limited with a warning. *"The scan ran"* and
+*"the scan had current data"* are different claims.
+
+**At scale (Release 4, KDEC-032 proposed):** the organisation can host the NVD datafeed, the KEV catalog
+and the Trivy database itself, privately, refreshed once a day for every repository — and a scan refuses
+a mirror that is stale or does not match its manifest instead of reading it as clean. Setup, from the
+Azure side to the first verified refresh: [`FEED_MIRRORS.md`](FEED_MIRRORS.md).
 
 ---
 
@@ -604,7 +722,9 @@ warning. *"The scan ran"* and *"the scan had current data"* are different claims
 | Deploy succeeds, app never healthy | **ACR pull rights missing** (§8 #5) |
 | App registration not in member picker | Searching by object ID — search by **display name** |
 | Secret set but empty at runtime | Set as a **Variable**, or at the wrong scope (repo vs environment) |
-| NVD job runs 30+ min | No `NVD_API_KEY` |
+| NVD job runs 30+ min | `nvd_datafeed_url` set to `""` and no `NVD_API_KEY`, or the runner cannot reach the public datafeed (§9) |
+| `HTTP 401: Bad credentials` on every API step | Read the **Job token preflight** row in the discover job's summary: it names `JOB_TOKEN_REJECTED`, `ORG_IP_ALLOW_LIST_BLOCKS_RUNNER`, `ORG_SSO_BLOCKS_TOKEN`, `RATE_LIMITED` or `API_UNREACHABLE` with its owner. On a `<tenant>.ghe.com` host an error URL naming `api.github.com` means a kit revision older than KDEC-027 is running (`operations/FAILURE_MODES.md` §4) |
+| Dependabot Updates fail `dependency_file_not_found` | A `dependabot.yml` entry names a directory with no manifest of its ecosystem; the kit lists only where a manifest is (`tests/check_action_pins.py` P7) |
 
 ## 11 · Minimum setup
 

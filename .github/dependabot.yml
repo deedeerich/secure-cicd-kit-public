@@ -18,10 +18,16 @@
 #   reusable-security.yml remain the thing that establishes posture; this only proposes fixes.
 #
 # ECOSYSTEMS
-#   Listed broadly on purpose. Dependabot skips an ecosystem with no manifest rather than
-#   erroring, so over-listing costs nothing and under-listing silently drops coverage -- the same
-#   reason discovery in reusable-security.yml turns everything on when it cannot establish
-#   applicability.
+#   ONLY WHERE A MANIFEST IS (tests/check_action_pins.py P7). This file used to list pip, npm,
+#   nuget, gomod, maven, composer, docker and terraform at `/` "because Dependabot skips an
+#   ecosystem with no manifest". It does not: it fails that update job with
+#   dependency_file_not_found ("No Dockerfiles nor Kubernetes YAML found", file-path /Dockerfile),
+#   every week, on every copy of the kit (the owner's work copy, 2026-11-02). The kit's root holds
+#   no application manifest; its real ones are the workflows and composites (github-actions),
+#   infra/feed-mirrors (terraform) and the live deploy probes' Dockerfiles (docker). The fixture
+#   directories below are listed only to be HELD. P8 (2026-11-04) holds the converse: every
+#   manifest outside the fixture is read by an entry, and every entry that opens PRs rebases.
+#   A copy of the kit that adds a manifest adds its entry, beside the manifest.
 
 # THE TEST FIXTURES ARE DELIBERATELY VULNERABLE -- never "fix" them.
 #   tests/consumer-fixture/ holds the scanners' acceptance signals: pinned vulnerable packages the
@@ -32,13 +38,25 @@
 version: 2
 
 updates:
+  # SHA PINS STAY CURRENT HERE (ledger L82). Every remote `uses:` is `owner/repo@<sha> # vX.Y.Z`;
+  # Dependabot moves the SHA and the version comment together. `/` reads .github/workflows and a
+  # root action.yml only, so the composites are listed by glob (`directories` supports `*`;
+  # `directory` does not). templates/ holds placeholders a consumer pins, and is not read.
+  # overlays/ is deliberately not read either: an overlay ships into its consumer's own copy and is
+  # maintained there, by that consumer's Dependabot (tests/check_action_pins.py P5 holds both).
   - package-ecosystem: github-actions
-    directory: /
+    directories:
+      - "/"
+      - "/.github/actions/*"
     exclude-paths:
       - "tests/consumer-fixture/**"
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    # A PR that falls into conflict with main is rebased by Dependabot (P8). Branch protection also
+    # requires the branch to be up to date with main ("strict"); a PR merely BEHIND main is not a
+    # conflict, so the triage or a human comments `@dependabot rebase` (DEPENDABOT_TRIAGE.md 3).
+    rebase-strategy: auto
     labels: [dependencies, github-actions]
     commit-message:
       prefix: "deps(actions)"
@@ -46,85 +64,145 @@ updates:
       actions-minor-and-patch:
         update-types: [minor, patch]
 
-  - package-ecosystem: pip
-    directory: /
-    exclude-paths:
-      - "tests/consumer-fixture/**"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 10
-    labels: [dependencies, python]
-    commit-message:
-      prefix: "deps(pip)"
-    groups:
-      python-minor-and-patch:
-        update-types: [minor, patch]
-
-  - package-ecosystem: npm
-    directory: /
-    exclude-paths:
-      - "tests/consumer-fixture/**"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 10
-    labels: [dependencies, javascript]
-    commit-message:
-      prefix: "deps(npm)"
-    groups:
-      npm-minor-and-patch:
-        update-types: [minor, patch]
-
-  - package-ecosystem: nuget
-    directory: /
-    exclude-paths:
-      - "tests/consumer-fixture/**"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    labels: [dependencies, dotnet]
-    commit-message:
-      prefix: "deps(nuget)"
-
-  - package-ecosystem: gomod
-    directory: /
-    exclude-paths:
-      - "tests/consumer-fixture/**"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    labels: [dependencies, go]
-    commit-message:
-      prefix: "deps(go)"
-
-  - package-ecosystem: maven
-    directory: /
-    exclude-paths:
-      - "tests/consumer-fixture/**"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    labels: [dependencies, java]
-    commit-message:
-      prefix: "deps(maven)"
-
-  - package-ecosystem: docker
-    directory: /
-    exclude-paths:
-      - "tests/consumer-fixture/**"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    labels: [dependencies, docker]
-    commit-message:
-      prefix: "deps(docker)"
-
+  # THE KIT'S OWN TERRAFORM (infra/feed-mirrors, KDEC-032): its provider pins stay current.
   - package-ecosystem: terraform
-    directory: /
+    directory: /infra/feed-mirrors
     exclude-paths:
       - "tests/consumer-fixture/**"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    rebase-strategy: auto
     labels: [dependencies, terraform]
     commit-message:
       prefix: "deps(terraform)"
+
+  # THE LIVE DEPLOY PROBES (tests/fixtures/deploy-probe, live-deploy-acceptance.yml): real images,
+  # NOT deliberately vulnerable -- busybox by tag AND digest. Kept current like any real base image
+  # (P8: every manifest outside tests/consumer-fixture/ is read). Docker is a protected ecosystem in
+  # the triage, so a base-image bump always goes to a human.
+  - package-ecosystem: docker
+    directories:
+      - "/tests/fixtures/deploy-probe/healthy-a"
+      - "/tests/fixtures/deploy-probe/healthy-b"
+      - "/tests/fixtures/deploy-probe/unhealthy"
+    # Every real entry excludes the deliberately vulnerable fixture (prove_deps_scan_composer C5).
+    exclude-paths:
+      - "tests/consumer-fixture/**"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    rebase-strategy: auto
+    labels: [dependencies, docker]
+    commit-message:
+      prefix: "deps(docker)"
+    groups:
+      deploy-probe-base-image:
+        patterns: ["*"]
+
+  # THE FIXTURE, HELD STILL AGAINST SECURITY UPDATES TOO (tests/check_action_pins.py P6).
+  #   exclude-paths above binds VERSION updates only. An alert-driven SECURITY update ignores it and
+  #   opened #2, #4, #7 (pip) and #9 (log4j-core 2.14.1 -> 2.25.4, full/java) against the fixture.
+  #   A security update does apply the `ignore` of the entry matching its ecosystem and directory,
+  #   so each fixture manifest directory has one: every dependency ignored, and a version-update
+  #   limit of 0. A new fixture manifest without its entry fails P6.
+  - package-ecosystem: pip
+    directory: "/tests/consumer-fixture/clean"
+    schedule: {interval: monthly}
+    open-pull-requests-limit: 0
+    ignore: [{dependency-name: "*"}]
+  - package-ecosystem: pip
+    directory: "/tests/consumer-fixture/seeded"
+    schedule: {interval: monthly}
+    open-pull-requests-limit: 0
+    ignore: [{dependency-name: "*"}]
+  - package-ecosystem: pip
+    directory: "/tests/consumer-fixture/full/python"
+    schedule: {interval: monthly}
+    open-pull-requests-limit: 0
+    ignore: [{dependency-name: "*"}]
+  - package-ecosystem: npm
+    directory: "/tests/consumer-fixture/full/node"
+    schedule: {interval: monthly}
+    open-pull-requests-limit: 0
+    ignore: [{dependency-name: "*"}]
+  - package-ecosystem: npm
+    directory: "/tests/consumer-fixture/full/services/api"
+    schedule: {interval: monthly}
+    open-pull-requests-limit: 0
+    ignore: [{dependency-name: "*"}]
+  - package-ecosystem: maven
+    directory: "/tests/consumer-fixture/full/java"
+    schedule: {interval: monthly}
+    open-pull-requests-limit: 0
+    ignore: [{dependency-name: "*"}]
+  - package-ecosystem: nuget
+    directory: "/tests/consumer-fixture/full/dotnet"
+    schedule: {interval: monthly}
+    open-pull-requests-limit: 0
+    ignore: [{dependency-name: "*"}]
+  - package-ecosystem: gomod
+    directory: "/tests/consumer-fixture/full/go"
+    schedule: {interval: monthly}
+    open-pull-requests-limit: 0
+    ignore: [{dependency-name: "*"}]
+  - package-ecosystem: gomod
+    directory: "/tests/consumer-fixture/full/services/worker"
+    schedule: {interval: monthly}
+    open-pull-requests-limit: 0
+    ignore: [{dependency-name: "*"}]
+  - package-ecosystem: composer
+    directory: "/tests/consumer-fixture/full/php"
+    schedule: {interval: monthly}
+    open-pull-requests-limit: 0
+    ignore: [{dependency-name: "*"}]
+  - package-ecosystem: docker
+    directory: "/tests/consumer-fixture/buildonly"
+    schedule: {interval: monthly}
+    open-pull-requests-limit: 0
+    ignore: [{dependency-name: "*"}]
+  - package-ecosystem: docker
+    directory: "/tests/consumer-fixture/full/infra"
+    schedule: {interval: monthly}
+    open-pull-requests-limit: 0
+    ignore: [{dependency-name: "*"}]
+  - package-ecosystem: terraform
+    directory: "/tests/consumer-fixture/full/infra"
+    schedule: {interval: monthly}
+    open-pull-requests-limit: 0
+    ignore: [{dependency-name: "*"}]
+  - package-ecosystem: terraform
+    directory: "/tests/consumer-fixture/iac-heavy/envs/prod"
+    schedule: {interval: monthly}
+    open-pull-requests-limit: 0
+    ignore: [{dependency-name: "*"}]
+  - package-ecosystem: terraform
+    directory: "/tests/consumer-fixture/iac-heavy/modules/compute"
+    schedule: {interval: monthly}
+    open-pull-requests-limit: 0
+    ignore: [{dependency-name: "*"}]
+  - package-ecosystem: terraform
+    directory: "/tests/consumer-fixture/iac-heavy/modules/database"
+    schedule: {interval: monthly}
+    open-pull-requests-limit: 0
+    ignore: [{dependency-name: "*"}]
+  - package-ecosystem: terraform
+    directory: "/tests/consumer-fixture/iac-heavy/modules/keyvault"
+    schedule: {interval: monthly}
+    open-pull-requests-limit: 0
+    ignore: [{dependency-name: "*"}]
+  - package-ecosystem: terraform
+    directory: "/tests/consumer-fixture/iac-heavy/modules/kubernetes"
+    schedule: {interval: monthly}
+    open-pull-requests-limit: 0
+    ignore: [{dependency-name: "*"}]
+  - package-ecosystem: terraform
+    directory: "/tests/consumer-fixture/iac-heavy/modules/network"
+    schedule: {interval: monthly}
+    open-pull-requests-limit: 0
+    ignore: [{dependency-name: "*"}]
+  - package-ecosystem: terraform
+    directory: "/tests/consumer-fixture/iac-heavy/modules/storage"
+    schedule: {interval: monthly}
+    open-pull-requests-limit: 0
+    ignore: [{dependency-name: "*"}]

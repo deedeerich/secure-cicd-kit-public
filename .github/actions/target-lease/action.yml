@@ -1,0 +1,86 @@
+name: target-lease
+description: >-
+  KDEC-030 (DRAFT): the cross-repository lock on one deploy target. A GitHub Actions concurrency
+  group is evaluated inside one repository, so it cannot make a landing-zone apply (platform
+  repository) and a kit deploy (application repository) wait for each other. Both sides call THIS
+  composite instead: an Azure Storage blob lease on the target's own container in the landing zone's
+  lease account, keyed by the target's ARM resource id, with a generation number as the fencing
+  token. acquire before the first mutation (refused LEASE_HELD, naming the holder, when someone else
+  holds it); begin / fence before each mutating step (refused STALE_LEASE_HOLDER or
+  LEASE_EXPIRED_HOLDER once the lease is lost); end after the last one (MUTATED_WITHOUT_LEASE if it
+  was lost in flight); release. Fencing stops a stale holder before its NEXT call; it cannot recall an
+  Azure call already sent. Needs `azure/login` first (a storage-scoped Entra token, never a key) and a
+  runner that can reach the account's private endpoint. scripts/target_lease.py;
+  tests/prove_target_lease.py, tests/prove_target_lease_crossrepo.py;
+  docs/architecture/LZ_KIT_SEAM_CONTRACT.md.
+inputs:
+  op:
+    description: acquire, begin, fence, end, release or status.
+    required: true
+  account:
+    description: The lease storage account (the landing zone vends it; the environment variable KIT_TARGET_LEASE_ACCOUNT).
+    required: false
+    default: ''
+  resource-id:
+    description: The target's ARM resource id (acquire and status). Case-insensitive; one target, one lease.
+    required: false
+    default: ''
+  holder:
+    description: "Who takes the lease (acquire), e.g. kit-deploy:<repo>/<run>-<attempt> or lz-apply:<repo>/<run>-<attempt>."
+    required: false
+    default: ''
+  what:
+    description: The mutation being marked (begin), recorded in the lease metadata.
+    required: false
+    default: ''
+  cloud:
+    description: public or gov (the blob endpoint suffix).
+    required: false
+    default: 'public'
+  token-file:
+    description: Where the fencing token is kept between steps of one job (never uploaded).
+    required: false
+    default: ''
+outputs:
+  target_lease: {description: "The outcome (assurance-taxonomy.yaml target_lease)", value: "${{ steps.l.outputs.target_lease }}"}
+  target_lease_reason: {description: Why, naming the holder when refused, value: "${{ steps.l.outputs.target_lease_reason }}"}
+runs:
+  using: composite
+  steps:
+    - name: Target lease
+      id: l
+      shell: bash
+      env:
+        # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
+        L_OP: ${{ inputs.op }}
+        L_ACCOUNT: ${{ inputs.account }}
+        L_RESOURCE_ID: ${{ inputs.resource-id }}
+        L_HOLDER: ${{ inputs.holder }}
+        L_WHAT: ${{ inputs.what }}
+        L_CLOUD: ${{ inputs.cloud }}
+        L_TOKEN_FILE: ${{ inputs.token-file }}
+      run: |
+        set -uo pipefail
+        kit_root="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)"
+        script="${kit_root}/scripts/target_lease.py"
+        # A LOCK THAT CANNOT BE TAKEN IS NOT A FREE TARGET: fail closed.
+        if [ ! -s "$script" ]; then
+          echo "::error title=target_lease LEASE_STORE_UNREACHABLE::scripts/target_lease.py is not in the kit delivered with this action."
+          echo "target_lease=LEASE_STORE_UNREACHABLE" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi
+        token="${L_TOKEN_FILE:-${RUNNER_TEMP}/kit-target-lease/token.json}"
+        args=("$L_OP" --token-file "$token" --cloud "${L_CLOUD:-public}")
+        case "$L_OP" in
+          acquire) args+=(--account "$L_ACCOUNT" --resource-id "$L_RESOURCE_ID" --holder "$L_HOLDER") ;;
+          status)  args+=(--account "$L_ACCOUNT" --resource-id "$L_RESOURCE_ID") ;;
+          begin)   args+=(--what "$L_WHAT") ;;
+          fence|end|release) ;;
+          *) echo "::error::target-lease: unknown op '$L_OP'"; exit 1 ;;
+        esac
+        rc=0
+        python3 "$script" "${args[@]}" || rc=$?
+        if [ "$rc" -ne 0 ]; then
+          echo "::error title=target lease refused::$L_OP did not pass (exit $rc); see target_lease and target_lease_reason. Nothing further is mutated by this step's caller."
+        fi
+        exit "$rc"

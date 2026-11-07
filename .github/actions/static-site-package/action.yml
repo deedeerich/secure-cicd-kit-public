@@ -1,0 +1,72 @@
+name: static-site-package
+description: >-
+  OF-5 K-8: package a BUILT static site as one artefact the kit can release by digest. Writes
+  kit-release.json into the site root -- the TREE digest of every other file (sha256 over the sorted
+  "<path>\0<sha256 of the file>" lines) and the build's provenance -- uploads the site as the artifact
+  kit-static-site-<hex> and its SBOM (Syft, the directory) as sbom-<hex>, so a promotion re-scans it
+  like an image's. The marker is served with the site: the deploy reads what serves back from it.
+  Sign the marker (actions/attest with subject-path) in the caller's attest job, never here: a
+  packaging step holds no attestations write. scripts/static_site_contract.py package;
+  tests/prove_deploy_staticwebapp.py.
+inputs:
+  path:
+    description: The built site's directory (what the app's own build produced), relative to the workspace.
+    required: true
+  retention-days:
+    description: >-
+      How long the site artefact is kept. A rollback can restore a release only while its artefact
+      exists (rollback_capability AVAILABLE), so keep it at least as long as a release may stand.
+    required: false
+    default: '90'
+outputs:
+  site_digest: {description: "sha256:<64 hex>, the tree digest the deploy releases", value: "${{ steps.pkg.outputs.site_digest }}"}
+  artifact_name: {description: kit-static-site-<hex>, value: "${{ steps.pkg.outputs.artifact_name }}"}
+  marker_path: {description: "the marker file, to attest (actions/attest subject-path)", value: "${{ steps.pkg.outputs.marker_path }}"}
+  marker_sha256: {description: the marker file's sha256, value: "${{ steps.pkg.outputs.marker_sha256 }}"}
+  sbom_sha256: {description: the SBOM's sha256 (the promotion record carries it), value: "${{ steps.sbom.outputs.sha256 }}"}
+runs:
+  using: composite
+  steps:
+    - name: Write the marker and compute the tree digest
+      id: pkg
+      shell: bash
+      env:
+        # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
+        S_DIR: ${{ inputs.path }}
+      run: |
+        set -euo pipefail
+        kit_root="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)"
+        python3 "${kit_root}/scripts/static_site_contract.py" package --dir "$S_DIR"
+
+    - name: SBOM of the site (Syft, SPDX JSON)
+      id: sbom
+      shell: bash
+      env:
+        S_DIR: ${{ inputs.path }}
+      run: |
+        set -euo pipefail
+        # Pinned (ledger L84): syft v1.54.1, verified against a recorded digest -- the build's own pin.
+        s=syft_1.54.1_linux_amd64.tar.gz
+        curl -sSfLO "https://github.com/anchore/syft/releases/download/v1.54.1/$s"
+        echo "c069905b391cc4c20a5ba65ad5c10be2a7ba074f8ea6ad203e24d14e303dad47  $s" | sha256sum -c -
+        tar -xzf "$s" syft && sudo mv syft /usr/local/bin/ && rm -f "$s"
+        mkdir -p "$RUNNER_TEMP/static-site-sbom"
+        syft "dir:$S_DIR" -o "spdx-json=$RUNNER_TEMP/static-site-sbom/sbom.spdx.json"
+        echo "sha256=$(sha256sum "$RUNNER_TEMP/static-site-sbom/sbom.spdx.json" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+    - name: Upload the site (kit-static-site-<hex>)
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ steps.pkg.outputs.artifact_name }}
+        path: ${{ inputs.path }}
+        if-no-files-found: error
+        include-hidden-files: true
+        retention-days: ${{ inputs.retention-days }}
+
+    - name: Upload the SBOM (sbom-<hex>)
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: sbom-${{ steps.pkg.outputs.digest_hex }}
+        path: ${{ runner.temp }}/static-site-sbom/sbom.spdx.json
+        if-no-files-found: error
+        retention-days: ${{ inputs.retention-days }}

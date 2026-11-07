@@ -63,7 +63,7 @@ did. Both trackers will cascade closure downward if asked, so the bridge never a
 | variable | meaning | validated at run start by |
 |---|---|---|
 | `TICKET_BACKEND=jira` | selects this backend | `choose_backend`: exactly one backend, or refuse |
-| `JIRA_HOST` | `https://<site>.atlassian.net` | well-formed https URL, no path, no credentials in it |
+| `JIRA_HOST` | `https://<site>.atlassian.net` or the bare `<site>.atlassian.net` (given `https://`) | well-formed https URL, no path, no credentials in it |
 | `JIRA_EMAIL`, `JIRA_TOKEN` | basic auth is `email:token` (the token alone returns 401) | the probe (3.4). Never logged, never echoed, held only in a protected environment |
 | `JIRA_PROJECT` | project key | `GET /rest/api/3/project/{key}` resolves |
 | `JIRA_STAMP_FIELD` | `customfield_<id>`, a **single-line text** field provisioned once by a human | createmeta (3.2) lists it as settable on the tier-0 type, with schema `string` |

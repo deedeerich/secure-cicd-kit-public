@@ -48,6 +48,17 @@ WORKFLOWS = os.path.join(ROOT, '.github', 'workflows', 'reusable-*.yml')
 RUNS_AFTER_FAILURE = ('always()', 'failure()', '!cancelled()')
 
 
+def _expand(doc):
+    """The workflow with every `$/` composite step expanded into its job, as the runner sees it.
+
+    Scanner job bodies live in `.github/actions/<scanner>/` (ledger L64); this reads the steps a
+    job actually runs. One rule, tests/_composite_expand.py, for every reader.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.expanded_doc(doc)
+
+
 def offenders(doc):
     """-> [(job, step name, its if)] for steps a failing enforce step would skip."""
     out = []
@@ -98,7 +109,7 @@ def main():
         return 2
     found = []
     for f in files:
-        doc = yaml.safe_load(io.open(f, encoding='utf-8'))
+        doc = _expand(yaml.safe_load(io.open(f, encoding='utf-8')))
         for job, step, cond, enforce in offenders(doc):
             found.append('%s / %s: step %r follows %r and has if: %s'
                          % (os.path.basename(f), job, step, enforce, cond))

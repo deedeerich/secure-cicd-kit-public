@@ -67,6 +67,17 @@ SECRETS = {
 }
 
 
+def _expand(doc):
+    """The workflow with every `$/` composite step expanded into its job, as the runner sees it.
+
+    Scanner job bodies live in `.github/actions/<scanner>/` (ledger L64); this reads the steps a
+    job actually runs. One rule, tests/_composite_expand.py, for every reader.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.expanded_doc(doc)
+
+
 def sarif(tool, results):
     return {'version': '2.1.0', '$schema': 'https://json.schemastore.org/sarif-2.1.0.json',
             'runs': [{'tool': {'driver': {'name': tool}}, 'results': results}]}
@@ -150,7 +161,7 @@ def workflow_redaction_script():
     The FIRST job that publishes scanner output is deliberately not special-cased: every job
     carrying this step gets the identical generated body, and the generator's --check proves it.
     """
-    doc = yaml.safe_load(io.open(WF, encoding='utf-8'))
+    doc = _expand(yaml.safe_load(io.open(WF, encoding='utf-8')))
     for job, v in (doc.get('jobs') or {}).items():
         for s in (v.get('steps') or []):
             if 'Redact credential' in str(s.get('name') or ''):

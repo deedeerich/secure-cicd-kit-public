@@ -42,7 +42,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, 'scripts'))
 WF = os.path.join(ROOT, '.github', 'workflows', 'reusable-security.yml')
-JOB = 'report'
+JOB = 'security-gate'   # G3 (KDEC-033): the report is the first part of the gate job
 
 
 def locate(doc):

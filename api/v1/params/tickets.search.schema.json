@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/params/tickets.search.schema.json",
+  "title": "params of tickets.search",
+  "description": "Search the kit's tickets in this repository's tracker. The CVE, KEV and free-text filters read the findings of a security run (findings_run_id) and need one. With tracker_query (api/v1/tickets/intake.schema.json) it reads EVERY ticket in the named projects, manually created ones included, one page at a time with the tracker's cursor, joined to the findings of findings_run_id when given (KDEC-037).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "filters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8,128}$"
+        },
+        "finding_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16,128}$"
+        },
+        "cluster_key": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16,128}$"
+        },
+        "repo": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+        },
+        "severity": {
+          "type": "array",
+          "maxItems": 9,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "moderate",
+              "low",
+              "info",
+              "informational",
+              "note",
+              "none"
+            ]
+          }
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "open",
+            "closed"
+          ]
+        },
+        "cve": {
+          "type": "string",
+          "pattern": "^CVE-[0-9]{4}-[0-9]{4,}$"
+        },
+        "kev": {
+          "type": "boolean"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      }
+    },
+    "findings_run_id": {
+      "description": "A completed run of the repository's security caller on the default branch, by id, or \"latest\" for the newest such run that kept its evidence.",
+      "type": [
+        "integer",
+        "string"
+      ],
+      "minimum": 1,
+      "pattern": "^latest$"
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200
+    },
+    "offset": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100000
+    },
+    "tracker_query": {
+      "description": "Tracker intake: api/v1/tickets/intake.schema.json, validated there.",
+      "type": "object"
+    }
+  }
+}

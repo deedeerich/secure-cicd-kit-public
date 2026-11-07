@@ -1,0 +1,21 @@
+{
+  "api_version": "v1",
+  "client": {
+    "name": "tines-3b-step",
+    "version": "1.0.0"
+  },
+  "correlation_id": "kapi-20261103T101500Z-000000000001",
+  "idempotency_key": "vuln-triage:wf-12:item-88",
+  "on_behalf_of": "analyst@example.invalid",
+  "operation": "tickets.write",
+  "params": {
+    "select": {
+      "identities": [
+        "3f9c2a7d1e5b4c60a1b2c3d4e5f60718"
+      ]
+    },
+    "source": {
+      "run_id": 40812345678
+    }
+  }
+}

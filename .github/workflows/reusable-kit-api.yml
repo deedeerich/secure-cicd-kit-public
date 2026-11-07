@@ -1,0 +1,501 @@
+name: Kit API (reusable)
+
+# KDEC-035 (PROPOSED): THE KIT'S API -- the run that answers one call from another program.
+#
+# WHO CALLS THIS. A repository's own `kit-api.yml` (templates/kit-api.yml), started by a
+# workflow_dispatch (or a repository_dispatch of type kit-api) whose `request` is a v1 request
+# (api/v1/request.schema.json). The run is named `kit-api <correlation id>`, and its answer is a v1
+# result (api/v1/result.schema.json) written three ways: the artifact kit-api-result-<correlation id>,
+# the run summary, and the check run `kit-api/<correlation id>`. docs/api/README.md.
+#
+# THE JOBS, AND WHAT EACH MAY HOLD.
+#   intake    validates and refuses by name; records the idempotency key; answers a findings read
+#             (no credential beyond the run's token, so no second billed job); holds NO tracker
+#             credential and is in no environment.
+#   tickets   the ticket operations, through the kit's own reconciler (scripts/reconcile_tickets.py),
+#             in the SAME protected environment and with the SAME settings as the pipeline's ticket
+#             reconciliation (reusable-ticket-reconcile.yml) -- and, for a write, in the SAME
+#             concurrency group, so the API and the pipeline never look up and create at once.
+#   finish    (phase finish) reports what the caller's scan or release jobs established.
+# A scan and a release are NOT done here: templates/kit-api.yml runs them as its own jobs (the kit's
+# security workflow; the repository's build-deploy.yml as a reusable workflow, so every release gate
+# applies and the API caller IS the release's requester). Nothing here deploys, dispatches, approves
+# or writes the repository.
+#
+# DATA, NEVER CODE. Every caller value reaches the server through `env:` (tests/lint_injection.py).
+#
+# STATUS: proven locally only (tests/prove_kit_api_client.py, prove_kit_api_server.py,
+# prove_kit_api_workflow.py). No hosted run yet.
+
+on:
+  workflow_call:
+    inputs:
+      phase:
+        description: "run (intake, then the operation) or finish (report a scan or a release the caller ran)."
+        type: string
+        default: run
+      correlation_id:
+        description: "The call's correlation id, as dispatched (the run-name carries it)."
+        type: string
+        required: true
+      idempotency_key:
+        description: "The call's idempotency key, as dispatched (empty for a read)."
+        type: string
+        default: ""
+      request:
+        description: "The v1 request (JSON text), as dispatched. Validated before anything it asks for is done."
+        type: string
+        required: true
+      default_branch:
+        description: "The protected default branch. Ticket and release calls are refused on any other ref."
+        type: string
+        required: true
+      operations:
+        description: "The operations this repository serves (comma list). Empty serves every read and scan.request; a write is served only where named here."
+        type: string
+        default: ""
+      ticketing_environment:
+        description: "The protected environment holding the tracker credential: the one the pipeline's ticket reconciliation uses."
+        type: string
+        default: "ticketing"
+      ticket_backend:
+        description: "jira, azdo or github: the repository's ticket backend (KDEC-004)."
+        type: string
+        default: "jira"
+      security_workflow:
+        description: "The workflow file whose default-branch runs hold the security evidence (findings.json) the API reads."
+        type: string
+        default: "build-deploy.yml"
+      deploy_environments:
+        description: "Environments a release may be requested for through the API (comma list). Empty permits none."
+        type: string
+        default: ""
+      build_deploy_environments:
+        description: "Environments a build-and-deploy (not a promotion) may target through the API."
+        type: string
+        default: "dev,test"
+      ledger_path:
+        description: "The ticket ledger in the checkout of the default branch."
+        type: string
+        default: ".security/ticket-ledger.json"
+      intake:
+        description: "phase finish: the run phase's intake output."
+        type: string
+        default: ""
+      job_result:
+        description: "phase finish: the result of the caller's scan or release job."
+        type: string
+        default: ""
+      routing_result:
+        description: "phase finish (scan): the security workflow's routing_result."
+        type: string
+        default: ""
+      assurance_state:
+        description: "phase finish (scan): the security workflow's assurance_state."
+        type: string
+        default: ""
+      advisory_causes:
+        description: "phase finish (scan): the security workflow's list of causes behind its verdict, as it emitted them."
+        type: string
+        default: ""
+      evidence_artifact:
+        description: "phase finish (scan): the security workflow's evidence_artifact."
+        type: string
+        default: ""
+    secrets:
+      JIRA_HOST:
+        description: "Jira: the site URL (https://<site>.atlassian.net), held as a SECRET where the host must not appear in logs. Read first; vars.JIRA_HOST is the fallback. From the protected environment."
+        required: false
+      JIRA_EMAIL:
+        description: "Jira: the account email (basic auth). From the ticketing environment, as for ticket reconciliation."
+        required: false
+      JIRA_TOKEN:
+        description: "Jira: API token. From the ticketing environment."
+        required: false
+      AZDO_PAT:
+        description: "Azure DevOps: PAT, Work Items read & write. From the ticketing environment."
+        required: false
+      GH_TICKET_TOKEN:
+        description: "GitHub Issues: a token with issues read & write on vars.TICKET_REPO. From the ticketing environment."
+        required: false
+      KIT_API_TEAM_READ_TOKEN:
+        description: "KDEC-037: a token that can read the members of the approver GitHub team (members:read only), for KIT_API_REVIEW_APPROVER_SOURCE=team:<org>/<slug>. Optional."
+        required: false
+    outputs:
+      accepted:
+        description: "true when intake accepted the call."
+        value: ${{ jobs.intake.outputs.accepted }}
+      operation:
+        description: "The call's operation."
+        value: ${{ jobs.intake.outputs.operation }}
+      refusal:
+        description: "The intake's refusal, by name (empty when accepted)."
+        value: ${{ jobs.intake.outputs.refusal }}
+      intake:
+        description: "The intake record, for the finish phase."
+        value: ${{ jobs.intake.outputs.intake }}
+      deploy_mode:
+        description: "deploy.request, validated: promote or build-deploy."
+        value: ${{ jobs.intake.outputs.deploy_mode }}
+      deploy_environment:
+        description: "deploy.request, validated: the environment."
+        value: ${{ jobs.intake.outputs.deploy_environment }}
+      promote_from_run_id:
+        description: "deploy.request, validated: the predecessor run."
+        value: ${{ jobs.intake.outputs.promote_from_run_id }}
+      promote_from_environment:
+        description: "deploy.request, validated: the predecessor environment."
+        value: ${{ jobs.intake.outputs.promote_from_environment }}
+      release_path:
+        description: "deploy.request, validated: normal or hotfix."
+        value: ${{ jobs.intake.outputs.release_path }}
+      api_state:
+        description: "The call's kit_api_state when this run answered it."
+        value: ${{ jobs.tickets.outputs.api_state || jobs.intake.outputs.api_state || jobs.finish.outputs.api_state }}
+
+permissions:
+  contents: read
+
+jobs:
+  intake:
+    name: Intake (validate, refuse by name, record the key; answer a findings read)
+    if: inputs.phase == 'run'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read      # the idempotency markers and the runs they name
+      checks: write      # the call's check run, where the caller reads the answer
+      deployments: read  # KDEC-039 evidence.export: the durable release records (task kit-release-record)
+    outputs:
+      accepted: ${{ steps.intake.outputs.accepted }}
+      operation: ${{ steps.intake.outputs.operation }}
+      refusal: ${{ steps.intake.outputs.refusal }}
+      intake: ${{ steps.intake.outputs.intake }}
+      deploy_mode: ${{ steps.intake.outputs.deploy_mode }}
+      deploy_environment: ${{ steps.intake.outputs.deploy_environment }}
+      promote_from_run_id: ${{ steps.intake.outputs.promote_from_run_id }}
+      promote_from_environment: ${{ steps.intake.outputs.promote_from_environment }}
+      release_path: ${{ steps.intake.outputs.release_path }}
+      api_state: ${{ steps.refused.outputs.api_state || steps.findings_answer.outputs.api_state }}
+    steps:
+      # A FINDINGS READ IS ANSWERED IN THIS JOB: it holds no credential beyond the run's own token, so
+      # a second job would only bill a second minute (owner, cost-beneficial). A ticket call is NOT:
+      # its credential's environment is requested only after this job has validated the call.
+      - name: Check out the default branch (the ticket ledger binds findings to tickets)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate the request
+        id: intake
+        uses: $/.github/actions/kit-api
+        with:
+          phase: intake
+          out-dir: ${{ runner.temp }}/kit-api
+        env:
+          KIT_API_REQUEST: ${{ inputs.request }}
+          KIT_API_CORRELATION_ID: ${{ inputs.correlation_id }}
+          KIT_API_IDEMPOTENCY_KEY: ${{ inputs.idempotency_key }}
+          KIT_API_OPERATIONS: ${{ inputs.operations }}
+          KIT_API_DEFAULT_BRANCH: ${{ inputs.default_branch }}
+          KIT_API_DEPLOY_ENVIRONMENTS: ${{ inputs.deploy_environments }}
+          KIT_API_BUILD_DEPLOY_ENVIRONMENTS: ${{ inputs.build_deploy_environments }}
+          # KDEC-037: the owner's template numbers; unset is the stated default (ticket_templates.py).
+          KIT_API_EXTENSION_DEFAULT_DAYS: ${{ vars.KIT_API_EXTENSION_DEFAULT_DAYS }}
+          KIT_API_EXTENSION_MAX: ${{ vars.KIT_API_EXTENSION_MAX }}
+          KIT_API_EXTENSION_CEILING_DAYS: ${{ vars.KIT_API_EXTENSION_CEILING_DAYS }}
+          KIT_API_VENDOR_ADVISORY_EXTENSIONS: ${{ vars.KIT_API_VENDOR_ADVISORY_EXTENSIONS }}
+          KIT_API_VENDOR_ADVISORY_DAYS: ${{ vars.KIT_API_VENDOR_ADVISORY_DAYS }}
+          KIT_API_NOFIX_EXEMPTION_DAYS: ${{ vars.KIT_API_NOFIX_EXEMPTION_DAYS }}
+          KIT_API_NOFIX_EXEMPTION_CEILING_DAYS: ${{ vars.KIT_API_NOFIX_EXEMPTION_CEILING_DAYS }}
+          KIT_API_NOFIX_RECHECK_DAYS: ${{ vars.KIT_API_NOFIX_RECHECK_DAYS }}
+          KIT_API_NOFIX_REVIEW_DAYS: ${{ vars.KIT_API_NOFIX_REVIEW_DAYS }}
+          KIT_API_EXCEPTION_MAX_DAYS: ${{ vars.KIT_API_EXCEPTION_MAX_DAYS }}
+          KIT_API_REVIEW_MAX_AGE_DAYS: ${{ vars.KIT_API_REVIEW_MAX_AGE_DAYS }}
+          KIT_API_VERIFICATION_REMINDER_DAYS: ${{ vars.KIT_API_VERIFICATION_REMINDER_DAYS }}
+          KIT_API_FUZZY_TITLE_PERCENT: ${{ vars.KIT_API_FUZZY_TITLE_PERCENT }}
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # THE KEY'S MARKER. A later call with the same key finds it (API_DUPLICATE_REQUEST) and does
+      # nothing; the caller workflow's concurrency group keeps two such calls from overlapping.
+      - name: Record the idempotency key
+        if: steps.intake.outputs.accepted == 'true' && steps.intake.outputs.write == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kit-api-idem-${{ steps.intake.outputs.idem_hash }}
+          path: ${{ runner.temp }}/kit-api/intake.json
+          retention-days: 90
+
+      - name: Read and search the findings
+        id: findings
+        if: steps.intake.outputs.accepted == 'true' && (startsWith(steps.intake.outputs.operation, 'findings.') || steps.intake.outputs.operation == 'evidence.export')
+        uses: $/.github/actions/kit-api
+        with:
+          phase: findings
+          out-dir: ${{ runner.temp }}/kit-api
+          kev-mirror-url: ${{ vars.KIT_FEED_MIRROR_URL }}
+          kev-mirror-max-age-hours: ${{ vars.KIT_FEED_MIRROR_MAX_AGE_HOURS }}
+          kev-mirror-fallback: ${{ vars.KIT_FEED_MIRROR_FALLBACK }}
+        env:
+          KIT_API_INTAKE: ${{ steps.intake.outputs.intake }}
+          KIT_API_LEDGER: ${{ github.workspace }}/${{ inputs.ledger_path }}
+          KIT_API_SECURITY_WORKFLOW: ${{ inputs.security_workflow }}
+          KIT_API_DEFAULT_BRANCH: ${{ inputs.default_branch }}
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Answer a findings read
+        id: findings_answer
+        if: always() && steps.intake.outputs.accepted == 'true' && (startsWith(steps.intake.outputs.operation, 'findings.') || steps.intake.outputs.operation == 'evidence.export')
+        uses: $/.github/actions/kit-api
+        with:
+          phase: finish
+          out-dir: ${{ runner.temp }}/kit-api
+        env:
+          KIT_API_INTAKE: ${{ steps.intake.outputs.intake }}
+          KIT_API_OP_RESULT: ${{ runner.temp }}/kit-api/op-result.json
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Say the answer in plain words (docs/errors/ERRORS.md)
+        if: always()
+        uses: $/.github/actions/plain-errors
+        with:
+          source: api
+          states: kit_api_state:${{ steps.findings_answer.outputs.api_state }}
+
+      # KDEC-039: the export unpacked as the files the evidence harness reads (--kit-evidence).
+      - name: Keep the evidence export
+        if: always() && steps.intake.outputs.accepted == 'true' && steps.intake.outputs.operation == 'evidence.export'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kit-evidence-export-${{ steps.intake.outputs.correlation_id || github.run_id }}
+          path: ${{ runner.temp }}/kit-api/evidence-export
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Answer a refused call
+        id: refused
+        if: steps.intake.outputs.accepted != 'true'
+        uses: $/.github/actions/kit-api
+        with:
+          phase: finish
+          out-dir: ${{ runner.temp }}/kit-api
+        env:
+          KIT_API_INTAKE: ${{ steps.intake.outputs.intake }}
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Say the refusal in plain words (docs/errors/ERRORS.md)
+        if: steps.intake.outputs.accepted != 'true'
+        uses: $/.github/actions/plain-errors
+        with:
+          source: api
+          states: kit_api_refusal:${{ steps.intake.outputs.refusal }} kit_api_state:${{ steps.refused.outputs.api_state }}
+
+      - name: Keep the result
+        if: always() && (steps.intake.outputs.accepted != 'true' || (startsWith(steps.intake.outputs.operation, 'findings.') || steps.intake.outputs.operation == 'evidence.export'))
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kit-api-result-${{ steps.intake.outputs.correlation_id || github.run_id }}
+          path: ${{ runner.temp }}/kit-api/result.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  tickets:
+    name: Tickets, through the kit's reconciler
+    needs: intake
+    if: inputs.phase == 'run' && needs.intake.outputs.accepted == 'true' && startsWith(needs.intake.outputs.operation, 'tickets.')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The tracker credential lives here, in the environment the pipeline's reconciliation uses, whose
+    # branch policy admits only the default branch (TICKETING_CONTRACT.md 7.2).
+    environment: ${{ inputs.ticketing_environment }}
+    # ONE TICKET WRITER AT A TIME PER REPOSITORY: the same group as reusable-ticket-reconcile.yml's
+    # reconcile and resurface jobs, so a lookup and a create are never interleaved with another's.
+    # GitHub keeps one waiting job per group: a call replaced while waiting ends cancelled, and its
+    # caller reads API_CANCELLED and resubmits with the same key. A read takes its own group.
+    concurrency:
+      group: ${{ (needs.intake.outputs.operation == 'tickets.write' || needs.intake.outputs.operation == 'tickets.submit') && format('kit-ticket-writes-{0}', github.repository) || format('kit-api-read-{0}-{1}', github.run_id, github.run_attempt) }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+      pull-requests: read   # KDEC-037: the pull request that merged a review record, and who approved it
+    outputs:
+      api_state: ${{ steps.finish.outputs.api_state }}
+    steps:
+      - name: Check out the default branch (the ledger, the register and the review records live here)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Carry out the ticket operation
+        id: op
+        uses: $/.github/actions/kit-api
+        with:
+          phase: tickets
+          out-dir: ${{ runner.temp }}/kit-api
+          kev-mirror-url: ${{ vars.KIT_FEED_MIRROR_URL }}
+          kev-mirror-max-age-hours: ${{ vars.KIT_FEED_MIRROR_MAX_AGE_HOURS }}
+          kev-mirror-fallback: ${{ vars.KIT_FEED_MIRROR_FALLBACK }}
+        env:
+          KIT_API_INTAKE: ${{ needs.intake.outputs.intake }}
+          KIT_API_LEDGER: ${{ github.workspace }}/${{ inputs.ledger_path }}
+          KIT_API_REGISTRATION: ${{ github.workspace }}/.security/policy-registration.json
+          KIT_API_SECURITY_WORKFLOW: ${{ inputs.security_workflow }}
+          KIT_API_DEFAULT_BRANCH: ${{ inputs.default_branch }}
+          # KDEC-037: the finalized review records (.security/reviews/<review id>.json) on the default
+          # branch, and the approver list a concurring reviewer must be on.
+          KIT_API_REVIEWS_DIR: ${{ github.workspace }}/.security/reviews
+          KIT_API_REVIEW_APPROVER_LIST: ${{ vars.KIT_API_REVIEW_APPROVER_LIST }}
+          # The approvers: `list:<name>` (the register) or `team:<org>/<slug>` (a GitHub team, read with
+          # the team-read token below; members only, never written). Unset: list:review-concurrence.
+          KIT_API_REVIEW_APPROVER_SOURCE: ${{ vars.KIT_API_REVIEW_APPROVER_SOURCE }}
+          KIT_API_TEAM_READ_TOKEN: ${{ secrets.KIT_API_TEAM_READ_TOKEN }}
+          # Which branch's clean rescan closes which environment's ticket (`branch=env,...`; unset: the
+          # default branch is prod). Approved tools and evidence stores raise a finding's trust score.
+          KIT_API_BRANCH_ENVIRONMENTS: ${{ vars.KIT_API_BRANCH_ENVIRONMENTS }}
+          KIT_API_APPROVED_TOOLS: ${{ vars.KIT_API_APPROVED_TOOLS }}
+          KIT_API_EVIDENCE_STORES: ${{ vars.KIT_API_EVIDENCE_STORES }}
+          # KDEC-037: the owner's template numbers; unset is the stated default (ticket_templates.py).
+          KIT_API_EXTENSION_DEFAULT_DAYS: ${{ vars.KIT_API_EXTENSION_DEFAULT_DAYS }}
+          KIT_API_EXTENSION_MAX: ${{ vars.KIT_API_EXTENSION_MAX }}
+          KIT_API_EXTENSION_CEILING_DAYS: ${{ vars.KIT_API_EXTENSION_CEILING_DAYS }}
+          KIT_API_VENDOR_ADVISORY_EXTENSIONS: ${{ vars.KIT_API_VENDOR_ADVISORY_EXTENSIONS }}
+          KIT_API_VENDOR_ADVISORY_DAYS: ${{ vars.KIT_API_VENDOR_ADVISORY_DAYS }}
+          KIT_API_NOFIX_EXEMPTION_DAYS: ${{ vars.KIT_API_NOFIX_EXEMPTION_DAYS }}
+          KIT_API_NOFIX_EXEMPTION_CEILING_DAYS: ${{ vars.KIT_API_NOFIX_EXEMPTION_CEILING_DAYS }}
+          KIT_API_NOFIX_RECHECK_DAYS: ${{ vars.KIT_API_NOFIX_RECHECK_DAYS }}
+          KIT_API_NOFIX_REVIEW_DAYS: ${{ vars.KIT_API_NOFIX_REVIEW_DAYS }}
+          KIT_API_EXCEPTION_MAX_DAYS: ${{ vars.KIT_API_EXCEPTION_MAX_DAYS }}
+          KIT_API_REVIEW_MAX_AGE_DAYS: ${{ vars.KIT_API_REVIEW_MAX_AGE_DAYS }}
+          KIT_API_VERIFICATION_REMINDER_DAYS: ${{ vars.KIT_API_VERIFICATION_REMINDER_DAYS }}
+          KIT_API_FUZZY_TITLE_PERCENT: ${{ vars.KIT_API_FUZZY_TITLE_PERCENT }}
+          GITHUB_TOKEN: ${{ github.token }}
+          TICKET_BACKEND: ${{ inputs.ticket_backend }}
+          # The tracker's settings and credentials, exactly as reusable-ticket-reconcile.yml passes them.
+          JIRA_HOST: ${{ secrets.JIRA_HOST || vars.JIRA_HOST }}
+          JIRA_PROJECT: ${{ vars.JIRA_PROJECT }}
+          JIRA_STAMP_FIELD: ${{ vars.JIRA_STAMP_FIELD }}
+          JIRA_EPIC_ID: ${{ vars.JIRA_EPIC_ID }}
+          JIRA_CALIBRATION_ISSUE: ${{ vars.JIRA_CALIBRATION_ISSUE }}
+          JIRA_TYPE_CLUSTER: ${{ vars.JIRA_TYPE_CLUSTER }}
+          JIRA_TYPE_INSTANCE: ${{ vars.JIRA_TYPE_INSTANCE }}
+          JIRA_TRANSITION_REOPEN: ${{ vars.JIRA_TRANSITION_REOPEN }}
+          JIRA_TRANSITION_DONE: ${{ vars.JIRA_TRANSITION_DONE }}
+          JIRA_PRIORITY_LADDER: ${{ vars.JIRA_PRIORITY_LADDER }}
+          JIRA_AUTH_MODE: ${{ vars.JIRA_AUTH_MODE }}
+          JIRA_CLOUD_ID: ${{ vars.JIRA_CLOUD_ID }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+          AZDO_ORG_URL: ${{ vars.AZDO_ORG_URL }}
+          AZDO_PROJECT: ${{ vars.AZDO_PROJECT }}
+          AZDO_STAMP_FIELD: ${{ vars.AZDO_STAMP_FIELD }}
+          AZDO_EPIC_ID: ${{ vars.AZDO_EPIC_ID }}
+          AZDO_CALIBRATION_ITEM: ${{ vars.AZDO_CALIBRATION_ITEM }}
+          AZDO_TYPE_CLUSTER: ${{ vars.AZDO_TYPE_CLUSTER }}
+          AZDO_TYPE_INSTANCE: ${{ vars.AZDO_TYPE_INSTANCE }}
+          AZDO_STATE_REOPEN: ${{ vars.AZDO_STATE_REOPEN }}
+          AZDO_STATE_DONE: ${{ vars.AZDO_STATE_DONE }}
+          AZDO_PAT: ${{ secrets.AZDO_PAT }}
+          TICKET_REPO: ${{ vars.TICKET_REPO }}
+          TICKET_CALIBRATION_REF: ${{ vars.TICKET_CALIBRATION_REF }}
+          KIT_API_GH_TICKET_TOKEN: ${{ secrets.GH_TICKET_TOKEN }}
+          TICKET_STAMP_LABEL: ${{ vars.TICKET_STAMP_LABEL }}
+          TICKET_CREATE_CEILING: ${{ vars.TICKET_CREATE_CEILING }}
+          TICKET_RETRY_CEILING: ${{ vars.TICKET_RETRY_CEILING }}
+          TICKET_CALL_BUDGET: ${{ vars.TICKET_CALL_BUDGET }}
+          TICKET_INSTANCE_THRESHOLD: ${{ vars.TICKET_INSTANCE_THRESHOLD }}
+          TICKET_DEGRADED_RUN_THRESHOLD: ${{ vars.TICKET_DEGRADED_RUN_THRESHOLD }}
+
+      - name: Answer the call
+        id: finish
+        if: always()
+        uses: $/.github/actions/kit-api
+        with:
+          phase: finish
+          out-dir: ${{ runner.temp }}/kit-api
+        env:
+          KIT_API_INTAKE: ${{ needs.intake.outputs.intake }}
+          KIT_API_OP_RESULT: ${{ runner.temp }}/kit-api/op-result.json
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Say the answer in plain words (docs/errors/ERRORS.md)
+        if: always()
+        uses: $/.github/actions/plain-errors
+        with:
+          source: api
+          states: kit_api_state:${{ steps.finish.outputs.api_state }}
+
+      - name: Keep the result and the ticket ledger proposal
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kit-api-result-${{ fromJSON(needs.intake.outputs.intake).correlation_id }}
+          path: |
+            ${{ runner.temp }}/kit-api/result.json
+            ${{ runner.temp }}/kit-api/ticket-ledger-proposal.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      # THE OUTBOX (KDEC-037): items the tracker could not take are kept here, durable, and the next
+      # tickets.submit retries them first; the done marker names what an earlier outbox drained.
+      - name: Keep the ticket outbox
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kit-ticket-outbox-${{ fromJSON(needs.intake.outputs.intake).correlation_id }}
+          path: ${{ runner.temp }}/kit-api/outbox.json
+          if-no-files-found: ignore
+          retention-days: 90
+      - name: Keep the outbox done marker
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kit-ticket-outbox-done-${{ fromJSON(needs.intake.outputs.intake).correlation_id }}
+          path: ${{ runner.temp }}/kit-api/outbox-done.json
+          if-no-files-found: ignore
+          retention-days: 90
+
+  finish:
+    name: Report the scan or the release
+    if: inputs.phase == 'finish'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read      # the release's deploy evidence in this run
+      checks: write
+    outputs:
+      api_state: ${{ steps.finish.outputs.api_state }}
+    steps:
+      - name: Answer the call
+        id: finish
+        uses: $/.github/actions/kit-api
+        with:
+          phase: finish
+          out-dir: ${{ runner.temp }}/kit-api
+        env:
+          KIT_API_INTAKE: ${{ inputs.intake }}
+          KIT_API_JOB_RESULT: ${{ inputs.job_result }}
+          KIT_API_ROUTING_RESULT: ${{ inputs.routing_result }}
+          KIT_API_ASSURANCE_STATE: ${{ inputs.assurance_state }}
+          KIT_API_ADVISORY_CAUSES: ${{ inputs.advisory_causes }}
+          KIT_API_EVIDENCE_ARTIFACT: ${{ inputs.evidence_artifact }}
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Say the answer in plain words (docs/errors/ERRORS.md)
+        if: always()
+        uses: $/.github/actions/plain-errors
+        with:
+          source: api
+          states: kit_api_state:${{ steps.finish.outputs.api_state }}
+
+      - name: Keep the result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kit-api-result-${{ fromJSON(inputs.intake).correlation_id }}
+          path: ${{ runner.temp }}/kit-api/result.json
+          if-no-files-found: warn
+          retention-days: 30

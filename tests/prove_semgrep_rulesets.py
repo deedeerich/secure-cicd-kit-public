@@ -44,9 +44,20 @@ JOB, SCAN = 'sast-semgrep', 'Semgrep scan'
 FLAW = 'import subprocess\n\n\ndef run(cmd):\n    subprocess.call(cmd, shell=True)\n'
 
 
+def _expand(doc):
+    """The workflow with every `$/` composite step expanded into its job, as the runner sees it.
+
+    Scanner job bodies live in `.github/actions/<scanner>/` (ledger L64); this reads the steps a
+    job actually runs. One rule, tests/_composite_expand.py, for every reader.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.expanded_doc(doc)
+
+
 def configured():
     import yaml
-    doc = yaml.safe_load(open(h.WF, encoding='utf-8'))
+    doc = _expand(yaml.safe_load(open(h.WF, encoding='utf-8')))
     on = doc.get('on', doc.get(True)) or {}
     return str(((on.get('workflow_call') or {}).get('inputs') or {})
                .get('semgrep_config', {}).get('default', '')).split()

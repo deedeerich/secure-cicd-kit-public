@@ -1,0 +1,74 @@
+# Starter: drop this into a calling repo at .github/workflows/kit-init.yml, replace YOUR_ORG and the
+# 0000000000000000000000000000000000000000 with the 40-hex commit SHA of the kit you chose, and run it
+# from the Actions tab (Run workflow). It is `kit init` (scripts/kit_init.py) as one button:
+#
+#   it detects your stack and deploy shape, writes the caller workflows pinned to that SHA with exactly
+#   the permissions each needs, dependabot.yml, a CODEOWNERS block, the environments spec and a settings
+#   stub, and opens ONE pull request whose body is the checklist of what only a person can do (with the
+#   exact commands). It never writes a secret and never changes a setting.
+#
+# THE TOKEN. A workflow's own token can never push a change to .github/workflows/. So either set the
+# repository secret KIT_INIT_TOKEN (a fine-grained token or a GitHub App token for THIS repository only:
+# Contents, Pull requests and Workflows, read and write) and the run opens the pull request; or leave it
+# unset and the run uploads the files as the artifact kit-init-files for you to commit.
+#
+# Re-running it is safe: it updates its own files and keeps every file (and the CODEOWNERS block) a person
+# edited. Guide: docs/adoption/GETTING_STARTED_1_HOUR.md.
+name: Kit init
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy shape: auto (detect), container, static, none (scan only)"
+        type: choice
+        options: [auto, container, static, none]
+        default: auto
+      with_triage:
+        description: "Add the Dependabot triage caller (auto-merges only what cannot change behaviour)"
+        type: boolean
+        default: false
+      with_api:
+        description: "Add the kit API caller (container deploys)"
+        type: boolean
+        default: false
+      automerge:
+        description: "You will turn on auto-merge (the checklist says how, and the risks)"
+        type: boolean
+        default: false
+      outside_landing_zone:
+        description: "This repository deploys outside a landing zone (AppSec owes a readiness attestation)"
+        type: boolean
+        default: false
+      appsec_team:
+        description: "@org/team for AppSec (CODEOWNERS and the uat/prod reviewers)"
+        type: string
+        default: ""
+      platform_team:
+        description: "@org/team for platform (CODEOWNERS and the uat/prod reviewers)"
+        type: string
+        default: ""
+
+permissions: {}
+
+jobs:
+  init:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read   # the pull request is pushed with KIT_INIT_TOKEN, never with this run's token
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: kit init
+        uses: YOUR_ORG/secure-cicd-kit/.github/actions/kit-init@0000000000000000000000000000000000000000   # pin a commit SHA
+        with:
+          deploy: ${{ inputs.deploy }}
+          with-triage: ${{ inputs.with_triage }}
+          with-api: ${{ inputs.with_api }}
+          automerge: ${{ inputs.automerge }}
+          outside-landing-zone: ${{ inputs.outside_landing_zone }}
+          appsec-team: ${{ inputs.appsec_team }}
+          platform-team: ${{ inputs.platform_team }}
+          token: ${{ secrets.KIT_INIT_TOKEN }}

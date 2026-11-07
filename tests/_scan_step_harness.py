@@ -36,9 +36,20 @@ import prove_bootstrap_failure as pbf  # noqa: E402
 WF = os.environ.get('KIT_PROOF_WORKFLOW') or pbf.WF
 
 
+def _expand(doc):
+    """The workflow with every `$/` composite step expanded into its job, as the runner sees it.
+
+    Scanner job bodies live in `.github/actions/<scanner>/` (ledger L64); this reads the steps a
+    job actually runs. One rule, tests/_composite_expand.py, for every reader.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.expanded_doc(doc)
+
+
 def load():
     import yaml
-    return yaml.safe_load(io.open(WF, encoding='utf-8'))
+    return _expand(yaml.safe_load(io.open(WF, encoding='utf-8')))
 
 
 def job(name, doc=None):

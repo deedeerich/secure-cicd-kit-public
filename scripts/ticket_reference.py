@@ -87,12 +87,17 @@ def build_reference_pattern(project, url_template=None):
     `<project>-<digits>` form is matched, which is what a commit message or a branch name carries.
     """
     proj_re = escape_literal(project)
+    # A KEY ENDS WHERE ITS NUMBER ENDS. The pattern takes the number AND any letters, digits or `_`
+    # running on from it, so `WORK-123abc` is one malformed candidate (refused by select_valid), never
+    # `WORK-123`. Punctuation, `?`, `#`, `/` or whitespace ends a key. (Lane L-FX; the core gate's
+    # own check is lane L-W's G10.)
+    tail = r'-([0-9]+)([A-Za-z0-9_]*)'
     if url_template:
         # The template is a LITERAL except for the one placeholder. Escaping it and then restoring
         # the placeholder is what stops a host containing a dot from matching any character.
         body = escape_literal(url_template).replace(escape_literal('{project}'), proj_re)
-        return re.compile(body + r'-([0-9]+)')
-    return re.compile(r'\b' + proj_re + r'-([0-9]+)\b')
+        return re.compile(body + tail)
+    return re.compile(r'\b' + proj_re + tail)
 
 
 def find_candidates(text, pattern, cap=CANDIDATE_CAP):
@@ -146,7 +151,14 @@ def select_valid(candidates, project, enforce=False, min_digits=None, max_digits
     for cand in candidates:
         key, num = parse_key(cand, project)
         if key is None:
-            rejected.append((cand, 'does not parse as %s-<digits>' % project))
+            tail = (cand or '').rsplit('/', 1)[-1]
+            if re.search(escape_literal(project) + r'-[0-9]+[A-Za-z0-9_]+$', tail):
+                rejected.append((cand, 'malformed key: letters, digits or _ run on from the number'))
+            else:
+                rejected.append((cand, 'does not parse as %s-<digits>' % project))
+            continue
+        if num.startswith('0'):
+            rejected.append((key, 'malformed key: a leading zero'))
             continue
         if enforce and not (min_digits <= len(num) <= max_digits):
             rejected.append((key, '%d digits, policy requires %d-%d'
@@ -256,6 +268,21 @@ def _selftest():
     r = examine(many, 'WORK', cap=50)
     if not r['truncated'] or r['candidates'] != 59:
         fails.append('a truncated candidate list did not report the truncation: %r' % r)
+
+    # 8. A KEY ENDS WHERE ITS NUMBER ENDS (lane L-FX, after lane L-W's G10 in the core gate).
+    #    Letters, digits or `_` running on from the number, or a leading zero, is a MALFORMED key --
+    #    never its leading digits. Punctuation, `?`, `#` or `/` ends a key.
+    url = 'https://t.example.net/browse/{project}'
+    for bad in ('WORK-123abc', 'WORK-1234X', 'WORK-1234_', 'WORK-0123'):
+        for text, tmpl in (('see https://t.example.net/browse/%s now' % bad, url), ('fixes %s' % bad, None)):
+            r = examine(text, 'WORK', url_template=tmpl)
+            if r['key'] is not None:
+                fails.append('a malformed key %r was accepted as %r (%s)' % (bad, r['key'],
+                                                                             'url' if tmpl else 'bare'))
+    for good, end in (('WORK-1234', '?x=1'), ('WORK-1234', '#c'), ('WORK-1234', '/'), ('WORK-1234', '.')):
+        r = examine('https://t.example.net/browse/%s%s' % (good, end), 'WORK', url_template=url)
+        if r['key'] != good:
+            fails.append('%r followed by %r was not read as %s: %r' % (good, end, good, r))
 
     for i, f in enumerate(fails, 1):
         print('  %d. %s' % (i, f))
