@@ -275,6 +275,12 @@ def ke05_and_bypass(work):
     check(not pp.check_codeowners(ROOT), 'O-P1 the real CODEOWNERS: every protected path solely the protected owner',
           pp.check_codeowners(ROOT)[:3])
     text = io.open(os.path.join(ROOT, 'CODEOWNERS'), encoding='utf-8').read()
+    # The fixtures start from the TEMPLATE form of the real file: an adopted copy (the public mirror, a
+    # consumer) names its real owners, and O-N3 needs a copy that still names the placeholder.
+    declared, owner_rules = pp.parse(text)
+    for real_owner in sorted({declared} | {o for _p, os_ in owner_rules for o in os_}, key=len, reverse=True):
+        if real_owner and real_owner.startswith('@') and not pp.PLACEHOLDER.search(real_owner):
+            text = re.sub(r'(?<![\w/@-])%s(?![\w/-])' % re.escape(real_owner), pp.PLACEHOLDER_OWNER, text)
 
     def root_with(name, owners, watermark=False):
         d = os.path.join(work, name)

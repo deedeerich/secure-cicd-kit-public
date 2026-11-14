@@ -1,5 +1,5 @@
 {
-  "exported_at_utc": "2026-11-14T08:31:18Z",
+  "exported_at_utc": "2026-11-14T09:15:18Z",
   "files": {
     ".custody.json": "56adfbefa20942fd8d03f2927ebe2c8b3d967152252c5b43303566e97928b168",
     ".env.example": "2803cf35729edfa1785d56e21070c95d7c656da07b422fa8be98b8b1320d34d9",
@@ -419,7 +419,7 @@
     "scripts/promotion.py": "925b0e04c6e366d137ed36838a4dc4a9978e7e6b9bb43c52b1b7aa547b178dd6",
     "scripts/propose_ledger.py": "30fa124a6f36c5caa85af61c1a5cee33cde4efba06d1d160b63024570016dc92",
     "scripts/protected_paths.py": "dab814518903afeb4aeb9617d64d2bad0e82f1ff13087e31ff0224108b279910",
-    "scripts/reconcile_taxonomy.py": "5515a0017c8ab4ea92b46fa33cec7197dfb932581828d170a6a80e7c7fedb86c",
+    "scripts/reconcile_taxonomy.py": "e431cf2c770d9f6273b3cba2e471fa66ce297282932b7c1266d3a104aa9a1ef8",
     "scripts/reconcile_tickets.py": "b8fbc31c4770b40544995a11257a88bfd9a719d6dd0bd3f0fe59269ec5de5d2a",
     "scripts/redact_all.sh": "54676983c69d6e6151964f2a0cb0449b0dfba1ae00220d076b34958d271ee7b4",
     "scripts/redact_sarif.py": "8d0c9549a79ecfb38b5614f57c457e0aed4c679d171912dca02e3cbdc388f079",
@@ -800,7 +800,7 @@
     "tests/prove_sast_secret_tickets.py": "1e4b7bd02760445c15332c468d238e9a954d466b124474d2495f3986852e25ae",
     "tests/prove_sbom_licence_verdict.py": "c85eda02bb197dfa052a0bac5d91e300967b6c559fa501246f4f2efea3125068",
     "tests/prove_scan_status_zero.py": "a3c368da2eef591cf9179a512f80297042a1e0ac7f3c18effd53057224940e32",
-    "tests/prove_scanner_floor_shrink.py": "8a19704ed7fcc3ecfb9dc0d77f77ab8cc6438292202a46a121f3213a246370ed",
+    "tests/prove_scanner_floor_shrink.py": "ba41c80fecadfe144ee5e6fc19392012eeee7f296b9b531c258e3b66bb8d5dea",
     "tests/prove_scanners_survive_enforce.py": "c45c6e4f8f66aa192f4dcc475432783f7ee96c1de17d5f7a9e132bfce419ea56",
     "tests/prove_scope_reaches_osv_and_syft.py": "8c7ed9267a7a1fb564d36925bbc354f823ec52859b9224d0c3f087ceee4b6d74",
     "tests/prove_seam_app_rollback_refuses_shared_entry.py": "2e4f3e424ce358f9edf2737fe78765e964655889c4f9ed95a4dda8810501fda7",
@@ -856,7 +856,7 @@
   "note": "Written by scripts/export_for_adoption.py. It records what this copy RECEIVED, so the next export can tell a source change from a change made here. Deleting it does not break anything; it only forces the next export to be told its baseline with --baseline.",
   "profile": "neutral",
   "source": "the kit's source repository (commit recorded; branch names are not)",
-  "source_commit": "007d23165d094d4d857f3a5d062fa7a81344902a",
+  "source_commit": "c107cfc54ce9b8761193dd3d5a3c06e87451f57e",
   "source_dirty": false,
   "unresolved_conflicts": {}
 }

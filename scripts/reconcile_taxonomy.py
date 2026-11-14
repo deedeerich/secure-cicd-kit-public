@@ -60,6 +60,8 @@ NOT_VOCABULARY = {
     # Configuration names, not vocabulary: the harness checkout the pair proof reads, and the optional
     # org-read secret of the governance gate (docs/adoption/SETTINGS_PRECEDENCE.md).
     "EVIDENCE_HARNESS_ROOT", "GOVERNANCE_READ_ORG_TOKEN",
+    # A constant name (scripts/protected_paths.py), read by the floor proof's fixtures.
+    "PLACEHOLDER_OWNER",
     "GITHUB_OUTPUT", "GITHUB_ENV", "GITHUB_STEP_SUMMARY", "GITHUB_PATH", "GITHUB_TOKEN",
     # The runner's REST API base URL, read by scripts/environment_protection.py to read an
     # environment's protection rules back. A platform environment variable, same class as above.
