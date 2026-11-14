@@ -1,5 +1,5 @@
 {
-  "exported_at_utc": "2026-11-14T09:15:18Z",
+  "exported_at_utc": "2026-11-14T09:48:22Z",
   "files": {
     ".custody.json": "56adfbefa20942fd8d03f2927ebe2c8b3d967152252c5b43303566e97928b168",
     ".env.example": "2803cf35729edfa1785d56e21070c95d7c656da07b422fa8be98b8b1320d34d9",
@@ -277,7 +277,7 @@
     "docs/assurance/KNOWN_GAPS.md": "b4a44234e9a04d72f63cc0a061e1e482e9b69d54c43976b96b1c2572cfc2e869",
     "docs/assurance/PINNING.md": "e792885efef2104054adde37f0fe7ae4ada1d78e162b1bea7c7522319b182839",
     "docs/assurance/POSITIVE_NEGATIVE_MATRIX.md": "ee432d07c14e1ce7194152a321d59f6b1930441d0589bb230e6e62cbf83ffb74",
-    "docs/assurance/PROTECTED_CHANGE_LOG.md": "de858cee0e426619c5dbdf318a21c2a17403f7f3ec6fdfc8af65fd920285ba94",
+    "docs/assurance/PROTECTED_CHANGE_LOG.md": "319ded36e380680087bceaf891ead133796a6b8ee16d6a51ae82630d212eb6be",
     "docs/assurance/RELEASE_1_EVIDENCE_MANIFEST.md": "47fe1bc2a2aab02a5ef335ba18b490feb2a04fbbcb78b42cbf62b0b906dad3d1",
     "docs/assurance/RELEASE_1_EVIDENCE_MANIFEST_PART2.md": "78c915b8aa9716c48a7ae6094122da56b4fd203a383ebcd281291c3709f84dba",
     "docs/assurance/RELEASE_1_EVIDENCE_MANIFEST_PART3.md": "609fe37fa97d1eb83737f42716c2998232c67fe91c94e37de74e986fcf75c8c1",
@@ -856,7 +856,7 @@
   "note": "Written by scripts/export_for_adoption.py. It records what this copy RECEIVED, so the next export can tell a source change from a change made here. Deleting it does not break anything; it only forces the next export to be told its baseline with --baseline.",
   "profile": "neutral",
   "source": "the kit's source repository (commit recorded; branch names are not)",
-  "source_commit": "c107cfc54ce9b8761193dd3d5a3c06e87451f57e",
+  "source_commit": "b98e6d77a142ae2c662e7f9623c63512ab184b02",
   "source_dirty": false,
   "unresolved_conflicts": {}
 }
