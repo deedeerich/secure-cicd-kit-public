@@ -99,10 +99,31 @@ nothing for this; reviewers need to know to quote the digest the run summary sho
 release record, create-only, as `releases/<environment>/<UTC>-<run>-<attempt>.json` in the target's
 lease container: digest, `now_serving`, run, `routing_result`, validity, target, and the full
 promotion record -- what the landing zone's seam detector, destroy evidence and `status.json` read.
-The kit never overwrites or deletes one. **Retention is the landing zone's**: it sets a time-based
-immutability policy on the lease container at least as long as its Git evidence (SOC 2); the kit
-reads the container's properties and records `retention_policy` (`present` | `absent` |
-`unreadable`), warning when no policy is in force.
+The kit never overwrites or deletes one. **Retention is the landing zone's, and it is NOT an
+immutability policy on the lease container** (corrected 2026-11-10, risk R-47; this paragraph used to
+ask for "a time-based immutability policy on the lease container"). The lease blob lives in that same
+container and the lease protocol keeps its state in the blob's metadata, rewritten with Set Blob
+Metadata on every acquire, heartbeat, begin, end, release and break (`scripts/target_lease.py`
+`AzureBlobLeaseStore.write`). Azure Blob Storage refuses Set Blob Metadata on every blob of a container
+under a time-based retention policy or a legal hold, while the policy is active and after it expires,
+and under version-level immutability as well (Microsoft's documentation of immutable storage; read, not
+yet run against real Azure Storage). A policy on the lease container would therefore stop the lease:
+no acquire, no heartbeat, no release. So:
+
+- **the lease container carries no immutability policy and no legal hold**;
+- **a release record that needs retention is copied to an immutable evidence store**: a separate
+  container or account that holds no lease blob, with the time-based retention at least as long as the
+  landing zone's Git evidence (SOC 2). The copy in `releases/` stays create-only and is the working
+  copy the seam detector, destroy evidence and `status.json` read;
+- **where that store is, who copies, and when is an OPEN OWNER DECISION** (the storage architecture
+  decision on release-record retention). Nothing copies the records today: until the decision is made
+  and built, a release record's retention is only the create-only write and the storage account's own
+  protections, and it is not established as immutable.
+
+The kit still reads the container's properties and records `retention_policy` (`present` | `absent` |
+`unreadable`) and still warns when it reads `absent`. Under this correction `absent` is the EXPECTED
+reading for a lease container and `present` is the one to act on (the lease will be refused); the
+warning's wording and the meaning of the field change with the owner decision, not before (R-47).
 
 The deploy identity additionally receives, from the vend: `Storage Blob Data Contributor` on **its
 target's lease container only** (only after G09), and a custom role holding only
@@ -111,10 +132,10 @@ target's lease container only** (only after G09), and a custom role holding only
 The vending also records, in its own output for the platform team (not in the repository): the
 application's owner role, its cost centre, and the guardrails in force.
 
-## The deploy identity — least privilege, per application
+## The deploy identity — least privilege, per tool
 
-One identity per application per environment (or per application with one federated credential per
-environment). Scoped to **that application's resources only**:
+One identity per tool (an application or an internal tool, KDEC-015) per environment. Scoped to **that
+tool's resources only**:
 
 | target | role at the application's scope | why |
 |---|---|---|
@@ -161,11 +182,35 @@ REFUSED.
 
 ## Open items for the owner
 
-1. One identity per application per environment, or one per application with several federated
-   credentials? (Recommended: one per environment; a test identity can never reach prod.)
-2. Does the vending also create the **build** identity and its registry scope, or is that a second,
-   one-time onboarding step?
-3. Role names to verify on the first live deploy (the table above is read, not run).
-4. Where application-level configuration that is infrastructure (scale, plan size, app settings that
-   are not secrets) lives: in the vending (plan → apply), or as kit-managed settings. Recommended: the
-   vending, so the kit never changes what the platform team approved.
+Items 1, 2 and 4 were answered on 2026-11-13 (the owner accepted the recommended directions, KDEC-052);
+item 3 is live acceptance, not a decision.
+
+1. **Answered:** one identity per tool per environment (`gh-secure-cicd-kit-<env>` in the reference
+   sandbox); a test identity can never reach prod.
+2. **Answered:** the vending creates the **build** identity and its registry scope (AcrPush on that
+   repository path) only when the customer chose the kit deployment path. On the native path and on the
+   customer's own deployment process, that process owns the build identity (the kit is optional for the
+   landing zone).
+3. **Still owed (live acceptance, not a decision):** the role names in the table above are read, not run.
+   They are verified by one live deploy under exactly these roles plus the boundary probe
+   (`verify-azure-oidc.yml`), on the owner's personal sandbox.
+4. **Answered:** infrastructure-like application configuration (scale, plan size, app settings that are
+   not secrets) lives in the vending (plan → apply), so the kit never changes what the platform team
+   approved (`KIT_SETTING_KEYS` is empty by default). Whether KDEC-030's field-ownership half leaves DRAFT
+   is recorded in KDEC-030 itself, not here.
+
+## Tier and target binding
+
+Moved here from the comments of `.github/workflows/reusable-deploy-staticwebapp.yml` on 2026-11-13 (integration of the round-5 lanes) to keep that file under the `tests/check_workflow_size.py` fail threshold; the workflow keeps a one-line pointer. The same text still sits in the comments of the App Service and Container App deploy reusables (and, for the concurrency note, of `reusable-build-docker.yml`).
+
+```text
+B-13 / LZ-1 (ledger P-01). The landing zone vends the tier and the target as VARIABLES of
+this job's GitHub environment (docs/architecture/LZ_KIT_HANDOFF_CONTRACT.md). A caller job
+cannot read them, so the tier was whatever string the caller typed -- `prod` in the
+starter template, for every target -- and the tier decides the production rules. This job
+runs IN the environment: an empty input is filled from the vended value (GITHUB_ENV, read
+by every later step), an input that disagrees with it is refused here, before the verdict
+is weighed and before login, and an environment that vends nothing leaves the inputs as
+given (UNBOUND, recorded). The body is identical in both deploy reusables.
+tests/prove_deploy_environment_binding.py.
+```

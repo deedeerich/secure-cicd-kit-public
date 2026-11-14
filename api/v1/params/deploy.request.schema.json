@@ -26,6 +26,12 @@
       "type": "string",
       "pattern": "^[A-Za-z0-9_-]{1,64}$"
     },
+    "promote_from_target_resource_id": {
+      "description": "OPTIONAL here, REQUIRED by the release gate at uat and prod: the resource id of the predecessor target (the app) promoted from. The pipeline's promotion gate refuses a uat or prod promotion that leaves it empty (PROMOTION_REFUSED_SOURCE_TARGET_REQUIRED).",
+      "type": "string",
+      "pattern": "^/[sS]ubscriptions/[^/\\s]+/[rR]esource[gG]roups/[^/\\s]+/providers/[^\\s]+$",
+      "maxLength": 512
+    },
     "release_path": {
       "description": "normal or hotfix through the API. rollback and break-glass are accepted by the schema only so that the refusal is named (API_RELEASE_PATH_NOT_PERMITTED).",
       "type": "string",

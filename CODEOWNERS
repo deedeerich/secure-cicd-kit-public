@@ -26,30 +26,55 @@
 # REQUIRE review from code owners, or this is documentation pretending to be a control -- the same
 # declared-versus-enforced gap this kit exists to eliminate. Verify it, do not assume it.
 
+# ── THE PROTECTED OWNER (KE-05, KDEC-050, 2026-11-11) ────────────────────────────
+# Every path that changes what the control DOES -- the floor, the scanner registry, the policy
+# register, the workflows and composites, the validators (scripts/, tests/), the schemas, templates,
+# profiles, the API, and this file itself -- has ONE owner: the team named on the line below.
+# ONE, because GitHub accepts approval from ANY ONE owner listed on the matching line: a line
+# reading `@a @b` lets either team approve alone, so "both teams sign" was never enforced by this
+# file. If two teams must both sign, put the people who may approve control changes in this one
+# team and require two approvals in the ruleset (KDEC-050 mitigation, PROPOSED).
+#
+# The placeholder team name says what to do. scripts/protected_paths.py --check-codeowners (in the
+# self-test contract job) holds every protected path to this owner, and REFUSES the placeholder in an
+# adopted copy (one carrying the export watermark): a placeholder team owns nothing. Replace it here
+# AND on the declaration line.
+# kit-protected-owner: @YOUR_ORG/replace-me-kit-control-owners
+
 # ── The machinery: what the control DOES ────────────────────────────────────────
-# Changing these changes what "secure" means for every consumer.
-/.github/workflows/          @YOUR_ORG/pipeline-maintainers
-/assurance-taxonomy.yaml     @YOUR_ORG/pipeline-maintainers
-/scripts/                    @YOUR_ORG/pipeline-maintainers
-/tests/                      @YOUR_ORG/pipeline-maintainers
+# Changing these changes what "secure" means for every consumer. Formerly
+# @YOUR_ORG/pipeline-maintainers: populate the protected owner with them.
+/.github/                    @YOUR_ORG/replace-me-kit-control-owners
+/assurance-taxonomy.yaml     @YOUR_ORG/replace-me-kit-control-owners
+/scripts/                    @YOUR_ORG/replace-me-kit-control-owners
+/tests/                      @YOUR_ORG/replace-me-kit-control-owners
+/api/                        @YOUR_ORG/replace-me-kit-control-owners
+/templates/                  @YOUR_ORG/replace-me-kit-control-owners
+/schemas/                    @YOUR_ORG/replace-me-kit-control-owners
+/rollback-resource-classes.yaml  @YOUR_ORG/replace-me-kit-control-owners
+/CODEOWNERS                  @YOUR_ORG/replace-me-kit-control-owners
+/docs/CODEOWNERS             @YOUR_ORG/replace-me-kit-control-owners
 
 # ── Policy: how hard it enforces ────────────────────────────────────────────────
-# Profiles decide adoption-vs-strict and which capabilities are required. That is a security
-# decision about enforcement posture, so BOTH teams sign: maintainers for correctness, security for
-# whether the posture is acceptable.
-/profiles/                   @YOUR_ORG/pipeline-maintainers @YOUR_ORG/security-approvers
+# Profiles decide adoption-vs-strict and which capabilities are required; the central policy
+# register decides what every repository inherits. Security decisions about enforcement posture:
+# the protected owner's membership must include the security approvers' view (see above).
+/profiles/                   @YOUR_ORG/replace-me-kit-control-owners
+/policy/                     @YOUR_ORG/replace-me-kit-control-owners
 
-# ── The protected capability floor (owner ruling 4, 2026-10-27, KDEC-033) ─────────
+# ── The protected capability floor and the scanner registry (KDEC-033, KDEC-050) ──
 # What the gate must expect WHATEVER scanner-registry.yaml says. Kit-owned, and it only shrinks
-# through a tombstone with a recorded decision, so both teams sign -- as for profiles. Its checker
-# and the composite that reads it in the gate are held the same way: a floor anyone can re-read
-# differently is not protected.
-/capability-floor.json                    @YOUR_ORG/pipeline-maintainers @YOUR_ORG/security-approvers
-/scripts/capability_floor.py              @YOUR_ORG/pipeline-maintainers @YOUR_ORG/security-approvers
-/.github/actions/capability-floor/        @YOUR_ORG/pipeline-maintainers @YOUR_ORG/security-approvers
+# through a tombstone with a recorded decision. The registry is the population denominator: a row
+# removed there is a scanner removed. Their checkers and the composite are under /scripts/ and
+# /.github/ above.
+/capability-floor.json       @YOUR_ORG/replace-me-kit-control-owners
+/scanner-registry.yaml       @YOUR_ORG/replace-me-kit-control-owners
 # Mappings a person made for ids the kit could not read (owner ruling 2026-11-06, scripts/unknown_ids.py):
-# a mapping changes which family a finding joins, so the machinery's owners and security both review it.
-/id-mappings.json                         @YOUR_ORG/pipeline-maintainers @YOUR_ORG/security-approvers
+# a mapping changes which family a finding joins.
+/id-mappings.json            @YOUR_ORG/replace-me-kit-control-owners
+# The governance profile (KDEC-059): which authorizer a protected change needs. The gate reads it from
+# the BASE only, and a change to it is itself protected.
+/governance-profile.json     @YOUR_ORG/replace-me-kit-control-owners
 
 # ── Exceptions: may THIS finding pass ───────────────────────────────────────────
 # Security approves exceptions and NOTHING ELSE. Deliberately no ownership of the gate itself.

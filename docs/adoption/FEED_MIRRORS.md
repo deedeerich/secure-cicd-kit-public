@@ -253,6 +253,7 @@ the public feeds exactly as before (`NOT_CONFIGURED`), with no other change.
 - That Trivy 0.71.2 accepts the unpacked database with `--skip-db-update` exactly as it does its own
   download (it is its own download, tarred and untarred). Measured locally instead: the checks bundle
   unpacked into a cache is used under `--skip-check-update`, a missing one falls back to embedded checks,
-  and a missing custom-check path is fatal; osv-scanner 2.6.0 scans offline from a placed `all.zip`
+  and a missing custom-check path is fatal; osv-scanner 2.6.0 (and 2.7.0, the one pin since 2026-11-07,
+  re-measured by tests/prove_feed_mirror_gaps.py G8) scans offline from a placed `all.zip`
   and exits 127 without one.
 - Registered as `feed-mirror-live` (tests/reconcile_validation.py), expiring 2026-12-31.

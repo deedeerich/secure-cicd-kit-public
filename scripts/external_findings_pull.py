@@ -56,6 +56,11 @@ MAPPING INTO THE `finding` TEMPLATE (api/v1/tickets/finding.schema.json)
     aliases      the vendor's own key (sonar:<key>, aikido:<id>) and the CVE: a re-pull is the same finding
     evidence     ref: the vendor's key; sha256: of the vendor's record as received (canonical JSON)
 
+    NEVER A DROP (owner ruling 2026-11-11, KDEC-049). A finding the kit already holds is an item with
+    `enhances` (the kit finding's cluster key = its ticket's stamp, identity, rule, path, line, severity,
+    match basis), listed under `enhancements` (ENHANCES_EXISTING_FINDING). Two records of one identity in one
+    pull are one item carrying the second record whole in `corroborating_evidence` (CORROBORATES_PULLED_ITEM).
+
     CODE FINDINGS AND THE SAST IDENTITY (the SAST/evidence-export lane is building it on the trunk). Until it
     lands, `kit_duplicate()` below matches a code finding to a kit finding by path, line and CWE, and a
     dependency finding by CVE and path. The seam is that one function: replace its code branch with the
@@ -70,7 +75,9 @@ USAGE
         --organization ORG --project KEY [--project KEY ...] --repo-map map.json --out pulled.json
     AIKIDO_CLIENT_ID=... AIKIDO_CLIENT_SECRET=... python3 scripts/external_findings_pull.py aikido \
         --base https://app.aikido.dev/api/public/v1 --repo-map map.json --out pulled.json
-    [--kit-findings findings.json]  deduplicate against the kit's own findings (scan_report findings.json)
+    [--kit-findings findings.json]  match against the kit's own findings (scan_report findings.json): a match
+        is an ENHANCEMENT (ENHANCES_EXISTING_FINDING), never a drop -- the item travels with `enhances` and
+        the review gate, and on submit the existing ticket gets the additional evidence (KDEC-049)
     python3 scripts/external_findings_pull.py batch --in pulled.json --review-id REVIEW --out-dir batches/
         tickets.submit params of at most 20 items, each with the evidence-set hash its review must concur with
 EXIT  0 pulled completely (zero findings is a result)   1 refused, named (SOURCE_*)   2 usage
@@ -92,6 +99,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import finding_ids  # noqa: E402  (THE id normaliser for every source, owner 2026-11-06)
 import unknown_ids  # noqa: E402  (unknown ids logged and routed to a person, owner ruling 2026-11-06)
+import external_findings_baseline as EFB  # noqa: E402  (the baseline and the identity model, KDEC-049 R1-R2)
 UNKNOWN = unknown_ids.UnknownLog()
 
 # Named states (assurance-taxonomy.yaml :: external_findings_pull)
@@ -103,7 +111,13 @@ RESPONSE_INVALID = 'SOURCE_RESPONSE_INVALID'
 TRUNCATED = 'SOURCE_TRUNCATED'
 HOST_REFUSED = 'SOURCE_HOST_REFUSED'
 NOT_MAPPED = 'NOT_MAPPED'
-DUPLICATE_OF_KIT = 'DUPLICATE_OF_KIT_FINDING'
+# OWNER RULING 2026-11-11 (KDEC-049): "It should never drop the vuln it should enhance the existing ticket
+# with additional evidence." A match is an ENHANCEMENT that still travels through the review gate; the
+# old duplicate-of-kit drop (listed, not submitted) is retired.
+ENHANCES = 'ENHANCES_EXISTING_FINDING'
+CORROBORATES = 'CORROBORATES_PULLED_ITEM'
+CORROBORATION_MAX = 50       # = finding.schema.json corroborating_evidence maxItems
+ALIASES_MAX = 20             # = finding.schema.json aliases maxItems
 
 SONAR_PS = 500
 SONAR_DEPTH = 10000          # UNVERIFIED limit; above it the pull is refused as TRUNCATED
@@ -395,53 +409,152 @@ def aikido_items(rows, repo_map, environment, tool='Aikido', id_refusals=None):
                                     (' in %s' % r['affected_package']) if r.get('affected_package') else ''))[:300]}
         if cwe:
             item['cwe'] = cwe
+        if r.get('affected_package'):
+            # THE AFFECTED COMPONENT (KDEC-049 R2): the same CVE on another package is another instance.
+            item['component'] = re.sub(r'[^A-Za-z0-9._:/@+-]', '-', '%s%s' % (
+                r['affected_package'], ('@%s' % r['installed_version']) if r.get('installed_version') else ''))[:200]
         items.append(item)
     return items, closed, unmapped
 
 
 # ───────────────────────────────────────────────────────────── normalise, validate, dedupe
+def kit_match(item, kit):
+    """THE SEAM for the SAST identity (the SAST/evidence-export lane). -> (the matching kit observation, the
+    basis) or (None, ''). THE IDENTITY MODEL is external_findings_baseline.classify (KDEC-049 R2): the same
+    vulnerability identity (a shared CVE, or path + line + CWE for code) AND the same affected asset
+    (repository + path, and the component when both sides name one), in exactly one kit cluster."""
+    state, o, basis, _rel = EFB.classify(item, kit)
+    return (o, basis) if state == EFB.MATCHED else (None, '')
+
+
 def kit_duplicate(item, kit):
-    """THE SEAM for the SAST identity (the SAST/evidence-export lane). -> the matching kit observation, or None.
-    Dependency: a shared CVE on the same path. Code: same path, same line and the same CWE."""
-    path = item['asset']['path'].lower()
-    cves = {a.upper() for a in item.get('aliases', []) if a.upper().startswith('CVE-')}
-    for o in kit:
-        kp = str(o.get('canonical_path') or '').lower().lstrip('/')
-        if kp != path and not kp.endswith('/' + path) and not path.endswith('/' + kp):
-            continue
-        if cves and cves & {str(a).upper() for a in o.get('what_aliases') or []}:
-            return o
-        if (item.get('cwe') and str(o.get('cwe') or '').upper() == item['cwe'].upper() and
-                item['asset'].get('line') and o.get('line') == item['asset'].get('line')):
-            return o
-    return None
+    """-> the matching kit observation, or None (kit_match without the basis)."""
+    return kit_match(item, kit)[0]
 
 
-def finish(source, items, closed, unmapped, kit_findings, provenance):
+def _text(v, n):
+    v = str(v or '').strip()
+    return v[:n] if v else ''
+
+
+def kit_link(o, basis):
+    """-> the item's `enhances` object (finding.schema.json): WHICH existing finding this one adds evidence to.
+    The cluster key is the kit's ticket stamp (KDEC-038/043), so tickets.submit finds that ticket by it."""
+    link = {'basis': basis}
+    ck = str(o.get('cluster_key') or o.get('correlation_key') or '')
+    if re.match(r'^[0-9a-f]{32}$', ck):
+        link['correlation_key'] = ck
+    for k, src, n in (('identity', 'identity', 128), ('scanner', 'scanner', 100), ('rule_id', 'rule_id', 200),
+                      ('path', 'canonical_path', 500), ('severity', 'severity', 20)):
+        v = _text(o.get(src), n)
+        if v:
+            link[k] = v
+    if isinstance(o.get('line'), int) and not isinstance(o.get('line'), bool) and o['line'] >= 1:
+        link['line'] = o['line']
+    for k, n in (('repository', 200), ('component', 200)):
+        v = _text(o.get(k), n)
+        if v:
+            link[k] = v
+    if o.get('register') in ('baseline-run', 'ticket-ledger'):
+        link['register'] = o['register']
+    if o.get('ticket_state') in ('open', 'closed'):
+        link['ticket_state'] = o['ticket_state']
+    # AN ACTIVE DISPOSITION ON THE MATCH (KDEC-049 R2): carried so submit marks it for RE-EVALUATION (scope,
+    # validity, expiry); it is never extended or cleared here or there.
+    disp = []
+    for d in o.get('dispositions') or []:
+        if isinstance(d, dict) and str(d.get('state') or '').lower() == 'approved':
+            row = {'type': _text(d.get('disposition_type') or d.get('type'), 40) or 'unnamed',
+                   'state': 'approved'}
+            if _text(d.get('expires'), 10):
+                row['expires'] = _text(d.get('expires'), 10)
+            disp.append(row)
+    if disp:
+        link['dispositions'] = disp[:10]
+    return link
+
+
+def _receipt_stamp(receipt):
+    """-> the item's `baseline` (finding.schema.json): which baseline it was matched against, and its state."""
+    r = receipt or {'state': EFB.UNAVAILABLE}
+    b = {'state': r.get('state') if r.get('state') in EFB.STATES else EFB.UNAVAILABLE}
+    if isinstance(r.get('run_id'), int) and r['run_id'] > 0:
+        b['run_id'] = r['run_id']
+    if re.match(r'^[0-9a-f]{40}$', str(r.get('commit_sha') or '')):
+        b['commit_sha'] = r['commit_sha']
+    # The register state, on every item. A receipt that does not say the register was read never reads as read.
+    reg = r.get('register') if isinstance(r.get('register'), dict) else {}
+    b['register'] = reg.get('state') if reg.get('state') in EFB.register_states else EFB.REGISTER_NOT_ESTABLISHED
+    return b
+
+
+def corroboration_of(it):
+    """-> one record's evidence, whole, for the item that carries its identity (never dropped)."""
+    c = {'source_tool': it['source_tool'], 'source_key': it['aliases'][0], 'evidence': dict(it['evidence']),
+         'aliases': list(it['aliases'])[:ALIASES_MAX], 'severity': it['severity'], 'title': it['title']}
+    if it['asset'].get('line'):
+        c['line'] = it['asset']['line']
+    return c
+
+
+def _listed(it, state, extra=None):
+    row = {'source_key': it['aliases'][0], 'state': state}
+    row.update(extra or {})
+    return row
+
+
+def finish(source, items, closed, unmapped, kit_findings, provenance, baseline_receipt=None):
+    """`kit_findings`: the baseline run's observations AND the register's (external_findings_baseline);
+    `baseline_receipt`: the selection's receipt. None (a caller-supplied list) is BASELINE_UNAVAILABLE."""
     import ticket_templates as tt
-    out_items, dup_kit, seen = [], [], {}
+    out_items, enhancements, corroborations, seen, reviews = [], [], [], {}, []
+    stamp = _receipt_stamp(baseline_receipt)
+    unproven_new = []
     for idx, it in enumerate(items):
+        it['baseline'] = dict(stamp)
+        state, k, basis, related = EFB.classify(it, kit_findings or [])
+        if state == EFB.NO_MATCH and stamp['register'] != EFB.REGISTER_READ:
+            # NOT "NEW": nothing matched, but the register was not read, so a bound ticket cannot be ruled out.
+            unproven_new.append(_listed(it, stamp['register']))
+        if state in (EFB.AMBIGUOUS, EFB.MATCH_SCOPE_MISMATCH, EFB.SEPARATE):
+            # NEVER MERGED: a separate instance is linked as related; ambiguous or out-of-scope is kept and
+            # flagged for a person (template triage).
+            it['match_review'] = {'state': state, 'candidates': related[:10]}
+            reviews.append(_listed(it, state, {'candidates': related[:10]}))
         prob = tt.validate_item('finding', it, idx)
         if prob:
             unmapped.append({'source_key': it['aliases'][0], 'state': NOT_MAPPED,
                              'why': '%s: %s' % (prob.get('code'), prob.get('detail'))})
             continue
         rec = tt.normalize('finding', it, provenance, idx)
-        if rec['identity'] in seen:
-            seen[rec['identity']]['aliases'] = sorted(set(seen[rec['identity']]['aliases']) | set(it['aliases']))
+        first = seen.get(rec['identity'])
+        if first is not None and len(first.get('corroborating_evidence') or []) < CORROBORATION_MAX:
+            # ONE IDENTITY, EVERY RECORD'S EVIDENCE: the second record rides on the first item, whole.
+            first.setdefault('corroborating_evidence', []).append(corroboration_of(it))
+            for a in it['aliases']:
+                if a not in first['aliases'] and len(first['aliases']) < ALIASES_MAX:
+                    first['aliases'].append(a)
+            if k is not None and 'enhances' not in first:
+                first['enhances'] = kit_link(k, basis)
+                enhancements.append(_listed(first, ENHANCES, {'enhances': first['enhances']}))
+            corroborations.append(_listed(it, CORROBORATES, {'item_source_key': first['aliases'][0]}))
             continue
-        k = kit_duplicate(it, kit_findings or [])
         if k is not None:
-            dup_kit.append({'source_key': it['aliases'][0], 'state': DUPLICATE_OF_KIT,
-                            'kit': {'scanner': k.get('scanner'), 'rule_id': k.get('rule_id'),
-                                    'path': k.get('canonical_path'), 'line': k.get('line')}})
-            continue
-        seen[rec['identity']] = it
+            # NEVER A DROP (KDEC-049): the item travels, linked to the finding it adds evidence to.
+            it['enhances'] = kit_link(k, basis)
+            enhancements.append(_listed(it, ENHANCES, {'enhances': it['enhances']}))
+        seen.setdefault(rec['identity'], it)
         out_items.append(it)
     return {'source': source, 'state': PULLED, 'pulled_at': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
-            'counts': {'items': len(out_items), 'duplicates_of_kit': len(dup_kit), 'source_closed': len(closed),
-                       'not_mapped': len(unmapped)},
-            'items': out_items, 'duplicates_of_kit': dup_kit, 'source_closed': closed, 'not_mapped': unmapped}
+            'baseline': baseline_receipt or {'state': EFB.UNAVAILABLE, 'detail': 'no baseline was selected; the kit '
+                                             'findings were supplied by the caller'},
+            'counts': {'items': len(out_items), 'enhancements': len(enhancements),
+                       'corroborations': len(corroborations), 'source_closed': len(closed),
+                       'not_mapped': len(unmapped), 'match_reviews': len(reviews),
+                       'new_not_established': len(unproven_new)},
+            'register': stamp['register'], 'new_not_established': unproven_new,
+            'items': out_items, 'enhancements': enhancements, 'corroborations': corroborations,
+            'match_reviews': reviews, 'source_closed': closed, 'not_mapped': unmapped}
 
 
 def batches(pulled, review_id, size=20):
@@ -513,15 +626,42 @@ def main(argv=None):
     ap.add_argument('--repo-map', help='JSON {project key or repo name: "org/repo"}; "*": "org/{}" maps every name')
     ap.add_argument('--environment', default='code')
     ap.add_argument('--kit-findings')
+    ap.add_argument('--baseline', help='the selection written by scripts/external_findings_baseline.py (KDEC-049 R1)')
+    ap.add_argument('--register', help='the ticket ledger from the default branch (.security/ticket-ledger.json)')
+    ap.add_argument('--repository', default=os.environ.get('GITHUB_REPOSITORY', ''))
     ap.add_argument('--out', required=True)
     a = ap.parse_args(argv)
+    receipt = None
     try:
         repo_map = load_json(a.repo_map, {})
         kit = load_json(a.kit_findings, [])
         if isinstance(kit, dict):
             kit = kit.get('findings') or kit.get('observations') or []
+        if a.baseline and not os.path.exists(a.baseline):
+            # THE SELECTION STEP FAILED (it is allowed to): the pull still completes, and every item names the
+            # baseline as unavailable -- never a failed pull, never a silent "no match".
+            receipt = {'state': EFB.UNAVAILABLE, 'detail': 'the baseline selection was not written (the selection '
+                       'step failed); no match against the baseline can be ruled out'}
+        elif a.baseline:
+            sel = load_json(a.baseline, {})
+            receipt = sel.get('receipt') or {'state': EFB.UNAVAILABLE, 'detail': 'the selection holds no receipt'}
+            if receipt.get('state') in (EFB.SELECTED, EFB.STALE):
+                kit = list(kit) + list(sel.get('observations') or [])
+        # THE REGISTER, ALWAYS NAMED (lane ticket-defaults 2026-11-13): read, not established (none named, or
+        # none at the path) or unreadable. The state rides on the receipt and on EVERY item (baseline.register),
+        # so the batches, the review, tickets.submit and the workflow output all carry it -- never a log line.
+        led, reg_state, note = EFB.read_register(a.register)
+        if reg_state == EFB.REGISTER_UNREADABLE:
+            # AN UNREADABLE REGISTER IS NOT AN EMPTY ONE: no match can be ruled out.
+            receipt = dict(receipt or {}, state=EFB.UNAVAILABLE)
+        elif led is not None:
+            kit = list(kit) + EFB.register_observations(led, a.repository)
+        receipt = dict(receipt or {'state': EFB.UNAVAILABLE, 'detail': 'no baseline was selected; the kit '
+                                   'findings were supplied by the caller'},
+                       register={'state': reg_state, 'detail': note})
     except (OSError, ValueError) as e:
-        print('usage: a --repo-map or --kit-findings file could not be read (%s)' % type(e).__name__)
+        print('usage: a --repo-map, --kit-findings, --baseline or --register file could not be read (%s)'
+              % type(e).__name__)
         return 2
     prov = {'submitted_by': 'external-findings-pull', 'review_id': ''}
     try:
@@ -536,7 +676,7 @@ def main(argv=None):
             iss, hs, comps, cwe_of = sonar_pull(http, a.project, a.organization, a.environment, a.rule_lookup, tool)
             items, closed, unmapped = sonar_items(iss, hs, comps, cwe_of, repo_map, a.environment, tool,
                                                   urllib.parse.urlparse(a.host).netloc)
-            result = finish('sonarqube', items, closed, unmapped, kit, prov)
+            result = finish('sonarqube', items, closed, unmapped, kit, prov, receipt)
         else:
             cid, csec = os.environ.get('AIKIDO_CLIENT_ID', ''), os.environ.get('AIKIDO_CLIENT_SECRET', '')
             if not cid or not csec:
@@ -550,7 +690,7 @@ def main(argv=None):
             rows = aikido_pull(http)
             id_refusals = []
             items, closed, unmapped = aikido_items(rows, repo_map, a.environment, id_refusals=id_refusals)
-            result = finish('aikido', items, closed, unmapped, kit, prov)
+            result = finish('aikido', items, closed, unmapped, kit, prov, receipt)
             result['id_refusals'] = id_refusals
     except Refused as e:
         result = {'source': a.source, 'state': e.state, 'detail': e.detail, 'items': []}
@@ -563,10 +703,16 @@ def main(argv=None):
     UNKNOWN.write(os.path.join(os.path.dirname(os.path.abspath(a.out)), unknown_ids.FILENAME))
     io.open(a.out, 'w', encoding='utf-8').write(json.dumps(result, indent=1, sort_keys=True))
     c = result['counts']
-    print('%s %s: %d item(s) for the intake, %d already a kit finding, %d closed at the source, %d not mapped'
-          % (PULLED, result['source'], c['items'], c['duplicates_of_kit'], c['source_closed'], c['not_mapped']))
+    print('%s %s: %d item(s) for the intake (%d of them enhance an existing kit finding: %s), %d record(s) carried '
+          'as corroborating evidence on an item (%s), %d closed at the source, %d not mapped'
+          % (PULLED, result['source'], c['items'], c['enhancements'], ENHANCES, c['corroborations'], CORROBORATES,
+             c['source_closed'], c['not_mapped']))
     for u in result['not_mapped'][:20]:
         print('  NOT_MAPPED %s: %s' % (u['source_key'], u['why']))
+    if result['register'] != EFB.REGISTER_READ:
+        print('%s: %s. %d unmatched item(s) are NOT classified as new; every item carries baseline.register and '
+              'goes to triage.' % (result['register'], (result['baseline'].get('register') or {}).get('detail', ''),
+                                   c['new_not_established']))
     for u in result['unknown_ids']:
         print('  NEEDS_MAPPING %s %s %r (seen %d): a person maps it in id-mappings.json' % (
             u['kind'], u['tool'], u['raw'], u['count']))

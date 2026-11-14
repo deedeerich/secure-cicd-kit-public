@@ -7,6 +7,15 @@
   "environment_names": {"development": "dev", "qa": "test", "staging": "uat", "production": "prod"},
   "orgs": {"example-org-a": "example-enterprise", "example-org-b": "example-enterprise"},
   "approver_lists": {"deployment-approvers": ["architects", "security", "platform"]},
+  "numbers": {
+    "sla_period_days": {"CRITICAL": 7, "HIGH": 30, "MEDIUM": 180, "LOW": 365},
+    "breach_grace_days": {"CRITICAL": 0, "HIGH": 7, "MEDIUM": 14, "LOW": 14},
+    "track_stall_period_days": 90,
+    "no_fix_recheck_days": 30,
+    "ticket_instance_threshold": 25,
+    "ticket_create_ceiling": 25
+  },
+  "environment_numbers": {"ticketing-test": {"ticket_create_ceiling": 5}},
   "repositories": {
     "example-org-a/payments-api": {"team": "payments", "product": "ledger"},
     "example-org-a/payments-web": {"team": "payments", "product": "checkout"},

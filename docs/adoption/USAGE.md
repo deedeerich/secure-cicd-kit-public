@@ -26,6 +26,9 @@ templates to this rule.
 | `reusable-deployed-scan.yml` | The daily scan of what each environment is actually serving, with the landing zone's drift vocabulary | OIDC (each environment's reader) | `contents: read`, `actions: read`, `id-token: write` |
 | `reusable-rollback-sequence.yml` | A recorded rollback of a release, one target lease for the whole sequence | OIDC | `contents: read`, `actions: read`, `id-token: write` |
 | `reusable-feed-mirror-refresh.yml` | Refreshes the organisation feed mirrors (KDEC-032, optional; [`FEED_MIRRORS.md`](FEED_MIRRORS.md)) | OIDC (`feed-mirror` environment) | `contents: read`, `id-token: write` |
+| `reusable-dependabot-config-check.yml` | Fails a pull request that adds a manifest `.github/dependabot.yml` does not read, with the fix and a corrected file (KDEC-040; [DEPENDABOT_IN_YOUR_REPO.md](DEPENDABOT_IN_YOUR_REPO.md)); starter `templates/dependabot-config-check.yml` | none | `contents: read`, `pull-requests: read` |
+| `reusable-dependabot-keep-current.yml` | Asks a behind Dependabot pull request to rebase, once per base commit (KDEC-040; [DEPENDABOT_TRIAGE.md](DEPENDABOT_TRIAGE.md) 3b); called by the triage starter's `keep-current` job | none (optional `COMMAND_TOKEN`, only if R-23 happens) | `contents: read`, `pull-requests: write` |
+| `reusable-external-findings.yml` | Pulls SonarQube and Aikido findings read-only into the intake; submits them as tickets only after a finalized review and an approval in `external-findings-review` (KDEC-037, KDEC-040; [EXTERNAL_FINDINGS_SONAR_AIKIDO.md](EXTERNAL_FINDINGS_SONAR_AIKIDO.md)); starter `templates/external-findings.yml` | the vendors' tokens (secrets) | `contents: read`, `actions: write` |
 | `verify-azure-oidc.yml` | Zero-resource check of the OIDC subject, the session context and the authorization boundary | OIDC | `contents: read`, `id-token: write` |
 
 **Composite actions** (`.github/actions/*` — for repos that build inside their own workflows):
@@ -33,6 +36,16 @@ templates to this rule.
 `render-version-metadata`, `determine-changes`, `verify-attestation`. The flagship's own
 `discover`, `resolve`, `scan-report` and `propose-ledger` composites are called by the kit, not by
 consumers.
+
+**Composites the kit's own workflows call** (never wired by a consumer; listed so a reviewer knows them):
+`kit-init` (the `templates/kit-init.yml` button runs it: `scripts/kit_init.py`, KDEC-041), `plain-errors` (every
+refusal in plain words first, `docs/errors/ERRORS.md`), `org-settings` (the org overlay's governed settings and
+each environment's Azure cloud, read before any deploy, build or rollback signs in: owner 2026-11-07,
+[SETTINGS_PRECEDENCE.md](SETTINGS_PRECEDENCE.md)), `reviewer-signals`, `resolve-policy`, `run-record`,
+`known-exploited`, `target-lease`, `capability-floor`, `feed-mirror`, `feed-mirror-refresh`, `secret-scan`,
+`deps-scan`, `iac-scan`, `sast-*`, `deployed-scan`, `static-site-package`, `selftest-tools` and `kit-api`.
+**One-command wiring:** `kit init` writes the right callers with exactly these permissions
+([GETTING_STARTED_1_HOUR.md](GETTING_STARTED_1_HOUR.md)).
 
 The flagship reaches its own composites with `uses: $/.github/actions/<name>`, which resolves to
 the **kit's** repository at the commit the caller pinned (requires a current github.com runner).
@@ -97,7 +110,8 @@ Nothing environment-specific is baked in. Every deploy input arrives from the ca
   differ: `commercial` for Container Apps and the build, `gov` for App Service — set it explicitly.
 
 Grant `permissions` on the *calling job* as in the table above — a reusable workflow cannot grant
-itself more than the caller has. The kit's policy gate rejects workflow-level `id-token: write`.
+itself more than the caller has. The kit's policy gate WARNS on workflow-level `id-token: write` in a workflow with more than one job
+(`workflow-policy-check.yml`, a WARN, not an ERROR); grant it per job.
 
 ## Deploy contract
 
@@ -132,7 +146,7 @@ taken on each side. The deploy reusables now also hold, before Azure login:
 |---|---|---|
 | platform stop | `KIT_RELEASE_BLOCK` set to anything but `none` (`platform_halted`, `ttl_expired`, `budget_cap_reached`), at **every** tier: `RELEASE_BLOCKED_BY_PLATFORM` | the landing zone writes it into each environment on every halt, TTL or budget-cap change |
 | zone readiness | at `uat`/`prod`, `KIT_ZONE_READINESS` not `READY` or `READY_WITH_EXCEPTIONS` -- `NOT_READY`, `UNKNOWN` or **unset**: `RELEASE_REFUSED_ZONE_NOT_READY` | the landing zone's readiness gates. **Outside a landing zone, setting `KIT_ZONE_READINESS: READY` on your own uat and prod environments is a TEST FIXTURE ONLY** -- in production it lets the deploy side certify the platform's readiness to itself, so the value must be issued by the landing zone when the app is in a connected one, and otherwise by AppSec, manually, as a recorded attestation (owner ruling 2026-11-03, refining O-34a); the app or deploy team never sets it for itself, and the kit records the value, not who wrote it; unknown is never a pass |
-| release approval | at `uat`/`prod`: no approval of this run's environment (an admin bypass leaves none), an approval by the requester or by the released commit's author, or no independent approval comment that **quotes the digest** (full `sha256:...` or its first 12 hex characters): `RELEASE_APPROVAL_ABSENT`, `SELF_DEPLOYMENT_APPROVAL`, `RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST` | GitHub's own self-review prevention excludes only the run's trigger. **Reviewers: approve with the digest in the comment.** `deploy_approval.confirm_digest: required` in the policy register demands it below uat too |
+| release approval | at `uat`/`prod`: no approval of this run's environment (an admin bypass leaves none), an approval by the requester or by the released commit's author, or no independent approval comment that **quotes the digest** (full `sha256:...` or its first 12 hex characters): `RELEASE_APPROVAL_ABSENT`, `SELF_DEPLOYMENT_APPROVAL`, `RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST` | GitHub's own self-review prevention excludes only the run's trigger. **Reviewers: approve with the digest in the comment.** `deploy_approval.confirm_digest: required` in the policy register demands it below uat too. Under the org overlay's small-team self-approval the requester or author may approve (`RELEASE_APPROVAL_SMALL_TEAM_SELF_APPROVAL`), still quoting the digest |
 
 With the KDEC-030 seam opted in (`KIT_TARGET_LEASE_ACCOUNT` vended), before the first mutation the
 deploy also refuses a setting it does not own or one the landing zone also claims
@@ -224,7 +238,31 @@ dispatch promote_from_run_id=<run> promote_from_environment=test ─▶ promote 
 | `PROMOTION_REFUSED_NEW_FINDING` | the SBOM re-scan finds a HIGH finding the build gate did not have |
 | `PROMOTION_REFUSED_RECHECK_INCOMPLETE` | the SBOM re-scan, KEV, history or revocation register could not be read |
 | `PROMOTION_REFUSED_STALE` | verified more than 14 days ago |
-| `PROMOTION_REFUSED_SUPERSEDED` | a newer build was verified in the same predecessor since |
+| `PROMOTION_REFUSED_SUPERSEDED` | a newer build of the same target (adapter + resource id) was verified in the same predecessor since |
+| `PROMOTION_REFUSED_TARGET_UNKNOWN` | the source record names no target (a canonical adapter id + `target_resource_id`) |
+| `PROMOTION_REFUSED_HISTORY_INCOMPLETE` | the target's predecessor history was not read to its end (the bound is named) |
+| `PROMOTION_REFUSED_SOURCE_AMBIGUOUS` | the source run recorded this digest for two targets in the environment |
+| `PROMOTION_REFUSED_SOURCE_TARGET_MISMATCH` | `promote_from_target_resource_id` is set and the source run has no record for that target |
+| `PROMOTION_REFUSED_SOURCE_TARGET_REQUIRED` | a uat or prod promotion left `promote_from_target_resource_id` empty (migration: set it; break-glass does not lift this) |
+
+Records are scoped to ONE deployment target: two apps sharing a repository and an environment name
+each resolve only their own records (artifact `kit-promotion-record-<env>--<hash of target>`; records
+from before this change keep `kit-promotion-record-<env>` and are still read). The daily scan compares
+what a target serves only with that target's records, and names a target with no readable record of
+its own `KIT-PROMOTION-HISTORY-INCOMPLETE` (as it does any history listing not read to its end).
+
+`promote_from_target_resource_id` names the predecessor target you promote from; the gate
+then takes only that target's record from the source run (digest AND target must match). It is
+**REQUIRED when promoting into uat or prod**: an empty value refuses with
+`PROMOTION_REFUSED_SOURCE_TARGET_REQUIRED` and is never replaced by a digest-only selection (no override,
+break-glass included). **Migration note:** every existing uat/prod caller (the `templates/build-deploy*.yml`
+promote dispatch, your own callers) must now pass it, set to the `target_resource_id` of the predecessor
+(test or uat) target the digest was verified on; the kit API's `deploy.request` carries it as an optional field
+(`promote_from_target_resource_id`, an Azure resource id; a malformed value is `API_SCHEMA_VIOLATION`) and passes it to the deploy input, so a
+uat/prod deploy through the API names it or the gate refuses. It stays optional in dev and test: left empty
+there, the record is chosen by digest as before and two targets with that digest refuse as ambiguous. A break-glass deploy's testing is owed until the predecessor
+target it was promoted from (recorded in the gate's `source.target`) verifies the digest; a record with
+no recorded predecessor target stays `BREAK_GLASS_DISCHARGE_NOT_ESTABLISHED` until a normal promotion.
 
 14 days is a **maximum**. Revoke at once by committing an entry to
 `.security/promotion-revocations.json` on the default branch (CODEOWNERS-protected):
@@ -303,6 +341,44 @@ baseline, classify it (see [`FINDING_CLASSIFICATION.md`](../operations/FINDING_C
 `enforce_lint` (default **false**) is separate: `ruff` and ESLint findings are advisory because **lint
 style is not a security control**, and hard-failing on it blocked adoption of a security workflow on
 day one. Turn it on when your team chooses to.
+
+## Before 2026-12-31: inventory your legacy-keyed decisions (read-only)
+
+Approved decisions in `.security/dispositions.json` (or `.github/security/dispositions.json`) used
+to be keyed on the **legacy fingerprint** (12 hex characters: scanner, rule, path and message). The
+kit now keys on the **durable identity** (64 hex characters). The migration window (KDEC-008 OD-6)
+honours legacy keys until **2026-12-31** (extended from 2026-11-13 by KDEC-052); from the next day every legacy-keyed decision **stops
+suppressing** and its findings block again.
+
+Before that date, run this on each repository that has a register, from a checkout of the kit:
+
+```
+python scripts/legacy_inventory.py --register <repo>/.security/dispositions.json --findings findings.json
+```
+
+- `--findings` is the `findings.json` of a recent run of that repository (the scan report writes it;
+  repeat the flag for several). It is how a legacy key is resolved to its durable identity: a legacy
+  key is a hash and cannot be reversed, so without a findings file every row says
+  `REKEY_REQUIRED_IDENTITY_UNRESOLVED`. The kit's scan report step (`scan_report.py --batch`) writes it
+  beside `findings-coverage.json`; take it from that run.
+- Add `--json` for a machine-readable copy; `--today YYYY-MM-DD` to see the state on another day.
+- It **writes nothing and re-keys nothing** (`tests/prove_legacy_inventory.py` checks the inputs are
+  byte-identical after a run). Exit 2 means the register could not be read, which is not "no legacy keys".
+
+Each legacy key is listed with its scanner, rule, path, claim, owner (`approver_role`), expiry,
+the durable identity it resolves to, and one state:
+
+| State | What to do |
+| --- | --- |
+| `REKEY_REQUIRED` | A person reaffirms the decision as a new entry keyed on the durable identity shown, before the window closes. |
+| `REKEY_REQUIRED_IDENTITY_UNRESOLVED` | Same, but find the finding first: it was not in the findings file, its identity was not computed, or the key matches several identities (decide each one). |
+| `ALREADY_REKEYED` | A record on the durable key exists **and suppresses today** (approved, in date, in schema); nothing is lost and the legacy entry may be retired. |
+| `REKEYED_REPLACEMENT_NOT_EFFECTIVE` | A record exists on the durable key but does **not** suppress today (expired, rejected or only proposed, or outside the schema). The row says why. Treat it like `REKEY_REQUIRED`: a person must reaffirm it on the durable key before the window closes. It is counted as needing reaffirmation. |
+| `NOT_SUPPRESSING` | The entry suppresses nothing anyway (expired, not approved, outside the schema); the reason is shown. |
+
+The last line counts each state. The output is an inventory of candidate migration obligations, not proof that any approval was safely
+migrated. Re-keying is a new approval: never copy a legacy record onto the new
+key without the owner of the decision agreeing that it still holds.
 
 ## What each scanner needs in order to see anything
 

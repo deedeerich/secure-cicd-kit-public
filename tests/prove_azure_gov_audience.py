@@ -105,10 +105,14 @@ def sites(root=ROOT):
 def contexts(composite):
     """(label, ctx, expected) for the four cases."""
     o = 'inputs.audience' if composite else 'vars.KIT_AZURE_OIDC_AUDIENCE'
-    return [('gov, no override', {'inputs.cloud': 'gov'}, GOV),
-            ('gov, override', {'inputs.cloud': 'gov', o: OVERRIDE}, OVERRIDE),
-            ('commercial, no override', {'inputs.cloud': 'commercial'}, GLOBAL),
-            ('commercial, override set', {'inputs.cloud': 'commercial', o: 'api://something-else'}, GLOBAL)]
+    # The deploys and the rollback sign in to the cloud the org-settings step resolved for the environment
+    # (owner 2026-11-07, KIT_CLOUD per environment); other sites read inputs.cloud. Both name the same cloud.
+    r = 'steps.org_settings.outputs.azure_cloud'
+    return [('gov, no override', {'inputs.cloud': 'gov', r: 'gov'}, GOV),
+            ('gov, override', {'inputs.cloud': 'gov', r: 'gov', o: OVERRIDE}, OVERRIDE),
+            ('commercial, no override', {'inputs.cloud': 'commercial', r: 'commercial'}, GLOBAL),
+            ('commercial, override set', {'inputs.cloud': 'commercial', r: 'commercial', o: 'api://something-else'},
+             GLOBAL)]
 
 
 def site_problems(rel, jn, st, composite):

@@ -1,0 +1,272 @@
+{
+  "_what": "THE ONE PIN LIST: every scanner, linter and CLI the kit installs, by exactly one version and the vendor's published digest. tests/check_tool_pins_single_version.py refuses any other version or digest of a tool named here anywhere in the kit's code (workflows, composites, scripts, tools, templates, tests). Workflows and composites still carry the literal (a reusable workflow runs in the consumer's checkout, where this file is not), so a bump is: change this file, change every literal the check names, re-run the proofs. Language runtimes a caller chooses (python, go, node, java, dotnet versions) are inputs, not pins, and are not listed.",
+  "_exceptions": "An exception is a second version of a tool that something else REQUIRES, scoped to the files named, with the reason. It is never a way to keep an old pin.",
+  "tools": {
+    "trivy": {
+      "version": "0.71.2",
+      "repo": "aquasecurity/trivy",
+      "aliases": [
+        "trivy"
+      ],
+      "sha256": {
+        "trivy_0.71.2_Linux-64bit.tar.gz": "0510e71e2fd39bf863856d499c8dc19feb4e7336546394c502a8f5cc7ab27460"
+      },
+      "source": "https://github.com/aquasecurity/trivy/releases/download/v0.71.2/trivy_0.71.2_checksums.txt",
+      "exceptions": [
+        {
+          "version": "0.70.0",
+          "files": [
+            ".github/workflows/probe-scanner-corpora.yml"
+          ],
+          "sha256": [
+            "8b4376d5d6befe5c24d503f10ff136d9e0c49f9127a4279fd110b727929a5aa9"
+          ],
+          "why": "the default of trivy-action@v0.36.0: the corpus probe measures it beside the pin (a matrix leg); no kit job installs it"
+        }
+      ]
+    },
+    "syft": {
+      "version": "1.54.1",
+      "repo": "anchore/syft",
+      "aliases": [
+        "syft"
+      ],
+      "sha256": {
+        "syft_1.54.1_linux_amd64.tar.gz": "c069905b391cc4c20a5ba65ad5c10be2a7ba074f8ea6ad203e24d14e303dad47",
+        "syft_1.54.1_windows_amd64.zip": "8b56e8285e295e0bbed26eeea9b16ed51c493be97ccdf42dae6326c84fe8e19f"
+      },
+      "source": "https://github.com/anchore/syft/releases/download/v1.54.1/syft_1.54.1_checksums.txt",
+      "exceptions": [
+        {
+          "version": "1.52.0",
+          "files": [
+            ".github/workflows/reusable-security.yml"
+          ],
+          "line_contains": "Measured on syft 1.52.0",
+          "why": "a measurement record in the inlined copy of scripts/sbom_licenses.py (generated, byte-equal to it); the licence step was re-measured on 1.54.1 on 2026-11-07 (tests/prove_sbom_licence_verdict.py)"
+        }
+      ]
+    },
+    "osv-scanner": {
+      "version": "2.7.0",
+      "repo": "google/osv-scanner",
+      "aliases": [
+        "osv-scanner",
+        "OSV_VERSION"
+      ],
+      "sha256": {
+        "osv-scanner_linux_amd64": "160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b",
+        "osv-scanner_linux_arm64": "4061ef4c021ed3c47f203b818f337e351336cc5cd67c0274fc36bd1dfc728dd7",
+        "osv-scanner_darwin_amd64": "e82c5df7ab0a42dff29a1cd0660711447b56b4c0483ff66ad8634df10fd81a45",
+        "osv-scanner_darwin_arm64": "d4926ef8da134332543be276dff157e4c170f99ad91fc48e89448a8816bdf70b",
+        "osv-scanner_windows_amd64.exe": "9964ed64ec9a387391eb4cc006ad5c531154821aef29b793e02c448de4686438",
+        "osv-scanner_windows_arm64.exe": "3e630381c1f1fd3c9c4d447e6ff2ef6c737083371722773db8337eead0f97962"
+      },
+      "source": "https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_SHA256SUMS"
+    },
+    "actionlint": {
+      "version": "1.7.12",
+      "repo": "rhysd/actionlint",
+      "aliases": [
+        "actionlint"
+      ],
+      "sha256": {
+        "actionlint_1.7.12_linux_amd64.tar.gz": "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8",
+        "actionlint_1.7.12_windows_amd64.zip": "6e7241b51e6817ea6a047693d8e6fed13b31819c9a0dd6c5a726e1592d22f6e9"
+      },
+      "source": "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_checksums.txt"
+    },
+    "gosec": {
+      "version": "2.24.6",
+      "repo": "securego/gosec",
+      "aliases": [
+        "gosec"
+      ],
+      "sha256": {},
+      "image": {
+        "name": "securego/gosec",
+        "tag": "2.24.6",
+        "digest": "2cf71ea78210c496c65e3a987576a9c8317b68e20f2960520b3f6f8f9f539be5"
+      },
+      "source": "https://github.com/securego/gosec/releases/download/v2.24.6/gosec_2.24.6_checksums.txt (fetched and verified at install; the image by digest)"
+    },
+    "gitleaks": {
+      "version": "8.21.2",
+      "repo": "gitleaks/gitleaks",
+      "aliases": [
+        "gitleaks"
+      ],
+      "sha256": {},
+      "image": {
+        "name": "zricethezav/gitleaks",
+        "tag": "v8.21.2",
+        "digest": "0e99e8821643ea5b235718642b93bb32486af9c8162c8b8731f7cbdc951a7f46"
+      },
+      "source": "https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_checksums.txt (fetched and verified at install; the image by digest)"
+    },
+    "shellcheck": {
+      "version": "0.11.0",
+      "repo": "koalaman/shellcheck",
+      "aliases": [
+        "shellcheck"
+      ],
+      "sha256": {
+        "shellcheck-v0.11.0.linux.x86_64.tar.xz": "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+      },
+      "source": "GitHub release asset digest, https://api.github.com/repos/koalaman/shellcheck/releases/tags/v0.11.0"
+    },
+    "zizmor": {
+      "version": "1.30.1",
+      "repo": "zizmorcore/zizmor",
+      "aliases": [
+        "zizmor"
+      ],
+      "sha256": {
+        "zizmor-x86_64-unknown-linux-gnu.tar.gz": "e65324f4430c2717591937edcec90ccbefaf14c174f8ec9415e03ca875b46e1a"
+      },
+      "source": "GitHub release asset digest, https://api.github.com/repos/zizmorcore/zizmor/releases/tags/v1.30.1"
+    },
+    "hadolint": {
+      "version": "2.15.1",
+      "repo": "hadolint/hadolint",
+      "aliases": [
+        "hadolint"
+      ],
+      "sha256": {
+        "hadolint-linux-x86_64": "c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507"
+      },
+      "source": "GitHub release asset digest, https://api.github.com/repos/hadolint/hadolint/releases/tags/v2.15.1"
+    },
+    "dependency-check": {
+      "version": "12.2.2",
+      "repo": "dependency-check/DependencyCheck",
+      "aliases": [
+        "dependency-check",
+        "DependencyCheck",
+        "dependency_check_version"
+      ],
+      "sha256": {
+        "dependency-check-12.2.2-release.zip": "bf07fefd81af3094c5f6850423b014df44db62ce2dbad0f79079a90df675e44a"
+      },
+      "source": "Maven Central dependency-check-cli-12.2.2-release.zip.sha256 (equal to the GitHub asset)"
+    },
+    "psscriptanalyzer": {
+      "version": "1.25.0",
+      "aliases": [
+        "PSScriptAnalyzer"
+      ],
+      "sha256": {
+        "PSScriptAnalyzer.1.25.0.nupkg": "14e634c828eb98efb9f40b2918ba90f139ed5eccdf663a2a747736d996995d60"
+      },
+      "source": "https://www.powershellgallery.com/api/v2/package/PSScriptAnalyzer/1.25.0 (the gallery's SHA512 agreed)"
+    },
+    "static-web-apps-cli": {
+      "version": "2.0.2",
+      "aliases": [
+        "static-web-apps-cli",
+        "swa"
+      ],
+      "sha256": {},
+      "source": "npm @azure/static-web-apps-cli@2.0.2, installed --ignore-scripts"
+    },
+    "semgrep": {
+      "version": "1.178.0",
+      "pypi": "semgrep",
+      "aliases": [
+        "semgrep"
+      ],
+      "sha256": {},
+      "image": {
+        "name": "semgrep/semgrep",
+        "tag": null,
+        "digest": "32e459968daabe7ab86968184a29109b9564aa00392401156f9788452b42786b"
+      },
+      "source": "PyPI semgrep==1.178.0; the sast-semgrep image by digest (tests/_semgrep_pin.py)",
+      "exceptions": [
+        {
+          "version": "1.172.0",
+          "files": [
+            ".github/actions/sast-mobile/action.yml",
+            ".github/workflows/validate-scanners.yml",
+            ".github/actions/resolve/action.yml"
+          ],
+          "sha256": [
+            "d8b94af4266a575287ad2cd844573743ab4fe58f6bfb6d9229327807937eade3",
+            "f13ddebc870e784b03c9247f095720f49f67244eca1e7da493364f55c65b4493"
+          ],
+          "why": "mobsfscan 1.0.1 pins semgrep==1.172.0 exactly; installed --no-deps --require-hashes in mobsfscan's own venv, never on the runner's PATH beside 1.178.0 (the resolve composite states the Swift parser it reads)"
+        }
+      ]
+    },
+    "mobsfscan": {
+      "version": "1.0.1",
+      "pypi": "mobsfscan",
+      "aliases": [
+        "mobsfscan"
+      ],
+      "sha256": {
+        "mobsfscan-1.0.1-py3-none-any.whl": "4d755d4b7910fdbb119f1844433a1fbe1d8c2d64e02eee4b648331c51f260bd3"
+      },
+      "source": "PyPI JSON sha256 for mobsfscan 1.0.1"
+    },
+    "bandit": {
+      "version": "1.9.4",
+      "pypi": "bandit",
+      "aliases": [
+        "bandit"
+      ],
+      "sha256": {},
+      "source": "PyPI bandit==1.9.4"
+    },
+    "detect-secrets": {
+      "version": "1.5.0",
+      "pypi": "detect-secrets",
+      "aliases": [
+        "detect-secrets"
+      ],
+      "sha256": {},
+      "source": "PyPI detect-secrets==1.5.0"
+    },
+    "checkov": {
+      "version": "3.3.30",
+      "pypi": "checkov",
+      "aliases": [
+        "checkov"
+      ],
+      "sha256": {},
+      "image": {
+        "name": "ghcr.io/bridgecrewio/checkov",
+        "tag": null,
+        "digest": "4b65e89f1fde292249fc0aa0d0db43302c036dfe39f7370b2d3517571082b894"
+      },
+      "source": "the image checkov-action@v12 names (ghcr.io/bridgecrewio/checkov:3.3.30), by digest; PyPI checkov==3.3.30"
+    },
+    "pyyaml": {
+      "version": "6.0.3",
+      "pypi": "PyYAML",
+      "aliases": [
+        "PyYAML"
+      ],
+      "sha256": {},
+      "source": "PyPI PyYAML==6.0.3"
+    }
+  },
+  "images": {
+    "busybox": {
+      "tag": "1.36.1",
+      "digest": "73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
+    },
+    "python": {
+      "tag": "3.12-slim",
+      "digest": "a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1"
+    },
+    "ubuntu": {
+      "tag": "24.04",
+      "digest": "68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac"
+    },
+    "ghcr.io/zaproxy/zaproxy": {
+      "tag": null,
+      "digest": "5ccfff9a411743ab2615136a2edd7416bec9ce41572fa94e935df38c14adb2b6"
+    }
+  }
+}

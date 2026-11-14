@@ -4425,10 +4425,11 @@ jobs:
         # published osv-scanner_SHA256SUMS and is written HERE, not fetched beside the binary --
         # a checksum downloaded from the same place as the file proves only that the download
         # finished. Bump both values together. tests/prove_malicious_deps_enforces.py refuses an
-        # unpinned or unverified install.
+        # unpinned or unverified install; tests/check_tool_pins_single_version.py holds both to
+        # .github/tool-pins.json, the release every other osv-scanner install in the kit uses.
         env:
-          OSV_VERSION: v2.6.0
-          OSV_SHA256: ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108
+          OSV_VERSION: v2.7.0
+          OSV_SHA256: 160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b
         run: |
           set -euo pipefail
           dl="${RUNNER_TEMP:-/tmp}/osv-scanner"
@@ -4467,7 +4468,8 @@ jobs:
           # unresolvable requirements and reported COLLECTION_FAILED for a tree it was never
           # asked about (tests/prove_scope_reaches_osv_and_syft.py).
           scope="${IN_PATHS:-.}"; [ -d "$scope" ] || scope="."
-          # THE EXIT CODE IS RECORDED, NOT SWALLOWED. Measured against osv-scanner v2.6.0:
+          # THE EXIT CODE IS RECORDED, NOT SWALLOWED. Measured against osv-scanner v2.6.0, and again
+          # on v2.7.0 (2026-11-07, tests/prove_malicious_deps_enforces.py, the same codes):
           #   0    package sources scanned, nothing matched
           #   1    package sources scanned, at least one advisory matched (CVE or MAL-)
           #   128  "No package sources found" -- which is ALSO what a lockfile that failed to
@@ -4730,16 +4732,17 @@ jobs:
       - name: Install Syft (pinned, verified)
         # PINNED BY VERSION, VERIFIED BY CHECKSUM (ledger L84). This fetched anchore/syft's
         # install.sh from `main` and ran whatever it installed -- 1.54.1 on the last hosted run,
-        # while tests/prove_sbom_licence_verdict.py measured the licence step on 1.52.0. The
-        # version is the one that proof measured; the digest is the linux_amd64 line of the
-        # release's syft_1.52.0_checksums.txt, verified against the downloaded bytes before
+        # while tests/prove_sbom_licence_verdict.py measured the licence step on 1.52.0. Since
+        # 2026-11-07 it is 1.54.1, the ONE syft the kit pins (.github/tool-pins.json; both build
+        # paths already ran it), re-measured by that proof on 1.54.1; the digest is the linux_amd64
+        # line of the release's syft_1.54.1_checksums.txt, verified against the downloaded bytes before
         # anything is extracted. Its own step, so the scope proof can run the generate step
         # under shims without pretending to install anything.
         run: |
           set -euo pipefail
-          s=syft_1.52.0_linux_amd64.tar.gz
-          curl -sSfL --retry 3 --connect-timeout 20 -o "$s" "https://github.com/anchore/syft/releases/download/v1.52.0/$s"
-          echo "caeedb81fb0491615f1ebd1761e4145d41ee86dd2cc7bf80669f9f5ad9d6133d  $s" | sha256sum -c -
+          s=syft_1.54.1_linux_amd64.tar.gz
+          curl -sSfL --retry 3 --connect-timeout 20 -o "$s" "https://github.com/anchore/syft/releases/download/v1.54.1/$s"
+          echo "c069905b391cc4c20a5ba65ad5c10be2a7ba074f8ea6ad203e24d14e303dad47  $s" | sha256sum -c -
           tar -xzf "$s" syft && sudo mv syft /usr/local/bin/ && rm -f "$s"
           syft version
       - name: Generate SBOM with Syft
@@ -5179,7 +5182,10 @@ jobs:
           }
 
           add() {
-            # add <scanner> <applicability> <job-result> <scope> <sarif-name> <job>
+            # add <scanner> <applicability> <job-result> <scope> <sarif-name> <job> [<basis>]
+            # ARGUMENT 7 IS THE APPLICABILITY EVIDENCE (review round 3 F19): default the discovery
+            # state, so a NOT_APPLICABLE row says what established it and the ticket reconciler
+            # validates it against scanner-registry.yaml `applies` instead of taking its word.
             #
             # ARGUMENT 6 IS THE PRODUCING JOB (C3). The gate reads findings per JOB, because a
             # job that FAILED because it found something is FINDINGS, and one that failed with
@@ -5213,9 +5219,9 @@ jobs:
             fi
             jq -n --arg sc "$1" --arg ap "$2" --arg ex "$(exec_of "$3")" \
                   --arg sp "$4" --arg sa "$_s" --arg ar "$_art" --arg up "$_up" \
-                  --arg gt "$_gate" --arg jb "${6:-}" \
+                  --arg gt "$_gate" --arg jb "${6:-}" --arg ab "${7:-discovery:${D_STATE:-UNSTATED}}" \
               '{scanner:$sc, applicability:$ap, execution:$ex, scope:$sp,
-                sarif:$sa, artifact:$ar, upload:$up, gate:$gt, job:$jb}' \
+                sarif:$sa, artifact:$ar, upload:$up, gate:$gt, job:$jb, applicability_basis:$ab}' \
               > "_states/state-$1.json"
           }
 
@@ -5342,8 +5348,8 @@ jobs:
             _img_scope="$IMAGE_REF"
             _img_appl=APPLICABLE
           fi
-          add "trivy-image"   "$_img_appl"        "$R_IMAGE"   "$_img_scope"            'trivy-image.sarif' image-scan
-          add "trivy-image-secret" "$_img_appl"   "$R_IMAGE"   "$_img_scope"            'trivy-image-secret.sarif' image-scan
+          add "trivy-image"   "$_img_appl"        "$R_IMAGE"   "$_img_scope"            'trivy-image.sarif' image-scan input:image_ref
+          add "trivy-image-secret" "$_img_appl"   "$R_IMAGE"   "$_img_scope"            'trivy-image-secret.sarif' image-scan input:image_ref
 
           # --- CodeQL, one verdict per language -------------------------------------------
           #

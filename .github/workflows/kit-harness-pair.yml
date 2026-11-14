@@ -1,0 +1,77 @@
+# The hosted kit-harness pair (KREQ-302; owner-accepted 2026-11-13, KDEC-052 item 9; built KDEC-058).
+# tests/prove_kit_harness_pair.py runs the kit's export leg and the evidence harness's import leg on one
+# fixture. This checks the harness out at the ONE commit .github/harness-pair.json pins, with a READ-ONLY
+# GitHub App installation token scoped to the harness repository alone, and runs the pair.
+#
+# Its own workflow, not a self-test job: self-test's `required` verdict must need every job, and this one
+# fails on purpose until the owner creates the credential (HARNESS_LEG_NOT_RUN, named, never a pass).
+#
+# NEVER BESIDE PULL-REQUEST CODE: no pull_request trigger; the environment `kit-harness-pair` (which holds the
+# key) admits only the default branch; and scripts/harness_pair_gate.py refuses any other event or ref before
+# the mint step can run. Host-agnostic (KDEC-027): the token is minted at github.api_url and the checkout reads
+# github.server_url, so both stay on the run's own host. Setup: docs/operations/HARNESS_PAIR_HOSTED.md.
+name: Kit-harness pair
+
+on:
+  # DISPATCH-ONLY UNTIL SETUP (integration 2026-11-13, KDEC-058 M6): with no App yet every run ends
+  # HARNESS_LEG_NOT_RUN, and a check that is red on every push trains people to ignore red. After the owner's
+  # setup (docs/operations/HARNESS_PAIR_HOSTED.md) add `push: branches: [main]` back, a protected change;
+  # tests/prove_harness_pair_gate.py W1 demands it once .github/harness-pair.json pins a commit.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pair:
+    name: Kit-harness pair (read-only App token, pinned harness commit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: kit-harness-pair
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Decide whether the pair may run (trusted event, credential, repository, pinned commit)
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          HAS_APP_KEY: ${{ secrets.KIT_HARNESS_APP_PRIVATE_KEY != '' }}
+          APP_CLIENT_ID: ${{ vars.KIT_HARNESS_APP_CLIENT_ID }}
+          HARNESS_REPOSITORY: ${{ vars.KIT_HARNESS_REPOSITORY }}
+        run: python3 scripts/harness_pair_gate.py plan
+      - name: Mint a read-only installation token for the harness repository only
+        id: token
+        if: steps.plan.outputs.run == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.KIT_HARNESS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.KIT_HARNESS_APP_PRIVATE_KEY }}
+          owner: ${{ steps.plan.outputs.owner }}
+          repositories: ${{ steps.plan.outputs.repo }}
+          permission-contents: read
+      - name: Check out the harness at the pinned commit
+        if: steps.plan.outputs.run == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.plan.outputs.owner }}/${{ steps.plan.outputs.repo }}
+          ref: ${{ steps.plan.outputs.commit }}
+          token: ${{ steps.token.outputs.token }}
+          path: _harness
+          persist-credentials: false
+      - name: Run the pair, or name why it did not run (HARNESS_LEG_NOT_RUN is never a pass)
+        if: always()
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          HAS_APP_KEY: ${{ secrets.KIT_HARNESS_APP_PRIVATE_KEY != '' }}
+          APP_CLIENT_ID: ${{ vars.KIT_HARNESS_APP_CLIENT_ID }}
+          HARNESS_REPOSITORY: ${{ vars.KIT_HARNESS_REPOSITORY }}
+        run: python3 scripts/harness_pair_gate.py run --harness-root _harness

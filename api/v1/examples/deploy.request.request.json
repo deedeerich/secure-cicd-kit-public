@@ -12,6 +12,7 @@
     "mode": "promote",
     "promote_from_environment": "test",
     "promote_from_run_id": 40812345678,
+    "promote_from_target_resource_id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-app/providers/Microsoft.Web/staticSites/app-test",
     "release_path": "normal"
   }
 }

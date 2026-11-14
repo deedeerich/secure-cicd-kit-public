@@ -969,6 +969,29 @@ def keep_deployment_record(payload, healthy, tier, app_url):
         return NOT_KEPT, '', 'the Deployments API refused or could not be reached (%s)' % type(exc).__name__
 
 
+def promotion_summary(pdoc):
+    """The promotion record -> the summary the DURABLE release record carries (KDEC-039), or None.
+
+    xprod 2026-11-09: the summary keeps the promotion gate's verdict (`gate`: PROMOTION_ALLOWED, the refusal
+    that stopped it, or '' when the deploy was from a build, not a promotion) and the CODES of the refusals a
+    break-glass / hotfix / rollback decision overrode (`overridden`), so a reader after the artifact expires never
+    takes a refused or overridden promotion for an established one. Codes only, never the free-text why or by."""
+    if not pdoc:
+        return None
+    # KREQ-322 guard G2 (R2 F13): state, gate and overridden codes verbatim; held by
+    # tests/prove_refused_promotion_not_established.py (mutants summary_gate_dropped, summary_overridden_dropped,
+    # summary_state_read_established).
+    pred = pdoc.get('predecessor') if isinstance(pdoc.get('predecessor'), dict) else {}
+    return {'record_id': pdoc.get('record_id', ''), 'state': pdoc.get('state', ''),
+            'release_path': pdoc.get('release_path', ''),
+            'expires_at': (pdoc.get('validity') or {}).get('expires_at', ''),
+            'target_resource_id': (pdoc.get('environment') or {}).get('target_resource_id', ''),
+            'digest': (pdoc.get('artifact') or {}).get('digest', ''),
+            'gate': pred.get('gate') or '',
+            'overridden': [str(o.get('code')) for o in (pred.get('overridden') or [])
+                           if isinstance(o, dict) and o.get('code')]}
+
+
 def cmd_deploy_post(a):
     ev = evidence_dir()
     pre = jload(io.open(os.path.join(ev, 'review-pre.json'), encoding='utf-8').read(), {}) \
@@ -984,11 +1007,7 @@ def cmd_deploy_post(a):
     outcome = env('d_deployment_outcome')
     # KDEC-039: the promotion record's summary rides in the DURABLE release record, so it outlives its artifact.
     pdoc = jload(io.open(promo, encoding='utf-8').read(), {}) if os.path.exists(promo) else {}
-    promotion = {'record_id': pdoc.get('record_id', ''), 'state': pdoc.get('state', ''),
-                 'release_path': pdoc.get('release_path', ''),
-                 'expires_at': (pdoc.get('validity') or {}).get('expires_at', ''),
-                 'target_resource_id': (pdoc.get('environment') or {}).get('target_resource_id', ''),
-                 'digest': (pdoc.get('artifact') or {}).get('digest', '')} if pdoc else None
+    promotion = promotion_summary(pdoc)
     payload = {
         'schema': RELEASE_SCHEMA, 'repository': env('github_repository'), 'run_id': env('github_run_id'),
         'run_attempt': env('github_run_attempt'), 'commit': env('github_sha'), 'environment': env('deploy_environment'),
@@ -996,6 +1015,8 @@ def cmd_deploy_post(a):
         'deployment_outcome': outcome, 'release_approval': env('d_release_approval'),
         'release_approval_by': csv(env('d_release_approval_by')), 'zone_readiness': env('d_zone_readiness'),
         'release_block': env('d_release_block'),
+        'environment_protection': env('d_environment_protection') or 'not reported',
+        'small_team_self_approval': env('d_small_team_self_approval') or 'not in force',
         'verdict_provenance': (pre.get('verdict_provenance') or {}).get('state', 'not reported'),
         'weakening_check': (pre.get('weakening_check') or {}).get('state', ''),
         'tier_source': pre.get('tier_source', 'not reported'), 'tier_reality': reality, 'tier_reality_signals': signals,
@@ -1021,6 +1042,11 @@ def cmd_deploy_post(a):
     rows = ['| tier reality (G4) | `%s` | %s |' % (reality, '; '.join(signals) or 'no custom domain or production-like scale read'),
             '| release record (G6) | `%s` | %s |' % (rr, rr_why),
             '| release approval by | `%s` | the approvers read before login |' % (env('d_release_approval_by') or 'none'),
+            '| small-team self-approval | `%s` | %s |' % (
+                env('d_small_team_self_approval') or 'not in force',
+                'SMALL_TEAM_SELF_APPROVAL: the developer approved their own deployment under the org overlay\'s declared, '
+                'time-boxed small-team weakening' if env('d_small_team_self_approval') else 'an approver other than the '
+                'requester and the author was required'),
             '| lease / seam | `%s` / `%s` | |' % (lease_state, seam_state)]
     summary('### Reviewer signals after the release (KDEC-036)\n\n| signal | value | detail |\n|---|---|---|\n' + '\n'.join(rows))
     if reality == MISMATCH:

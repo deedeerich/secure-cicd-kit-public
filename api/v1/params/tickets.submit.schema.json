@@ -90,6 +90,11 @@
           }
         }
       }
+    },
+    "via": {
+      "description": "KDEC-043 (PROPOSED): the integration that submits this call (e.g. tines), written on each new ticket as the label <stamp>-via-<name>. A CLAIM, never proof: the kit compares it with the identity its credential authenticated as and the tracker's record of who made the write (KIT_INTEGRATION_IDENTITIES maps a name to that identity); a mismatch is flagged on the ticket and sent to a person.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,39}$"
     }
   }
 }

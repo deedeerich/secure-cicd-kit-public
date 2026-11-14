@@ -46,6 +46,8 @@ inputs:
   seam-ownership: {description: "deploy-post: the seam step's seam_ownership", required: false, default: ''}
   app-url: {description: "deploy-post: the app's URL", required: false, default: ''}
   readiness-source: {description: "deploy-post: the zone step's readiness_source", required: false, default: ''}
+  environment-protection: {description: "deploy-post: the protection step's environment_protection", required: false, default: ''}
+  small-team-self-approval: {description: "deploy-post: SMALL_TEAM_SELF_APPROVAL when the org's small-team mode let the developer approve", required: false, default: ''}
 outputs:
   security_record: {description: "security: kit-security-record.json, compact", value: "${{ steps.r.outputs.security_record }}"}
   kit_watermark: {description: "the kit copy's watermark as read (G9)", value: "${{ steps.r.outputs.kit_watermark }}"}
@@ -105,6 +107,8 @@ runs:
         D_SEAM_OWNERSHIP: ${{ inputs.seam-ownership }}
         D_APP_URL: ${{ inputs.app-url }}
         D_READINESS_SOURCE: ${{ inputs.readiness-source }}
+        D_ENVIRONMENT_PROTECTION: ${{ inputs.environment-protection }}
+        D_SMALL_TEAM_SELF_APPROVAL: ${{ inputs.small-team-self-approval }}
       run: |
         set -uo pipefail
         kit_root="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)"

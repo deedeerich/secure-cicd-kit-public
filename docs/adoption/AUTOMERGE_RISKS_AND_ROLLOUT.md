@@ -56,6 +56,17 @@ A green check over few tests proves little.
 ### 4. Merge to `main` deploys to production without CAB or change approval (the biggest one)
 
 If a push to `main` triggers a production deploy with no human gate, auto-merge becomes auto-deploy.
+
+**Now enforced by the kit (KDEC-042, 2026-11-06), not only advised.** Every kit deploy job runs in its
+GitHub environment (`environment:` from a required input, never conditional on the trigger;
+`tests/check_deploy_environment_declared.py`), so a push or an auto-merge to `main` that reaches uat or
+prod waits on that environment's required reviewers. Before any cloud login the deploy also refuses a uat
+or prod environment that does not exist, has no reviewers, allows self-review, has no platform or security
+pool reviewer, or can be approved only by the app team, and refuses an environment it cannot class
+(`ENVIRONMENT_UNCLASSED`) at every tier (`tests/prove_uat_prod_gating.py`). What stays a person's: the
+reviewers themselves (a repository admin sets them), and CAB where your change process requires it; the
+residual risks are R-27 and R-28 in the risk register.
+
 **Suggested mitigations** (PROPOSED):
 - Tie every production deploy to a GitHub environment with **required reviewers** and self-review prevented; the kit's deploy reusables already read the environment's protection back and refuse at uat/prod when it falls short (`deploy_approval`).
 - Route production releases through CAB (`docs/security-review/CAB-CHANGE-REVIEW-CHECKLIST.md`); keep promotion of the same digest (KDEC-029) so prod deploys a build a person approved.

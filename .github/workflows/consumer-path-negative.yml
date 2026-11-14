@@ -10,6 +10,12 @@ name: Consumer path — negative (EXPECTED TO FAIL)
 # `consumer-path-test.yml` dispatches this and asserts it FAILED. It is dispatch-only so it
 # never adds red to the default branch's status on its own.
 #
+# NOT INDEPENDENTLY RUNNABLE (KREQ-632, FW section 12 option (b), accepted 2026-11-13, KDEC-052). The
+# first job, `caller`, lets the run proceed only when its correlation id names its reader: an
+# in-progress consumer-path-test.yml run of this repository, or scripts/measure_cost.py. A hand dispatch
+# (empty id) stops there, before any scanner starts (scripts/negative_control_caller.py says why the
+# `workflow_dispatch` trigger itself must stay: the readers start this run through the dispatch API).
+#
 # Why a separate workflow at all: GitHub does not permit `continue-on-error` on a job that
 # calls a reusable workflow, so an "expected failure" cannot be absorbed inline.
 #
@@ -49,6 +55,23 @@ permissions:
   contents: read
 
 jobs:
+  # ── KREQ-632: NOTHING RUNS WITHOUT A READER ───────────────────────────────────────────
+  caller:
+    name: Dispatched by a reader (consumer path test or cost tool)
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      actions: read   # reads the dispatching run (GET /repos/{repo}/actions/runs/{id})
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Refuse a run nothing reads
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CORRELATION_ID: ${{ inputs.correlation_id }}
+          SCOPE: ${{ inputs.scope }}
+        run: python3 scripts/negative_control_caller.py --correlation-id "$CORRELATION_ID" --scope "$SCOPE"
+
   # ── THE NEVER-COMMITTED SEEDS, GENERATED ON THE RUNNER (KDEC-011) ───────────────────
   #
   # The three credential seeds and the negative control under tests/consumer-fixture/full/secrets/
@@ -60,6 +83,7 @@ jobs:
   # committed and already in the checkout the scan reads.
   seed:
     name: Generate the never-committed secret seeds
+    needs: caller
     if: inputs.scope == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -130,6 +154,7 @@ jobs:
   # PROCEED_WITH_ADVISORY with FINDINGS_NOT_BLOCKED and a green gate; above crawl BLOCKED and red.
   seeded-php:
     name: Seeded PHP MUST block the caller
+    needs: caller
     if: inputs.scope == 'php'
     uses: ./.github/workflows/reusable-security.yml
     permissions:
@@ -149,8 +174,8 @@ jobs:
   # passed or failed; the assertion in consumer-path-test.yml reads what the gate emitted.
   php-verdict:
     name: Record the PHP leg's verdict
-    needs: seeded-php
-    if: always() && inputs.scope == 'php'
+    needs: [caller, seeded-php]
+    if: always() && inputs.scope == 'php' && needs.caller.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -188,6 +213,7 @@ jobs:
   # in the security report. scripts/measure_cost.py reads them from that artifact.
   seeded-iac:
     name: Terraform-heavy fixture (cost class)
+    needs: caller
     if: inputs.scope == 'iac'
     uses: ./.github/workflows/reusable-security.yml
     permissions:

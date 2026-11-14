@@ -8,8 +8,8 @@ Aikido yet: the first one is the owner's, at work, with the checklist at the end
 `scripts/external_findings_pull.py` pulls findings from **SonarQube** (Server or Cloud) and **Aikido**,
 read-only, and turns each open one into a `finding` ticket-template item (KDEC-037,
 `api/v1/tickets/finding.schema.json`) with its provenance. It checks every item against the template,
-removes the ones the kit's own scan already holds, and writes one file. It writes nothing to either
-vendor and nothing to a tracker.
+links each one the kit's own scan already holds to that kit finding (an enhancement: it is never
+dropped, see below), and writes one file. It writes nothing to either vendor and nothing to a tracker.
 
 `.github/workflows/reusable-external-findings.yml` runs it in two separate modes:
 
@@ -66,8 +66,25 @@ which need their own asset scheme) is listed `NOT_MAPPED` with the reason. It is
 
 **Code findings and the SAST identity.** The SAST/evidence-export lane is building a code-finding
 identity on the trunk. Until it lands, a code finding matches a kit finding by path, line and CWE,
-and a dependency finding by CVE and path (`kit_duplicate()`, the one function to replace). Two Sonar
-issues of one rule in one file are one identity until then; both vendor keys are kept as aliases.
+and a dependency finding by CVE and path (`kit_match()`, the one function to replace). Two Sonar
+issues of one rule in one file are one identity until then; both vendor keys are kept as aliases and the
+second record is kept whole (below).
+
+**Never a drop: an existing finding is enhanced** (owner ruling 2026-11-11, KDEC-049: "It should never
+drop the vuln it should enhance the existing ticket with additional evidence.")
+
+| case | what the pull does | what tickets.submit does (after the same review gate) |
+|---|---|---|
+| the kit already holds it (`--kit-findings`) | an item with `enhances`: the kit finding's cluster key (its ticket's stamp), identity, scanner, rule, path, line, severity and the match basis; listed under `enhancements` as `ENHANCES_EXISTING_FINDING` | finds that ticket by ITS key and appends ONE comment with every evidence field (source tool, vendor key, evidence ref and sha256, aliases with the CVE, severity as the source rated it, title, each corroborating record) and additive labels: `TEMPLATE_ENHANCED_EXISTING`. No ticket is created, closed or reopened; the description, severity and priority are never changed |
+| the source rates it higher than the ticket | recorded on the item as rated | the comment says SEVERITY HIGHER AT THE SOURCE; labels `severity-review` and `triage` for a person; nothing is raised or lowered |
+| the same evidence again | the same item | `TEMPLATE_TICKET_BOUND`: nothing added twice |
+| the existing finding's ticket is not found | the same item | CREATED in triage, `possible-duplicate`, with a comment naming the finding it enhances (`TEMPLATE_POSSIBLE_DUPLICATE`): never lost |
+| a second record of the same identity in one pull | kept whole in the first item's `corroborating_evidence`; listed under `corroborations` as `CORROBORATES_PULLED_ITEM` | the ticket's facts (or the enhancement comment) list every corroborating record |
+
+The review concurs with the items exactly as cut (the evidence-set hash covers `enhances` and
+`corroborating_evidence`), so an enhancement cannot reach a ticket without the review. The reusable
+workflow does not yet pass `--kit-findings`; without it a match is found only at submit, by the
+external finding's own key (KDEC-049 M2).
 
 ## One normaliser for every id
 
@@ -91,6 +108,9 @@ required; CODEOWNERS); until then it stays unknown, never guessed (`tests/prove_
 `SOURCE_PULLED` (every page read, items listed; zero items is a result) · `SOURCE_NOT_CONFIGURED` ·
 `SOURCE_AUTH_REFUSED` (401/403: never "no findings") · `SOURCE_UNREACHABLE` · `SOURCE_RESPONSE_INVALID` ·
 `SOURCE_TRUNCATED` · `SOURCE_HOST_REFUSED` (not https). Every state but the first fails the run.
+Per finding: `NOT_MAPPED` (listed with why) · `ENHANCES_EXISTING_FINDING` (an item linked to the kit finding
+it adds evidence to) · `CORROBORATES_PULLED_ITEM` (a record carried whole on another item). The retired
+duplicate-of-kit state (listed, not submitted) no longer exists: nothing is dropped.
 
 ## Testing at work: the owner's checklist
 
@@ -103,7 +123,8 @@ required; CODEOWNERS); until then it stays unknown, never guessed (`tests/prove_
    `gh api -X PUT repos/<org>/<repo>/environments/external-findings-review --input env.json`, with
    `env.json` = `{"reviewers":[{"type":"Team","id":<team id>}],"prevent_self_review":true}`.
 4. Dispatch **External findings** with nothing set. Expect `SOURCE_PULLED` for each source and
-   read the summary: items, duplicates of kit findings, closed at the source, not mapped (with why).
+   read the summary: items (and how many enhance an existing kit finding), records carried as
+   corroborating evidence, closed at the source, not mapped (with why).
 5. Negative check: temporarily point `SONAR_HOST_URL` at the right host with a wrong token in a
    scratch repository. Expect `SOURCE_AUTH_REFUSED`, a red run, no items.
 6. Note anything the summary says is `NOT_MAPPED` and extend `repo_map`; record the first real
@@ -114,3 +135,28 @@ required; CODEOWNERS); until then it stays unknown, never guessed (`tests/prove_
    `scripts/kit_api.py status --correlation-id <id>`. Test on the owner's personal tracker first.
 
 Proofs: `tests/prove_external_findings_pull.py`, `tests/prove_external_findings_workflow.py`.
+
+## The baseline, the identity model and the states (KDEC-049 R1-R5)
+
+The pull job first runs `scripts/external_findings_baseline.py`: the latest SUCCESSFUL security-suite run of this
+repository on the default branch whose commit is an ancestor of (or equal to) the head and whose coverage rows
+for the capability (Sonar: SOURCE; Aikido: SOURCE_DEPENDENCY) are all ESTABLISHED. Its receipt is `baseline` in
+pulled.json. The ticket ledger (`ledger_path`, default `.security/ticket-ledger.json`) is read too, so a finding
+still ticketed but absent from the latest scan still matches.
+
+| State | Meaning | What happens |
+|---|---|---|
+| BASELINE_SELECTED | a qualifying run, receipt recorded | matches used as is |
+| BASELINE_STALE / PARTIAL / UNAVAILABLE / INCOMPATIBLE | no trustworthy baseline | every item labelled baseline-review + triage; the register still matches; never "no match" |
+| MATCHED (ENHANCES_EXISTING_FINDING) | same identity AND same asset (repo + path, component when both name one) | the existing ticket gets one comment + labels (TEMPLATE_ENHANCED_EXISTING) |
+| MATCH_SEPARATE_INSTANCE | same CVE, other component or path | its own ticket, related named, match-review + triage |
+| MATCH_AMBIGUOUS / MATCH_SCOPE_MISMATCH | several clusters / another repository | its own ticket, flagged, never merged |
+| SEVERITY_MATERIAL_DISAGREEMENT | two or more levels apart | both assessments kept, severity-disagreement + triage |
+| DISPOSITION_REEVALUATION_REQUIRED | the match has an approved accepted risk, exception or false positive | evidence attached, disposition-reevaluate + triage; never extended or cleared |
+| TEMPLATE_REGRESSION | the matched ticket was closed | reopened under the kit's reopen policy, evidence attached |
+| EVIDENCE_ALREADY_ON_TICKET | the fingerprint is already on the ticket | nothing written twice (retry, concurrency) |
+| TEMPLATE_OUTBOX | a comment or label write failed | held in the outbox, retried; one comment in the end |
+| TEMPLATE_DUPLICATE_CLOSURE_REFUSED | a duplicate's evidence transfer could not be read back | both tickets stay open, linked |
+
+The authoritative record of each observation is `evidence_observations` in the ticket ledger entry of the
+canonical finding (ticket-ledger-proposal.json), keyed by its sha256 fingerprint. Defaults are PROPOSED (KDEC-049 M5).

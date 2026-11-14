@@ -36,6 +36,47 @@ WHAT IT PROVES (scripts/evidence_export.py, scripts/kit_api_server.py, scripts/r
     M3  records copied whole (no allowlist)         -> N3 fails
     M4  the author recorded by email                -> N4 fails
 
+THE QUALIFIERS (xprod 2026-11-09; independent review: the harness must never read a kit promotion or lineage
+record as STRONGER than the kit establishes)
+    Q1  a finding's disposition_basis is exported verbatim: DISPOSITION_CARRIED_BY_LINEAGE (pending
+        reaffirmation), lineage-refused, LINEAGE_RECONCILIATION_UNRESOLVED
+    Q2  a promotion record's gate verdict and the refusal codes a break-glass overrode are exported verbatim
+        (PROMOTION_REFUSED_HISTORY_INCOMPLETE, _TARGET_UNKNOWN), and a refused promotion keeps its refusal
+    Q3  the DURABLE release record's promotion summary (reviewer_signals.promotion_summary) carries the same
+        gate and codes, and the export keeps them
+    QN  negative: an override's free-text why and by (an exception ref) never reach the export
+    QE3 the harness keeps every qualifier: open findings flagged PENDING_DECISION <basis>, never an approval;
+        with a harness at HDEC-XPROD2 also F12 (DispositionBasis / ApprovalStatus on every row), F13 (the split
+        promotion facts) and F16 (the unpacked records agree with the export on every qualifier)
+        kind; the promotion state FLAGGED, the codes verbatim, PROMOTION_NOT_ESTABLISHED (run where the harness
+        source is present; against a harness that drops them this FAILS, by design)
+    M6  the predecessor dropped from the promotion allowlist      -> Q2 fails
+    M7  gate / overridden dropped from the durable summary allowlist -> Q3 fails
+    M8  disposition_basis dropped from the finding allowlist    -> Q1 fails
+
+THE EVALUATED DECISION (R-45 M5, KDEC-048: export what the kit's disposition evaluator decided, never the
+register's raw status; scan_report.evaluated_decision writes it into findings.json at the run's date)
+    D1  an approved, in-date direct decision is APPROVED_EFFECTIVE, with scope, expiry, register key and the
+        evaluation date; it never clears the finding; separation of duties NOT_ESTABLISHED
+    D2  an expired approval and a legacy key past its window are NOT_EFFECTIVE, the evaluator's reason verbatim
+    D3  a carried decision stays PENDING_REAFFIRMATION although its predecessor is approved
+    D4  the export carries the evaluator's object verbatim, deterministic, schema-valid
+    DN1 a tampered object (carried read as approved, a "cleared" finding, an extra field, a basis mismatch) is
+        exported DECISION_NOT_ESTABLISHED with the reason; DN2 an older report exports no object
+    QE4 the harness reads APPROVED_EFFECTIVE only where the evaluator said so (with the harness source variable)
+    M9  the object copied unchecked -> DN1   M10 the object dropped -> D4
+    M11 an evaluator ignoring expiry -> D2   M12 a carried decision mapped to approved -> D3
+    THE SCHEMA DESCRIBES THE OBJECT (R3 closeout C2, KDEC-048 M1: api/v1/evidence-export.schema.json)
+    D5  both forms the exporter emits (evaluated, and DECISION_NOT_ESTABLISHED) validate against the schema's
+        disposition_decision, in place in the export; an export without the object still validates
+    DN3 a malformed object is REJECTED BY THE SCHEMA: a property outside the eleven, a value outside the
+        vocabulary, a missing required property, a wrongly typed scope / expires / evaluation date
+    DN4 a text field (expires, separation_of_duties, basis) that is not a string or null in the report is
+        exported DECISION_NOT_ESTABLISHED, never passed through; the export still validates
+    M13 the schema without its disposition_decision (items allow anything again) -> DN3
+    M14 the text-field type check removed from decision_of -> DN4
+    M15 an unbounded DECISION_NOT_ESTABLISHED reason (the defect D5 found: the slice bound to the tuple) -> D5
+
 EXIT  0 proven   1 a case failed (named)   2 could not be checked
 """
 import copy
@@ -254,6 +295,422 @@ def harness_leg(ee, doc, work):
     return ok
 
 
+# ── the qualifiers (xprod) ─────────────────────────────────────────────────────────────────────────
+CARRIED, REFUSED_CARRY, UNRESOLVED = 'DISPOSITION_CARRIED_BY_LINEAGE', 'lineage-refused', 'LINEAGE_RECONCILIATION_UNRESOLVED'
+HIST, TGT = 'PROMOTION_REFUSED_HISTORY_INCOMPLETE', 'PROMOTION_REFUSED_TARGET_UNKNOWN'
+
+
+def qualified_promotion(env, state, path, gate, over, rid):
+    return {'schema': 'kit-promotion-record/1', 'record_id': '%s-1-%s' % (rid, env), 'state': state,
+            'release_path': path, 'artifact': {'digest': 'sha256:' + 'd' * 64},
+            'environment': {'name': env, 'tier': env, 'adapter': 'appservice',
+                            'target_resource_id': None if TGT in over else '/x'},
+            'predecessor': {'required': 'uat' if env == 'prod' else 'test', 'promoted_from': {'run_id': '4999'},
+                            'gate': gate, 'overridden': [{'code': c, 'why': 'the history: ' + PLANTED,
+                                                          'by': 'break-glass exception EXC-PLANTED-7'} for c in over]},
+            'validity': {'expires_at': None},
+            'run': {'id': rid, 'attempt': '1', 'url': 'https://example.ghe.com/%s/actions/runs/%s' % (REPO, rid)}}
+
+
+class QualifiedGitHub(FakeGitHub):
+    """The fixture with the three qualifiers: carried / refused / unresolved lineage bases on the findings, a
+    break-glass prod promotion over HISTORY_INCOMPLETE + TARGET_UNKNOWN, a uat promotion REFUSED for an
+    incomplete history, and the durable release record's summary built by reviewer_signals.promotion_summary."""
+
+    def __init__(self):
+        import reviewer_signals as rs
+        FakeGitHub.__init__(self)
+        findings = copy.deepcopy(FINDINGS)
+        for f, b in zip(findings, (CARRIED, REFUSED_CARRY, UNRESOLVED)):
+            f['disposition_basis'] = b
+        self.prod = qualified_promotion('prod', 'BREAK_GLASS', 'break-glass', 'PROMOTION_ALLOWED', (HIST, TGT), '5002')
+        uat = qualified_promotion('uat', 'not-verified', 'normal', HIST, (), '5003')
+        for a in self.arts:
+            if a['name'] == 'security-report-1':
+                self.blobs[a['id']] = zblob({'findings.json': findings, 'report.md': '# report'})
+            if a['name'] == 'kit-promotion-record-prod':
+                self.blobs[a['id']] = zblob({'promotion-record.json': self.prod})
+        n = max(a['id'] for a in self.arts) + 1
+        self.arts.append({'id': n, 'name': 'kit-promotion-record-uat', 'expired': False,
+                          'workflow_run': {'id': 5002}, 'run_id': 5002})
+        self.blobs[n] = zblob({'promotion-record.json': uat})
+        for d in self.deployments:
+            if d['id'] == 9001:
+                d['payload'] = dict(d['payload'], promotion=rs.promotion_summary(self.prod))
+
+
+def qualifiers_of(doc):
+    """-> (finding bases, {env: (gate, [codes])} of the records, (gate, [codes]) of the durable summary)."""
+    secs = (doc or {}).get('sections') or {}
+    bases = sorted(str(f.get('disposition_basis')) for f in (secs.get('findings') or {}).get('findings') or [])
+    recs, summ = {}, None
+    for r in (secs.get('promotion_records') or {}).get('records') or []:
+        if r.get('record'):
+            p = r['record'].get('predecessor') or {}
+            recs[(r['record'].get('environment') or {}).get('name')] = (
+                p.get('gate'), [o.get('code') for o in p.get('overridden') or []])
+        elif r.get('summary'):
+            summ = (r['summary'].get('gate'), r['summary'].get('overridden'))
+    return bases, recs, summ
+
+
+def qualifier_checks(ee, work):
+    print('Q the qualifiers are exported verbatim, never stronger than the kit establishes')
+    doc, ref = make_export(ee, QualifiedGitHub())
+    bases, recs, summ = qualifiers_of(doc)
+    check(ref is None and bases == sorted((CARRIED, REFUSED_CARRY, UNRESOLVED)),
+          'Q1 every finding keeps its disposition_basis verbatim (%s)' % bases)
+    check(recs.get('prod') == ('PROMOTION_ALLOWED', [HIST, TGT]) and recs.get('uat') == (HIST, []),
+          'Q2 the gate verdict and the overridden refusal codes are exported verbatim (%s)' % recs)
+    check(summ == ('PROMOTION_ALLOWED', [HIST, TGT]),
+          'Q3 the durable release record\'s promotion summary keeps the gate and the codes (%s)' % (summ,))
+    schema_path = os.path.join(ROOT, 'api', 'v1', 'evidence-export.schema.json')
+    import kit_api as ka
+    check(not ka.validate(doc, json.load(io.open(schema_path, encoding='utf-8'))),
+          'Q the qualified export still validates against api/v1/evidence-export.schema.json')
+    blob = json.dumps(doc)
+    check(PLANTED not in blob and 'EXC-PLANTED-7' not in blob and 'the history: ' not in blob,
+          'QN an override\'s free-text why and by never reach the export (codes only)')
+    full = ee.PROMOTION_RECORD
+    mutant(ee, 'PROMOTION_RECORD', dict((k, v) for k, v in full.items() if k != 'predecessor'),
+           lambda: qualifiers_of(make_export(ee, QualifiedGitHub())[0])[1].get('prod') == ('PROMOTION_ALLOWED', [HIST, TGT]),
+           'M6 the predecessor dropped from the promotion allowlist is caught by Q2')
+    rel = dict(ee.RELEASE_RECORD, promotion=tuple(k for k in ee.RELEASE_RECORD['promotion']
+                                                  if k not in ('gate', 'overridden')))
+    mutant(ee, 'RELEASE_RECORD', rel,
+           lambda: qualifiers_of(make_export(ee, QualifiedGitHub())[0])[2] == ('PROMOTION_ALLOWED', [HIST, TGT]),
+           'M7 gate and overridden dropped from the durable summary allowlist are caught by Q3')
+    mutant(ee, 'FINDING', tuple(k for k in ee.FINDING if k != 'disposition_basis'),
+           lambda: qualifiers_of(make_export(ee, QualifiedGitHub())[0])[0] == sorted((CARRIED, REFUSED_CARRY, UNRESOLVED)),
+           'M8 disposition_basis dropped from the finding allowlist is caught by Q1')
+    harness_qualifiers_leg(ee, doc, work)
+
+
+def harness_qualifiers_leg(ee, doc, work):
+    src = os.environ.get('evidence_harness_src'.upper(), '').strip()
+    if not src or not os.path.isfile(os.path.join(src, 'app_evidence_bundle.py')):
+        print('  NOT RUN QE3 the harness keeps the qualifiers: the harness source variable names no '
+              'src/app_evidence_bundle.py on this host')
+        return None
+    sys.path.insert(0, src)
+    import app_evidence_bundle as aeb
+    import datetime
+    q = os.path.join(work, 'q')
+    case, kit_fx, tk = os.path.join(q, 'case'), os.path.join(q, 'kit-fx'), os.path.join(q, 'tickets.json')
+    aeb._fixture(case, kit_fx, tk)
+    kit = os.path.join(q, 'kit-export')
+    ee.unpack(doc, kit)
+    ctx, _out = aeb.build(case, 'orders-api', datetime.date(2031, 5, 20), kit, tk, 'CHG-1', write=False)
+    rows = [x for x in ctx.exc if x['Source'] == 'kit findings']
+    approval = getattr(aeb, 'APPROVAL_KINDS', ())
+    ok = check(sorted(x['Flags'].split(' -- ')[0] for x in rows) ==
+               sorted('PENDING_DECISION: ' + b for b in (CARRIED, REFUSED_CARRY, UNRESOLVED)) and
+               all(x['Kind'] == 'FINDING' and x['Open'] == 'YES' and x['Kind'] not in approval for x in rows),
+               'QE3 each qualified finding stays an open FINDING flagged PENDING_DECISION <basis>, verbatim, never '
+               'an approval (%s)' % [x['Flags'][:60] for x in rows])
+    facts = ctx.facts
+    st = dict((f['Subject'], f['State']) for f in facts if f['Fact'] == 'promotion state')
+    over = [f['Value'] for f in facts if f['Subject'] == 'promotion prod' and f['Fact'] == 'promotion gate overridden']
+    gate = [f['Value'] for f in facts if f['Subject'] == 'promotion uat' and f['Fact'] == 'promotion gate']
+    summ = [f['State'] for f in facts if f['Fact'] == 'promotion summary (durable release record)']
+    ok &= check(st.get('promotion prod') == 'FLAGGED' and st.get('promotion uat') == 'FLAGGED' and
+                over == ['%s;%s' % (HIST, TGT)] and gate == [HIST] and summ == ['FLAGGED'] and
+                len([f for f in ctx.flags if f[0] == 'PROMOTION_NOT_ESTABLISHED']) >= 3,
+                'QE3 a break-glass over HISTORY_INCOMPLETE + TARGET_UNKNOWN and a refused promotion are FLAGGED with the '
+                'codes verbatim and PROMOTION_NOT_ESTABLISHED, in the record and the durable summary (%s %s %s %s)'
+                % (st, over, gate, summ))
+    # R2 F12 (harness HDEC-XPROD2): every finding row carries DispositionBasis verbatim; a carried approval is
+    # NOT_AN_APPROVAL, never an ordinary approval
+    if 'DispositionBasis' not in getattr(aeb, 'EXC_COLUMNS', ()):
+        print('  NOT RUN QE3 F12/F13/F16: this harness predates DispositionBasis (harness HDEC-XPROD2)')
+        return ok
+    ok &= check(sorted(x['DispositionBasis'] for x in rows) == sorted((CARRIED, REFUSED_CARRY, UNRESOLVED)) and
+                all(x['ApprovalStatus'].endswith('_NOT_AN_APPROVAL') for x in rows) and
+                sorted(x['ReconciliationState'] for x in rows) == sorted(
+                    ('CARRIED_PENDING_REAFFIRMATION', 'LINEAGE_REFUSED', 'RECONCILIATION_UNRESOLVED')),
+                'QE3 F12 every finding row carries its DispositionBasis verbatim, and a carried / refused / unresolved '
+                'one reads NOT_AN_APPROVAL (%s)' % [(x['DispositionBasis'], x['ApprovalStatus']) for x in rows])
+    # R2 F13: a valid record of a refused / overridden promotion: integrity ESTABLISHED, the decision apart
+    sp = dict(((f['Subject'], f['Fact']), f['Value']) for f in facts)
+    integ = 'INTEGRITY_NOT_VERIFIED' if hasattr(aeb, 'record_verification') else 'ESTABLISHED'   # harness HDEC-017
+    want = {('promotion prod', 'record_integrity_state'): integ,
+            ('promotion prod', 'promotion_decision_state'): 'OVERRIDDEN',
+            ('promotion prod', 'target_identity_state'): 'TARGET_UNKNOWN',
+            ('promotion prod', 'history_completeness_state'): 'HISTORY_INCOMPLETE',
+            ('promotion uat', 'record_integrity_state'): integ,
+            ('promotion uat', 'promotion_decision_state'): 'REFUSED',
+            ('promotion uat', 'history_completeness_state'): 'HISTORY_INCOMPLETE',
+            ('promotion prod (durable summary)', 'promotion_decision_state'): 'OVERRIDDEN',
+            ('promotion prod (durable summary)', 'target_identity_state'): 'TARGET_UNKNOWN'}
+    got = dict((k, sp.get(k)) for k in want)
+    ok &= check(got == want, 'QE3 F13 the promotion facts are kept apart: integrity ' + integ + ' (never inferred '
+                'from present fields, harness HDEC-017), decision '
+                'REFUSED / OVERRIDDEN, TARGET_UNKNOWN, HISTORY_INCOMPLETE, record and durable summary (%s)'
+                % dict((k[0] + '/' + k[1], v) for k, v in got.items() if v != want[k]))
+    # R2 F16: the folder the kit unpacked agrees with its own export on every qualifier (no conflict)
+    ok &= check(not ctx.export_conflicts and not any(f[0] == 'KIT_EXPORT_QUALIFIER_CONFLICT' for f in ctx.flags),
+                'QE3 F16 the unpacked records agree with the export on every qualifier (conflicts: %s)'
+                % sorted(ctx.export_conflicts))
+    return ok
+
+
+# ── R-45 M5 (KDEC-048): the EVALUATED disposition decision is exported, not the register's raw status ──
+DAY = '2031-05-20'
+DEC_PRED = 'd' * 32       # the predecessor of a carried decision
+
+
+def _reg_entry(key, scanner, rule, path, expires, state='approved'):
+    return {'schema_version': '1', 'fingerprint': key, 'scanner': scanner, 'rule': rule, 'scope_path': path,
+            'disposition_type': 'ACCEPTED_RISK', 'evidence_ref': 'RISK-REG-7',
+            'rationale': 'the input is a constant list; reviewed by the security lead',
+            'approver_role': 'security-lead', 'created': '2031-01-02', 'expires': expires, 'state': state}
+
+
+DEC_REGISTER = {'f' * 32: _reg_entry('f' * 32, 'bandit', 'B602', 'app/run.py', '2031-12-31'),
+                'e' * 32: _reg_entry('e' * 32, 'trivy', 'CVE-2019-20477', 'requirements.txt', '2031-01-01'),
+                '0f0f0f0f0f0f': _reg_entry('0f0f0f0f0f0f', 'gitleaks', 'aws-access-token', 'config/settings.py',
+                                           '2031-12-31'),
+                DEC_PRED: _reg_entry(DEC_PRED, 'bandit', 'B602', 'app/old.py', '2031-12-31')}
+
+
+def decision_findings(tamper=None):
+    """FINDINGS + a carried one, each with the basis and the object the kit's own evaluator produced."""
+    import datetime
+    import scan_report as sr
+    day = datetime.date(*[int(x) for x in DAY.split('-')])
+    out = copy.deepcopy(FINDINGS)
+    carried = dict(copy.deepcopy(FINDINGS[0]), identity='c' * 32, fp='c1c1c1c1c1c1', canonical_path='app/new.py')
+    out.append(carried)
+    for f in out:
+        g = dict(f, rule=f.get('rule_id'), uri=f.get('canonical_path'))
+        if f is carried:
+            # the lineage resolver is proven in tests/prove_lineage_consumers.py; here its answer is given
+            # (an APPROVED, in-date decision on the predecessor) and the evaluator must still not approve
+            saved = sr.disposition_for
+            sr.disposition_for = lambda *a, **k: (DEC_REGISTER[DEC_PRED], sr.LINEAGE_CARRIED, 'carried')
+            try:
+                f['disposition_basis'] = sr.LINEAGE_CARRIED
+                f['disposition_decision'] = sr.evaluated_decision(g, DEC_REGISTER, day, register='dispositions.json')
+            finally:
+                sr.disposition_for = saved
+        else:
+            f['disposition_basis'] = sr.disposition_for(g, DEC_REGISTER, day)[1]
+            f['disposition_decision'] = sr.evaluated_decision(g, DEC_REGISTER, day, register='dispositions.json')
+    if tamper:
+        tamper(out)
+    return out
+
+
+class DecisionGitHub(FakeGitHub):
+    def __init__(self, tamper=None, drop=False):
+        FakeGitHub.__init__(self)
+        fs = decision_findings(tamper)
+        if drop:
+            for f in fs:
+                f.pop('disposition_decision', None)
+        for a in self.arts:
+            if a['name'] == 'security-report-1':
+                self.blobs[a['id']] = zblob({'findings.json': fs, 'report.md': '# report'})
+
+
+def decisions_of(doc):
+    """-> {identity or fp: the exported disposition_decision, or None}."""
+    secs = (doc or {}).get('sections') or {}
+    return dict((f.get('identity') or f.get('fp'), f.get('disposition_decision'))
+                for f in (secs.get('findings') or {}).get('findings') or [])
+
+
+def decision_checks(ee, work):
+    import scan_report as sr
+    print('D the evaluated disposition decision (R-45 M5, KDEC-048): the evaluator\'s, never re-decided')
+    doc, ref = make_export(ee, DecisionGitHub())
+    d = decisions_of(doc)
+    ok = d.get('f' * 32) or {}
+    check(ref is None and ok.get('effective_decision') == 'APPROVED_EFFECTIVE' and ok.get('finding_cleared') is False
+          and ok.get('evaluated_on') == DAY and ok.get('expires') == '2031-12-31'
+          and ok.get('scope') == {'scanner': 'bandit', 'rule': 'B602', 'scope_path': 'app/run.py'}
+          and ok.get('source_register') == {'register': 'dispositions.json', 'key': 'f' * 32}
+          and ok.get('separation_of_duties') == 'NOT_ESTABLISHED'
+          and ok.get('recorded_decision') == {'disposition_type': 'ACCEPTED_RISK', 'state': 'approved',
+                                              'recorded_on': 'this_finding'},
+          'D1 an approved, in-date direct decision is APPROVED_EFFECTIVE with its scope, expiry, register key and '
+          'evaluation date; it never clears the finding; separation of duties NOT_ESTABLISHED (%s)' % ok)
+    ex, lc = d.get('e' * 32) or {}, d.get('0f0f0f0f0f0f') or {}
+    check(ex.get('effective_decision') == 'NOT_EFFECTIVE' and str(ex.get('reason')).startswith('EXPIRED 2031-01-01')
+          and lc.get('effective_decision') == 'NOT_EFFECTIVE' and lc.get('basis') == 'legacy-closed',
+          'D2 an expired approval and a legacy key past its window are NOT_EFFECTIVE, the evaluator\'s reason verbatim '
+          '(%s / %s)' % (ex.get('reason'), lc.get('basis')))
+    ca = d.get('c' * 32) or {}
+    check(ca.get('effective_decision') == 'PENDING_REAFFIRMATION' and ca.get('basis') == sr.LINEAGE_CARRIED
+          and (ca.get('recorded_decision') or {}).get('state') == 'approved'
+          and (ca.get('recorded_decision') or {}).get('recorded_on') == 'predecessor',
+          'D3 a carried decision stays PENDING_REAFFIRMATION although its predecessor is approved and in date (%s)'
+          % ca.get('effective_decision'))
+    doc2, _r = make_export(ee, DecisionGitHub())
+    schema = json.load(io.open(os.path.join(ROOT, 'api', 'v1', 'evidence-export.schema.json'), encoding='utf-8'))
+    import kit_api as ka
+    want = dict((f.get('identity') or f.get('fp'), f.get('disposition_decision')) for f in decision_findings())
+    check(json.dumps(doc, sort_keys=True) == json.dumps(doc2, sort_keys=True) and d == want
+          and not ka.validate(doc, schema),
+          'D4 the export carries the evaluator\'s object verbatim, the same bytes twice, and validates')
+    # negatives: a tampered or older report
+    def tamper(fs):
+        fs[3]['disposition_decision']['effective_decision'] = 'APPROVED_EFFECTIVE'     # carried read as approved
+        fs[0]['disposition_decision']['finding_cleared'] = True
+        fs[2]['disposition_decision']['approved_by'] = 'someone'                         # outside the allowlist
+        fs[1]['disposition_decision']['basis'] = 'durable'                               # not the finding's basis
+    t = decisions_of(make_export(ee, DecisionGitHub(tamper))[0])
+    check(all((t.get(k) or {}).get('effective_decision') == ee.DECISION_NOT_ESTABLISHED
+              for k in ('c' * 32, 'f' * 32, 'e' * 32, '0f0f0f0f0f0f'))
+          and 'someone' not in json.dumps(t),
+          'DN1 a carried object reading APPROVED_EFFECTIVE, a "cleared" finding, a field outside the allowlist and '
+          'a basis mismatch are each exported DECISION_NOT_ESTABLISHED with the reason, never repaired (%s)'
+          % dict((k[:6], (v or {}).get('effective_decision')) for k, v in t.items()))
+    old = decisions_of(make_export(ee, DecisionGitHub(drop=True))[0])
+    check(old and all(v is None for v in old.values()),
+          'DN2 a security report that predates the object exports none: the reader keeps "not exported"')
+    mutant(ee, 'decision_of', lambda obj, basis: obj,
+           lambda: all((decisions_of(make_export(ee, DecisionGitHub(tamper))[0]).get(k) or {}).get(
+               'effective_decision') == ee.DECISION_NOT_ESTABLISHED for k in ('c' * 32, 'f' * 32)),
+           'M9 the object copied unchecked is caught by DN1')
+    mutant(ee, 'decision_of', lambda obj, basis: None,
+           lambda: decisions_of(make_export(ee, DecisionGitHub())[0]) == want,
+           'M10 the object dropped from the export is caught by D4')
+    mutant(sr, 'not_suppressed_because', lambda dd, today=None: '',
+           lambda: (decisions_of(make_export(ee, DecisionGitHub())[0]).get('e' * 32) or {}).get(
+               'effective_decision') == 'NOT_EFFECTIVE',
+           'M11 an evaluator that ignores expiry is caught by D2 (the object follows the evaluator, never a copy of it)')
+    mutant(sr, 'DECISION_PENDING_REAFFIRMATION', 'APPROVED_EFFECTIVE',
+           lambda: (decisions_of(make_export(ee, DecisionGitHub())[0]).get('c' * 32) or {}).get(
+               'effective_decision') == 'PENDING_REAFFIRMATION',
+           'M12 a carried decision mapped to APPROVED_EFFECTIVE is caught by D3')
+    schema_describes_decision(ee, ka, schema, doc, tamper, make_export(ee, DecisionGitHub(drop=True))[0])
+    harness_decision_leg(ee, doc, make_export(ee, DecisionGitHub(tamper))[0], work)
+
+
+def decision_schema(schema):
+    """-> the schema's description of findings[].disposition_decision, or None when it has none."""
+    cur = schema
+    for k in ('properties', 'sections', 'properties', 'findings', 'properties', 'findings', 'items', 'properties',
+              'disposition_decision'):
+        cur = cur.get(k) if isinstance(cur, dict) else None
+    return cur if isinstance(cur, dict) else None
+
+
+def malformed_decisions(good):
+    """-> [(what, object)]: each a single departure from a well-formed evaluated object."""
+    def edit(**over):
+        o = copy.deepcopy(good)
+        for k, v in over.items():
+            if v is KeyError:
+                o.pop(k, None)
+            else:
+                o[k] = v
+        return o
+    return [('a property outside the eleven', edit(approved_by='someone')),
+            ('a value outside the vocabulary', edit(effective_decision='APPROVED')),
+            ('a missing required property', edit(reason=KeyError)),
+            ('a scope that is not an object', edit(scope='app/run.py')),
+            ('a scope with a property of its own', edit(scope=dict(good['scope'], extra='x'))),
+            ('an expiry that is not a string', edit(expires=20311231)),
+            ('an evaluation date that is not a date', edit(evaluated_on='2031-5-1')),
+            ('a finding_cleared that is not a boolean', edit(finding_cleared='no')),
+            ('a reason longer than the bound', edit(reason='x' * 301))]
+
+
+def schema_describes_decision(ee, ka, schema, doc, tamper, older):
+    import scan_report as sr
+    print('D the export schema DESCRIBES the decision object (R3 closeout C2, KDEC-048 M1)')
+    dsch = decision_schema(schema)
+    check(dsch is not None and dsch.get('additionalProperties') is False,
+          'D5 api/v1/evidence-export.schema.json describes findings[].disposition_decision, closed to other properties')
+    good = decisions_of(doc)
+
+    def d5():
+        tampered = make_export(ee, DecisionGitHub(tamper))[0]
+        ne = decisions_of(tampered)
+        return (dsch is not None and len(good) == 4 and len(ne) == 4
+                and all(v and len(v) == 11 and not ka.validate(v, dsch) for v in good.values())
+                and all(v and len(v) == 6 and v.get('effective_decision') == ee.DECISION_NOT_ESTABLISHED
+                        and len(v.get('reason') or '') <= sr.DECISION_REASON_MAX and not ka.validate(v, dsch)
+                        for v in ne.values())
+                and not ka.validate(doc, schema) and not ka.validate(tampered, schema)
+                and not ka.validate(older, schema))
+    check(d5(), 'D5 both forms the exporter emits validate (evaluated: eleven properties; DECISION_NOT_ESTABLISHED: '
+          'six, its reason bounded), in place in the export; an export without the object still validates')
+
+    def rejected_in_place(sch):
+        """-> [what] the schema `sch` did NOT reject, each planted in the first finding of a whole export."""
+        missed = []
+        for what, obj in malformed_decisions(good['f' * 32]):
+            d = copy.deepcopy(doc)
+            d['sections']['findings']['findings'][0]['disposition_decision'] = obj
+            errs = ka.validate(d, sch)
+            if not any('disposition_decision' in p for p, _m in errs):
+                missed.append(what)
+        return missed
+    missed = rejected_in_place(schema)
+    check(not missed, 'DN3 a malformed decision object is rejected by the schema, at its own path: %s'
+          % (missed or 'all %d departures' % len(malformed_decisions(good['f' * 32]))))
+
+    def mistyped(fs):
+        fs[0]['disposition_decision']['expires'] = True
+        fs[1]['disposition_decision']['separation_of_duties'] = 7
+        fs[2]['disposition_decision']['expires'] = ['2031-12-31']
+
+    def dn4():
+        d4 = make_export(ee, DecisionGitHub(mistyped))[0]
+        got = decisions_of(d4)
+        return (all((got.get(k) or {}).get('effective_decision') == ee.DECISION_NOT_ESTABLISHED
+                    and 'not a string or null' in str((got.get(k) or {}).get('reason'))
+                    for k in ('f' * 32, 'e' * 32, '0f0f0f0f0f0f'))
+                and (got.get('c' * 32) or {}).get('effective_decision') == 'PENDING_REAFFIRMATION'
+                and not ka.validate(d4, schema))
+    check(dn4(), 'DN4 a text field that is not a string or null in the report is exported DECISION_NOT_ESTABLISHED '
+          'with the reason, never passed through; the untouched finding keeps its decision; the export validates')
+    loose = copy.deepcopy(schema)
+    items = loose['properties']['sections']['properties']['findings']['properties']['findings']['items']
+    items['properties'].pop('disposition_decision', None)
+    check(len(rejected_in_place(loose)) == len(malformed_decisions(good['f' * 32])) and not ka.validate(doc, loose),
+          'M13 the schema without its disposition_decision accepts every malformed object: caught by DN3')
+    mutant(ee, 'decision_text_problems', lambda obj: [], dn4,
+           'M14 the text-field type check removed from decision_of is caught by DN4')
+    mutant(sr, 'DECISION_REASON_MAX', 10 ** 6, d5,
+           'M15 an unbounded DECISION_NOT_ESTABLISHED reason (as before this fix) is caught by D5')
+
+
+def harness_decision_leg(ee, doc, tampered, work):
+    src = os.environ.get('evidence_harness_src'.upper(), '').strip()
+    if not src or not os.path.isfile(os.path.join(src, 'app_evidence_bundle.py')):
+        print('  NOT RUN QE4 the harness reads the evaluated decision: the harness source variable names no '
+              'src/app_evidence_bundle.py on this host')
+        return None
+    sys.path.insert(0, src)
+    import app_evidence_bundle as aeb
+    import datetime
+    if not hasattr(aeb, 'DECISION_STATUS'):
+        print('  NOT RUN QE4: this harness predates the evaluated decision (harness HDEC-018)')
+        return None
+    got = {}
+    for name, d in (('d', doc), ('t', tampered)):
+        q = os.path.join(work, 'qe4' + name)
+        case, kit_fx, tk = os.path.join(q, 'case'), os.path.join(q, 'kit-fx'), os.path.join(q, 'tickets.json')
+        aeb._fixture(case, kit_fx, tk)
+        kit = os.path.join(q, 'kit-export')
+        ee.unpack(d, kit)
+        ctx, _out = aeb.build(case, 'orders-api', datetime.date(2031, 5, 20), kit, tk, 'CHG-1', write=False)
+        got[name] = ([x['ApprovalStatus'] for x in ctx.exc if x['Source'] == 'kit findings'], ctx)
+    vals = sorted(got['d'][0])
+    ok = check('APPROVED_EFFECTIVE' in vals and 'DIRECT_DECISION_NOT_EFFECTIVE' in vals and
+               'CARRIED_BY_LINEAGE_NOT_AN_APPROVAL' in vals and not got['d'][1].export_conflicts,
+               'QE4 the harness reads APPROVED_EFFECTIVE only where the kit\'s evaluator said so, NOT_EFFECTIVE for the '
+               'expired and closed keys, and a carried one stays NOT_AN_APPROVAL; the unpacked records agree (%s)' % vals)
+    tv = sorted(got['t'][0])
+    ok &= check('APPROVED_EFFECTIVE' not in tv and 'DIRECT_DECISION_NOT_ESTABLISHED' in tv,
+                'QE4 a tampered object never reads APPROVED_EFFECTIVE in the harness (%s)' % tv)
+    return ok
+
+
 def main():
     try:
         import evidence_export as ee
@@ -417,6 +874,40 @@ def run(ee, ka, ks, work):
     mutant(ee, 'author_by_email', True, lambda: author_email not in json.dumps(
         ee.export(_NoRecordAuthor(), REPO, {'commit': SHA}, ledger={}, ledger_note='')[0]),
         'M4 an author recorded by email is caught')
+    # External review 2026-11-07 item 4: a listing longer than one page.
+    class _Paged(FakeGitHub):
+        def __init__(self, second_page_ok):
+            FakeGitHub.__init__(self)
+            self.second_page_ok = second_page_ok
+        def get(self, path):
+            if path.startswith('https://') and 'page=2' in path:
+                self.calls.append(path)
+                if not self.second_page_ok:
+                    return 502, None, {}, 'HTTP 502'
+                return 200, {'workflow_runs': [{'id': 5999, 'head_sha': 'f' * 40, 'status': 'completed'}],
+                             'total_count': 3}, {}, None
+            st, doc, h, err = FakeGitHub.get(self, path)
+            if path.split('?')[0].endswith('/actions/runs') and isinstance(doc, dict):
+                doc = dict(doc, total_count=3)
+                h = {'Link': '<https://api.example.test/repos/%s/actions/runs?head_sha=%s&per_page=100&page=2>; rel="next"'
+                     % (REPO, SHA)}
+            return st, doc, h, err
+    pdoc, _ = make_export(ee, _Paged(True))
+    check((pdoc['sections'].get('security_record') or {}).get('state') == ee.ESTABLISHED,
+          'P6 a second page of runs is read to the end; the record stays ESTABLISHED')
+    sdoc, _ = make_export(ee, _Paged(False))
+    ssec = sdoc['sections'].get('security_record') or {}
+    check(ssec.get('state') == ee.NOT_ESTABLISHED and 'incomplete read' in (ssec.get('why') or '')
+          and 'page 2 could not be read' in (ssec.get('why') or ''),
+          'N5 a page that fails mid-listing makes the sections it feeds NOT ESTABLISHED, the missing population named')
+    check((sdoc['sections'].get('release_records') or {}).get('state') == ee.ESTABLISHED,
+          'N5 a short runs listing does not touch the deployments it does not feed')
+    def m5():
+        d, _ = make_export(ee, _Paged(False))
+        return (d['sections'].get('security_record') or {}).get('state') == ee.NOT_ESTABLISHED
+    mutant(ee, 'paging_ignored', True, m5, 'M5 reading page one as the whole population is caught')
+    qualifier_checks(ee, work)
+    decision_checks(ee, work)
     print()
     if FAILS:
         print('FAIL: %d check(s): evidence.export does not yet produce the kit\'s half of the bundle.' % len(FAILS))

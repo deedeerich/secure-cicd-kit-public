@@ -89,6 +89,10 @@ def lookup(path, ctx):
         # The env context a step's `if:` sees: the job's env (resolved) with the harness's
         # extra_env over it. KDEC-030's opt-in lease steps read env.KIT_TARGET_LEASE_ACCOUNT.
         v = ctx.get('env', {}).get(parts[1], '')
+    elif parts[0] == 'vars' and len(parts) == 2:
+        # A repository/organisation/environment variable the harness does not set reads as unset, as on
+        # GitHub. A harness sets the value it means through extra_env (the job env names it), which wins.
+        v = ctx.get('vars', {}).get(parts[1], '')
     elif parts == ['job', 'status']:
         # job.status as GitHub reports it to a step: cancelled > failure > success.
         v = ctx.get('job_status', 'success')
@@ -251,6 +255,7 @@ def break_glass(inputs):
     return out
 
 
+PROMOTION_SOURCE_TARGET = '/subs/x/rg/rg-a/containerApps/web'   # the predecessor target a uat/prod promotion must name
 PROMOTION_SIGNER = 'o/secure-cicd-kit/.github/workflows/reusable-build-docker.yml'
 _GH_VERIFIED = r'''
 import json, sys
@@ -286,27 +291,46 @@ def promoted(inputs, source_environment='test', source_run='90'):
            'state': 'verified-for-promotion',
            'artifact': {'digest': digest, 'sbom_sha256': hashlib.sha256(sbom).hexdigest(),
                         'artifact_identity': 'REGISTRY_IDENTITY_PROVEN'},
-           'environment': {'name': source_environment, 'tier': 'test'},
+           'environment': {'name': source_environment, 'tier': 'test', 'adapter': 'containerapp',
+                           'target_resource_id': PROMOTION_SOURCE_TARGET},
            'provenance': {'source_ref': 'refs/heads/main', 'build_workflow': PROMOTION_SIGNER,
                           'build_run_id': source_run},
            'conditions': {'established': [], 'missing': []}, 'validity': {'verified_at': at},
            'run': {'id': source_run}, 'approval': {'approvers': []}}
+    # R08 (28ba4d1): the gate reads its source from the source run's OWN artifact listing and needs a record that
+    # names its target (canonical adapter + target_resource_id), published under record_key(env, target_key(env)).
+    # The fixture now serves both, as prove_deploy_staticwebapp.promotion_world does (58126b5). The adapter is the
+    # one the caller's inputs belong to. Nothing any caller asserts has changed.
+    scripts_dir = os.path.join(os.path.dirname(HERE), 'scripts')
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    import promotion as _pr
+    adapter = 'containerapp' if 'containerapp_name' in inputs else 'appservice' if 'webapp_name' in inputs \
+        else 'staticwebapp'
+    # Round 3 (integration): the record names PROMOTION_SOURCE_TARGET, the same target the request names in
+    # promote_from_target_resource_id (r08d: required at uat/prod), so digest AND target select it.
+    rec['environment'].update(adapter=adapter, target_resource_id=PROMOTION_SOURCE_TARGET)
+    rec_name = _pr.record_key(source_environment, _pr.target_key(rec['environment']))
 
     def zipped(name, body):
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, 'w') as zf:
             zf.writestr(name, body)
         return buf.getvalue()
-    arts = [{'id': 1, 'name': 'kit-promotion-record-%s' % source_environment, 'expired': False,
+    arts = [{'id': 1, 'name': rec_name, 'expired': False,
              'created_at': at, 'archive_download_url': '@API_ROOT@/zips/rec.zip',
              'workflow_run': {'id': int(source_run), 'head_branch': 'main'}},
             {'id': 2, 'name': 'sbom-' + digest.split(':', 1)[1], 'expired': False, 'created_at': at,
              'archive_download_url': '@API_ROOT@/zips/sbom.zip',
              'workflow_run': {'id': int(source_run), 'head_branch': 'main'}}]
     out = dict(inputs, promote_from_run_id=source_run, promote_from_environment=source_environment,
+               promote_from_target_resource_id=PROMOTION_SOURCE_TARGET,
                promotion_predecessor=source_environment, attestation_signer_workflow=PROMOTION_SIGNER,
                attestations_available=True, artifact_identity='REGISTRY_IDENTITY_PROVEN')
-    kw = {'api_files': {'repos/o/r/actions/artifacts': json.dumps({'total_count': 2, 'artifacts': arts})},
+    listing = json.dumps({'total_count': 2, 'artifacts': arts})
+    kw = {'api_files': {'repos/o/r/actions/artifacts': listing,
+                        # R08: the source run's OWN listing (gate-collect reads the run, not the repo)
+                        'repos/o/r/actions/runs/%s/artifacts' % source_run: listing},
           'api_binary': {'zips/rec.zip': zipped('promotion-record.json', json.dumps(rec)),
                          'zips/sbom.zip': zipped('sbom.spdx.json', sbom)},
           'tools': {'gh': _GH_VERIFIED, 'trivy': _TRIVY_CLEAN},
@@ -381,6 +405,13 @@ def write_default_api(api_root):
     listing = os.path.join(repo, 'actions', 'artifacts')
     if not os.path.exists(listing):
         io.open(listing, 'w', encoding='utf-8').write(json.dumps({'total_count': 0, 'artifacts': []}))
+    # KDEC-042: the deploy classes its environment before login. The recorded repository classes the
+    # harness's generic environment name `env` as dev, the way kit init's .kit/environments.json would;
+    # the bound tier still raises it (a prod-tier run is gated). tests/prove_uat_prod_gating.py proves classing.
+    spec = os.path.join(repo, 'contents', '.kit', 'environments.json')
+    if not os.path.exists(spec):
+        os.makedirs(os.path.dirname(spec), exist_ok=True)
+        io.open(spec, 'w', encoding='utf-8').write(json.dumps({'classes': {'env': 'dev'}}))
 
 
 def run_world(path, inputs, state, cancel_after=None, environment_answer=PROTECTED_ENVIRONMENT,

@@ -21,8 +21,8 @@ THE ADAPTER SEAM
 
     jira          built: the enhanced search (POST /rest/api/3/search/jql), paged by nextPageToken,
                   bounded, inside the projects this repository's routing and ledger name
-    freshservice  the seam: TRACKER_INTAKE_NOT_CONFIGURED until an adapter is built (the owner's
-                  "FreshService comes later")
+    freshservice  built (KDEC-043, 2026-11-06; scripts/tracker_freshservice.py): the filter by tag for exact
+                  (verified against the governed stamp field), the list (with updated_since) for near
     azdo          built (KDEC-037 O-37h, owner 2026-11-04): WIQL inside the project, paged by id, then
                   workitemsbatch; exact by the stamp field or the correlation-key tag
     github        built: the issues list by the correlation-key label, the search API for text, paged
@@ -301,8 +301,12 @@ class GitHubIntake(_PagedById):
 def adapter_for(backend, name=''):
     want = (name or getattr(backend, 'name', '') or '').lower()
     if want == 'freshservice':
-        return NotConfigured('freshservice', 'the FreshService intake adapter is the seam, not yet built '
-                                             '(TRACKER_INTAKE_NOT_CONFIGURED); nothing was read')
+        if getattr(backend, 'name', '') == 'freshservice':
+            import tracker_freshservice as tfs
+            return tfs.FreshserviceIntake(backend)
+        return NotConfigured('freshservice', 'the Freshservice intake adapter reads a Freshservice tracker, and this '
+                                             'run\'s tracker is %s (TRACKER_INTAKE_NOT_CONFIGURED); nothing was read'
+                             % (getattr(backend, 'name', '') or 'not configured'))
     if want == 'jira' and getattr(backend, 'name', '') == 'jira':
         return JiraIntake(backend)
     if want == 'azdo' and getattr(backend, 'name', '') == 'azdo':
@@ -326,22 +330,47 @@ def _fit(label):
     return rt.fit_label(label)
 
 
+def label_hit(ck_label, labels):
+    """The correlation-key label (or its tracker's short form) is on the ticket. A SEARCH HIT, never an identity
+    (KDEC-043 rule 1): the caller verifies it against the full key with ticket_governance.verify_label_hit."""
+    labels = list(labels or [])
+    return ck_label in labels or _fit(ck_label) in [_fit(x) for x in labels]
+
+
 def match(record, tickets, ck_label, stamp_line, threshold):
-    """-> {'exact': [(ticket, basis)], 'candidates': [(ticket, basis, score)]}. Exact only by the key."""
+    """-> {'exact': [(ticket, basis)], 'candidates': [(ticket, basis, score)], 'label_states': [(ref, state)]}.
+
+    EXACT ONLY BY THE FULL KEY: the stamp field, a stamp or link line in the body, or a label hit the body or
+    field VERIFIES (KDEC-043). A label hit on a ticket whose governed key is another key is a short-label
+    COLLISION, and one on a ticket with no full key is UNVERIFIED: both are candidates for a person, never
+    exact, never merged. A ticket stamped with another key and no label hit is not this finding's."""
+    import ticket_governance as tg
     ck = record['correlation_key']
-    exact, cands = [], []
+    exact, cands, states = [], [], []
     ident = str(record.get('rule') or '').lower()
     needles = [ident] + list(record.get('aliases') or [])
     asset = str(record.get('asset_needle') or '').lower()
     title = str(record.get('title') or '').lower()
     for t in tickets:
         text = ('%s\n%s\n%s' % (t.get('summary') or '', ' '.join(t.get('labels') or []), t.get('_text') or '')).lower()
+        keys = tg.ticket_keys(t)
         if t.get('stamp') == ck:
             exact.append((t, 'stamp'))
             continue
-        # Both sides fitted the same way: a GitHub label is cut to 50 characters (reconcile_tickets.fit_label).
-        if ck_label in (t.get('labels') or []) or _fit(ck_label) in [_fit(x) for x in t.get('labels') or []]:
-            exact.append((t, 'correlation-label'))
+        if ck.lower() in keys:
+            exact.append((t, 'body-stamp'))
+            continue
+        if label_hit(ck_label, t.get('labels')):
+            verdict, _other = tg.verify_label_hit(t, ck)
+            if verdict == tg.LABEL_VERIFIED:
+                exact.append((t, 'correlation-label (verified against the full key)'))
+                continue
+            states.append((t.get('ref'), verdict))
+            cands.append((t, 'correlation-label-collision' if verdict == tg.CORRELATION_LABEL_COLLISION
+                          else 'correlation-label-unverified', 100))
+            continue
+        if keys or (t.get('stamp') and t.get('stamp') != ck):
+            # Another finding's ticket: the full key says so, whatever its text shares with this one.
             continue
         if (stamp_line + ' ' + ck).lower() in text:
             exact.append((t, 'body-stamp'))
@@ -355,4 +384,4 @@ def match(record, tickets, ck_label, stamp_line, threshold):
         ratio = int(round(100 * difflib.SequenceMatcher(None, title, str(t.get('summary') or '').lower()).ratio()))
         if ratio >= threshold:
             cands.append((t, 'identifier+title', ratio))
-    return {'exact': exact, 'candidates': cands}
+    return {'exact': exact, 'candidates': cands, 'label_states': states}

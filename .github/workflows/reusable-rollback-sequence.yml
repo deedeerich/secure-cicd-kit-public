@@ -25,8 +25,11 @@ name: "Kit: Sequential rollback (reverse order, end-to-end tests between steps)"
 # before login, and a test period of 0 is ROLLBACK_SEQUENCE_REFUSED_NO_TEST_PERIOD; nothing is
 # touched (docs/architecture/ROLLBACK_CONTRACT.md, "Sequential rollback").
 #
-# A MUTATING JOB, SO NO timeout-minutes (ROLLBACK_CONTRACT.md: a timeout is a cancellation nobody
-# chose, mid-reversal). The e2e command is bounded instead, and so is the period (240 minutes).
+# A MUTATING JOB, BOUNDED BY DESIGN (KREQ-717, KDEC-061 M2): rollback_timeout_minutes, 30..360, clamped to
+# 180 outside it, refused before login below 30 + steps x the test period. A kill is designed, never assumed
+# clean (ROLLBACK_CONTRACT.md "Timeouts", the sequence table): mid-sequence it records
+# INTERRUPTED_DEPLOY_RECONCILIATION_REQUIRED under the target's kit-deploy-state artifact, and the next deploy
+# or sequence of the target is refused until a person names the run (scripts/deploy_interruption.py).
 #
 # CONCURRENCY -- DEPLOYS ARE FROZEN WHILE THIS RUNS. The group is the TARGET's
 # (kit-target-<environment>-<target_resource_group>-<target_name>), the same string the deploy
@@ -117,6 +120,16 @@ on:
         type: string
         required: false
         default: "commercial"
+      rollback_timeout_minutes:
+        description: "KREQ-717: the job's time bound, 30..360 min and >= 30 + steps x the test period; else refused before login."
+        type: number
+        required: false
+        default: 180
+      reconciled_interrupted_run:
+        description: "KREQ-717: the run id of an interrupted deploy or sequence of this target a person reconciled by hand."
+        type: string
+        required: false
+        default: ""
       weakening_reason:
         description: "Why a control on this invocation is weaker than baseline."
         type: string
@@ -212,12 +225,19 @@ jobs:
     name: Roll back in reverse order, end-to-end tests between steps
     runs-on: ${{ inputs.runner_label }}
     environment: ${{ inputs.github_environment }}
+    timeout-minutes: ${{ (inputs.rollback_timeout_minutes >= 30 && inputs.rollback_timeout_minutes <= 360) && inputs.rollback_timeout_minutes || 180 }}
     env:
       # KDEC-030 (DRAFT): the cross-repository target lease, OFF unless the landing zone vends its
       # lease account into this environment. Empty: the lease steps are skipped and the sequence
       # runs exactly as before. tests/prove_target_lease_crossrepo.py W9.
       KIT_TARGET_LEASE_ACCOUNT: ${{ vars.KIT_TARGET_LEASE_ACCOUNT }}
+      # Owner O-42c (2026-11-07): the rollback runs the deploy's read-back gating check before it signs in;
+      # the tier and the cloud the landing zone vended into this environment are read here (KDEC-042, KDEC-044).
+      KIT_BOUND_ENVIRONMENT_TIER: ${{ vars.KIT_ENVIRONMENT_TIER }}
+      KIT_BOUND_CLOUD: ${{ vars.KIT_CLOUD }}
+      DEPLOY_ENVIRONMENT: ${{ inputs.github_environment }}
     outputs:
+      environment_protection: ${{ steps.protection.outputs.environment_protection }}
       sequence_result: ${{ steps.sequence.outputs.sequence_result }}
       steps_verified: ${{ steps.sequence.outputs.steps_verified }}
       rollback_state: ${{ steps.sequence.outputs.rollback_state }}
@@ -248,12 +268,58 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Org governed settings and this environment's Azure cloud (refuse before login)
+        id: org_settings
+        # The same reader the deploys run through `$/`, here from the kit checkout (scripts/org_settings.py).
+        env:
+          IN_CLOUD: ${{ inputs.cloud }}
+          KIT_DIR: ${{ github.workspace }}/.kit
+        run: |
+          set -u
+          python3 "$KIT_DIR/scripts/org_settings.py" resolve --kit-root "$KIT_DIR" \
+            --repository "${GITHUB_REPOSITORY:-}" --environment "${DEPLOY_ENVIRONMENT:-}" \
+            --cloud "${IN_CLOUD:-}" --bound-cloud "${KIT_BOUND_CLOUD:-}" --azure \
+            --github-output "$GITHUB_OUTPUT" --github-env "$GITHUB_ENV"
+
+      - name: Verify the environment's deployment protection (refuse before login)
+        id: protection
+        # Owner O-42c (2026-11-07): "rollback runs the same read-back gating check." The job already waits on
+        # the environment's required reviewers (it declares the environment); this reads the rules back and
+        # refuses an unclassed environment, or a uat/prod one without a non-empty reviewers rule, self-review
+        # prevented (unless the org's small-team mode is in force), the pools and not the app team alone --
+        # the deploys' own script and outcomes. tests/prove_uat_prod_gating.py G6.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KIT_APPROVER_POOLS: ${{ vars.KIT_APPROVER_POOLS }}
+          KIT_APP_TEAM: ${{ vars.KIT_APP_TEAM }}
+          KIT_SMALL_TEAM_SELF_APPROVAL: ${{ vars.KIT_SMALL_TEAM_SELF_APPROVAL }}
+          KIT_ORG_SETTINGS: ${{ steps.org_settings.outputs.org_settings }}
+          KIT_DIR: ${{ github.workspace }}/.kit
+        run: |
+          set -u
+          python3 "$KIT_DIR/scripts/environment_protection.py" \
+            --repository "${GITHUB_REPOSITORY:-}" --environment "${DEPLOY_ENVIRONMENT:-}" \
+            --tier "${KIT_BOUND_ENVIRONMENT_TIER:-}" --tier-optional --ref "${GITHUB_SHA:-}" \
+            --github-output "$GITHUB_OUTPUT" > "$RUNNER_TEMP/environment-protection.txt" 2>&1
+          rc=$?
+          cat "$RUNNER_TEMP/environment-protection.txt"
+          outcome="$(sed -n 's/^environment_protection=\([A-Z_]*\) .*/\1/p' "$RUNNER_TEMP/environment-protection.txt" | head -1)"
+          [ -n "$outcome" ] || outcome=ENVIRONMENT_PROTECTION_NOT_ESTABLISHED
+          { echo "### GitHub environment protection (rollback)"; echo ""
+            echo "\`${outcome}\` for \`${DEPLOY_ENVIRONMENT:-none}\`."; } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" != "0" ]; then
+            echo "::error title=Rollback refused before login (environment protection)::${outcome}: the environment ${DEPLOY_ENVIRONMENT:-(none)} is unclassed, or is a uat or prod environment whose reviewers rule falls short, or its rules could not be read (docs/errors/ERRORS.md). Nothing was rolled back."
+            exit 1
+          fi
+
       - name: Fetch each deployment's evidence
+        id: fetch
         # A run whose evidence cannot be fetched is named here and refused, whole, by the sequence
         # step: nothing is rolled back on a sequence that cannot be read in full.
         env:
           GH_TOKEN: ${{ github.token }}
           SEQUENCE: ${{ inputs.sequence }}
+          PERIOD: ${{ inputs.e2e_test_period_minutes }}
           KIT_DIR: ${{ github.workspace }}/.kit
         run: |
           set -uo pipefail
@@ -263,14 +329,45 @@ jobs:
           mkdir -p "$root"
           if ! python3 "$KIT_DIR/scripts/rollback_sequence.py" list-runs --sequence-env sequence > "$RUNNER_TEMP/rollback-runs.txt"; then
             echo "::error title=Sequence unreadable::the sequence input is not a readable sequence; the sequence step refuses it"
+            echo "test_minutes=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # KREQ-717: the work the bound must cover -- a test period after EACH step.
+          n="$(grep -c . "$RUNNER_TEMP/rollback-runs.txt" || true)"
+          echo "test_minutes=$(awk -v n="${n:-0}" -v p="${PERIOD:-0}" 'BEGIN { print n * p }')" >> "$GITHUB_OUTPUT"
           while read -r run_id attempt; do
             name="deploy-evidence-${run_id}-${attempt}"
             if ! gh run download "$run_id" -R "${GH_HOST}/${GITHUB_REPOSITORY}" -n "$name" -D "$root/$name"; then
               echo "::error title=Evidence not fetched::${name} could not be downloaded; the sequence step refuses the sequence"
             fi
           done < "$RUNNER_TEMP/rollback-runs.txt"
+
+      - name: Time bound and interrupted changes of the target (KREQ-717, refuse before login)
+        id: interruption
+        # The deploys' own check (scripts/deploy_interruption.py, from the kit checkout): the bound covers
+        # 30 + steps x the test period, and the newest kit-deploy-state of THIS target -- a deploy or a
+        # sequence killed mid-change -- owes nothing, or a person names the run they reconciled.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESOURCE_GROUP: ${{ inputs.target_resource_group }}
+          I_TARGET: ${{ inputs.target_name }}
+          I_TIMEOUT: ${{ inputs.rollback_timeout_minutes }}
+          I_PERIOD: ${{ steps.fetch.outputs.test_minutes }}
+          I_RECONCILED: ${{ inputs.reconciled_interrupted_run }}
+          KIT_DIR: ${{ github.workspace }}/.kit
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/rollback-interruption"
+          # An unknown test period would shrink the bound to 30 minutes: refuse rather than assume zero.
+          if [ -z "$I_PERIOD" ]; then
+            echo "::error title=Test period unknown::the sequence's test period was not computed; the time bound cannot be set, so the sequence is refused"
+            exit 1
+          fi
+          python3 "$KIT_DIR/scripts/deploy_interruption.py" check --environment "${DEPLOY_ENVIRONMENT:-}" \
+            --resource-group "$RESOURCE_GROUP" --name "$I_TARGET" --timeout "$I_TIMEOUT" \
+            --test-period "$I_PERIOD" --dast false --reconciled-run "$I_RECONCILED" \
+            --bound-name rollback_timeout_minutes --out "$RUNNER_TEMP/rollback-interruption/interruption-check.json" \
+            --github-output "$GITHUB_OUTPUT" --summary "${GITHUB_STEP_SUMMARY:-}"
 
       - name: Azure login (OIDC)
         # Not even a login without end-to-end tests: the sequence is refused before it.
@@ -280,8 +377,8 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
-          environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
-          audience: ${{ inputs.cloud == 'gov' && (vars.KIT_AZURE_OIDC_AUDIENCE || 'api://AzureADTokenExchangeUSGov') || 'api://AzureADTokenExchange' }}
+          environment: ${{ steps.org_settings.outputs.azure_cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
+          audience: ${{ steps.org_settings.outputs.azure_cloud == 'gov' && (vars.KIT_AZURE_OIDC_AUDIENCE || 'api://AzureADTokenExchangeUSGov') || 'api://AzureADTokenExchange' }}
 
       - name: Target lease -- acquire once for the whole sequence (KDEC-030, opt-in)
         # The same lock the landing-zone apply and every kit deploy of this target take (a
@@ -296,7 +393,7 @@ jobs:
           LEASE_SUBSCRIPTION: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
           LEASE_RESOURCE_GROUP: ${{ inputs.target_resource_group }}
           LEASE_NAME: ${{ inputs.target_name }}
-          LEASE_CLOUD: ${{ inputs.cloud }}
+          LEASE_CLOUD: ${{ steps.org_settings.outputs.azure_cloud }}
           KIT_DIR: ${{ github.workspace }}/.kit
         run: |
           set -euo pipefail
@@ -377,6 +474,36 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           exit "$rc"
 
+      - name: Sequence state for the next run (KREQ-717, also on a cancelled or timed-out job)
+        id: interruption_record
+        # No sequence record but a step's work on disk: killed mid-sequence -> PARTIAL_APPLY or
+        # STATUS_UNTRUSTED, INTERRUPTED_DEPLOY_RECONCILIATION_REQUIRED, under the target's kit-deploy-state
+        # artifact (the name the deploys and the next sequence read). No step reached: nothing recorded.
+        if: always()
+        env:
+          RESOURCE_GROUP: ${{ inputs.target_resource_group }}
+          I_TARGET: ${{ inputs.target_name }}
+          I_CANCELLED: ${{ job.status == 'cancelled' }}
+          KIT_DIR: ${{ github.workspace }}/.kit
+        run: |
+          set -uo pipefail
+          python3 "$KIT_DIR/scripts/deploy_interruption.py" record --kind rollback-sequence \
+            --environment "${DEPLOY_ENVIRONMENT:-}" --resource-group "$RESOURCE_GROUP" --name "$I_TARGET" \
+            --evidence-dir "$RUNNER_TEMP/rollback-work" --sequence-record "$RUNNER_TEMP/rollback-sequence.json" \
+            --out-dir "$RUNNER_TEMP/kit-deploy-state" --cancelled "$I_CANCELLED" \
+            --run-id "${GITHUB_RUN_ID:-}" --run-attempt "${GITHUB_RUN_ATTEMPT:-1}" \
+            --github-output "$GITHUB_OUTPUT" --summary "${GITHUB_STEP_SUMMARY:-}"
+
+      - name: Keep the target's state for the next run
+        if: always() && steps.interruption_record.outputs.state_written == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.interruption_record.outputs.state_name }}
+          path: ${{ runner.temp }}/kit-deploy-state/deploy-state.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 90
+
       - name: Target lease -- release (refused while a halted sequence left it mutating)
         id: lease_release
         if: "!cancelled() && env.KIT_TARGET_LEASE_ACCOUNT != '' && steps.lease_acquire.outcome == 'success'"
@@ -442,6 +569,7 @@ jobs:
           W_WEAKENING_AUTHORITY: ${{ inputs.weakening_authority }}
           W_WEAKENING_EXCEPTION_REF: ${{ inputs.weakening_exception_ref }}
           W_WEAKENING_EXPIRES: ${{ inputs.weakening_expires }}
+          W_RECONCILED_INTERRUPTED_RUN: ${{ inputs.reconciled_interrupted_run }}
           RC: ${{ steps.sequence.outputs.rc }}
           RESULT: ${{ steps.sequence.outputs.sequence_result }}
         run: |
@@ -495,6 +623,10 @@ jobs:
           posture health_retries           SEVERITY_RAISED "max:12" health-probe "$W_HEALTH_RETRIES"
           posture health_interval_seconds  SEVERITY_RAISED "max:10" health-probe "$W_HEALTH_INTERVAL_SECONDS"
           posture cloud                    NOT_A_CONTROL_SURFACE - -
+          # KREQ-717: the job's time bound, refused outside 30..360 or below its own work, clamped to 180.
+          posture rollback_timeout_minutes NOT_A_CONTROL_SURFACE - -
+          # A person's record that they reconciled an interrupted run by hand: attribution, not a control.
+          posture reconciled_interrupted_run EXCEPTION_ATTRIBUTION - -
           # Where the job runs. The lease (KDEC-030) needs a runner that reaches its private store;
           # the label changes no control, and an unreachable store refuses rather than skips.
           posture runner_label             NOT_A_CONTROL_SURFACE - -

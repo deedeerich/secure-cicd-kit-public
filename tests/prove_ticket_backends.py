@@ -34,6 +34,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sys
 import urllib.error
 import urllib.request
@@ -404,12 +405,19 @@ def case_jira_shape(rt, fails):
             ('no epic id', {'JIRA_EPIC_ID': ''}, 'JIRA_EPIC_ID'),
             ('an umbrella label with a space', {'TICKET_STAMP_LABEL': 'secure cicd'},
              'TICKET_STAMP_LABEL'),
-            ('no creation ceiling', {'TICKET_CREATE_CEILING': ''}, 'TICKET_CREATE_CEILING'),
             ('a zero creation ceiling', {'TICKET_CREATE_CEILING': '0'},
              'TICKET_CREATE_CEILING')):
         b, note = rt.choose_backend(dict(JIRA_ENV, **change))
         if b is not None or name not in (note or ''):
             fails.append('%s was not refused by name (%s): %r' % (label, name, note))
+    # KDEC-052 item 7: an UNSET creation ceiling is no longer a refusal -- the governed default (25) applies and
+    # the run records it came from the kit default.
+    b, note = rt.choose_backend(dict(JIRA_ENV, TICKET_CREATE_CEILING=''))
+    rec = [x for x in ((getattr(b, 'ticket_settings', None) or {}).get('record') or [])
+           if x['setting'] == 'ticket_create_ceiling']
+    if b is None or b.create_ceiling != 25 or [x['level'] for x in rec] != ['kit_default']:
+        fails.append('an unset creation ceiling did not take the kit default 25, recorded as kit_default: %r %r'
+                     % (note, rec))
 
     # (b) The shape on the site, established at run start. Each failure: NOTHING created or
     #     updated, the obligation carried, the claim untrusted.
@@ -546,7 +554,8 @@ def case_jira_instances(rt, fails):
             rt._rec('grype', 'GHSA-J8', 'go.mod', 'id-j8b', aliases=['cve-j8']),
             rt._rec('osv', 'CVE-J8', 'go.mod', 'id-j8c', aliases=['cve-j8'])]
     for label, threshold, want in (('threshold 2, three instances', '2', 2),
-                                   ('threshold unset', None, 0)):
+                                   ('threshold unset (the kit default 25)', None, 3),
+                                   ('threshold 0 set at a lower level', '0', 0)):
         env = dict(JIRA_ENV)
         if threshold is not None:
             env['TICKET_INSTANCE_THRESHOLD'] = threshold
@@ -906,6 +915,7 @@ class JiraTracker(object):
         replay.on('GET', r'/rest/api/3/issue/\d+\?fields=description$', self._get_description)
         replay.on('GET', r'/rest/api/3/issue/\d+\?fields=priority,labels$', self._get_priority)
         replay.on('POST', r'/rest/api/3/issue/\d+/comment$', self._comment)
+        replay.on('GET', r'/rest/api/3/issue/\d+/comment\?', self._get_comments)
         replay.on('GET', r'/rest/api/3/issue/\d+/transitions$', self._transitions)
         replay.on('POST', r'/rest/api/3/issue/\d+/transitions$', self._transition)
 
@@ -922,6 +932,18 @@ class JiraTracker(object):
             return 404, {'errorMessages': ['Issue does not exist']}, {}
         self.comments.append((i, adf_text((rec['json'] or {}).get('body'))))
         return 201, {'id': str(len(self.comments))}, {}
+
+    def _get_comments(self, rec):
+        """GET .../comment?startAt=&maxResults= (documented shape: comments, startAt, maxResults, total)."""
+        i = self._id(rec)
+        if i not in self.issues:
+            return 404, {'errorMessages': ['Issue does not exist']}, {}
+        mine = [t for n, t in self.comments if str(n) == i]
+        q = dict(x.split('=', 1) for x in rec['url'].split('?', 1)[1].split('&') if '=' in x)
+        s, m = int(q.get('startAt') or 0), int(q.get('maxResults') or 50)
+        page = [{'id': str(s + k), 'body': {'type': 'doc', 'version': 1, 'content': [
+            {'type': 'paragraph', 'content': [{'type': 'text', 'text': t}]}]}} for k, t in enumerate(mine[s:s + m])]
+        return 200, {'comments': page, 'startAt': s, 'maxResults': m, 'total': len(mine)}, {}
 
     def _transitions(self, rec):
         i = self._id(rec)
@@ -1029,6 +1051,7 @@ class GitHubTracker(object):
         replay.on('POST', base + r'/issues$', self._create)
         replay.on('PATCH', base + r'/issues/(\d+)$', self._patch)
         replay.on('POST', base + r'/issues/(\d+)/comments$', self._comment)
+        replay.on('GET', base + r'/issues/(\d+)/comments\?', self._get_comments)
         replay.on('POST', base + r'/issues/(\d+)/labels$', self._labels)
 
     @staticmethod
@@ -1075,6 +1098,14 @@ class GitHubTracker(object):
         self.comments.append((n, (rec['json'] or {}).get('body') or ''))
         return 201, {'id': len(self.comments)}, {}
 
+    def _get_comments(self, rec):
+        n = self._n(rec)
+        if n not in self.issues:
+            return 404, {'message': 'Not Found'}, {}
+        page = int((re.search(r'[?&]page=(\d+)', rec['url']) or [None, '1'])[1])
+        mine = [{'id': k, 'body': t} for k, (m, t) in enumerate(self.comments) if m == n]
+        return 200, mine[(page - 1) * 100:page * 100], {}
+
     def _labels(self, rec):
         n = self._n(rec)
         if n not in self.issues:
@@ -1087,6 +1118,74 @@ class GitHubTracker(object):
 
 def _jira_backend(rt, r, **change):
     return backend(rt, dict(JIRA_ENV, **change))
+
+
+def case_observations_survive(rt, fails):
+    """KDEC-049 M8: the structured evidence record (`evidence_observations`) survives a re-bind by the
+    reconciler (a create for a cluster whose ledger entry already holds it) AND the proposal payload
+    reusable-propose-ledger merges (propose_ledger.ticket_part carries the entry verbatim)."""
+    import tempfile
+    import propose_ledger as pl
+    _sleeps(rt)
+    a = rt._rec('trivy', 'CVE-X9', 'go.mod', 'id-x9a', aliases=['cve-x9'])
+    clusters, withheld = rt.build_clusters([a])
+    ck = clusters[0]['cluster_key']
+    obs = {'fingerprint': 'b' * 64, 'source_tool': 'aikido', 'canonical_key': ck}
+    ledger = {ck: {'evidence_observations': [obs], 'deferrals': {}}}
+    r = install(Replay())
+    JiraTracker(r)
+    rt.reconcile(clusters, withheld, backend=_jira_backend(rt, r), ledger=ledger, apply_changes=True,
+                 today='2026-11-11')
+    entry = ledger.get(ck) or {}
+    if not entry.get('ref'):
+        fails.append('O-1 the fixture did not reach the re-bind (no ticket bound for %s): %s' % (ck, entry))
+    elif entry.get('evidence_observations') != [obs]:
+        fails.append('O-1 a re-bind dropped the structured evidence record of %s (evidence_observations %r)'
+                     % (ck, entry.get('evidence_observations')))
+    work = tempfile.mkdtemp(prefix='kit-m8-')
+    try:
+        p = os.path.join(work, 'ticket-ledger-proposal.json')
+        rt.save_ledger(p, ledger)
+        res, why = pl.ticket_part(work, 'HEAD', p, '.security/ticket-ledger.json')
+        merged = json.loads(((res or {}).get('file') or {}).get('content') or '{}')
+        if (merged.get('clusters') or {}).get(ck, {}).get('evidence_observations') != [obs]:
+            fails.append('O-2 the proposal payload lost evidence_observations (%s, %s)' % ((res or {}).get('state'), why))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def case_comment_readback(rt, fails):
+    """KDEC-049 R4/R5 the comment read-back: Jira and GitHub list EVERY comment, paged (positive); an unreadable
+    list is not ok (negative); Azure DevOps has no established comment-list read in the kit, so it offers none
+    and a duplicate closure is refused there (KDEC-049 M6), never inferred from an unread list."""
+    import ticket_submit as ts
+    texts = ['evidence %d' % k for k in range(105)]
+    r = install(Replay())
+    t = JiraTracker(r)
+    t.issues['30001'] = {'id': '30001', 'fields': {}}
+    t.comments = [('30001', x) for x in texts]
+    got, ok, why = _jira_backend(rt, r).comment_texts('30001')
+    if not (ok and got == texts):
+        fails.append('C-1 Jira: 105 comments over two pages were not all read back (%s, %d)' % (why, len(got or [])))
+    got, ok, why = _jira_backend(rt, r).comment_texts('39999')
+    if ok:
+        fails.append('C-1 Jira: an issue whose comments cannot be read was read as ok')
+    r = install(Replay())
+    g = GitHubTracker(r)
+    g.comments = [(7, x) for x in texts]
+    got, ok, why = backend(rt, dict(GH_ENV)).comment_texts('7')
+    if not (ok and got == texts):
+        fails.append('C-2 GitHub: 105 comments over two pages were not all read back (%s, %d)' % (why, len(got or [])))
+    got, ok, why = backend(rt, dict(GH_ENV)).comment_texts('8')
+    if ok:
+        fails.append('C-2 GitHub: an issue whose comments cannot be read was read as ok')
+    install(Replay())
+    az = rt.AzureDevOps(**AZDO_KW)
+    if hasattr(az, 'comment_texts'):
+        fails.append('C-3 Azure DevOps offers a comment read-back the kit has no established shape for')
+    ok, why = ts.transfer_verified(az, {'k': {'evidence_observations': [{'fingerprint': 'a' * 64}]}}, 'k', '1', ['a' * 64])
+    if ok or 'could not be read back' not in why:
+        fails.append('C-3 Azure DevOps: a duplicate closure was not refused without a read-back (%s)' % why)
 
 
 def case_t_matrix(rt, fails):
@@ -1553,7 +1652,78 @@ CASES = [('J-3 / L54 calibration probe', case_probe),
          ('X-1 T-9 / T-10 injection and secret', case_injection_and_secret),
          ('X-1 T-12 no governance field is ever written', case_never_writes_governance),
          ('T-02 human text outside the block survives', case_human_text_preserved),
-         ('X-1 B-1 portability: configuration only', case_portability)]
+         ('X-1 B-1 portability: configuration only', case_portability),
+         ('C-1..3 KDEC-049 comment read-back', case_comment_readback),
+         ('O-1..2 KDEC-049 M8 evidence record kept', case_observations_survive)]
+
+
+# ── NAMED MUTANTS (folded in from the intake-enhance v2 scratch mutants, lane ticket-defaults 2026-11-13).
+# Each re-introduces one defect and must make its case FAIL at its OWN claim (the failure text names the
+# guard), so a case that fails before its guard proves nothing and is reported as a mutant NOT caught.
+
+def _mutant_m8(rt):
+    """M8: the re-bind drops evidence_observations (the pre-fix reconciler). Caught at O-1."""
+    import inspect
+    src = inspect.getsource(rt._reconcile)
+    anchor = '                    if prior_obs:\n'
+    if src.count(anchor) != 1:
+        return None, 'the M8 guard (`if prior_obs:`) is not in _reconcile exactly once'
+    ns = {}
+    exec(compile(src.replace(anchor, '                    if False:  # MUTANT M8\n'),
+                 rt.__file__ + ' (mutant M8)', 'exec'), rt.__dict__, ns)
+    real = rt._reconcile
+    rt._reconcile = ns['_reconcile']
+    fails = []
+    try:
+        case_observations_survive(rt, fails)
+    finally:
+        rt._reconcile = real
+    return fails, 'O-1 a re-bind dropped the structured evidence record'
+
+
+def _mutant_readback(rt, which):
+    """MR-1 Jira reads one page only (C-1); MR-2 GitHub reads an unreadable list as ok (C-2); MR-3 Azure DevOps
+    claims a read-back it has no established shape for (C-3)."""
+    fails = []
+    if which == 'MR-1':
+        real = rt.Jira.comment_texts
+        rt.Jira.comment_texts = lambda s, ref: (real(s, ref)[0][:100], True, 'x')
+        undo, want = (lambda: setattr(rt.Jira, 'comment_texts', real)), 'C-1 Jira: 105'
+    elif which == 'MR-2':
+        real = rt.GitHubIssues.comment_texts
+        rt.GitHubIssues.comment_texts = lambda s, ref: (real(s, ref)[0], True, 'x')
+        undo, want = (lambda: setattr(rt.GitHubIssues, 'comment_texts', real)), \
+            'C-2 GitHub: an issue whose comments cannot be read'
+    else:
+        rt.AzureDevOps.comment_texts = lambda s, ref: (['kit-observation sha256:' + 'a' * 64], True, 'x')
+        undo, want = (lambda: delattr(rt.AzureDevOps, 'comment_texts')), 'C-3 Azure DevOps'
+    try:
+        case_comment_readback(rt, fails)
+    finally:
+        undo()
+    return fails, want
+
+
+MUTANTS = [('M8 a re-bind drops evidence_observations', _mutant_m8),
+           ('MR-1 Jira reads one page of comments only', lambda rt: _mutant_readback(rt, 'MR-1')),
+           ('MR-2 GitHub reads an unreadable comment list as ok', lambda rt: _mutant_readback(rt, 'MR-2')),
+           ('MR-3 Azure DevOps claims a comment read-back', lambda rt: _mutant_readback(rt, 'MR-3'))]
+
+
+def run_mutants(rt, fails):
+    """Every named mutant must be caught at its own claim; one that is not is a failure of this proof."""
+    for label, fn in MUTANTS:
+        real_urlopen = urllib.request.urlopen
+        try:
+            got, want = fn(rt)
+        except Exception as exc:                      # noqa: BLE001 - a crash is not a catch
+            got, want = None, 'mutant crashed: %s: %s' % (type(exc).__name__, exc)
+        finally:
+            urllib.request.urlopen = real_urlopen
+        caught = got is not None and any(f.startswith(want) for f in got)
+        print('  mutant %-44s %s' % (label, 'caught' if caught else 'NOT CAUGHT'))
+        if not caught:
+            fails.append('mutant %s was not caught at its claim %r (%s)' % (label, want, got))
 
 
 def main():
@@ -1586,6 +1756,7 @@ def main():
                                          % label)
             print('  %-44s %s' % (label, 'ok' if len(fails) == before else 'FAIL'))
             transcript.extend(replay_log)
+        run_mutants(rt, fails)
     finally:
         urllib.request.urlopen = real_urlopen
     if fails:

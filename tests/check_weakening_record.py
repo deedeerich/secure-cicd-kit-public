@@ -243,6 +243,20 @@ INERT_ONLY: dict[str, dict] = {
     # Owner 2026-11-06: the external findings intake. Every input NAMES a source, a project, a mapping or
     # a review; none can soften a check: a pull that does not complete fails by name, and nothing is
     # written except through tickets.submit, which the kit API holds to a finalized review (KDEC-037).
+    # Owner 2026-11-07: the org survey and org setup check. Every input NAMES what is read (the kit commit, the
+    # owner, the kit's name, the overlay, the teams) or bounds the read; none can soften a check, because the job
+    # checks nothing -- it reads, GET only, and reports (tests/prove_kit_survey.py, tests/prove_kit_org_init.py).
+    'reusable-kit-survey.yml': {
+        'kit_repository': 'names the kit checked out for its scripts',
+        'kit_ref': 'names the kit commit',
+        'owner': 'names the organisation or user account read',
+        'kit_repo_name': 'names the kit repository callers reference; a wrong one finds no callers, said per row',
+        'overlay': 'names the overlay directory checked',
+        'platform_team': 'names the platform team checked',
+        'appsec_team': 'names the AppSec team checked',
+        'history': 'bounds the history read; a cut history is NOT_ESTABLISHED, never NEVER',
+        'timeout_minutes': 'bounds the job',
+    },
     'reusable-external-findings.yml': {
         'source': 'names the vendor read; an unknown one fails the step',
         'sonar_projects': 'names the projects read; none is SOURCE_NOT_CONFIGURED, never "no findings"',
@@ -255,6 +269,9 @@ INERT_ONLY: dict[str, dict] = {
         'from_run_id': 'names the pull the review concurred with',
         'review_environment': 'names the environment whose required reviewers are the gate',
         'kit_api_workflow': 'names the kit API workflow the batches are sent to',
+        'ledger_path': 'names the ticket ledger matched against (KDEC-049); a missing one is read as empty and '
+                       'the receipt names it (establishes nothing about what exists), an unreadable one makes '
+                       'the baseline UNAVAILABLE, and the reconciler still sweeps the tracker before any create',
     },
     'reusable-dependabot-keep-current.yml': {
         'base_branch': 'names the protected branch Dependabot targets; a wrong one finds no PRs',

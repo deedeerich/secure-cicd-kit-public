@@ -16,7 +16,7 @@ WHY THIS EXISTS
       * NO SBOM WAS EXIT 0. "no readable SBOM supplied" returned success, so a syft failure read
         as an empty licence set.
 
-MEASURED, NOT ASSUMED (syft 1.52.0, an npm lockfile, 2026-10-14)
+MEASURED, NOT ASSUMED (syft 1.52.0, an npm lockfile, 2026-10-14; re-run green on 1.54.1, the one pin, 2026-11-07)
     CycloneDX: `{"license": {"id": "GPL-3.0-or-later"}}`, `{"expression": "MIT OR GPL-3.0-only"}`,
     no `licenses` for an undeclared package. SPDX: the same in `licenseDeclared` with
     `licenseConcluded` NOASSERTION, plus a `.` package the document DESCRIBES (the scan root).

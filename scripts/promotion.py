@@ -82,6 +82,11 @@ DAST_TIMEOUT_SECONDS = 1800   # bound on the caller's DAST command
 TRIVY_VERSION = '0.71.2'
 REVOCATIONS_PATH = '.security/promotion-revocations.json'
 REVOCATION_KINDS = ('digest', 'signer', 'approval', 'test-evidence')
+# R08 (external review 2026-11-07): every listing pages to its end (Link rel="next", the API host only,
+# total_count checked) or says it did not; record downloads are bounded too. Never a silent cut.
+PAGE_CAP = 30                # pages of 100 per listing, as evidence.export
+MAX_RECORD_READS = 100       # records downloaded per history read
+ADAPTERS = ('containerapp', 'appservice', 'staticwebapp')   # the canonical adapter ids (--adapter)
 
 # Every refusal the gate and the preflight can give. The code is the reason's name; the text says
 # what to do about it.
@@ -99,7 +104,19 @@ REFUSALS = {
     'PROMOTION_REFUSED_RECHECK_INCOMPLETE': 'the promotion-time re-check (SBOM re-scan, KEV) could '
                                             'not be completed; never a pass',
     'PROMOTION_REFUSED_STALE': 'verified more than %d days ago' % MAX_AGE_DAYS,
-    'PROMOTION_REFUSED_SUPERSEDED': 'a newer build has since been verified in the same predecessor',
+    'PROMOTION_REFUSED_SUPERSEDED': 'a newer build has since been verified for the same target in the '
+                                    'same predecessor',
+    'PROMOTION_REFUSED_TARGET_UNKNOWN': 'the source record names no deployment target (a canonical adapter '
+                                        'id and target_resource_id), so supersession cannot be scoped to it',
+    'PROMOTION_REFUSED_SOURCE_TARGET_MISMATCH': 'the source run published no record of this environment for '
+                                                'the requested promote_from_target_resource_id',
+    'PROMOTION_REFUSED_SOURCE_TARGET_REQUIRED': 'a uat or prod promotion must name its source application: set '
+                                                'promote_from_target_resource_id to the predecessor target (its target_resource_id) '
+                                                '(optional only in dev and test)',
+    'PROMOTION_REFUSED_HISTORY_INCOMPLETE': 'the predecessor history of this target exceeds the bounded '
+                                            'read, so no newer verified build is established absent',
+    'PROMOTION_REFUSED_SOURCE_AMBIGUOUS': 'the source run published records for more than one target in '
+                                          'the environment with this digest',
     'PROMOTION_REFUSED_NO_PREDECESSOR': 'uat and prod are promoted from the prior environment, '
                                         'never deployed from a build',
     'PROMOTION_REFUSED_PATH_UNKNOWN': 'release_path is not normal, hotfix, rollback or break-glass',
@@ -117,7 +134,8 @@ REFUSALS = {
 # substituted digest or a build from another branch is not an emergency the exception covers.
 BREAK_GLASS_OVERRIDES = ('PROMOTION_REFUSED_NOT_VERIFIED', 'PROMOTION_REFUSED_WRONG_PREDECESSOR',
                          'PROMOTION_REFUSED_STALE', 'PROMOTION_REFUSED_SUPERSEDED',
-                         'PROMOTION_REFUSED_NEW_FINDING', 'PROMOTION_REFUSED_RECHECK_INCOMPLETE')
+                         'PROMOTION_REFUSED_NEW_FINDING', 'PROMOTION_REFUSED_RECHECK_INCOMPLETE',
+                         'PROMOTION_REFUSED_TARGET_UNKNOWN', 'PROMOTION_REFUSED_HISTORY_INCOMPLETE')
 
 env = dc.env
 output = dc.output
@@ -153,10 +171,29 @@ def parse_day(text):
         return None
 
 
-def record_key(environment):
-    """The artifact name a record is published under: one per environment, every run."""
+def record_key(environment, key=None):
+    """The artifact name a record is published under: one per environment AND target (R08: two targets
+    in one run under one environment name overwrote each other). A record with no target keeps the
+    legacy name `kit-promotion-record-<env>`; the readers read both, so no caller changes."""
     slug = re.sub(r'[^A-Za-z0-9._-]', '-', environment or 'env')[:40]
-    return 'kit-promotion-record-%s' % slug
+    return 'kit-promotion-record-%s%s' % (slug, '--' + hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]
+                                          if key else '')
+
+
+def target_key(envd):
+    """-> the deployment target a record is about: adapter | target_resource_id (Azure ids compare
+    case-insensitively), or None -- an UNKNOWN target, which never supersedes a keyed record. The
+    adapter must be one of ADAPTERS exactly as the kit writes it (review 2026-11-09 F4): a missing,
+    re-cased or padded adapter is never normalised into a key; it is an unknown target."""
+    rid = str((envd or {}).get('target_resource_id') or '').strip().lower()
+    adapter = (envd or {}).get('adapter')
+    return '%s|%s' % (adapter, rid) if rid and adapter in ADAPTERS else None
+
+
+def in_family(name, environment):
+    """Is this artifact name a record of `environment` (the legacy name or any target's)?"""
+    base = record_key(environment)
+    return name == base or bool(re.match(re.escape(base) + r'--[0-9a-f]{12}$', name or ''))
 
 
 def default_branch():
@@ -248,12 +285,96 @@ def _status(path, params):
         return 0
 
 
-def artifacts(name):
-    """Every unexpired artifact of this name in the repository, newest first."""
-    listing = rh.api('actions/artifacts', {'name': name, 'per_page': 100})
-    found = [a for a in (listing or {}).get('artifacts') or []
-             if isinstance(a, dict) and a.get('name') == name and not a.get('expired')]
-    return sorted(found, key=lambda a: a.get('created_at') or '', reverse=True)
+def fetch_page(url, hdrs):
+    return rh._open(url, hdrs)
+
+
+def _next_link(headers):
+    for k, v in (headers or {}).items():
+        if str(k).lower() == 'link':
+            for part in str(v).split(','):
+                bits = part.split(';')
+                if len(bits) > 1 and any(b.strip().replace(' ', '') in ('rel="next"', 'rel=next') for b in bits[1:]):
+                    return bits[0].strip().strip('<>')
+    return None
+
+
+def _same_host(url, base):
+    u, b = rh.urllib.parse.urlsplit(url), rh.urllib.parse.urlsplit(base)
+    return (u.scheme, u.netloc) == (b.scheme, b.netloc)
+
+
+_total_checked = True
+
+
+def list_all(path, params, key='artifacts'):
+    """-> (items, short_why or None). evidence_export._get_all's pattern (that module is not materialised
+    in the deploy): Link rel="next" to the end, on the API host only (a run's token goes nowhere else),
+    PAGE_CAP pages, total_count checked. A later page failing, the cap, a foreign next link or fewer
+    items than total_count is a SHORT read, named. The first page failing raises rh.Unreadable."""
+    base = env('GITHUB_API_URL', 'https://api.github.com').rstrip('/')  # unset means github.com
+    if base.startswith('file:'):   # the local stand-in (tests): one recorded answer, no paging
+        return list((rh.api(path, params) or {}).get(key) or []), None
+    url = '%s/repos/%s/%s?%s' % (base, env('github_repository'), path, rh.urllib.parse.urlencode(params or {}))
+    items, pages, total = [], 0, None
+    while url:
+        hdrs = {}
+        try:
+            doc = json.loads(fetch_page(url, hdrs).decode('utf-8'))
+            batch = doc.get(key) if isinstance(doc, dict) else None
+            if not isinstance(batch, list):
+                raise ValueError('no %s list' % key)
+        except Exception as exc:  # noqa: BLE001 -- any failure is "could not read", never a pass
+            if not pages:
+                raise rh.Unreadable('GET %s failed: %s' % (url.split('?')[0], type(exc).__name__))
+            return items, 'page %d could not be read (%s); %d read' % (pages + 1, type(exc).__name__, len(items))
+        items.extend(batch)
+        pages += 1
+        if total is None and isinstance(doc.get('total_count'), int):
+            total = doc['total_count']
+        url = _next_link(hdrs)
+        if url and not _same_host(url, base):
+            return items, 'the next page is on %s, not the API host; %d read' % (
+                rh.urllib.parse.urlsplit(url).netloc, len(items))
+        if url and pages >= PAGE_CAP:
+            return items, 'stopped after %d pages: %d read of %s' % (pages, len(items), total)
+    if _total_checked and total is not None and len(items) < total:
+        return items, '%d read of %d (total_count)' % (len(items), total)
+    return items, None
+
+
+def artifacts(name, path='actions/artifacts', short_ok=False):
+    """Every unexpired artifact of this name (None: every name) in the repository or under `path`,
+    newest first. A short listing raises rh.Unreadable, or with short_ok -> (artifacts, short)."""
+    found, short = list_all(path, dict({'per_page': 100}, **({'name': name} if name else {})))
+    found = sorted([a for a in found if isinstance(a, dict) and (name is None or a.get('name') == name)
+                    and not a.get('expired')], key=lambda a: a.get('created_at') or '', reverse=True)
+    if short_ok:
+        return found, short
+    if short:
+        raise rh.Unreadable('the listing of %s is incomplete: %s' % (name or path, short))
+    return found
+
+
+def history(environment, key, since=None):
+    """-> (records of THIS target newest first, short_why or None, listed): the target's own name and
+    the legacy name (records written before R08 name their target inside), created after `since`, at
+    most MAX_RECORD_READS downloaded. A record of another or of no target is never returned.
+    `listed` is True only when EVERY listing was read to its end: then the records read are the newest
+    of the whole listing (sorted here by created_at, no API ordering assumed) and a short read is only
+    the read bound. A short LISTING (`listed` False) may miss any record, the newest included."""
+    arts, shorts, listed = [], [], True
+    for name in sorted(set([record_key(environment, key), record_key(environment)])):
+        found, short = artifacts(name, short_ok=True)
+        arts += found
+        shorts += [short] if short else []
+        listed = listed and not short
+    arts = sorted([a for a in arts if not since or (parse_ts(a.get('created_at')) or since) > since],
+                  key=lambda a: a.get('created_at') or '', reverse=True)
+    if len(arts) > MAX_RECORD_READS:
+        shorts.append('%d records after %s; at most %d are read' % (len(arts), iso(since), MAX_RECORD_READS))
+    recs = [read_record(a) for a in arts[:MAX_RECORD_READS]]
+    return [r for r in recs if key and target_key(r.get('environment')) == key], '; '.join(shorts) or None, listed
 
 
 def download(artifact, suffix):
@@ -346,9 +467,18 @@ def judge(ctx):
     def refuse(code, why):
         refusals.append({'code': code, 'why': why})
 
+    # Review 2026-11-09 policy: into uat or prod the source application must be named, never inferred from
+    # the digest. Not in BREAK_GLASS_OVERRIDES: break-glass lifts none of the source-identity refusals.
+    if ctx.get('destination_tier') in ('uat', 'prod') and not str(ctx.get('expected_target') or '').strip():
+        refuse('PROMOTION_REFUSED_SOURCE_TARGET_REQUIRED', 'a %s promotion names no promote_from_target_resource_id; '
+               'set it to the target_resource_id of the predecessor target (migration: existing callers add the input)'
+               % ctx['destination_tier'])
+        return finish_judgement(refusals, ctx)
     rec = ctx.get('source')
     if rec is None:
-        refuse('PROMOTION_REFUSED_SOURCE_UNREADABLE', ctx.get('source_error') or 'no record')
+        why = ctx.get('source_error') or 'no record'
+        refuse(next((c for c in ('PROMOTION_REFUSED_SOURCE_AMBIGUOUS', 'PROMOTION_REFUSED_SOURCE_TARGET_MISMATCH')
+                     if c in why), 'PROMOTION_REFUSED_SOURCE_UNREADABLE'), why)
         return finish_judgement(refusals, ctx)
     art, envd = rec.get('artifact') or {}, rec.get('environment') or {}
     if art.get('digest') != ctx['digest']:
@@ -394,15 +524,26 @@ def judge(ctx):
                     ctx['release_path'], (ctx.get('exception') or {}).get('exception_ref'))})
         else:
             refuse('PROMOTION_REFUSED_STALE', why)
+    # R08: supersession is per TARGET. Only a newer verified record of the source's own target
+    # (adapter + target_resource_id) supersedes it; a record of another target, or of no target, never does.
+    key = target_key(envd)
+    if key is None:
+        refuse('PROMOTION_REFUSED_TARGET_UNKNOWN', 'the source record (run %s) names no environment '
+               'target_resource_id and canonical adapter (adapter %r; one of %s)' % (
+                   (rec.get('run') or {}).get('id'), envd.get('adapter'), ', '.join(ADAPTERS)))
+    if ctx.get('history_short'):
+        refuse('PROMOTION_REFUSED_HISTORY_INCOMPLETE', 'the %s history: %s' % (
+            ctx['required_predecessor'], ctx['history_short']))
     newer = [h for h in ctx.get('history') or []
-             if h.get('state') == VERIFIED and (h.get('artifact') or {}).get('digest') != art.get('digest')
+             if key and target_key(h.get('environment')) == key
+             and h.get('state') == VERIFIED and (h.get('artifact') or {}).get('digest') != art.get('digest')
              and verified_at and (parse_ts((h.get('validity') or {}).get('verified_at')) or verified_at) > verified_at]
     if newer:
         n = sorted(newer, key=lambda h: (h.get('validity') or {}).get('verified_at') or '')[-1]
         ctx['superseded_by'] = {'digest': (n.get('artifact') or {}).get('digest'),
                                 'run_id': (n.get('run') or {}).get('id'),
                                 'verified_at': (n.get('validity') or {}).get('verified_at')}
-        refuse('PROMOTION_REFUSED_SUPERSEDED', '%s was verified in %s at %s, after this one' % (
+        refuse('PROMOTION_REFUSED_SUPERSEDED', '%s was verified for this target in %s at %s, after this one' % (
             ctx['superseded_by']['digest'], ctx['required_predecessor'],
             ctx['superseded_by']['verified_at']))
     return finish_judgement(refusals, ctx)
@@ -525,21 +666,41 @@ def cmd_gate_collect(a):
     re-scan of the build's SBOM. Writes promotion/collected.json; the decision is gate-decide."""
     out = wdir()
     run_id, src_env = env('promote_from_run_id'), env('promote_from_environment')
-    col = {'run_id': run_id, 'source_environment': src_env,
+    # Optional (backward compatible): the predecessor target the caller promotes from. Empty: the
+    # source is chosen by digest among the run's records, and two targets with that digest refuse.
+    want = str(env('promote_from_target_resource_id') or '').strip().lower()
+    col = {'run_id': run_id, 'source_environment': src_env, 'expected_source_target': want or None,
            'required_predecessor': env('promotion_predecessor') or 'test',
            'source': None, 'source_error': '', 'history': [], 'revocations': [],
            'rescan': {'state': 'NOT_ESTABLISHED', 'why': 'not reached', 'critical': [], 'high': []}}
     try:
-        mine = [x for x in artifacts(record_key(src_env))
-                if str((x.get('workflow_run') or {}).get('id') or '') == run_id]
+        # The source run's OWN listing (R08): every target's record of src_env in that run.
+        mine = [read_record(x) for x in artifacts(None, 'actions/runs/%s/artifacts' % run_id)
+                if in_family(x.get('name'), src_env)]
+        if want:   # the request names its source target (review 2026-11-09 F5): digest AND target
+            hit = [r for r in mine if (target_key(r.get('environment')) or '|').split('|', 1)[1] == want]
+            if not hit:
+                raise rh.Unreadable('PROMOTION_REFUSED_SOURCE_TARGET_MISMATCH: run %s published no %s record for '
+                                    'the requested source target %s (its %s records name: %s)' % (
+                                        run_id, src_env, want, src_env, ', '.join(sorted(
+                                            str(target_key(r.get('environment'))) for r in mine)) or 'none'))
+            mine = hit
+        if len(mine) > 1:
+            mine = [r for r in mine if (r.get('artifact') or {}).get('digest') == env('image_digest')] or mine
         if not mine:
-            raise rh.Unreadable('run %s published no %s' % (run_id, record_key(src_env)))
-        col['source'] = read_record(mine[0])
+            raise rh.Unreadable('run %s published no %s record' % (run_id, record_key(src_env)))
+        if len(set(target_key(r.get('environment')) for r in mine)) > 1:
+            raise rh.Unreadable('PROMOTION_REFUSED_SOURCE_AMBIGUOUS: run %s published %s records for %d targets '
+                                'with this digest' % (run_id, src_env, len(mine)))
+        col['source'] = mine[0]
     except Exception as exc:  # noqa: BLE001 -- any failure is "could not read", never a pass
         col['source_error'] = str(exc)[:300]
     try:
-        hist = artifacts(record_key(col['required_predecessor']))[:30]
-        col['history'] = [read_record(x) for x in hist]
+        src = col['source']
+        if src:
+            col['history'], col['history_short'], _listed = history(
+                col['required_predecessor'], target_key(src.get('environment')),
+                parse_ts((src.get('validity') or {}).get('verified_at')))
     except Exception as exc:  # noqa: BLE001
         col['history_error'] = str(exc)[:300]
         col['rescan']['why'] = 'the predecessor history could not be read'
@@ -570,9 +731,11 @@ def cmd_gate_decide(a):
            env('promotion_predecessor') or 'test',
            'source_environment': col.get('source_environment') or env('promote_from_environment'),
            'source': col.get('source'), 'source_error': col.get('source_error') or 'not collected',
-           'history': col.get('history') or [], 'revocations': col.get('revocations') or [],
+           'history': col.get('history') or [], 'history_short': col.get('history_short'),
+           'revocations': col.get('revocations') or [],
            'rescan': col.get('rescan') or {}, 'kev': kev, 'attestation': env('attestation_outcome'),
            'release_path': env('release_path') or 'normal', 'exception': exception_record(),
+           'destination_tier': env('environment_tier'), 'expected_target': col.get('expected_source_target'),
            'now': now_dt()}
     if col.get('revocations_error'):
         ctx['rescan'] = dict(ctx['rescan'], state='NOT_ESTABLISHED',
@@ -582,7 +745,8 @@ def cmd_gate_decide(a):
     gate = {'promotion_gate': res['verdict'], 'refusals': res['refusals'],
             'overridden': res['overridden'], 'superseded_by': res['superseded_by'],
             'source': {'run_id': col.get('run_id'), 'environment': col.get('source_environment'),
-                       'record_id': src.get('record_id'),
+                       'record_id': src.get('record_id'), 'target': target_key(src.get('environment')),
+                       'expected_target': col.get('expected_source_target'),
                        'verified_at': (src.get('validity') or {}).get('verified_at')},
             'required_predecessor': ctx['required_predecessor'],
             'carried': {k: src.get(k) for k in ('artifact', 'provenance')},
@@ -892,9 +1056,10 @@ def cmd_record(a):
     out = wdir('record')
     jsave(os.path.join(out, 'promotion-record.json'), rec)
     dc.write_evidence('promotion-record.json', rec)
-    output(promotion_state=state, promotion_record_name=record_key(env('deploy_environment')))
+    name = record_key(env('deploy_environment'), target_key(rec['environment']))
+    output(promotion_state=state, promotion_record_name=name)
     summary('Promotion record (`%s`): **`%s`**%s' % (
-        record_key(env('deploy_environment')), state,
+        name, state,
         '; not yet established: ' + ', '.join(rec['conditions']['missing']) if rec['conditions']['missing'] else ''))
     print('promotion record: %s' % state)
     return 0
@@ -944,6 +1109,7 @@ def sarif(results, tool, rules):
 
 
 DRIFT_RULES = {'KIT-ARTIFACT-DRIFT': 'the serving digest is not the last promoted digest',
+               'KIT-PROMOTION-HISTORY-INCOMPLETE': 'no promotion record of this target was established',
                'KIT-SERVING-UNREADABLE': 'what is serving could not be read',
                'KIT-SECURITY-SETTINGS': 'the security-settings posture check failed',
                'KIT-BREAK-GLASS-TESTING-OWED': 'a break-glass deploy is still owed its testing',
@@ -958,6 +1124,7 @@ DRIFT_RULES = {'KIT-ARTIFACT-DRIFT': 'the serving digest is not the last promote
 # Vocabulary: assurance-taxonomy.yaml :: lz_drift_dimension, lz_drift_class.
 LZ_DRIFT = {'KIT-ARTIFACT-DRIFT': ('release', 'operational'),
             'KIT-SERVING-UNREADABLE': ('release', 'not_attempted'),
+            'KIT-PROMOTION-HISTORY-INCOMPLETE': ('release', 'not_attempted'),
             'KIT-SECURITY-SETTINGS': ('security_control', 'operational'),
             'KIT-BREAK-GLASS-TESTING-OWED': ('release', 'operational'),
             'KIT-RESCAN-NOT-ESTABLISHED': ('security_control', 'not_attempted'),
@@ -987,6 +1154,64 @@ def lz_view(results, rescans=()):
     return view
 
 
+def own_resource_id(adapter):
+    """-> the scanned target's resource id, read now (None when unreadable)."""
+    if adapter == 'staticwebapp':
+        import static_site_contract as ss  # noqa: E402
+        ok, shown, _ = ss.site()
+        return shown.get('id') if ok and isinstance(shown, dict) else None
+    return dc.resource_id(adapter)[0]
+
+
+def select_promoted(recs, key):
+    """-> (the last healthy record of THIS target, the digests verified for it, how many records were
+    of another or of no target and so ignored); newest first in."""
+    mine = [r for r in recs if key and target_key(r.get('environment')) == key]
+    healthy = [r for r in mine if (r.get('live_state') or {}).get('deployment_outcome') == 'DEPLOY_HEALTHY']
+    return (healthy[0] if healthy else None), set((r.get('artifact') or {}).get('digest') for r in mine
+                                                   if r.get('state') == VERIFIED), len(recs) - len(mine)
+
+
+bg_discharged, bg_owed, bg_not_established = ('BREAK_GLASS_DISCHARGED', 'BREAK_GLASS_OWED',
+                                              'BREAK_GLASS_DISCHARGE_NOT_ESTABLISHED')
+
+
+def break_glass_discharge(last):
+    """-> {state, digest, predecessor_target, why}: is the break-glass record's testing obligation met?
+    Bound to the RECORDED predecessor identity (review 2026-11-09 F3): the predecessor environment and
+    the target the deploy was promoted from (predecessor.promoted_from.target, written by gate-decide).
+    Another target's verified record of the same digest and adapter never discharges it.
+      bg_discharged        a verified record of THIS digest for THAT target, in a listing read to its end
+      bg_owed              every listing of that target read to its end, and no such record (not found)
+      bg_not_established   no predecessor target recorded, a short listing, or the history unreadable:
+                           could not establish, which is never discharged and never not-found."""
+    dig = (last.get('artifact') or {}).get('digest')
+    pred = (last.get('predecessor') or {}).get('required') or 'test'
+    pkey = ((last.get('predecessor') or {}).get('promoted_from') or {}).get('target') or None
+    out = {'state': bg_not_established, 'digest': dig, 'predecessor': pred, 'predecessor_target': pkey}
+    if not pkey or not dig:
+        out['why'] = ('The record names no predecessor target (a break-glass deploy with no promotion source, '
+                      'or a record written before the target was recorded), so the obligation cannot be '
+                      'established; a normal promotion of a digest verified in %s replaces it' % pred)
+        return out
+    try:
+        recs, short, listed = history(pred, pkey)
+    except Exception as exc:  # noqa: BLE001 -- unreadable is could-not-establish, never not-found
+        out['why'] = 'The %s history of %s could not be read: %s' % (pred, pkey, str(exc)[:200])
+        return out
+    found = any(r.get('state') == VERIFIED and (r.get('artifact') or {}).get('digest') == dig for r in recs)
+    if not listed:
+        out['why'] = 'The %s history of %s was not read to its end (%s)' % (pred, pkey, short)
+    elif found:
+        out.update(state=bg_discharged, why='%s was verified for %s in %s' % (dig, pkey, pred))
+    elif short:
+        out['why'] = ('No verified record of %s among the newest records of %s in %s (%s); older ones were '
+                      'not read' % (dig, pkey, pred, short))
+    else:
+        out.update(state=bg_owed, why='No verified record of %s for %s in %s (every record read)' % (dig, pkey, pred))
+    return out
+
+
 def cmd_deployed_scan(a):
     """Phase 1 of the daily scan for ONE environment (the job's own): reconcile, then the two
     drifts. Writes promotion/deployed/: deployed-state.json, state SARIFs, and the re-scan SARIF the
@@ -1000,22 +1225,37 @@ def cmd_deployed_scan(a):
     where = 'deployed/%s/%s' % (envname, env('containerapp_name') or env('webapp_name') or env('site_name'))
     serving = serving_now(adapter)
     doc['serving'] = serving
+    # R08: THIS target's records only (adapter + its resource id, read now); another target's, or a
+    # record naming no target, is never compared with what this target serves.
+    doc['target'] = key = target_key({'adapter': adapter, 'target_resource_id': own_resource_id(adapter)})
+    recs = []
     try:
-        recs = [read_record(x) for x in artifacts(record_key(envname))[:30]]
+        if key:
+            recs, doc['records_short'], doc['records_listed'] = history(envname, key)
     except Exception as exc:  # noqa: BLE001
-        recs, doc['records_error'] = [], str(exc)[:300]
-    healthy = [r for r in recs if (r.get('live_state') or {}).get('deployment_outcome') == 'DEPLOY_HEALTHY']
-    last = healthy[0] if healthy else None
+        doc['records_error'] = str(exc)[:300]
+    last, verified, doc['records_ignored'] = select_promoted(recs, key)
+    # Compared only when THIS target's newest records were read: a complete read, or one cut ONLY by
+    # the read bound (every listing read to its end, the newest of it read, sorted here) that still
+    # holds a healthy record. A short LISTING is never established, whatever it holds: no API ordering
+    # is assumed, so the newest record may be the one missing (review 2026-11-09 F2). No record of this
+    # target at all is named too: never a silent "no drift".
+    known = bool(key) and not doc.get('records_error') and (
+        not doc.get('records_short') or bool(last and doc.get('records_listed')))
+    if not known or last is None:
+        results.append(finding('KIT-PROMOTION-HISTORY-INCOMPLETE', 'No promotion record of this target (%s) '
+                               'was established in %s: %s.' % (key or 'its resource id could not be read', envname,
+                                                                doc.get('records_error') or doc.get('records_short') or
+                                                                'none on record'), where))
     doc['promoted'] = {'digest': (last.get('artifact') or {}).get('digest'), 'run_id': (last.get('run') or {}).get('id'),
                        'state': last.get('state')} if last else None
     if serving is None:
         results.append(finding('KIT-SERVING-UNREADABLE', 'What %s serves could not be read; nothing '
                                'about it is established.' % envname, where))
-    else:
+    elif known:   # an unestablished history is never compared: no drift claimed either way
         want = (doc['promoted'] or {}).get('digest')
         drift = [s for s in serving if s['weight'] > 0 and s['digest'] != want]
         doc['artifact_drift'] = bool(drift) if want else None
-        verified = set((r.get('artifact') or {}).get('digest') for r in recs if r.get('state') == VERIFIED)
         for s in drift:
             # A digest no kit run of this environment verified is serving: the landing zone's critical class.
             results.append(lz_tag(finding('KIT-ARTIFACT-DRIFT', '%s serves %s at %d%%; the last promoted '
@@ -1049,19 +1289,15 @@ def cmd_deployed_scan(a):
             dimension='network_exposure' if exposed else 'security_control',
             cls='critical' if exposed else ('not_attempted' if result == 'POSTURE_UNREADABLE' else 'operational')))
     if last and last.get('state') == BREAK_GLASS:
-        dig = (last.get('artifact') or {}).get('digest')
-        pred = (last.get('predecessor') or {}).get('required') or 'test'
-        try:
-            done = any(r.get('state') == VERIFIED and (r.get('artifact') or {}).get('digest') == dig
-                       for r in [read_record(x) for x in artifacts(record_key(pred))[:30]])
-        except Exception:  # noqa: BLE001
-            done = False
-        doc['break_glass_owed'] = not done
-        if not done:
+        doc['break_glass_discharge'] = disc = break_glass_discharge(last)
+        doc['break_glass_owed'] = {bg_discharged: False, bg_owed: True}.get(disc['state'])  # None: not established
+        if disc['state'] != bg_discharged:
             results.append(finding('KIT-BREAK-GLASS-TESTING-OWED', 'Break-glass deploy of %s (exception '
-                                   '%s) is still owed: %s.' % (dig, ((last.get('break_glass') or {}).get('exception') or {}).get('exception_ref'),
-                                                               ', '.join((last.get('break_glass') or {}).get('testing_owed') or [])),
-                                   '%s/break-glass' % where))
+                                   '%s) is still owed: %s. %s' % (
+                                       disc['digest'], ((last.get('break_glass') or {}).get('exception') or {}).get('exception_ref'),
+                                       ', '.join((last.get('break_glass') or {}).get('testing_owed') or []),
+                                       disc['why']),
+                                   '%s/break-glass' % where, props={'discharge': disc['state']}))
     for r in results:
         if 'lz_drift_dimension' not in (r.get('properties') or {}):
             lz_tag(r)
@@ -1160,9 +1396,9 @@ def self_test():
     now = parse_ts('2026-10-26T12:00:00Z')
     d1, d2 = 'sha256:' + '1' * 64, 'sha256:' + '2' * 64
 
-    def rec(digest=d1, envname='test', tier='test', state=VERIFIED, at='2026-10-25T12:00:00Z'):
+    def rec(digest=d1, envname='test', tier='test', state=VERIFIED, at='2026-10-25T12:00:00Z', rid='/s/a'):
         return {'schema': SCHEMA, 'state': state, 'artifact': {'digest': digest},
-                'environment': {'name': envname, 'tier': tier},
+                'environment': {'name': envname, 'tier': tier, 'adapter': 'containerapp', 'target_resource_id': rid},
                 'provenance': {'source_ref': 'refs/heads/main', 'build_workflow': 'o/k/.github/workflows/b.yml'},
                 'validity': {'verified_at': at}, 'run': {'id': '7'}, 'approval': {'approvers': []},
                 '_artifact': {'head_branch': 'main'}}
@@ -1180,6 +1416,8 @@ def self_test():
              ('swap', ctx(digest=d2), 'PROMOTION_REFUSED_DIGEST_MISMATCH'),
              ('stale', ctx(source=rec(at='2026-10-01T00:00:00Z')), 'PROMOTION_REFUSED_STALE'),
              ('super', ctx(history=[rec(digest=d2, at='2026-10-26T00:00:00Z')]), 'PROMOTION_REFUSED_SUPERSEDED'),
+             ('other target', ctx(history=[rec(digest=d2, at='2026-10-26T00:00:00Z', rid='/s/b')]), 'PROMOTION_ALLOWED'),
+             ('no target', ctx(source=rec(rid=None)), 'PROMOTION_REFUSED_TARGET_UNKNOWN'),
              ('kev', ctx(kev={'state': 'AVAILABLE', 'blocking': ['CVE-1@x']}), 'PROMOTION_REFUSED_REVOKED')]
     for label, c, want in cases:
         got = judge(c)['verdict']
@@ -1201,7 +1439,7 @@ def main(argv):
             'deployed-finish': cmd_deployed_finish, 'deployed-report': cmd_deployed_report}
     for name in cmds:
         p = sub.add_parser(name)
-        p.add_argument('--adapter', choices=('containerapp', 'appservice', 'staticwebapp'), default='containerapp')
+        p.add_argument('--adapter', choices=ADAPTERS, default='containerapp')
         p.add_argument('--state-dir', default='')
     sub.add_parser('self-test')
     a = ap.parse_args(argv)

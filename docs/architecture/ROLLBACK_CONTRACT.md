@@ -443,10 +443,11 @@ to know it exists.
 Until then, treat every deploy workflow in this kit as a **candidate implementation**, not a
 recommendation.
 
-> **Status of gate 2 (2026-10-16).** `DEPLOYMENT_CONTRACT_RECONCILIATION.md` did the
-> difference-by-difference comparison (2026-09-18) and says it closes this gate; whether that claim
-> stands is an open owner decision (completion ledger O-09, recommended: yes for the comparison,
-> with promotion — DCR gap 11 — still open). Gate 1 is implemented and proven live (header).
+> **Status of gate 2 (2026-11-13): CLOSED for the comparison.** `DEPLOYMENT_CONTRACT_RECONCILIATION.md`
+> did the difference-by-difference comparison (2026-09-18); the owner accepted that it closes this gate
+> on 2026-11-13 (completion ledger O-09, KDEC-052). Promotion (DCR gap 11) is decided by KDEC-029 and
+> stays under gate 1 for its proof; a live promotion and rollback are still owed (release notes).
+> Gate 1 is implemented and proven live (header).
 
 ## Promotion gate
 
@@ -524,3 +525,96 @@ an unbounded job, because it manufactures the exact condition this contract exis
 
 Cost still has to be bounded somewhere. The answer for mutating work is a bound on the **change
 window** with a manifest written before mutation begins — not a wall-clock kill on the job.
+
+**Answered 2026-11-13 (KREQ-717, KDEC-061 PROPOSED, under the owner's KDEC-052 direction).** The deploy jobs of
+the three deploy reusables are now bounded -- `deploy_timeout_minutes`, 30..360, default 90, clamped to 90 outside the
+range and refused before login outside it or below the job's own configured work -- because the question above now
+has an answer:
+
+| kill lands | change manifest at the kill | outcome (DCR-8) | owed to the next run |
+|---|---|---|---|
+| before login / before the first mutation | no entry | nothing changed | nothing (no state recorded) |
+| inside the mutating call | `planned`, issued, unconfirmed | `PARTIAL_APPLY` | `INTERRUPTED_DEPLOY_RECONCILIATION_REQUIRED` |
+| after it, before the run ends (health, traffic, reversal, test period, DAST) | entries, no completed reversal | `STATUS_UNTRUSTED` | `INTERRUPTED_DEPLOY_RECONCILIATION_REQUIRED` |
+| after a verified reversal | entries, reversal verified | `ROLLBACK_VERIFIED` | nothing |
+
+The always() steps run on the cancelled job: the outcome report, then `deploy-interruption` `record`, which writes
+`deploy-state.json` into the evidence and uploads `kit-deploy-state-<target key>`. The next deploy of the target runs
+`deploy-interruption` `check` before login and is refused, naming the run, until a person who reconciled it by hand
+names it in `reconciled_interrupted_run`. Nothing is silently "done" or "clean". `scripts/deploy_interruption.py`;
+`tests/prove_deploy_interruption.py`.
+
+**The other three jobs that change live targets (KDEC-061 M2, lane deploy-bounds, 2026-11-13).** Each was designed kill
+first, then bounded; the same script and composite (`scripts/deploy_interruption.py`, `deploy-interruption`) carry all
+of them. Built and proven with fixture proofs; no hosted run has yet observed a timeout (KDEC-061 M1).
+
+*The sequential rollback* (`reusable-rollback-sequence.yml`): `rollback_timeout_minutes`, 30..360, default 180,
+clamped to 180 outside the range, and refused before login (`DEPLOY_REFUSED_TIME_BOUND`, naming the input) below
+30 + steps x the test period. The sequence record (`rollback-sequence.json`) is written only when the sequence reaches
+its verdict, so what is on disk at the kill decides:
+
+| kill lands | on disk at the kill | outcome | owed to the next run |
+|---|---|---|---|
+| before any step (checkout, protection, fetch, the check, login, lease) | no step work directory | nothing changed | nothing (no state recorded; the previous state stands) |
+| inside a step's reversal (eligibility read, or the deploy contract's reverse) | the newest step's work directory, no `reversal.json` | `PARTIAL_APPLY` (a reversal may have been issued, never confirmed) | `INTERRUPTED_DEPLOY_RECONCILIATION_REQUIRED` |
+| after a reversal, before the verdict (read-back, test period, a later step) | the newest step has `reversal.json`; no sequence record | `STATUS_UNTRUSTED` (an untrusted mixed state: some steps reversed, the last untested) | `INTERRUPTED_DEPLOY_RECONCILIATION_REQUIRED` |
+| after the verdict (marker, upload, posture) | the sequence record | its own result | nothing more (a halt is already `ROLLBACK_REQUIRES_HUMAN_DECISION`, with its record, marker and held lease) |
+
+The always() record step writes the state under the TARGET's `kit-deploy-state-<target key>`, the same name the
+deploy reusables write and read, so the next deploy and the next sequence of that target are both refused, naming the
+run, until a person names it in `reconciled_interrupted_run` (now an input of the sequence too). The lease release
+step is `!cancelled()`, so a killed sequence also leaves the lease marked `mutating` (KDEC-030), as a halt does.
+
+*The registry push* (`reusable-build-docker.yml`, build job): `build_timeout_minutes`, 30..360, default 90, clamped to
+90 outside the range, and refused by the composite's `bound` operation as the job's first step. The build-evidence
+manifest is `planned` before the push and `applied` only once the registry's digest is known:
+
+| kill lands | build evidence at the kill | outcome | recorded |
+|---|---|---|---|
+| before the capability step (build, scan, SBOM) | no snapshot | registry untouched | nothing |
+| capability refused | snapshot, no manifest | registry untouched | nothing |
+| inside the push | manifest `planned` | `PARTIAL_APPLY` (the tag may hold a partial or unproven image) | `INTERRUPTED_PUSH_UNPROMOTABLE` |
+| after the push, before the identity round trip | manifest `applied`, identity not proven | `STATUS_UNTRUSTED` | `INTERRUPTED_PUSH_UNPROMOTABLE` |
+| after the identity round trip (classify, uploads, posture) | `applied`, `REGISTRY_IDENTITY_PROVEN` | proven, but the attest job never runs on a cancelled build job | `INTERRUPTED_PUSH_UNPROMOTABLE` |
+
+Nothing a kill leaves is promoted, and that already held before this bound; the proof shows it rather than adding a
+next-run refusal. The attest job's `if:` has no status function, so GitHub applies `success()`: a cancelled or failed
+build job is never attested, and it signs only `REGISTRY_IDENTITY_PROVEN`. The `image_digest` output is set only by a
+completed push. The promotion gate refuses anything V1 did not verify (`PROMOTION_REFUSED_SIGNATURE`), and break-glass
+does not lift that refusal. The build reusable holds no `actions: read`, and adding it would break every caller, so it
+is not given a next-run reader. Limit: the next push of the same tag reads whatever the tag now names as its rollback
+point; a reversal of the tag is not a promotion, and a tag pulled outside the kit is a person's to re-point against
+the build evidence.
+
+*Live deploy acceptance* (`live-deploy-acceptance.yml`, the harness): a `uses:` job takes no `timeout-minutes`, so the
+dispatch input `timeout_minutes` (default 90) is handed to each reusable's own bound (`deploy_timeout_minutes`,
+`build_timeout_minutes`), whose clamp and refusal apply; its one non-reusable job is bounded at 5 minutes. A kill in a
+deploy cell is the deploy table above (the next dispatch at that target is refused until the run is named); in the
+build cell it is the registry-push table, and its tag is run-unique (`run-<id>-<attempt>`), so no later run builds
+over it. The workflow creates no Azure resource; the sandbox targets are the caller's, so a kill leaves no test
+resource to tear down (the teardown harness of the section below is separate).
+
+`tests/prove_deploy_interruption.py` S2, R (the real sequence engine killed as a process tree mid-test-period after a
+live reversal), P (the shipped push steps with docker shimmed, and the promotion gate), and eight more named mutants.
+
+## Deploy concurrency
+
+Moved here from the comments of `.github/workflows/reusable-deploy-staticwebapp.yml` on 2026-11-13 (integration of the round-5 lanes) to keep that file under the `tests/check_workflow_size.py` fail threshold; the workflow keeps a one-line pointer. The same text still sits in the comments of the App Service and Container App deploy reusables (and, for the concurrency note, of `reusable-build-docker.yml`).
+
+```text
+Concurrency for a CHANGE workflow is the opposite of concurrency for a validation
+workflow. Validation cancels the superseded run — the answer is stale, killing it costs
+nothing. A deployment must NEVER be cancelled mid-mutation: the run dies between the
+change and its verification, leaving a half-applied state with no rollback and no record
+of what it owned. See docs/architecture/ROLLBACK_CONTRACT.md — a cancelled run cannot honour a
+contract that depends on completing its own change manifest.
+
+So: serialize per target, never cancel in flight. GitHub keeps at most one run PENDING
+per group and discards older pending ones, which is safe — a pending run has mutated
+nothing.
+
+KDEC-021 (owner, 2026-10-23): "A deployment rolling mid rollback means the deployment has to be
+rolled back." The group is the TARGET's, shared with reusable-rollback-sequence.yml
+(kit-target-<environment>-<resource group>-<name>, no adapter prefix), so a deploy queues behind a
+rollback of the same target instead of racing it. Proven by tests/prove_rollback_sequence.py S19.
+```

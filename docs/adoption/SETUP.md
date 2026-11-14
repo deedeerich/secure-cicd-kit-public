@@ -119,7 +119,7 @@ that blames authentication rather than policy.
 > A job that fails with **zero steps** has been refused by a protection rule. It is not a broken
 > workflow — do not go debugging the YAML.
 
-### 1.4 · Required reviewers (optional)
+### 1.4 · Required reviewers (optional at dev and test; REQUIRED at uat and prod)
 
 **GUI:** same page → tick **Required reviewers** → add up to 6 users/teams → **Save protection rules**
 
@@ -131,8 +131,36 @@ gh api -X PUT "repos/$ORG/$REPO/environments/$ENVIRONMENT" --input - <<JSON
 JSON
 ```
 
-The run pauses as *Waiting* until approved. Note that **you cannot approve your own deployment** in
-organization-owned repos, though you can in a personal one.
+The run pauses as *Waiting* until approved. Whether the person who started the run may approve it is
+the environment's **Prevent self-review** setting (`prevent_self_review`); at uat and prod it must be on.
+The one exception is the organisation's declared **small-team self-approval** (a team of two or fewer with
+no approver group; only the org overlay declares it, time-boxed, and the run says `SMALL_TEAM_SELF_APPROVAL`:
+[SETTINGS_PRECEDENCE.md](SETTINGS_PRECEDENCE.md) section 4). On GitHub Free, Pro and Team plans required
+reviewers exist only on public repositories. **"Prevent self-review" is a GitHub *environment* protection setting.** It governs only the approval of deployment jobs that target that environment. It does not change branch protection, rulesets or pull request review rules, and the kit never sets it: kit init only prints the command, and the deploy only reads it back and checks it.
+
+**uat and prod (KDEC-042, "never a prod deployment without a human approval"):** reviewers from the
+**platform or security** pool, never the app team alone, self-review prevented. A push straight to main
+still waits: the deploy job runs in the environment. Run as a repository admin (kit init prints the same
+commands, with your teams, in `.kit/ADOPTION_CHECKLIST.md`):
+
+```bash
+PLATFORM_ID=$(gh api orgs/$ORG/teams/platform --jq .id)
+SECURITY_ID=$(gh api orgs/$ORG/teams/security --jq .id)
+for ENVIRONMENT in uat prod; do
+gh api -X PUT "repos/$ORG/$REPO/environments/$ENVIRONMENT" --input - <<JSON
+{ "wait_timer": 0, "prevent_self_review": true,
+  "reviewers": [ { "type": "Team", "id": $PLATFORM_ID }, { "type": "Team", "id": $SECURITY_ID } ] }
+JSON
+done
+gh variable set KIT_APPROVER_POOLS --repo "$ORG/$REPO" --body '{"platform":["@'$ORG'/platform"],"security":["@'$ORG'/security"]}'
+gh variable set KIT_APP_TEAM --repo "$ORG/$REPO" --body "@$ORG/<app-team>"
+```
+
+Before it signs in, the deploy classes the environment (`.kit/environments.json` `class`, else its name;
+an environment it cannot class is refused, `ENVIRONMENT_UNCLASSED`) and at uat and prod refuses one that
+does not exist, has no reviewers, allows self-review, has no pool reviewer or only app-team reviewers, or
+cannot be read. The full table is in [BRANCH_PROTECTION_SETTINGS.md](BRANCH_PROTECTION_SETTINGS.md),
+section "What the deploy refuses"; each refusal's plain words and fix are in `docs/errors/ERRORS.md`.
 
 **At `uat` and `prod` they are not optional.** The deploy reads the environment's reviewers back and
 refuses without one (self-review prevented). It also reads the run's own approval (OF-5 K-1): the
@@ -510,7 +538,8 @@ per app.
 
 ### 4.2 · Azure Government: the audience
 
-For a Government tenant (`cloud: gov`, the repository variable `KIT_CLOUD=gov`), Microsoft documents
+For a Government tenant (`cloud: gov`; `KIT_CLOUD=gov` on each deploy environment, or the org overlay's
+`azure_clouds` map, which decides when it declares two clouds: [SETTINGS_PRECEDENCE.md](SETTINGS_PRECEDENCE.md) section 5), Microsoft documents
 the federated credential's audience as **`api://AzureADTokenExchangeUSGov`**, with
 `environment: AzureUSGovernment`. Every kit `azure/login` step that serves Government now asks for that
 audience (`tests/prove_azure_gov_audience.py`); commercial sign-in is unchanged
@@ -577,7 +606,7 @@ may deploy* is a repository policy question, not an identity question.
 |---|---|---|
 | Enumerate resources | **Reader** | subscription or RG |
 | Deploy to an existing App Service | **Website Contributor** | the app or its RG |
-| Deploy to an existing Container App | **ContainerApp Contributor** | the app or its RG |
+| Deploy to an existing Container App | **Container Apps Contributor** | the app or its RG |
 | **Push images to ACR** | **AcrPush** | **the registry** |
 | **Create** the test resources | **Contributor** | **a dedicated test RG only** |
 
@@ -619,7 +648,8 @@ GitHub refuses the whole run before any job starts (`startup_failure`, no log); 
 reusable workflow is in [`USAGE.md`](USAGE.md) → *What's in it*, and `tests/check_caller_permissions.py`
 enforces it on the kit's own callers and templates.
 
-The kit's policy gate rejects workflow-level `id-token: write`. Grant it per job, only where needed.
+The kit's policy gate warns on workflow-level `id-token: write` when the workflow has more than one job
+(`workflow-policy-check.yml` rule R3, a WARN, not an ERROR). Grant it per job, only where needed.
 
 ---
 
@@ -639,7 +669,7 @@ the two reachable ones. Its `verdict` output is `PASS` only when every assertion
 
 ## 8 · What you additionally need to test the DEPLOY workflows
 
-**Reader + Website Contributor + ContainerApp Contributor lets you deploy *to* things. It does not
+**Reader + Website Contributor + Container Apps Contributor lets you deploy *to* things. It does not
 let you *create* anything — and the deploy workflows require targets that already exist.**
 
 Required inputs, all of which name pre-existing resources:
@@ -657,7 +687,7 @@ So from a **zero-resource** subscription you still need:
 | 1 | A **resource group** | everything lands in one | **Contributor** on it (or create in portal) |
 | 2 | An **Azure Container Registry** | `acr_login_server` is required by both deploys and by the build | **AcrPush** to push · **Contributor** to create |
 | 3 | A **Linux App Service** (container-based) | `webapp_name` target | Website Contributor covers *deploy*, not *create* |
-| 4 | A **Container Apps environment + app** | `containerapp_name` target | ContainerApp Contributor covers *deploy*, not *create* |
+| 4 | A **Container Apps environment + app** | `containerapp_name` target | Container Apps Contributor covers *deploy*, not *create* |
 | 5 | **Pull rights from ACR to the apps** | otherwise deploy succeeds and the app fails to start | app's managed identity needs **AcrPull** on the registry |
 | 6 | `image_digest` | deploy input | produced by running `reusable-build-docker` first |
 

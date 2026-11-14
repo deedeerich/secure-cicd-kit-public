@@ -16,7 +16,7 @@ WHAT IT PROVES
         for deploy callers (deployments: write + pull-requests: read, scripts/consumer_surface_check.py R1),
         EXACT least privilege (no job grants more than its callee requests), every kit reference pinned
         to the one SHA, no placeholder, one security caller, and `dependabot_config.py check` on the result
-    P2  actionlint (the pinned 1.7.7, ACTIONLINT or on PATH) reports nothing on every generated workflow
+    P2  actionlint (the pinned 1.7.12, ACTIONLINT or on PATH) reports nothing on every generated workflow
         outside the two exact messages tests/check_actionlint.py documents (--actionlint; run in the
         actionlint job, UNKNOWN rc 2 where no actionlint exists)
     P3  idempotent: a second run is KIT_INIT_UNCHANGED and changes no byte
@@ -46,6 +46,25 @@ WHAT IT PROVES
     N6  a host that is neither github.com nor <tenant>.ghe.com -> KIT_INIT_HOST_UNSUPPORTED
     N7  --with-api without a container deploy -> KIT_INIT_API_NEEDS_CONTAINER
     N8  PR mode on a dirty tree -> KIT_INIT_DIRTY_TREE, nothing written; a refused push -> KIT_INIT_PR_NOT_OPENED
+  OWNER RULINGS 2026-11-07
+    P9  the host is DETECTED: github.com and <tenant>.ghe.com from the remote, from GITHUB_SERVER_URL/GITHUB_API_URL
+        in the repository's own workflow (another job's are ignored), the API base and the OIDC issuer derived;
+        the default branch detected      N9 gitlab.com or a GHES host refused by name   N10 disagreeing sources
+    P10 the org overlay applied on day one (tests/fixtures/org-overlay): approver teams as uat/prod reviewers, the
+        CODEOWNERS lines for .github/workflows/, .kit/, id-mappings.json, crawl with its 4/8/26-week clock, the
+        clouds and the ticket routing; governed values not copied into the repository
+    P11 a stricter level from the overlay or an option     P12 small-team mode reaches the spec and the checklist
+    P13 O-42b: with no pools, uat/prod still name a reviewer   P14 every checklist item says What, How and Why
+    N11 an option that loosens the overlay (a team, an app team, a lower level): KIT_INIT_GOVERNED_SETTING_LOOSENED
+    N12 an overlay with placeholders, or two for one org: KIT_INIT_OVERLAY_INVALID   N13 overlay host vs remote
+    M7  the overlay ignored   M8 the host fixed to github.com   M9 the loosening check bypassed
+  OWNER ADDITIONS 2026-11-07
+    P15 no CODEOWNERS: a complete default from the org's teams   P16 --codeowners customise: a draft, nothing written
+    P17 a CODEOWNERS in any of GitHub's three places is never changed; lines proposed; an ignored second file named
+    N14 an existing rule that would decide a kit path is flagged   N15 an edited default is the person's
+    P18 connectors inventoried by name with their purpose (files; with --inventory-api, environments, secrets,
+        variables)   N16 a token that cannot list: NOT_ESTABLISHED   P19/N17 teams listed, or NOT_ESTABLISHED
+    M10 the never-overwrite guard
   MUTANTS (each must be killed)
     M1  a job granted more than its callee requests      -> verify() names least privilege
     M2  a deploy caller without deployments: write        -> check_caller_permissions and R1 refuse
@@ -140,7 +159,7 @@ def make_repo(base, name, files, git=True, remote='https://github.com/acme/%s.gi
         subprocess.run(g + ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-qm', 'init',
                             '--allow-empty'], check=True)
         if remote:
-            subprocess.run(g + ['remote', 'add', 'origin', remote % name], check=True)
+            subprocess.run(g + ['remote', 'add', 'origin', remote % name if '%s' in remote else remote], check=True)
     return d
 
 
@@ -303,6 +322,18 @@ def pr_mode(base):
     open_ = all(not envs[n]['required_reviewers'] and not envs[n]['prevent_self_review'] for n in ('dev', 'test'))
     check(gated and open_ and all(e['deployment_branches'] == ['main'] for e in envs.values()),
           'P5 uat/prod need platform or security, self-review prevented; dev/test ungated; main only')
+    # KDEC-042: the spec the deploy reads back classes every deploy environment, the settings name the pools,
+    # and the checklist carries the exact PUT per environment and the variables a push cannot edit.
+    import environment_protection as ep
+    settings = json.load(io.open(os.path.join(d, '.kit', 'settings.json'), encoding='utf-8'))
+    classes = dict((n, ep.classify(n, 'dev', spec)[0]) for n in ('dev', 'test', 'uat', 'prod'))
+    check(classes == {'dev': 'dev', 'test': 'test', 'uat': 'uat', 'prod': 'prod'} and
+          all(envs[n].get('class') == n for n in classes), 'P5 the spec classes dev/test/uat/prod as the deploy reads it', classes)
+    check(ep.parse_pools(settings.get('approver_pools')) == {'appsec', 'platform'},
+          'P5 .kit/settings.json names the platform and security pools the deploy holds uat/prod to', settings)
+    check(all(('gh api -X PUT repos/acme/prapp/environments/%s --input - <<JSON' % n) in chk for n in classes) and
+          chk.count('"prevent_self_review":true') == 2 and "gh variable set KIT_APPROVER_POOLS --repo acme/prapp" in chk,
+          'P5 the checklist lists the exact PUT per environment, self-review prevented at uat and prod, and the pools variable')
     return d
 
 
@@ -518,6 +549,330 @@ def mutants(base):
     check(guessed, 'M6 with the refusal removed kit init guesses, which N1 refuses (mutant killed)')
 
 
+OVERLAY = os.path.join(HERE, 'fixtures', 'org-overlay')
+
+
+def host_detection(base):
+    """P9 (owner 2026-11-07): kit init detects the host -- github.com and <tenant>.ghe.com -- and derives the API
+    base and the OIDC issuer; N9 an unknown host and N10 disagreeing sources are refused by name."""
+    print('POSITIVE/NEGATIVE: the host, detected')
+    for name, remote, host, api, iss in (
+            ('h-gh', 'https://github.com/acme/%s.git', 'github.com', 'https://api.github.com',
+             'https://token.actions.githubusercontent.com'),
+            ('h-ghe', 'git@acme.ghe.com:acme/%s.git', 'acme.ghe.com', 'https://api.acme.ghe.com',
+             'https://token.actions.acme.ghe.com')):
+        d = make_repo(base, name, FIXTURES['container'], remote=remote)
+        rc, res, out = run(d, '--dry-run')
+        st = json.load(io.open(os.path.join(d, '.kit', 'settings.json'), encoding='utf-8')) if rc == 0 else {}
+        spec = json.load(io.open(os.path.join(d, '.kit', 'environments.json'), encoding='utf-8')) if rc == 0 else {}
+        check(rc == 0 and st.get('host', {}).get('host') == host and st['host']['api_url'] == api and
+              st['host']['oidc_issuer'] == iss and spec.get('api_url') == api and spec['oidc']['issuer'] == iss and
+              'origin remote' in st['host']['source'], 'P9 %s from the remote: API %s, issuer %s' % (host, api, iss),
+              (out[-300:], st.get('host')))
+    # in the repository's own workflow (the kit-init button): GITHUB_SERVER_URL and GITHUB_API_URL, no remote
+    d = make_repo(base, 'h-actions', FIXTURES['python'], remote=None)
+    env = dict(os.environ, GITHUB_WORKSPACE=d, GITHUB_SERVER_URL='https://acme.ghe.com',
+               GITHUB_API_URL='https://api.acme.ghe.com')
+    rc, res, out = run(d, '--dry-run', '--repo', 'acme/h-actions', env=env)
+    st = json.load(io.open(os.path.join(d, '.kit', 'settings.json'), encoding='utf-8')) if rc == 0 else {}
+    check(rc == 0 and st['host']['host'] == 'acme.ghe.com' and 'GITHUB_SERVER_URL' in st['host']['source'],
+          'P9 in its own workflow: the host from GITHUB_SERVER_URL and GITHUB_API_URL', out[-300:])
+    # the environment of ANOTHER job (the kit's own self-test) is not the target's: it is ignored
+    env = dict(os.environ, GITHUB_WORKSPACE=base, GITHUB_SERVER_URL='https://other.ghe.com')
+    d = make_repo(base, 'h-elsewhere', FIXTURES['python'])
+    rc, res, out = run(d, '--dry-run', env=env)
+    check(rc == 0, 'P9 GITHUB_SERVER_URL of another workspace is not taken for the target\'s host', out[-200:])
+    # the default branch is detected (the owner's repositories use main; another name is honoured)
+    d = make_repo(base, 'h-trunk', FIXTURES['container'])
+    subprocess.run(['git', '-C', d, 'branch', '-m', 'main', 'trunk'], check=True)
+    rc, res, out = run(d, '--dry-run')
+    spec = json.load(io.open(os.path.join(d, '.kit', 'environments.json'), encoding='utf-8')) if rc == 0 else {}
+    check(rc == 0 and all(e['deployment_branches'] == ['trunk'] for e in spec.get('environments', [])) and
+          spec.get('default_branch') == 'trunk', 'P9 the default branch is detected (trunk), not assumed', out[-200:])
+    for name, remote, label in (('h-gitlab', 'https://gitlab.com/acme/%s.git', 'gitlab.com'),
+                                ('h-ghes', 'https://github.example.com/acme/%s.git', 'a GitHub Enterprise Server host')):
+        d = make_repo(base, name, FIXTURES['python'], remote=remote)
+        before = snapshot(d)
+        rc, res, out = run(d, '--dry-run')
+        check(rc == 1 and res.get('state') == KI.HOST_UNSUPPORTED and 'origin remote' in res.get('what', '') and
+              snapshot(d) == before, 'N9 %s is refused by name, nothing written' % label, out[-200:])
+    d = make_repo(base, 'h-mismatch', FIXTURES['python'], remote='https://github.com/acme/%s.git')
+    rc, res, out = run(d, '--dry-run', '--host', 'acme.ghe.com')
+    check(rc == 1 and res.get('state') == KI.HOST_MISMATCH, 'N10 --host acme.ghe.com with a github.com remote: '
+          'KIT_INIT_HOST_MISMATCH', out[-200:])
+    env = dict(os.environ, GITHUB_WORKSPACE=None or '', GITHUB_SERVER_URL='')
+    d = make_repo(base, 'h-apimis', FIXTURES['python'], remote=None)
+    env = dict(os.environ, GITHUB_WORKSPACE=d, GITHUB_SERVER_URL='https://acme.ghe.com', GITHUB_API_URL='https://api.github.com')
+    rc, res, out = run(d, '--dry-run', '--repo', 'acme/x', env=env)
+    check(rc == 1 and res.get('state') == KI.HOST_MISMATCH, 'N10 GITHUB_SERVER_URL and GITHUB_API_URL disagreeing: '
+          'KIT_INIT_HOST_MISMATCH', out[-200:])
+
+
+def overlay(base):
+    """P10-P12 / N11-N13 (owner 2026-11-07): the org overlay is applied on day one -- approver teams, CODEOWNERS
+    lines for the kit-governed paths, the adoption level, the clouds, ticket routing -- and options only tighten."""
+    print('POSITIVE/NEGATIVE: the org overlay, applied on day one')
+    d = make_repo(base, 'app', FIXTURES['container'], remote='https://example.ghe.com/example-org/%s.git')
+    rc, res, out = run(d, '--dry-run', '--org-overlay', OVERLAY)
+    ok = rc == 0
+    st = json.load(io.open(os.path.join(d, '.kit', 'settings.json'), encoding='utf-8')) if ok else {}
+    spec = json.load(io.open(os.path.join(d, '.kit', 'environments.json'), encoding='utf-8')) if ok else {}
+    co = io.open(os.path.join(d, '.github', 'CODEOWNERS'), encoding='utf-8').read() if ok else ''
+    chk = io.open(os.path.join(d, '.kit', 'ADOPTION_CHECKLIST.md'), encoding='utf-8').read() if ok else ''
+    envs = {e['name']: e for e in spec.get('environments', [])}
+    teams = {'@example-org/platform-approvers', '@example-org/security-approvers'}
+    check(ok and st['org_overlay']['state'] == 'ORG_OVERLAY_APPLIED' and
+          all({r['team'] for r in envs[n]['required_reviewers']} == teams and envs[n]['prevent_self_review']
+              for n in ('uat', 'prod')), 'P10 uat/prod reviewers are the overlay\'s approver teams, self-review prevented',
+          out[-300:])
+    check(all(re.search(r'(?m)^%s\s+@example-org/platform-approvers @example-org/security-approvers$' % re.escape(p), co)
+              for p in ('/.github/workflows/', '/.kit/', '/id-mappings.json')),
+          'P10 CODEOWNERS: the approver teams own .github/workflows/, .kit/ and id-mappings.json (KDEC-044)', co)
+    check(st.get('rung') == 'crawl' and st['adoption']['crawl_weeks_optimal'] == 4 and
+          st['adoption']['crawl_weeks_advisory'] == 8 and st['adoption']['crawl_weeks_maximum'] == 26,
+          'P10 adoption starts at crawl: 4 weeks optimal, 8 advisory, 26 the hard maximum', st.get('adoption'))
+    check(all(envs[n].get('azure_cloud') == 'commercial' for n in ('dev', 'test', 'uat', 'prod', 'build')) and
+          st.get('ticket_routing', {}).get('project') == 'SEC' and 'project `SEC`' in chk,
+          'P10 the clouds per environment and the ticket routing come from the overlay')
+    check(st['approver_pools'] == {'platform': [], 'security': []} and st['app_team'] is None and
+          'Leave the approver variables unset' in chk and 'gh variable set KIT_APPROVER_POOLS' not in chk,
+          'P10 governed values are not copied into the repository (no pools file, no variables to set)')
+    # P11 a repository the overlay holds to a stricter level; a stricter option is honoured
+    d = make_repo(base, 'strict-app', FIXTURES['python'], remote='https://example.ghe.com/example-org/%s.git')
+    rc, res, out = run(d, '--dry-run', '--org-overlay', OVERLAY)
+    st = json.load(io.open(os.path.join(d, '.kit', 'settings.json'), encoding='utf-8')) if rc == 0 else {}
+    check(rc == 0 and st.get('rung') == 'walk', 'P11 the overlay overrides the level for one repository (walk)', out[-200:])
+    d = make_repo(base, 'stricter', FIXTURES['python'], remote='https://example.ghe.com/example-org/%s.git')
+    rc, res, out = run(d, '--dry-run', '--org-overlay', OVERLAY, '--adoption-level', 'run')
+    st = json.load(io.open(os.path.join(d, '.kit', 'settings.json'), encoding='utf-8')) if rc == 0 else {}
+    check(rc == 0 and st.get('rung') == 'run', 'P11 --adoption-level run (stricter) is honoured', out[-200:])
+    # P12 small-team self-approval, declared in the overlay, reaches the spec
+    d = make_repo(base, 'tiny-app', FIXTURES['static'], remote='git@github.com:example-solo/%s.git')
+    rc, res, out = run(d, '--dry-run', '--org-overlay', OVERLAY)
+    spec = json.load(io.open(os.path.join(d, '.kit', 'environments.json'), encoding='utf-8')) if rc == 0 else {}
+    chk = io.open(os.path.join(d, '.kit', 'ADOPTION_CHECKLIST.md'), encoding='utf-8').read() if rc == 0 else ''
+    envs = {e['name']: e for e in spec.get('environments', [])}
+    check(rc == 0 and all(not envs[n]['prevent_self_review'] and envs[n]['required_reviewers'] for n in ('uat', 'prod'))
+          and 'SMALL_TEAM_SELF_APPROVAL is in force' in chk,
+          'P12 small-team mode: uat/prod keep a named reviewer, self-review may be off, and the checklist says so', out[-200:])
+    # P13 O-42b: no teams and no overlay -> uat/prod still name SOMEONE (a person who is not the deployer)
+    d = make_repo(base, 'noteams', FIXTURES['container'])
+    rc, res, out = run(d, '--dry-run')
+    spec = json.load(io.open(os.path.join(d, '.kit', 'environments.json'), encoding='utf-8')) if rc == 0 else {}
+    envs = {e['name']: e for e in spec.get('environments', [])}
+    check(rc == 0 and all(envs[n]['required_reviewers'] and envs[n]['prevent_self_review'] for n in ('uat', 'prod')),
+          'P13 no pools anywhere: uat/prod still name a reviewer, self-review prevented (O-42b)', out[-200:])
+    # N11 an option that loosens the overlay
+    for args, label in ((['--platform-team', '@example-org/app-devs'], 'a team outside the overlay\'s pools'),
+                        (['--app-team', '@example-org/someone-else'], 'another app team')):
+        d = make_repo(base, 'loose-%d' % len(label), FIXTURES['python'], remote='https://example.ghe.com/example-org/app.git')
+        before = snapshot(d)
+        rc, res, out = run(d, '--dry-run', '--org-overlay', OVERLAY, *args)
+        check(rc == 1 and res.get('state') == KI.LOOSENED and snapshot(d) == before,
+              'N11 %s: KIT_INIT_GOVERNED_SETTING_LOOSENED, nothing written' % label, out[-200:])
+    d = make_repo(base, 'loose-level', FIXTURES['python'], remote='https://example.ghe.com/example-org/strict-app.git')
+    rc, res, out = run(d, '--dry-run', '--org-overlay', OVERLAY, '--adoption-level', 'crawl')
+    check(rc == 1 and res.get('state') == KI.LOOSENED, 'N11 --adoption-level crawl below the overlay\'s walk is refused', out[-200:])
+    # N12 an overlay with placeholders, an ambiguous one
+    bad = os.path.join(base, 'badov')
+    for name, doc in (('a', json.load(io.open(os.path.join(ROOT, 'templates', 'kit-org-settings.example.json'), encoding='utf-8'))),):
+        os.makedirs(os.path.join(bad, 'overlays', name))
+        doc['github_orgs'] = ['example-org']
+        doc['host'] = 'example.ghe.com'
+        io.open(os.path.join(bad, 'overlays', name, 'kit-org-settings.json'), 'w', encoding='utf-8').write(json.dumps(doc))
+    d = make_repo(base, 'ov-bad', FIXTURES['python'], remote='https://example.ghe.com/example-org/app.git')
+    before = snapshot(d)
+    rc, res, out = run(d, '--dry-run', '--org-overlay', bad)
+    check(rc == 1 and res.get('state') == KI.OVERLAY_INVALID and snapshot(d) == before,
+          'N12 an overlay still holding template placeholders: KIT_INIT_OVERLAY_INVALID, nothing written', out[-200:])
+    amb = os.path.join(base, 'ambov')
+    for name in ('one', 'two'):
+        os.makedirs(os.path.join(amb, 'overlays', name))
+        io.open(os.path.join(amb, 'overlays', name, 'kit-org-settings.json'), 'w', encoding='utf-8').write(
+            json.dumps({'schema': 'kit-org-settings/1', 'github_orgs': ['example-org']}))
+    rc, res, out = run(d, '--dry-run', '--org-overlay', amb)
+    check(rc == 1 and res.get('state') == KI.OVERLAY_INVALID, 'N12 two overlays naming one org: KIT_INIT_OVERLAY_INVALID', out[-200:])
+    # N13 the overlay's host disagrees with the remote
+    d = make_repo(base, 'ov-host', FIXTURES['python'], remote='https://github.com/example-org/app.git')
+    rc, res, out = run(d, '--dry-run', '--org-overlay', OVERLAY)
+    check(rc == 1 and res.get('state') == KI.HOST_MISMATCH, 'N13 the overlay says example.ghe.com, the remote github.com: '
+          'KIT_INIT_HOST_MISMATCH', out[-200:])
+
+
+def what_how_why(base):
+    """P14 (owner 2026-11-07): every checklist item says WHAT to do, HOW (the exact command), and WHY it matters."""
+    print('POSITIVE: every checklist item says what, how and why')
+    for name, files, remote, args in (('w1', FIXTURES['container'], 'https://github.com/acme/%s.git', ['--with-api', '--automerge', '--outside-landing-zone']),
+                                      ('w2', FIXTURES['python'], 'https://github.com/acme/%s.git', []),
+                                      ('app', FIXTURES['container'], 'https://example.ghe.com/example-org/%s.git', ['--org-overlay', OVERLAY])):
+        d = make_repo(os.path.join(base, 'whw-' + name), name, files, remote=remote)
+        rc, res, out = run(d, '--dry-run', *args)
+        chk = io.open(os.path.join(d, '.kit', 'ADOPTION_CHECKLIST.md'), encoding='utf-8').read() if rc == 0 else ''
+        items = re.split(r'(?m)^- \[ \] ', chk.split('## Only a person can do these', 1)[-1].split('## When something fails')[0])[1:]
+        bad = [i.split('\n', 1)[0] for i in items if not ('**What:**' in i and '**How:**' in i and '**Why it matters:**' in i)]
+        check(rc == 0 and len(items) >= 4 and not bad, 'P14 %s: %d items, each with What, How and Why it matters'
+              % (name, len(items)), (out[-200:], bad))
+
+
+def overlay_mutants(base):
+    print('MUTANTS: the overlay and the host')
+    d = make_repo(base, 'mut-ov', FIXTURES['container'], remote='https://example.ghe.com/example-org/app.git')
+    saved = KI.OS.load
+    try:
+        KI.OS.load = lambda root, owner: (None, KI.OS.ABSENT, '', 'mutant: the overlay ignored')
+        o = KI.parser().parse_args(['--target', d, '--kit-repo', KIT_REPO, '--kit-sha', SHA, '--dry-run',
+                                    '--org-overlay', OVERLAY])
+        ctx = KI.build(o)
+        envs = {e['name']: e for e in ctx['spec']['environments']}
+        teams = {r.get('team') for r in envs['prod']['required_reviewers']}
+    finally:
+        KI.OS.load = saved
+    check('@example-org/platform-approvers' not in teams, 'M7 with the overlay ignored the approver teams are lost, '
+          'which P10 refuses (mutant killed)')
+    saved = KI.resolve_host
+    try:
+        KI.resolve_host = lambda opts, root, rh, oh=None, environ=None: {'host': 'github.com', 'api_url': 'https://api.github.com',
+                                                                         'oidc_issuer': KI.issuer_for('github.com'), 'source': 'mutant'}
+        o = KI.parser().parse_args(['--target', d, '--kit-repo', KIT_REPO, '--kit-sha', SHA, '--dry-run'])
+        ctx = KI.build(o)
+    finally:
+        KI.resolve_host = saved
+    check(ctx['spec']['oidc']['issuer'] != 'https://token.actions.example.ghe.com',
+          'M8 with host detection replaced by a fixed github.com the GHE.com issuer is lost, which P9 refuses')
+    saved = KI.governance
+    try:
+        def loose(opts, odoc, ostate, osrc, repo):
+            opts.platform_team = None
+            return saved(opts, odoc, ostate, osrc, repo)
+        KI.governance = loose
+        o = KI.parser().parse_args(['--target', d, '--kit-repo', KIT_REPO, '--kit-sha', SHA, '--dry-run',
+                                    '--org-overlay', OVERLAY, '--platform-team', '@example-org/app-devs'])
+        refused = False
+        try:
+            KI.build(o)
+        except KI.Refusal:
+            refused = True
+    finally:
+        KI.governance = saved
+    check(not refused, 'M9 with the loosening check bypassed the option is accepted, which N11 refuses (mutant killed)')
+
+
+def api_stub(base, fail=False):
+    """A gh stand-in answering the read-only listings kit init may make (names only)."""
+    stub = os.path.join(base, 'gh_api_stub%s.py' % ('_fail' if fail else ''))
+    with io.open(stub, 'w', encoding='utf-8') as fh:
+        fh.write('import sys\n'
+                 'a = sys.argv[1:]\n'
+                 'if %r:\n'
+                 '    sys.stderr.write("HTTP 403: Resource not accessible by integration"); sys.exit(1)\n'
+                 'p = a[1] if len(a) > 1 else ""\n'
+                 'if p.endswith("/environments"): print("dev\\nprod\\nstaging-old")\n'
+                 'elif p.endswith("/actions/secrets"): print("JIRA_TOKEN\\nOLD_DEPLOY_KEY")\n'
+                 'elif p.endswith("/actions/variables"): print("KIT_CLOUD\\nKIT_SMALL_TEAM_SELF_APPROVAL\\nJIRA_HOST")\n'
+                 'elif "/teams" in p: print("platform-approvers\\nsecurity-approvers\\nweb-devs")\n'
+                 'else: sys.exit(3)\n' % fail)
+    return json.dumps([sys.executable, stub])
+
+
+def codeowners_and_connectors(base):
+    """Owner additions 2026-11-07: CODEOWNERS is never overwritten (three places, the first wins), kit lines are
+    proposed with the rules that would override them flagged, a default or a customisable draft when none exists;
+    the checklist inventories the connectors it can see, by name, with what each is for."""
+    print('POSITIVE/NEGATIVE: CODEOWNERS never overwritten; connectors inventoried')
+    gov_remote = 'https://example.ghe.com/example-org/%s.git'
+    # P15 no CODEOWNERS: a complete default from the overlay's approver teams
+    d = make_repo(os.path.join(base, 'co1'), 'app', FIXTURES['python'], remote=gov_remote)
+    rc, res, out = run(d, '--dry-run', '--org-overlay', OVERLAY)
+    co = io.open(os.path.join(d, '.github', 'CODEOWNERS'), encoding='utf-8').read() if rc == 0 else ''
+    check(rc == 0 and co.startswith('# CODEOWNERS written by kit init as a complete default') and
+          '/.github/workflows/' in co and '@example-org/security-approvers' in co,
+          'P15 no CODEOWNERS anywhere: a complete default from the org\'s approver teams', out[-200:])
+    # P16 --codeowners customise: nothing written where GitHub reads; a draft for the person
+    d = make_repo(os.path.join(base, 'co2'), 'app', FIXTURES['python'], remote=gov_remote)
+    rc, res, out = run(d, '--dry-run', '--org-overlay', OVERLAY, '--codeowners', 'customise')
+    chk = io.open(os.path.join(d, '.kit', 'ADOPTION_CHECKLIST.md'), encoding='utf-8').read() if rc == 0 else ''
+    check(rc == 0 and not any(os.path.exists(os.path.join(d, *p.split('/'))) for p in KI.CODEOWNERS_PLACES) and
+          os.path.isfile(os.path.join(d, '.kit', 'CODEOWNERS.proposed')) and 'Customise the CODEOWNERS draft' in chk,
+          'P16 --codeowners customise: no CODEOWNERS written, a draft to finish, the step says how', out[-200:])
+    # P17 an existing CODEOWNERS in each of the three places is never changed; the kit lines are proposed
+    for place in KI.CODEOWNERS_PLACES:
+        mine = '# ours\n* @example-org/web-devs\n/.github/workflows/ @example-org/web-devs\n'
+        d = make_repo(os.path.join(base, 'co3-' + place.replace('/', '_')), 'app',
+                      dict(FIXTURES['python'], **{place: mine}), remote=gov_remote)
+        rc, res, out = run(d, '--dry-run', '--org-overlay', OVERLAY)
+        kept = io.open(os.path.join(d, *place.split('/')), encoding='utf-8').read()
+        others = [p for p in KI.CODEOWNERS_PLACES if p != place and os.path.exists(os.path.join(d, *p.split('/')))]
+        chk = io.open(os.path.join(d, '.kit', 'ADOPTION_CHECKLIST.md'), encoding='utf-8').read() if rc == 0 else ''
+        check(rc == 0 and kept == mine and not others and os.path.isfile(os.path.join(d, '.kit', 'CODEOWNERS.proposed')),
+              'P17 %s exists: never changed, no second file, the kit lines proposed' % place, out[-200:])
+        # N14 the rule that would decide a kit path instead is flagged, by line
+        check('line 2 `* @example-org/web-devs`' in chk or 'line 3 `/.github/workflows/ @example-org/web-devs`' in chk,
+              'N14 %s: an existing rule that also matches a kit path is flagged (last match wins)' % place)
+    # P17b two CODEOWNERS: the first GitHub reads is the one; the other is named as ignored
+    d = make_repo(os.path.join(base, 'co4'), 'app', dict(FIXTURES['python'], **{
+        '.github/CODEOWNERS': '* @example-org/web-devs\n', 'docs/CODEOWNERS': '* @example-org/nobody\n'}), remote=gov_remote)
+    rc, res, out = run(d, '--dry-run', '--org-overlay', OVERLAY)
+    chk = io.open(os.path.join(d, '.kit', 'ADOPTION_CHECKLIST.md'), encoding='utf-8').read() if rc == 0 else ''
+    check(rc == 0 and 'these are ignored: `docs/CODEOWNERS`' in chk, 'P17 two CODEOWNERS: the one GitHub ignores is named')
+    # N15 a person edits the default kit init wrote: from then on it is theirs, and only proposed to
+    d = make_repo(os.path.join(base, 'co5'), 'app', FIXTURES['python'], remote=gov_remote)
+    run(d, '--dry-run', '--org-overlay', OVERLAY)
+    p = os.path.join(d, '.github', 'CODEOWNERS')
+    io.open(p, 'a', encoding='utf-8').write('/docs/ @example-org/web-devs\n')
+    edited = io.open(p, encoding='utf-8').read()
+    rc, res, out = run(d, '--dry-run', '--org-overlay', OVERLAY)
+    check(rc == 0 and io.open(p, encoding='utf-8').read() == edited and 'CODEOWNERS' in ' '.join(res.get('preserved', [])),
+          'N15 an edited default is the person\'s: kept byte for byte, listed, the lines proposed', out[-200:])
+    # P18 connectors: hand-wired files listed with what each is for
+    hand = ('on: pull_request\njobs:\n  security:\n    uses: example-org/secure-cicd-kit/.github/workflows/'
+            'reusable-security.yml@' + 'a' * 40 + '\n')
+    d = make_repo(os.path.join(base, 'cn1'), 'app', dict(FIXTURES['python'], **{
+        '.github/workflows/security-org.yml': hand, '.github/workflows/lint.yml': 'on: push\njobs: {}\n',
+        '.kit/zone-readiness.json': '{}\n'}), remote=gov_remote)
+    rc, res, out = run(d, '--dry-run', '--org-overlay', OVERLAY)
+    chk = io.open(os.path.join(d, '.kit', 'ADOPTION_CHECKLIST.md'), encoding='utf-8').read() if rc == 0 else ''
+    check(rc == 0 and '`.github/workflows/security-org.yml` | file | calls the kit (reusable-security.yml' in chk and
+          '`.github/workflows/lint.yml` | file | not a kit workflow' in chk and '`.kit/zone-readiness.json`' in chk and
+          'not listed: run kit init with --inventory-api' in chk,
+          'P18 the connectors it can see are listed with their purpose; the settings it cannot see are said', out[-300:])
+    # P18b with --inventory-api and a token that may list: names only, each with what it is for
+    d = make_repo(os.path.join(base, 'cn2'), 'app', FIXTURES['python'], remote=gov_remote)
+    rc, res, out = run(d, '--dry-run', '--org-overlay', OVERLAY, '--inventory-api', '--list-teams',
+                       env=dict(os.environ, KIT_INIT_GH=api_stub(base)))
+    chk = io.open(os.path.join(d, '.kit', 'ADOPTION_CHECKLIST.md'), encoding='utf-8').read() if rc == 0 else ''
+    check(rc == 0 and '`staging-old` | environment | not one the kit names' in chk and
+          '`OLD_DEPLOY_KEY` | secret | not a kit name' in chk and
+          '`KIT_SMALL_TEAM_SELF_APPROVAL` | variable | NOT a repository setting' in chk and
+          'listed with the token kit init ran with' in chk,
+          'P18 --inventory-api: environment, secret and variable NAMES listed, each with what it is for', out[-300:])
+    check(not leaked(d, ['HTTP 403']), 'P18 nothing but names reaches a file')
+    # N16 a token that may not list: NOT_ESTABLISHED, said
+    d = make_repo(os.path.join(base, 'cn3'), 'app', FIXTURES['python'], remote=gov_remote)
+    rc, res, out = run(d, '--dry-run', '--inventory-api', '--repo', 'example-org/app',
+                       env=dict(os.environ, KIT_INIT_GH=api_stub(base, fail=True)))
+    chk = io.open(os.path.join(d, '.kit', 'ADOPTION_CHECKLIST.md'), encoding='utf-8').read() if rc == 0 else ''
+    check(rc == 0 and 'NOT_ESTABLISHED for those' in chk, 'N16 a token that cannot list: NOT_ESTABLISHED, said', out[-200:])
+    # teams: listed when asked and the token can; NOT_ESTABLISHED otherwise
+    d = make_repo(os.path.join(base, 'tm1'), 'app', FIXTURES['python'], remote='https://github.com/acme/%s.git')
+    rc, res, out = run(d, '--dry-run', '--list-teams', env=dict(os.environ, KIT_INIT_GH=api_stub(base)))
+    chk = io.open(os.path.join(d, '.kit', 'ADOPTION_CHECKLIST.md'), encoding='utf-8').read() if rc == 0 else ''
+    check(rc == 0 and 'as the token listed them: `@acme/platform-approvers`' in chk, 'P19 --list-teams: the org teams listed for CODEOWNERS')
+    d = make_repo(os.path.join(base, 'tm2'), 'app', FIXTURES['python'], remote='https://github.com/acme/%s.git')
+    rc, res, out = run(d, '--dry-run')
+    chk = io.open(os.path.join(d, '.kit', 'ADOPTION_CHECKLIST.md'), encoding='utf-8').read() if rc == 0 else ''
+    check(rc == 0 and 'NOT_ESTABLISHED: no overlay names them' in chk, 'N17 no overlay, no teams, no listing: NOT_ESTABLISHED, said')
+    # M10 the never-overwrite rule removed: a person's CODEOWNERS is changed, which P17's byte comparison catches
+    d = make_repo(os.path.join(base, 'm10'), 'app', dict(FIXTURES['python'], CODEOWNERS='* @x/y\n'), remote=gov_remote)
+    saved = KI.codeowners_findings
+    try:
+        KI.codeowners_findings = lambda e, b: []
+        o = KI.parser().parse_args(['--target', d, '--kit-repo', KIT_REPO, '--kit-sha', SHA, '--dry-run'])
+        ctx = KI.apply(KI.build(o), write=False)
+    finally:
+        KI.codeowners_findings = saved
+    check('CODEOWNERS' not in ctx['writes'], 'M10 the existing CODEOWNERS is not in the write set (the guard holds)')
+
+
 ACTIONLINT_EXCLUDED = ('specifying action "$/', 'maximum number of inputs for "workflow_dispatch" event is 10')
 
 
@@ -562,6 +917,11 @@ def main():
             switch(base)
             negative(base)
             mutants(base)
+            host_detection(base)
+            overlay(base)
+            what_how_why(base)
+            overlay_mutants(base)
+            codeowners_and_connectors(base)
     finally:
         shutil.rmtree(base, ignore_errors=True)
     if FAILS:

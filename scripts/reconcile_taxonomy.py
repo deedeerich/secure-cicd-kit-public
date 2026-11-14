@@ -57,6 +57,9 @@ SKIP_DIRS = {os.path.join("docs", "architecture", "prototypes")}
 # vocabulary. Kept explicit rather than heuristic, because a heuristic that quietly swallows a real
 # taxonomy term would defeat the whole check.
 NOT_VOCABULARY = {
+    # Configuration names, not vocabulary: the harness checkout the pair proof reads, and the optional
+    # org-read secret of the governance gate (docs/adoption/SETTINGS_PRECEDENCE.md).
+    "EVIDENCE_HARNESS_ROOT", "GOVERNANCE_READ_ORG_TOKEN",
     "GITHUB_OUTPUT", "GITHUB_ENV", "GITHUB_STEP_SUMMARY", "GITHUB_PATH", "GITHUB_TOKEN",
     # The runner's REST API base URL, read by scripts/environment_protection.py to read an
     # environment's protection rules back. A platform environment variable, same class as above.
@@ -120,6 +123,19 @@ NOT_VOCABULARY = {
     # and the shim's two environment variables (log path, simulated files-API exit code), and its
     # per-job permission table. Settings and harness names; none is a state.
     "KIT_CONSUMER_PATH_ON_PUSH", "GITHUB_HEAD_REF", "GH_SHIM", "GH_LOG", "FILES_RC", "JOB_PERMS",
+    # Lane tickets (KDEC-043, 2026-11-06): the Freshservice backend's SETTINGS (a host, a key, a custom field's
+    # name, numeric ids, the mark mode notes|tags in lower case, a retry count and a lock directory) and the
+    # registered name->identity map for `via` claims; Python constants referenced across modules (the kit's
+    # block delimiters and line prefixes, Freshservice's own status numbers, the stand-in's keys and agent ids,
+    # the label-verification verdict 'verified', the module's constant naming the tag-change pattern, the
+    # reconciler's env-name constant) and os.open's flags. None is a state; the states are registered under
+    # ticket_governance_state and ticket_template_refusal.
+    "FRESHSERVICE_HOST", "FRESHSERVICE_API_KEY", "FRESHSERVICE_STAMP_FIELD", "FRESHSERVICE_REQUESTER_ID",
+    "FRESHSERVICE_CALIBRATION_TICKET", "FRESHSERVICE_WORKSPACE_ID", "FRESHSERVICE_MARK_MODE",
+    "FRESHSERVICE_TAG_RETRIES", "FRESHSERVICE_LOCK_DIR", "KIT_INTEGRATION_IDENTITIES",
+    "BLOCK_OPEN", "BLOCK_CLOSE", "LINK_PREFIX", "MARKER_PREFIX", "STAMP_FIELD", "STATUS_OPEN", "STATUS_PENDING",
+    "STATUS_RESOLVED", "STATUS_CLOSED", "KIT_KEY", "HUMAN_KEY", "KIT_AGENT", "HUMAN_AGENT", "LABEL_VERIFIED",
+    "TAG_CHANGE", "ENV_STAMP_LABEL", "O_CREAT", "O_EXCL", "O_WRONLY",
     # A Python constant in scripts/reconcile_tickets.py that POINTS AT a registered value rather
     # than being one: `UNCLASSIFIED_DEFAULT = BINDING_UNESTABLISHED`. It exists so that a future
     # branch which forgets to classify its lookup outcome lands on the safe value by construction
@@ -162,6 +178,9 @@ NOT_VOCABULARY = {
     # runs after which a carried obligation is escalated to a person (TICKETING_CONTRACT.md 4.1).
     # A numeric SETTING; nothing branches on its value being one of a fixed set.
     "TICKET_DEGRADED_RUN_THRESHOLD",
+    # The same class (KREQ-674, lane ticket-defaults 2026-11-13): the GitHub environment the reconcile job runs
+    # in, naming the ENVIRONMENT level of the ticketing numbers (scripts/ticket_settings.py). A name, not a state.
+    "TICKET_SETTINGS_ENVIRONMENT",
     # The same class (KDEC-024, lane L-TKT): the per-run call budget and the Jira priority ladder
     # the SLA escalation climbs, and the GitHub Issues token's secret name in the reusable
     # workflow. SETTINGS whose values are a number, a list of the tracker's own priority names
@@ -180,6 +199,14 @@ NOT_VOCABULARY = {
     # Platform environment variables the reconciler reads to link a ticket to its run and commit,
     # the same class as GITHUB_OUTPUT.
     "GITHUB_SERVER_URL", "GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_REPOSITORY",
+    # KREQ-717 / KREQ-558 (lane deploy-safety, 2026-11-13): the step env names of the deploy-interruption
+    # and live-target-authorisation composites, and the deploy job's environment name, as the proofs set
+    # them to run the composites' shell -- data carriers, never states.
+    "I_TARGET", "I_TIMEOUT", "I_PERIOD", "I_DAST", "I_RECONCILED", "I_CANCELLED", "I_SCAN",
+    "I_ENVIRONMENT", "I_DAST_EVIDENCE", "DEPLOY_ENVIRONMENT",
+    # KDEC-061 M2 (lane deploy-bounds, 2026-11-13): the same composite's new step env names (op, the bound's
+    # input name, the record's kind and the build's identity class), set by the proof -- data carriers.
+    "I_OP", "I_BOUND_NAME", "I_KIND", "I_IDENTITY",
     # Python constant names, referenced as attributes from another module (so the structural
     # assignment rule cannot see them): the model's actor string for an unattended mutation, and
     # the ticket proofs' placeholder configurations and forbidden-field pattern. Containers of
@@ -221,6 +248,14 @@ NOT_VOCABULARY = {
     # and tools/battery.py's override for the bash it runs step bodies with, and its constant for
     # the self-test workflow path. Names of settings, not states.
     "EXPECTED_AUDIENCE", "BATTERY_BASH", "SELF_TEST",
+    # tools/battery.py's KIT_LOCAL_TOOLS: the env var naming a directory of placed scanners (lane
+    # tools, 2026-11-07). A setting's name, not a state; the state it can produce, VERSION_MISMATCH,
+    # is registered under local_tool_pin.
+    "KIT_LOCAL_TOOLS",
+    # tests/check_tool_pins_single_version.py (lane pins, 2026-11-07): OSV_VERSION is the malicious-deps
+    # step's env key holding the osv-scanner tag, named in the pin registry as an alias. A setting's
+    # name, not a state.
+    "OSV_VERSION",
     # scripts/dependabot_config.py: the env var a caller may set to add path globs to leave out.
     "DEPENDABOT_CONFIG_EXCLUDE",
     # Lane kit-adoption (KDEC-041, 2026-11-06). scripts/kit_init.py and its proof: Python constant names that
@@ -241,9 +276,20 @@ NOT_VOCABULARY = {
     # constant names that alias registered states (reviewer_signals' KEPT_DEPLOYMENT and friends, the
     # pull's AUTH_REFUSED / HOST_REFUSED), the template version constant, and SonarQube's own hotspot
     # status word TO_REVIEW (the vendor's, read, never a state of this kit).
+    # scripts/kit_survey.py / kit_org_init.py (owner 2026-11-07): stored-cloud-key secret NAMES the survey looks
+    # for (never values), the token secret's name, and constant names (lists of variable names, claim keys).
+    "AZURE_CREDENTIALS", "AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "GCP_SA_KEY", "GOOGLE_CREDENTIALS",
+    "KIT_SURVEY_TOKEN", "WRONG_AT_ORG", "ORG_LEVEL_REQUIRED", "DEFAULT_SUB_CLAIMS", "STATIC_CLOUD_SECRETS",
+    "STRENGTH_STEPS", "KIT_ADVANTAGE", "SCANNER_KIT_ATTRS", "NATIVE_OWNERS", "DEPLOY_SIGNS", "PR_EVENTS",
+    "WORKFLOW_DIR", "CSV_COLUMNS", "DEFAULT_UI_MESSAGE", "SECRET_VALUE", "VAR_VALUE",
     "SONAR_TOKEN", "SONAR_HOST_URL", "SONAR_ORGANIZATION", "AIKIDO_API_BASE", "AIKIDO_CLIENT_ID", "AIKIDO_CLIENT_SECRET",
     "AIKIDO_ID", "AIKIDO_SECRET", "KEPT_DEPLOYMENT", "NOT_KEPT", "NOT_APPROVED", "SELF_APPROVED",
     "AUTH_REFUSED", "HOST_REFUSED", "TEMPLATE_VERSION", "TO_REVIEW",
+    # scripts/harness_pair_gate.py and the hosted kit-harness pair (KDEC-058): setting NAMES (the App's secret and
+    # variables, never values), the gate's environment-variable names and its constant names. Its states are
+    # kit_harness_pair_outcome.
+    "KIT_HARNESS_APP_PRIVATE_KEY", "KIT_HARNESS_APP_CLIENT_ID", "KIT_HARNESS_REPOSITORY", "APP_CLIENT_ID",
+    "HAS_APP_KEY", "HARNESS_REPOSITORY", "HARNESS_PIN_FILE", "TRUSTED_EVENTS",
     # scripts/finding_ids.py self-test inputs: spellings of a CVE and a CWE the normaliser must accept
     # (the format table). Ids of a vulnerability and a weakness, not states of this kit.
     "CVE_2021_44228", "CWE_79",
@@ -454,6 +500,10 @@ NOT_VOCABULARY = {
     # OF-5 K-6/K-7: the app-setting keys the hand-off assigns to the kit, and the app's own edge endpoint
     # (the purge scope, D-4) -- vended settings whose values are names, never states.
     "KIT_SETTING_KEYS", "KIT_EDGE_ENDPOINT",
+    # KDEC-042 (uat/prod gating): repository or organisation VARIABLES naming the approver pools and the
+    # app team (their outcomes are registered: environment_protection, app_team_check), and a Python
+    # constant name of scripts/environment_protection.py that its proof's mutants quote.
+    "KIT_APPROVER_POOLS", "KIT_APP_TEAM", "PRODUCTION_TIERS",
     # OF-5 K-10: Python constant names referenced as attributes from another module (the deployed scan's
     # rule table and its landing-zone mapping in scripts/promotion.py; the promotion proof's SBOM digest).
     # Containers of values, never states.
@@ -549,6 +599,43 @@ NOT_VOCABULARY = {
     "KIT_API_APPROVED_TOOLS", "KIT_API_EVIDENCE_STORES", "ANSWER_COMPLETED", "ANSWER_FAILED",
     "ANSWER_REFUSED", "AZDO_BATCH_MAX", "DEFAULT_APPROVER_SOURCE", "DISPOSITION_REQUESTS",
     "TERMINAL_OUTCOMES",
+    # Owner rulings 2026-11-07 (lane r5final): PYTHON CONSTANT NAMES of scripts/org_settings.py and the proofs
+    # (each carries a registered small_team_self_approval, azure_cloud or org_settings value), the deploys'
+    # ORG_* aliases of org_settings values, ENVIRONMENT-VARIABLE and SETTING NAMES (the composite's OS_* inputs,
+    # KIT_ORG_SETTINGS, KIT_SMALL_TEAM_SELF_APPROVAL, KIT_BOUND_ENVIRONMENT_TIER, GITHUB_EVENT_PATH, the AWS
+    # credential names the KIT_CLOUD scope check looks for, and the settings SETTINGS_PRECEDENCE.md tabulates),
+    # and SUFFIXES of registered values quoted in proof labels. Names and containers; the states are registered.
+    "AC_CONFLICT", "AC_ENV", "AC_INPUT", "AC_MAP", "AC_NOT_ESTABLISHED", "AC_SINGLE", "AC_UNKNOWN", "AC_UNSET",
+    "ADOPTION_DEFAULTS", "AWS_ACCESS_KEY_ID", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY", "BEYOND_REVIEW",
+    "CONFLICTS_WITH_ORG", "GITHUB_EVENT_PATH", "GOVERNED_SETTING_LOOSENED", "HOST_MISMATCH", "JIRA_MAX_DIGITS",
+    "JIRA_MIN_DIGITS", "KIT_AZURE_CLOUD", "KIT_BOUND_ENVIRONMENT_TIER", "KIT_ORG_SETTINGS",
+    "KIT_SMALL_TEAM_SELF_APPROVAL", "ORG_ABSENT", "ORG_APPLIED", "OS_AZURE", "OS_BOUND_CLOUD", "OS_CLOUD",
+    "OS_ENVIRONMENT", "OVERLAY_INVALID", "POOLS_EXIST", "REVIEW_DAYS_DEFAULT", "REVIEW_DAYS_MAX",
+    "SMALL_TEAM_MAX", "ST_BEYOND", "ST_EXPIRED", "ST_EXTERNAL", "ST_INCOMPLETE", "ST_IN_FORCE",
+    "DAST_NOT_REQUIRED", "DAST_NO_POLICY", "DAST_DECISION_FIELDS", "ST_NOT_DECLARED", "ST_NOT_KNOWN_SOLO", "ST_NOT_ORG", "ST_POOLS", "ST_TOO_LARGE", "TEAM_TOO_LARGE", "TOP_KEYS",
+    "UNSET_FOR_ENVIRONMENT", "VALUE_UNKNOWN", "WORDFENCE_API_KEY", "WPSCAN_API_TOKEN", "ZAP_TARGET",
+    "ZAP_TARGETX", "WEAKENING_FIELDS", "AC_PERMITTED", "CLOUD_WORDS", "OVERLAY_GLOB", "LEVEL_RANK",
+    "GOVERNED_PATHS", "SMALL_TEAM_OK", "SMALL_TEAM_REFUSED", "SMALL_TEAM_APPROVAL",
+    "CODEOWNERS_PLACES", "CODEOWNERS_PROPOSED", "CODEOWNERS_DEFAULT_HEAD", "CONNECTOR_PURPOSE", "ENV_PURPOSE",
+    "OLD_DEPLOY_KEY",
+    # Integration round 3 (2026-11-09): Python container names (finding_lineage's alias state tuples, the
+    # evidence export's record allowlists, the harness's column/kind tuples a kit proof reads, a proof's
+    # constant) and the environment variable that points a proof at the harness. Names; the states they hold
+    # are registered (lineage_*, promotion_*, evidence_harness_reading).
+    "ALIAS_DECIDED_STATES", "ALIAS_UNRESOLVED_STATES", "APPROVAL_KINDS", "EXC_COLUMNS", "PROMOTION_RECORD",
+    "RELEASE_RECORD", "REFUSED_CARRY", "EVIDENCE_HARNESS_SRC",
+    # R-45 M5 (KDEC-048, 2026-11-10): container and constant names around the evaluated decision (the states
+    # they hold are registered under disposition_decision); the harness module attribute a proof probes.
+    "DECISION_SCHEMA", "DECISION_REASON_MAX", "DECISION_EFFECTIVE_VALUES", "DECISION_APPROVED_EFFECTIVE",
+    "DECISION_PENDING_REAFFIRMATION", "DECISION_STATUS", "LINEAGE_CARRIED", "LINEAGE_PENDING",
+    # Integration of the 2026-11-11 fix lanes (KDEC-050, KDEC-051): PYTHON CONSTANT NAMES referenced as
+    # attributes from another module. Containers, a policy table and aliases of REGISTERED values -- never
+    # states: the decision object's key list and the kit's separation-of-duties literal (its value is the
+    # registered NOT_ESTABLISHED), capability_floor's default tombstone policy table, reconcile_tickets'
+    # aliases of reconciliation_population.SCANNER_INVENTORY_ESTABLISHED / _NOT_ESTABLISHED, and
+    # protected_paths' list of change-guarded files.
+    "DECISION_KEYS", "DECISION_SOD_NOT_ESTABLISHED", "DEFAULT_POLICY", "INVENTORY_ESTABLISHED",
+    "INVENTORY_NOT_ESTABLISHED", "CHANGE_GUARDED",
 }
 
 TOKEN = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")

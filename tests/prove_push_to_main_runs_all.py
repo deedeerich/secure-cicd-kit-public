@@ -52,8 +52,16 @@ EXEMPT = {
                              'a push supplies no environment or scopes to assert',
     'nvd-cve.yml': 'the NVD pass needs a dispatch-chosen environment holding NVD_API_KEY; without it the '
                    'database update is rate-limited for 20-40 minutes',
+    'kit-survey.yml': 'surveys an organisation with a read-only token this repository holds only when the owner '
+                      'adds it, and names private repositories: a person decides when (owner 2026-11-07)',
     'external-findings.yml': 'pulls SonarQube / Aikido with secrets this repository does not hold; a push '
                              'run would only end SOURCE_NOT_CONFIGURED (owner 2026-11-06: dispatch only here)',
+    'governance-gate.yml': 'decides an OPEN pull request from the default branch (KDEC-059); a push to main has '
+                           'no pull request to decide. It runs on pull_request_target, Self-test completion, '
+                           '/kit- comments and dispatch',
+    'kit-harness-pair.yml': 'dispatch-only until the owner creates the read-only App (KDEC-058 M6): with no '
+                            'credential every run ends HARNESS_LEG_NOT_RUN, red on every push. After setup the '
+                            'push trigger comes back (prove_harness_pair_gate.py W1) and this entry goes',
 }
 # Workflows whose push trigger is deliberately path-scoped, and why.
 PATH_SCOPED = {

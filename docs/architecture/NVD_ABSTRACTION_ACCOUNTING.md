@@ -25,7 +25,7 @@ This file exists so nothing is silently lost in translation. **Everything droppe
 | the original hardcoded scan paths | `scan_paths` input |
 | a hardcoded project name | `project_name` input, defaults to `${{ github.repository }}` |
 | a repository-specific secret name | `secrets.NVD_API_KEY` |
-| `--failOnCVSS 9` | `fail_on_cvss` input — **default changed to 11 (never fail)**, see §5 |
+| `--failOnCVSS 9` | `fail_on_cvss` input — **ships at 9.0** (owner ruling O-12 replaced an unreachable earlier default), see §5 |
 | Dependency-Check `9.0.9` pinned in URL | `dependency_check_version` input |
 | Python `3.11` | `python_version` input, default `3.12` |
 | `retention-days: 90` | `artifact_retention_days` input, **default 30** |

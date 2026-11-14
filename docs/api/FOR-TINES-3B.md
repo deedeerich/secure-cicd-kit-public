@@ -102,7 +102,7 @@ submit-then-poll. Copy status words verbatim; never turn a state into "done".
 | findings (vuln management) | `findings.search` | `{"run_id": "latest", "filters": {"kev": true}}` | `findings` (CVEs, KEV, ticket), `total` |
 | one finding | `findings.get` | `{"run_id": 123, "finding_id": "<id>"}` | `finding` |
 | a scan of a branch | `scan.request` | `{"ref": "main"}` (dispatched AT that ref) | `routing_result`, `run_id` |
-| a release | `deploy.request` (key required) | `{"mode": "promote", "environment": "prod", "promote_from_run_id": 123, "promote_from_environment": "test"}` | `deployment_outcome` |
+| a release | `deploy.request` (key required) | `{"mode": "promote", "environment": "prod", "promote_from_run_id": 123, "promote_from_environment": "test", "promote_from_target_resource_id": "/subscriptions/.../providers/..."}` (the id is optional in the request but REQUIRED by the gate at uat and prod) | `deployment_outcome` |
 | the answer to any call | `status` (client only) | the correlation id | the result |
 | tickets from a finalized review | `tickets.submit` (key required) | `{"template": "finding", "template_version": 1, "review_id": "<id>", "items": [...]}` | `items[]` (outcome, ref, candidates, score), `review` |
 | every ticket, manual too (dashboards) | `tickets.search` | `{"tracker_query": {"labels": ["security"], "max_results": 100}}` | `tickets` (manual, state, linked keys), `next_page_token` |

@@ -67,12 +67,19 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # Owner 2026-11-06 (no babysitting): the same caller also keeps open Dependabot PRs current.
     "dependabot-triage.yml": ["dependabot-triage", "dependabot-merge-hosted", "dependabot-keep-current"],
     "reusable-dependabot-keep-current.yml": ["dependabot-keep-current"],
+    # KDEC-059 (lane governance, 2026-11-13): the base-side governance gate (personal / employer profiles).
+    "governance-gate.yml": ["governance-gate"],
     # Owner 2026-11-06: a pull request that leaves a manifest unread, or an entry without a manifest, fails
     # with the fix (scripts/dependabot_config.py inlined; tests/prove_dependabot_config.py).
     "reusable-dependabot-config-check.yml": ["dependabot-config-check"],
     "dependabot-config-check.yml": ["dependabot-config-check"],
     # Owner 2026-11-06: SonarQube / Aikido findings pulled read-only, submitted only behind the review gate.
     "reusable-external-findings.yml": ["external-findings-pull"],
+    # Owner 2026-11-07: the read-only org survey and the one-time org setup check (KDEC-045).
+    "reusable-kit-survey.yml": ["org-survey"],
+    "kit-survey.yml": ["org-survey"],
+    # Owner-accepted 2026-11-13 (KDEC-052 item 9; built KDEC-058): the hosted kit-harness pair.
+    "kit-harness-pair.yml": ["kit-harness-pair-hosted"],
     "external-findings.yml": ["external-findings-pull"],
     "reusable-deploy-appservice.yml": ["deploy-appservice"],
     "reusable-deploy-containerapp.yml": ["deploy-containerapp"],
@@ -160,6 +167,14 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # tests/prove_target_lease_crossrepo.py (two callers against a Blob-service emulation). Never
     # run against real Azure Storage (the seam contract's U6, U10, U11).
     "action:target-lease": [],
+    # KDEC-061 (deploy-safety lane, integrated 2026-11-13): deploy-side safety, NOT AN ASSURANCE CLAIM about the
+    # code or the artefact. deploy-interruption makes the next run of a target reconcile a deploy a timeout
+    # killed (KREQ-717; proof: tests/prove_deploy_interruption.py); live-target-authorisation refuses DAST and
+    # the deployed scan without an authorisation record in force (KREQ-558; proof:
+    # tests/prove_live_target_authorisation.py). They gate runs and scan nothing, so they name no capability.
+    # Proven locally only; a hosted run is owed.
+    "action:deploy-interruption": [],
+    "action:live-target-authorisation": [],
     # THE RUN RECORD (ledger L36): evidence assembly, not an assurance claim -- it restates what the
     # gate established, validated against the schema. Proof: tests/prove_gate_run_record.py.
     "action:run-record": [],
@@ -218,6 +233,10 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # the plain-English error layer the gate, deploys, ticketing, triage, API and preflight call.
     "action:kit-init": ["kit-init"],
     "action:plain-errors": ["plain-errors"],
+    # Owner rulings 2026-11-07 (lane r5final): the org overlay's governed settings and each environment's
+    # Azure cloud, read before any deploy, build or rollback signs in. Proven locally (the composite's own
+    # step under bash, tests/prove_org_settings.py O4); a hosted run with an overlay is owed.
+    "action:org-settings": ["org-settings"],
 }
 
 # What is actually proven, and how. States:
@@ -549,6 +568,7 @@ VALIDATION_REGISTRY: dict[str, dict] = {
     # the taxonomy, every wiring site read from the workflows (tests/prove_plain_errors.py). Level `tool`:
     # no hosted run has shown the annotations on a run page yet.
     "plain-errors": {"probe": "tests/prove_plain_errors.py", "state": "observed", "level": "tool"},
+    "org-settings": {"probe": "tests/prove_org_settings.py", "state": "observed", "level": "tool"},
     # OBSERVED 2026-10-22, locally, by running the workflow's OWN evidence, decision and action steps
     # extracted from .github/workflows/reusable-dependabot-triage.yml under bash with a gh shim:
     # tests/prove_dependabot_triage.py (D1..D8, 42 decisions). Level `tool`: nothing here has run on
@@ -563,6 +583,10 @@ VALIDATION_REGISTRY: dict[str, dict] = {
     # until a hosted run (DEPENDABOT_TRIAGE.md section 3b).
     "dependabot-keep-current": {"probe": "tests/prove_dependabot_keep_current.py", "state": "observed",
                                 "level": "tool"},
+    # OBSERVED 2026-11-13, locally: scripts/governance_gate.py in both profiles against fixtures and real git
+    # repositories, and the workflow's shape (tests/prove_governance_profiles.py P-, N-, A-, F-, E-, B-, W-; 14
+    # mutants). Level `tool`: no hosted pull request has run the workflow (KDEC-059 M3 owes it).
+    "governance-gate": {"probe": "tests/prove_governance_profiles.py", "state": "observed", "level": "tool"},
     # OBSERVED 2026-11-06, locally: the script against constructed repositories and the kit's own tree,
     # and the workflow's check step run as shipped (tests/prove_dependabot_config.py C1..C4, N1..N9).
     # Level `tool`: no hosted pull request has run the reusable.
@@ -571,6 +595,15 @@ VALIDATION_REGISTRY: dict[str, dict] = {
     # OBSERVED 2026-11-06, locally: both adapters against a 127.0.0.1 stand-in answering the documented
     # shapes (tests/prove_external_findings_pull.py P1-P3, N1-N8) and the workflow's pull step as shipped
     # (tests/prove_external_findings_workflow.py). Level `tool`: no call to a real SonarQube or Aikido yet.
+    # OBSERVED 2026-11-07, locally: scripts/kit_survey.py and scripts/kit_org_init.py against a 127.0.0.1 stand-in
+    # in the github.com and GHE.com shapes (tests/prove_kit_survey.py P1-P7 N1-N7 M1-M8; tests/prove_kit_org_init.py),
+    # and read-only against the owner's personal account. Level `tool`: no hosted run of the reusable yet.
+    "org-survey": {"probe": "tests/prove_kit_survey.py", "state": "observed", "level": "tool"},
+    # OBSERVED 2026-11-13, locally (lane actionlint-pair): scripts/harness_pair_gate.py decides and runs the pair
+    # (tests/prove_harness_pair_gate.py G1-G2 N1-N6 W1, nine mutants), and through the gate against a real harness
+    # checkout at its commit (rc 0). Level `tool`: no hosted run; the owner has not created the App, so a hosted
+    # run today ends HARNESS_LEG_NOT_RUN by design (docs/operations/HARNESS_PAIR_HOSTED.md).
+    "kit-harness-pair-hosted": {"probe": "tests/prove_harness_pair_gate.py", "state": "observed", "level": "tool"},
     "external-findings-pull": {"probe": "tests/prove_external_findings_pull.py", "state": "observed",
                                "level": "tool"},
     # OBSERVED 2026-10-22, locally (lane L-FX): scripts/exception_due.py against fixture registers and

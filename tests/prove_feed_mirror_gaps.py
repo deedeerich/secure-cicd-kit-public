@@ -76,16 +76,14 @@ GOSEC = 'securego/gosec:2.24.6@' + GOSEC_D
 GITLEAKS = 'zricethezav/gitleaks:v8.21.2@' + GITLEAKS_D
 
 
-# osv-scanner v2.6.0, the release the workflow and self-test pin, from its osv-scanner_SHA256SUMS. The positive
-# OSV case runs only a binary whose bytes are one of these; anything else is UNKNOWN, never a pass.
-OSV_260_SHA256 = {
-    'ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108',  # linux_amd64 (self-test installs this)
-    '2c71403eb443d05891c4f268c3ad771cf4f16e5443463fd7851ef8f454d3c7e4',  # linux_arm64
-    '60c5296637e977b28eeda5c7f13573e447659a632922737f94d11fa7e30ad6ca',  # darwin_amd64
-    '98c460dcd37de25819babd757d04542045b6243113e209edcd4d89fedb0256b4',  # darwin_arm64
-    'e0ed7644118b717b028c249ee9d3515024e55e8510747ca08906eb96765354d6',  # windows_amd64.exe
-    'ca1379da0e408279ef2c85cde0846a903495738a91c7b065a208048437c1686c',  # windows_arm64.exe
-}
+# The osv-scanner the workflow and self-test pin, and every binary asset of that release from its
+# osv-scanner_SHA256SUMS, read from the ONE pin list (.github/tool-pins.json; it was 2.6.0, written here,
+# until 2026-11-07). The positive OSV case runs only a binary whose bytes are one of these; anything else
+# is UNKNOWN, never a pass.
+with io.open(os.path.join(ROOT, '.github', 'tool-pins.json'), encoding='utf-8') as _fh:
+    _OSV = json.load(_fh)['tools']['osv-scanner']
+OSV_VERSION = _OSV['version']
+OSV_SHA256 = set(_OSV['sha256'].values())
 # A check that exists only in the mirror's bundle: Trivy's embedded checks cannot produce this id.
 MARKER_REGO = b'''# METADATA
 # title: Kit feed-mirror marker
@@ -114,15 +112,15 @@ deny contains res if {
 '''
 
 
-def osv_scanner_260():
-    """osv-scanner on PATH -- only when its sha256 is a v2.6.0 release asset."""
+def osv_scanner_pinned():
+    """osv-scanner on PATH -- only when its sha256 is an asset of the pinned release."""
     b = shutil.which('osv-scanner')
     if not b or not os.path.isfile(b):
-        return None, 'osv-scanner v2.6.0 is not on PATH'
+        return None, 'osv-scanner v%s is not on PATH' % OSV_VERSION
     with io.open(b, 'rb') as fh:
         h = hashlib.sha256(fh.read()).hexdigest()
-    if h not in OSV_260_SHA256:
-        return None, '%s (sha256 %s) is not a checksum-verified osv-scanner v2.6.0 release asset' % (b, h)
+    if h not in OSV_SHA256:
+        return None, '%s (sha256 %s) is not a checksum-verified osv-scanner v%s release asset' % (b, h, OSV_VERSION)
     return b, ''
 
 
@@ -392,7 +390,7 @@ def main():
         # consume -> the scanner under the environment consume wrote. The seeds exist ONLY in the mirror
         # (an advisory for a package no public database has; a check id no embedded bundle has), so a
         # finding cannot have come from the public API or from Trivy's embedded checks.
-        osv_bin, why = osv_scanner_260()
+        osv_bin, why = osv_scanner_pinned()
         if not osv_bin:
             unknowns.append('G8 osv: ' + why)
             print('  G8 osv-scanner offline from a placed mirror: UNKNOWN (%s)' % why)
@@ -425,8 +423,8 @@ def main():
                        for v in pk.get('vulnerabilities') or []]
             except ValueError:
                 ids = []
-            print('  G8 osv-scanner 2.6.0 offline from a placed mirror: state=%s offline=%s rc=%d found=%s'
-                  % (o.get('mirror_state'), env.get('KIT_OSV_OFFLINE'), p.returncode, ids))
+            print('  G8 osv-scanner %s offline from a placed mirror: state=%s offline=%s rc=%d found=%s'
+                  % (OSV_VERSION, o.get('mirror_state'), env.get('KIT_OSV_OFFLINE'), p.returncode, ids))
             check(o.get('mirror_state') == 'MIRROR_CURRENT' and env.get('KIT_OSV_OFFLINE') == 'true'
                   and '--offline-vulnerabilities' in cmd and p.returncode == 1 and 'KIT-OSV-0001' in ids,
                   'G8: an offline osv-scanner scan against the placed mirror did not find the seeded vulnerable '
@@ -490,7 +488,8 @@ def main():
           'OSV database are mirrored with sha256 manifests; a refused checks mirror makes `trivy config` fatal '
           '(never a silent fall back to embedded checks) and a refused OSV mirror leaves osv-scanner offline '
           'against an empty database (COLLECTION_FAILED), never clean; a placed mirror is what the real '
-          'osv-scanner 2.6.0 and Trivy 0.71.2 read offline (the seeded vulnerable package and misconfiguration found).')
+          'osv-scanner %s and Trivy 0.71.2 read offline (the seeded vulnerable package and misconfiguration found).'
+          % OSV_VERSION)
     return 0
 
 

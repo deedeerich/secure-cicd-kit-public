@@ -75,12 +75,14 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, 'scripts'))
 import _workflow_runner as W  # noqa: E402
+import promotion as PR  # noqa: E402
 
 WF = os.path.join(ROOT, '.github', 'workflows', 'reusable-deploy-staticwebapp.yml')
 CA = os.path.join(ROOT, '.github', 'workflows', 'reusable-deploy-containerapp.yml')
 CONTRACT = os.path.join(ROOT, 'scripts', 'static_site_contract.py')
 TOKEN = 'SWA-DEPLOY-TOKEN-' + 'q7' * 12
 FAILS = []
+SWA_RID = '/subscriptions/0/resourceGroups/rg-a/providers/Microsoft.Web/staticSites/site'
 SWA_TOOL = r'''
 import io, json, os, sys
 st = os.environ['fake_az_state']
@@ -161,8 +163,13 @@ def world(prior_artifact=True, new_files=None, extra_arts=()):
     # K-1: an independent reviewer's approval of the run's environment, quoting the site digest.
     approvals = [{'state': 'approved', 'user': {'login': 'independent-reviewer'}, 'comment': 'approve %s' % NEW_D,
                   'environments': [{'name': n} for n in ('dev', 'uat-env', 'prod-env')]}]
-    return {'repos/o/r/actions/artifacts': json.dumps({'total_count': len(arts), 'artifacts': arts}),
-            'repos/o/r/actions/runs/4242/approvals': json.dumps(approvals)}, binary
+    files = {'repos/o/r/actions/artifacts': json.dumps({'total_count': len(arts), 'artifacts': arts}),
+             'repos/o/r/actions/runs/4242/approvals': json.dumps(approvals)}
+    # R08: the promotion gate reads its source from the source run's OWN artifact listing.
+    for rid in sorted(set(str(a['workflow_run']['id']) for a in extra_arts)):
+        mine = [a for a in extra_arts if str(a['workflow_run']['id']) == rid]
+        files['repos/o/r/actions/runs/%s/artifacts' % rid] = json.dumps({'total_count': len(mine), 'artifacts': mine})
+    return files, binary
 
 
 def state(prior='kit', **faults):
@@ -218,7 +225,8 @@ def promotion_world(verified_in='test', run_id='90', sbom=True):
     rec = {'schema': 'kit-promotion-record/1', 'record_id': '%s-1-%s' % (run_id, verified_in),
            'state': 'verified-for-promotion',
            'artifact': {'digest': NEW_D, 'sbom_sha256': hashlib.sha256(body).hexdigest()},
-           'environment': {'name': verified_in, 'tier': 'test', 'adapter': 'staticwebapp'},
+           'environment': {'name': verified_in, 'tier': 'test', 'adapter': 'staticwebapp',
+                           'target_resource_id': SWA_RID},
            'provenance': {'source_ref': 'refs/heads/main', 'build_workflow': SIGNER, 'build_run_id': run_id},
            'conditions': {'established': [], 'missing': []}, 'validity': {'verified_at': at},
            'run': {'id': run_id}, 'approval': {'approvers': []}}
@@ -228,7 +236,11 @@ def promotion_world(verified_in='test', run_id='90', sbom=True):
         with zipfile.ZipFile(buf, 'w') as zf:
             zf.writestr(name, b)
         return buf.getvalue()
-    arts = [{'id': 801, 'name': 'kit-promotion-record-%s' % verified_in, 'expired': False, 'created_at': at,
+    # R08 (28ba4d1): the gate reads its source from the source run's OWN artifact listing and needs a record that
+    # names its target (adapter + target_resource_id); the fixture now serves both, as prove_promotion.py does.
+    # Nothing J10 asserts has changed.
+    env_d = rec['environment']
+    arts = [{'id': 801, 'name': PR.record_key(verified_in, PR.target_key(env_d)), 'expired': False, 'created_at': at,
              'archive_download_url': '@API_ROOT@/zips/rec.zip', 'workflow_run': {'id': int(run_id), 'head_branch': 'main'}}]
     binary = {'zips/rec.zip': z('promotion-record.json', json.dumps(rec))}
     if sbom:
@@ -403,6 +415,7 @@ def jobs():
     # KEV, and V1 on the marker -- the same gate as an image; without the SBOM the re-check is incomplete.
     arts, binary = promotion_world()
     prom = inputs('prod-env', 'prod', e2e_test_command='', promote_from_run_id='90', promote_from_environment='test',
+                  promote_from_target_resource_id=SWA_RID,
                   attestation_signer_workflow=SIGNER, attestations_available=True)
     kev = {'promotion_kev': {'kev_state': 'AVAILABLE', 'kev_verdict': 'CLEAR', 'kev_blocking': ''}}
     res, final, calls = run(prom, state(), extra_arts=arts, binary_extra=binary, uses_outputs=kev,

@@ -295,6 +295,45 @@ def s1_intake(ka, ks, rt, tb, fc, tmp):
     check(intake.get('accepted') is True and (intake.get('deploy') or {}).get('environment') == 'prod'
           and (intake.get('deploy') or {}).get('promote_from_run_id') == '7',
           'S1: a reviewed prod promotion was not accepted with its inputs: %r' % intake)
+    # promote_from_target_resource_id (optional field): it travels from the request to the output the
+    # reusable deploy input is wired from; absent leaves the old request valid; malformed is refused by
+    # the schema with the field named (the case fails here if the refusal is anything else).
+    rid_ok = '/subscriptions/0/resourceGroups/rg-a/providers/Microsoft.Web/staticSites/web'
+    gho = os.path.join(tmp, 'rid-gh-output.txt')
+    result, seen, intake = w.call(ks, 'deploy.request',
+                                  {'mode': 'promote', 'environment': 'prod', 'promote_from_run_id': 7,
+                                   'promote_from_environment': 'test',
+                                   'promote_from_target_resource_id': rid_ok},
+                                  key='rel-0011-abcd', extra_env={'GITHUB_OUTPUT': gho})
+    check(intake.get('accepted') is True
+          and (intake.get('deploy') or {}).get('promote_from_target_resource_id') == rid_ok,
+          'S1: promote_from_target_resource_id did not reach the validated deploy block: %r'
+          % (intake.get('refusal') or intake.get('deploy')))
+    emitted = io.open(gho, encoding='utf-8').read() if os.path.exists(gho) else ''
+    check(('promote_from_target_resource_id=%s' % rid_ok) in emitted.splitlines(),
+          'S1: the step output promote_from_target_resource_id was not emitted: %r' % emitted[-400:])
+    # Absent: the old request stays valid and the output is empty (the gate, not the API, requires it).
+    gho2 = os.path.join(tmp, 'rid-gh-output2.txt')
+    _r, _s, intake = w.call(ks, 'deploy.request',
+                            {'mode': 'promote', 'environment': 'prod', 'promote_from_run_id': 7,
+                             'promote_from_environment': 'test'}, key='rel-0012-abcd',
+                            extra_env={'GITHUB_OUTPUT': gho2})
+    check(intake.get('accepted') is True
+          and (intake.get('deploy') or {}).get('promote_from_target_resource_id') == '',
+          'S1: a request without promote_from_target_resource_id was not accepted as before: %r'
+          % intake.get('refusal'))
+    check('promote_from_target_resource_id=' in io.open(gho2, encoding='utf-8').read().splitlines(),
+          'S1: the absent field did not emit an empty output')
+    for bad in ('not-a-resource-id', '/subscriptions/0/resourceGroups/rg', '', 42,
+                '/subscriptions/0/resourceGroups/rg-a/providers/X/y z', 'x' * 600):
+        _r, _s, intake = w.call(ks, 'deploy.request',
+                                {'mode': 'promote', 'environment': 'prod', 'promote_from_run_id': 7,
+                                 'promote_from_environment': 'test',
+                                 'promote_from_target_resource_id': bad}, key='rel-0013-abcd')
+        ref = intake.get('refusal') or {}
+        check(ref.get('code') == 'API_SCHEMA_VIOLATION'
+              and 'promote_from_target_resource_id' in (ref.get('field') or ref.get('detail') or ''),
+              'S1: a malformed promote_from_target_resource_id %r was %r' % (bad, ref))
     # Self-review allowed is not a human approval the API can rely on.
     w.stub.protect('test', reviewers=1, prevent_self_review=False)
     _r, _s, intake = w.call(ks, 'deploy.request', {'mode': 'build-deploy', 'environment': 'test'},

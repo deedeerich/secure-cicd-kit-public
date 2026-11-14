@@ -34,6 +34,10 @@ CASES
     W6  no `${{ }}` in a run: block of the reusable workflow or the composite
     W7  the env contract: every KIT_API_* the server reads is set where it is read (or set by the
         composite, or a stated optional), and every KIT_API_* a step sets is read
+    W9  promote_from_target_resource_id travels request -> schema -> server intake -> composite
+        output -> reusable output -> the deploy job's input of the same name, and the input exists on
+        build-deploy.yml (a gate at uat/prod refuses without it); named mutant api-drops-source-target
+        (each link dropped in turn must fail this case)
     W8  the composite's phase step, run under bash against a loopback stub: an accepted call opens
         its check run; a refused call says so in its outputs
 
@@ -114,7 +118,7 @@ def w2(t):
         check('needs.api.outputs.' in str(v) and 'request' not in str(v).replace('deploy.request', ''),
               'W2: deploy input %s = %r is not an intake-validated value' % (k, v))
     check(sorted(w) == ['deploy', 'environment', 'promote_from_environment', 'promote_from_run_id',
-                        'release_path'], 'W2: deploy passes %r -- never an exception record' % sorted(w))
+                        'promote_from_target_resource_id', 'release_path'], 'W2: deploy passes %r -- never an exception record' % sorted(w))
     fin = jobs.get('finish') or {}
     check(str(fin.get('if', '')).startswith('always()') and "accepted == 'true'" in str(fin.get('if'))
           and (fin.get('with') or {}).get('phase') == 'finish',
@@ -300,6 +304,59 @@ def w8():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def w9_chain(tpl_txt, rw_txt, ca_txt, srv_txt, schema_txt):
+    """Every link of promote_from_target_resource_id, read from the given texts. Returns failures."""
+    import yaml
+    bad = []
+    f = 'promote_from_target_resource_id'
+    if f not in (json.loads(schema_txt).get('properties') or {}):
+        bad.append('the deploy.request schema does not carry %s' % f)
+    elif f in (json.loads(schema_txt).get('required') or []):
+        bad.append('%s must stay OPTIONAL in the schema (the gate enforces it at uat/prod)' % f)
+    if "p.get('%s')" % f not in srv_txt or "emit(" not in srv_txt or ('%s=doc' % f) not in srv_txt:
+        bad.append('the server intake does not read and emit %s' % f)
+    ca = yaml.safe_load(ca_txt)
+    if '${{ steps.p.outputs.%s }}' % f not in str(((ca.get('outputs') or {}).get(f) or {}).get('value')):
+        bad.append('the composite does not expose %s from step p' % f)
+    rw = yaml.safe_load(rw_txt)
+    wc = (on_of(rw).get('workflow_call') or {}).get('outputs') or {}
+    if '${{ jobs.intake.outputs.%s }}' % f not in str((wc.get(f) or {}).get('value')):
+        bad.append('the reusable workflow does not output %s from its intake job' % f)
+    if '${{ steps.intake.outputs.%s }}' % f not in str((((rw.get('jobs') or {}).get('intake') or {})
+                                                         .get('outputs') or {}).get(f)):
+        bad.append('the reusable workflow intake job does not carry %s from its step' % f)
+    dep = ((yaml.safe_load(tpl_txt).get('jobs') or {}).get('deploy') or {}).get('with') or {}
+    if str(dep.get(f)) != '${{ needs.api.outputs.%s }}' % f:
+        bad.append('the template deploy job passes %s as %r, not the validated output of intake' % (f, dep.get(f)))
+    return bad
+
+
+def w9():
+    rd = lambda p: io.open(p, encoding='utf-8').read()
+    paths = (TPL, RW, CA, SERVER, os.path.join(ROOT, 'api', 'v1', 'params', 'deploy.request.schema.json'))
+    txt = [rd(p) for p in paths]
+    for b in w9_chain(*txt):
+        check(False, 'W9: ' + b)
+    f = 'promote_from_target_resource_id'
+    # the input the chain ends at exists on the repository's own release workflow, type string, default empty
+    bdi = (on_of(load(BD)).get('workflow_call') or {}).get('inputs') or {}
+    check((bdi.get(f) or {}).get('type') == 'string' and (bdi.get(f) or {}).get('default') == '',
+          'W9: build-deploy.yml workflow_call has no string input %s defaulting to empty: %r' % (f, bdi.get(f)))
+    # named mutant api-drops-source-target: dropping any one link must be caught by the chain check
+    muts = {
+        'template': (0, lambda s: re.sub(r'(?m)^ *%s: .*\n' % f, '', s)),
+        'reusable-output': (1, lambda s: s.replace('jobs.intake.outputs.%s' % f, 'jobs.intake.outputs.x')),
+        'composite': (2, lambda s: s.replace('steps.p.outputs.%s' % f, 'steps.p.outputs.x')),
+        'server-emit': (3, lambda s: s.replace('%s=doc' % f, 'x=doc')),
+        'schema': (4, lambda s: s.replace('"%s"' % f, '"x"')),
+    }
+    for name, (i, fn) in muts.items():
+        m = list(txt)
+        m[i] = fn(m[i])
+        check(m[i] != txt[i], 'W9 mutant api-drops-source-target (%s): the mutation changed nothing' % name)
+        check(w9_chain(*m), 'W9 mutant api-drops-source-target (%s) SURVIVED: the chain check passed' % name)
+
+
 def main():
     try:
         import yaml  # noqa: F401
@@ -311,7 +368,7 @@ def main():
             print('FAIL: %s does not exist' % os.path.relpath(p, ROOT))
             return 1
     t, rw = load(TPL), load(RW)
-    for case, args in ((w1, (t,)), (w2, (t,)), (w3, ()), (w4, ()), (w5, (rw,)), (w6, ()), (w7, (rw,)), (w8, ())):
+    for case, args in ((w1, (t,)), (w2, (t,)), (w3, ()), (w4, ()), (w5, (rw,)), (w6, ()), (w7, (rw,)), (w8, ()), (w9, ())):
         try:
             case(*args)
         except Exception as exc:  # noqa: BLE001
@@ -323,7 +380,7 @@ def main():
     if FAILS:
         print('\n%d failure(s)' % len(FAILS))
         return 1
-    print('prove_kit_api_workflow: W1..W8 hold -- the release is the repository\'s own pipeline, called; '
+    print('prove_kit_api_workflow: W1..W9 hold -- the release is the repository\'s own pipeline, called; '
           'the API holds no deploy identity and dispatches nothing; one ticket writer at a time; '
           'every value read is set; the shipped step answers')
     return 0

@@ -90,7 +90,7 @@ jobs:
           V: ${{ matrix.version }}
         run: |
           set -euo pipefail
-          python -m pip install --quiet pyyaml==6.0.2
+          python -m pip install --quiet pyyaml==6.0.3
           python -I tests/corpora/probe_iac_corpus.py --tool trivy-config \
             --cmd "$RUNNER_TEMP/trivy/trivy" --tool-version "$V" --check
 
@@ -123,5 +123,5 @@ jobs:
       - name: Compare the PHP measurement with the registry
         run: |
           set -euo pipefail
-          python -m pip install --quiet pyyaml==6.0.2
+          python -m pip install --quiet pyyaml==6.0.3
           python -I tests/corpora/probe_php_corpus.py --from "$RUNNER_TEMP/php-corpus.json" --check

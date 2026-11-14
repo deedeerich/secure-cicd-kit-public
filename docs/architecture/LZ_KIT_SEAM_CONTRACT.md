@@ -512,6 +512,26 @@ kit's promotion record. The human break-glass above is **PIM or an emergency acc
 pipeline. Neither substitutes for the other, and a human break-glass change is never recorded as a kit
 release.
 
+## What the lease guarantees, stated narrowly (external review 2026-11-07, R10)
+
+The lease is **cooperative serialisation**: it orders writers that call it. It is **not target-side fencing**.
+- The Azure target does not check the fencing token. A mutation already sent when the lease is lost still lands;
+  the after-fence detects it (MUTATED_WITHOUT_LEASE, ROLLBACK_REQUIRES_HUMAN_DECISION) but cannot recall it.
+- Any caller with blob write on the lease store can break a lease outside the wrapper. The break authority is
+  enforced by this protocol and by audit, not by Azure RBAC.
+- A writer that never calls the lease (a person in the portal, a third pipeline, an unconfigured kit deploy) is not
+  serialised at all. Field ownership and the drift rule are what catch it, afterwards.
+- It is **off unless KIT_TARGET_LEASE_ACCOUNT is set**. Unset is the standalone profile: correct for a target only
+  the kit mutates, and NOT qualified for a target the landing zone also mutates.
+
+**Requirement for joint operation.** A target that both the LZ and the kit mutate must have the lease configured
+on both sides, and the lease store's write and break rights limited to the two pipeline identities and the break
+authority. Until a live race test has passed on real Azure Storage (two repositories racing, a holder paused
+mid-mutation, a broken lease, a delayed API reply, a manual writer, a rollback during vending), the kit is not
+qualified for joint mutation of a shared target: the release record says so. Where an Azure API supports
+conditional writes (ETag / If-Match), use them; elsewhere the residual race is documented here and mutation
+authority is restricted.
+
 ## The kit purges its own routes (decided 2026-10-26)
 
 After a **verified** release (NOW SERVING read back, health passed), the kit purges the edge cache of
@@ -590,8 +610,11 @@ LZ-vs-kit review OF-5, KDEC-034 PROPOSED -- every one opt-in with the lease, as 
    reusables (the test period held with a heartbeat) and the rollback sequence (one lease for the
    sequence, held through every step and test period), with a fence before every mutating `az` call.
 2. **Built (K-4):** each release record written create-only into the target's `releases/`
-   (`target_lease.py record`, `RELEASE_RECORD_KEPT`); the GitHub artifact stays too. Retention is the
-   LZ's immutability policy on the container, read and recorded. `tests/prove_release_record_store.py`.
+   (`target_lease.py record`, `RELEASE_RECORD_KEPT`); the GitHub artifact stays too. Retention is NOT an
+   immutability policy on the lease container (corrected 2026-11-10, risk R-47: the lease's metadata
+   writes would be refused under one); records needing retention are copied to an immutable evidence
+   store, an open owner decision (`LZ_KIT_HANDOFF_CONTRACT.md`, K-4). The container's policy flag is
+   still read and recorded. `tests/prove_release_record_store.py`.
 3. **Built (K-6):** the `seam` step refuses an app-setting or env write outside the kit's assigned keys,
    or a kit key the LZ also claims (`SEAM_SETTING_OWNERSHIP_CONFLICT`), and a swap that would move a
    non-sticky LZ-owned key (`SEAM_SWAP_MOVES_LZ_SETTING`), before the first mutation.

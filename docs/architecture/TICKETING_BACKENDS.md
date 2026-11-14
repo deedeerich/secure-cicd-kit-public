@@ -192,6 +192,71 @@ as Jira: no foreign visibility means no creation from a not-found.
 
 ---
 
+## 4A · Freshservice (KDEC-043 PROPOSED, 2026-11-06)
+
+Built in `scripts/tracker_freshservice.py` to the same backend contract and the same intake contract;
+proven only against a stand-in on 127.0.0.1 (`tests/prove_freshservice_tracker.py`). Live runs happen on the
+owner's personal account, later, with her. Sources: https://api.freshservice.com/, retrieved 2026-11-06;
+every shape not found there is marked **UNVERIFIED** below and in the module.
+
+### 4A.1 Configuration
+
+| variable | meaning |
+|---|---|
+| `TICKET_BACKEND=freshservice` | selects it; a second tracker's credential in the same run is refused by name |
+| `FRESHSERVICE_HOST` | `https://<domain>.freshservice.com` (plain `http://` only to 127.0.0.1, for the stand-in) |
+| `FRESHSERVICE_API_KEY` | the API key; Basic auth `key:X` (documented). A secret |
+| `FRESHSERVICE_STAMP_FIELD` | `cf_<name>`: a single-line text custom field a human adds once. Holds the FULL correlation key |
+| `FRESHSERVICE_REQUESTER_ID` | the requester the kit files tickets as (a role account, numeric) |
+| `FRESHSERVICE_CALIBRATION_TICKET` | a known-present ticket the kit did not create (the probe, section 3.4's rule) |
+| `FRESHSERVICE_WORKSPACE_ID` | optional; the workspace tickets go to and the only one searched |
+| `FRESHSERVICE_MARK_MODE` | `notes` (default) or `tags` -- how lifecycle markers reach an existing ticket (4A.3) |
+| `FRESHSERVICE_TAG_RETRIES` | bounded retries of a tag merge (0-5, default 2) |
+| `FRESHSERVICE_LOCK_DIR` | optional; a directory every writer on one host shares, for per-ticket lock files |
+| `TICKET_STAMP_LABEL`, `TICKET_CREATE_CEILING` | as for every backend |
+
+### 4A.2 Sweep, create, update
+
+- **Sweep:** `GET /api/v2/tickets/filter?query="tag:'<stamp>'"` (30 per page, the query at most 512
+  characters). The filter cannot search a text custom field (documented: Number, Checkbox, Dropdown, Date
+  only), so the sweep filters on the umbrella TAG and reads the stamp from the field.
+- **Create:** `POST /api/v2/tickets` with **every tag at creation** -- the one write of the list that
+  cannot drop anybody's tag -- and the full key in the stamp field; the field is read back
+  (`STAMP_FIELD_NOT_CONFIRMED` when it did not take).
+- **Comments:** private notes (`POST /api/v2/tickets/[id]/notes`, UNVERIFIED).
+- **Description:** read, splice the machine-owned block, and write only when `updated_at` has not moved
+  since the read (Freshservice documents no precondition; the seconds between re-read and write are R-30).
+- **Close / reopen:** status 5 / 2 (documented values).
+- **Intake (search-first):** exact by the stamp field or the correlation-key tag VERIFIED against the full
+  key; near by the subject and description, read from the list with `updated_since` (the list shows only 30
+  days otherwise). A list row with no description makes the search PARTIAL -- the ticket is then created in
+  triage as dedupe-pending, never lost.
+
+### 4A.3 The whole-list tag write
+
+Freshservice's update takes the tag list WHOLE ("all the tags that need to stay associated with the Ticket
+should be provided in the PUT request payload"). So:
+
+1. **Tags at creation.** 2. **No tag updates on existing tickets by default:** a marker is a private note
+`secure-cicd-kit-marker: <label>`, append-only, counted only when the kit's authenticated identity wrote it.
+3. **`tags` mode** (for dashboards that filter on tags): read, merge, write, re-read, verify, under a
+**per-ticket lock** (`TICKET_WRITE_LOCK_HELD` when another writer holds it past the bound), with bounded
+retries; then the **activity history**: an activity since the read by anyone but the kit is a concurrent
+edit; its tag changes are parsed and reconciled (a person's added tag is put back, a person's removed tag
+stays removed) and verified again. History unreadable, identity unknown, or a change in words the adapter
+cannot read: **`TAG_PRESERVATION_NOT_ESTABLISHED`**, a private note asks a person, and the write is reported
+failed. Preservation is never claimed without proof.
+
+### 4A.4 UNVERIFIED (R-29)
+
+The notes and conversations endpoints and `user_id`; `GET /api/v2/agents/me`; the filter's response shape
+and whether it returns tags; whether the list returns `description_text`; the words of an activity's tag
+change; priority 1-4 and source 2; the `ticket_form_fields` shape and the type name `custom_text`; a tag
+length limit; whether creation appears as an activity. Each is settled by the first live run on the owner's
+personal Freshservice, with a transcript.
+
+---
+
 ## 5 · Where it runs (TICKETING_CONTRACT.md section 7, applied)
 
 - **A separate reusable workflow**, `reusable-ticket-reconcile.yml`. Its triggers are push to the

@@ -9,51 +9,66 @@ In a run, the same sentence is the title of the annotation at the top of the run
 ## Contents
 
 - [advisory_cause](#advisory_cause) (9)
+- [alias_continuity](#alias_continuity) (4)
 - [api_boundary](#api_boundary) (4)
 - [api_token_preflight](#api_token_preflight) (6)
 - [artifact_identity](#artifact_identity) (3)
 - [attestation_verification](#attestation_verification) (4)
 - [authorization_probe_outcome](#authorization_probe_outcome) (3)
+- [azure_cloud](#azure_cloud) (4)
+- [break_glass_discharge](#break_glass_discharge) (2)
 - [capability_floor_state](#capability_floor_state) (2)
 - [code_finding_key_state](#code_finding_key_state) (6)
 - [control_weakening](#control_weakening) (12)
 - [coverage_state](#coverage_state) (2)
 - [dependabot_triage_rule](#dependabot_triage_rule) (26)
 - [deploy_coverage](#deploy_coverage) (1)
+- [deploy_interruption](#deploy_interruption) (4)
 - [deployment_outcome](#deployment_outcome) (6)
 - [discovery_state](#discovery_state) (8)
+- [disposition_carry](#disposition_carry) (2)
 - [edge_purge](#edge_purge) (2)
-- [environment_protection](#environment_protection) (4)
+- [environment_protection](#environment_protection) (13)
+- [escalation_route](#escalation_route) (2)
 - [evidence_retention](#evidence_retention) (2)
 - [exception_lifecycle](#exception_lifecycle) (3)
 - [exception_resurfacing](#exception_resurfacing) (7)
 - [execution_state](#execution_state) (4)
 - [execution_unavailable_reason](#execution_unavailable_reason) (7)
+- [external_findings_baseline](#external_findings_baseline) (10)
 - [external_findings_pull](#external_findings_pull) (7)
 - [feed_mirror](#feed_mirror) (4)
 - [feed_mirror_refresh](#feed_mirror_refresh) (4)
 - [finding_baseline_state](#finding_baseline_state) (1)
 - [finding_id_form](#finding_id_form) (2)
+- [governance_gate_rule](#governance_gate_rule) (18)
 - [human_control_availability](#human_control_availability) (2)
+- [kit_adoption_state](#kit_adoption_state) (4)
 - [kit_api_refusal](#kit_api_refusal) (29)
 - [kit_api_state](#kit_api_state) (6)
-- [kit_init_state](#kit_init_state) (11)
+- [kit_init_state](#kit_init_state) (14)
+- [kit_survey_state](#kit_survey_state) (7)
 - [kit_watermark](#kit_watermark) (2)
 - [known_exploited](#known_exploited) (3)
 - [known_exploited_exception_refusal](#known_exploited_exception_refusal) (7)
 - [leak_gate_setup_refusal](#leak_gate_setup_refusal) (9)
 - [leak_gate_state](#leak_gate_state) (3)
+- [live_target_authorisation](#live_target_authorisation) (1)
 - [oidc_subject_form](#oidc_subject_form) (1)
+- [org_init_result](#org_init_result) (2)
+- [org_settings](#org_settings) (2)
 - [platform_applicability](#platform_applicability) (3)
 - [policy_notice](#policy_notice) (2)
 - [policy_resolution](#policy_resolution) (16)
 - [prerequisite_readiness](#prerequisite_readiness) (4)
 - [previous_state](#previous_state) (1)
 - [promotion_check](#promotion_check) (4)
-- [promotion_gate](#promotion_gate) (18)
+- [promotion_gate](#promotion_gate) (23)
 - [promotion_revocation](#promotion_revocation) (6)
 - [publication_state](#publication_state) (2)
 - [readiness_source](#readiness_source) (4)
+- [reconciliation_correlation](#reconciliation_correlation) (3)
+- [reconciliation_population](#reconciliation_population) (2)
 - [release_approval](#release_approval) (4)
 - [release_block](#release_block) (1)
 - [release_record](#release_record) (1)
@@ -73,12 +88,16 @@ In a run, the same sentence is the title of the annotation at the top of the run
 - [seam_ownership_check](#seam_ownership_check) (1)
 - [seam_ownership_refusal](#seam_ownership_refusal) (2)
 - [secret_exception_refusal](#secret_exception_refusal) (7)
+- [small_team_self_approval](#small_team_self_approval) (9)
 - [target_lease](#target_lease) (12)
+- [ticket_clearance_hold](#ticket_clearance_hold) (8)
+- [ticket_governance_state](#ticket_governance_state) (9)
 - [ticket_intake_state](#ticket_intake_state) (3)
 - [ticket_lookup_outcome](#ticket_lookup_outcome) (4)
 - [ticket_reference_outcome](#ticket_reference_outcome) (5)
-- [ticket_template_outcome](#ticket_template_outcome) (4)
-- [ticket_template_refusal](#ticket_template_refusal) (14)
+- [ticket_setting](#ticket_setting) (3)
+- [ticket_template_outcome](#ticket_template_outcome) (5)
+- [ticket_template_refusal](#ticket_template_refusal) (15)
 - [ticketing_availability](#ticketing_availability) (3)
 - [tier_reality](#tier_reality) (2)
 - [tier_source](#tier_source) (1)
@@ -162,6 +181,42 @@ A control is weakened, but the record approving it is missing a field (reason, o
 - **Why it matters:** Below uat this is recorded; a uat or prod deploy is refused until the record is complete.
 - **Fix:** Fill in all five weakening fields in the workflow inputs, with an approver who is not you.
 - **More:** [docs/adoption/POLICY_REGISTER.md](../adoption/POLICY_REGISTER.md)
+
+## alias_continuity
+
+Not failures (nothing to do): `ALIAS_AUTHORITY_NOT_CONSULTED`, `SCANNER_ATTESTED`, `SCANNER_ATTESTED_ALIAS_CONTINUITY`, `ALIAS_NOT_APPLICABLE`, `ALIAS_UNCHANGED`.
+
+### ALIAS_CONTRADICTORY (alias_continuity)
+
+A finding's advisory ids changed to a different id of the same kind (for example a second CVE), so it is not certain this is the same finding. **[ALIAS_CONTRADICTORY]**
+
+- **Why it matters:** Two ids of one kind for one finding contradict each other; carrying the old ticket or decision across would be a guess, so the ticket is held and nothing is closed.
+- **Fix:** Resolve the hold with --resolve-reconciliation (same or separate), a triager and a second person who approves, or record the lineage event (scripts/finding_lineage.py); or decide the new finding directly.
+- **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
+
+### ALIAS_REMOVED (alias_continuity)
+
+A finding's advisory ids shrank (an id it used to carry is gone), so it is not certain this is the same finding. **[ALIAS_REMOVED]**
+
+- **Why it matters:** A narrower set is not evidence of the same advisory; the old ticket is held, not continued silently and not closed.
+- **Fix:** Resolve the hold with --resolve-reconciliation (same or separate), a triager and a second person who approves, or record the lineage event (scripts/finding_lineage.py); or decide the new finding directly.
+- **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
+
+### ALIAS_REPLACED (alias_continuity)
+
+A finding's advisory ids were swapped for different ones, so it is not certain this is the same finding. **[ALIAS_REPLACED]**
+
+- **Why it matters:** A replacement is not an alias; the old ticket is held and the earlier decision is not carried.
+- **Fix:** Resolve the hold with --resolve-reconciliation (same or separate), a triager and a second person who approves, or record the lineage event (scripts/finding_lineage.py); or decide the new finding directly.
+- **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
+
+### ALIAS_UNVERIFIED (alias_continuity)
+
+A finding gained an advisory id that the scanner's own advisory record does not list, so the match to the earlier finding is unverified. **[ALIAS_UNVERIFIED]**
+
+- **Why it matters:** An id read from message text or references does not prove two ids name one advisory; nothing is carried and the ticket is held.
+- **Fix:** Resolve the hold with --resolve-reconciliation (same or separate), a triager and a second person who approves, or record the lineage event (scripts/finding_lineage.py); or decide the new finding directly.
+- **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
 
 ## api_boundary
 
@@ -338,6 +393,62 @@ The access check never got an answer (throttling, network or an expired sign-in)
 - **Why it matters:** Unknown is never treated as refused.
 - **Fix:** Re-run verify-azure-oidc.yml; check the runner's network if it repeats.
 - **More:** [docs/adoption/SETUP.md](../adoption/SETUP.md)
+
+## azure_cloud
+
+Not failures (nothing to do): `AZURE_CLOUD_FROM_ENVIRONMENT`, `AZURE_CLOUD_FROM_INPUT`, `AZURE_CLOUD_FROM_ORG_MAP`, `AZURE_CLOUD_ORG_SINGLE`.
+
+### AZURE_CLOUD_CONFLICTS_WITH_ORG (azure_cloud)
+
+The cloud this run asked for, or the environment's KIT_CLOUD, is not the one the organisation set for this environment. **[AZURE_CLOUD_CONFLICTS_WITH_ORG]**
+
+- **Why it matters:** Signing in to the wrong cloud reaches the wrong tenant; the deploy is refused before sign-in.
+- **Fix:** Remove or correct KIT_CLOUD (repository, organisation or environment) and the cloud input so they match the org overlay, or ask the platform team to correct the overlay.
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
+
+### AZURE_CLOUD_NOT_ESTABLISHED (azure_cloud)
+
+The organisation's overlay in the kit could not be read, so the cloud cannot be decided. **[AZURE_CLOUD_NOT_ESTABLISHED]**
+
+- **Why it matters:** An unreadable setting is never treated as unset.
+- **Fix:** Ask the platform team to fix overlays/<org>/kit-org-settings.json (scripts/org_settings.py validate names the problem).
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
+
+### AZURE_CLOUD_UNSET_FOR_ENVIRONMENT (azure_cloud)
+
+The organisation uses more than one Azure cloud and its overlay does not say which one this environment is in. **[AZURE_CLOUD_UNSET_FOR_ENVIRONMENT]**
+
+- **Why it matters:** An organisation-wide value could send a Government deploy to the commercial cloud or the reverse, so nothing signs in.
+- **Fix:** Ask the platform team to add this environment (or owner/repo:environment) to azure_clouds.environments in the org overlay.
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
+
+### AZURE_CLOUD_VALUE_UNKNOWN (azure_cloud)
+
+A cloud value is neither commercial nor gov. **[AZURE_CLOUD_VALUE_UNKNOWN]**
+
+- **Why it matters:** The kit will not guess which Azure cloud to sign in to.
+- **Fix:** Set KIT_CLOUD (or the cloud input) to commercial or gov.
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
+
+## break_glass_discharge
+
+Not failures (nothing to do): `BREAK_GLASS_DISCHARGED`.
+
+### BREAK_GLASS_DISCHARGE_NOT_ESTABLISHED (break_glass_discharge)
+
+The daily scan could not establish whether a break-glass deploy's testing was done (the reason is named). **[BREAK_GLASS_DISCHARGE_NOT_ESTABLISHED]**
+
+- **Why it matters:** No predecessor target was recorded, or its history could not be read to the end; unread is never done.
+- **Fix:** Re-run the scan; if no predecessor target is recorded, promote a digest verified in the predecessor normally.
+- **More:** [docs/adoption/USAGE.md](../adoption/USAGE.md)
+
+### BREAK_GLASS_OWED (break_glass_discharge)
+
+A break-glass deploy is still serving and its predecessor target has no verified record of that digest. **[BREAK_GLASS_OWED]**
+
+- **Why it matters:** Break-glass skipped the testing; until the same digest is verified in the predecessor it stays an exception.
+- **Fix:** Deploy the digest to the predecessor target the break-glass was promoted from and let it verify, or promote a verified build normally.
+- **More:** [docs/adoption/USAGE.md](../adoption/USAGE.md)
 
 ## capability_floor_state
 
@@ -749,6 +860,42 @@ This repository deploys to a kind of hosting the kit has no deploy step for (for
 - **Fix:** Deploy as a container (Container Apps or App Service) or a static site, or ask the platform team about your hosting.
 - **More:** [docs/adoption/USAGE.md](../adoption/USAGE.md)
 
+## deploy_interruption
+
+Not failures (nothing to do): `INTERRUPTED_DEPLOY_RECONCILED_BY_HAND`, `INTERRUPTION_CHECK_CLEAR`.
+
+### DEPLOY_REFUSED_TIME_BOUND (deploy_interruption)
+
+The job's time bound (deploy_timeout_minutes, rollback_timeout_minutes or build_timeout_minutes) is outside 30 to 360, or shorter than the work the job is configured to do. **[DEPLOY_REFUSED_TIME_BOUND]**
+
+- **Why it matters:** A mutating job is bounded, never unbounded, and a bound below its own work would kill every run mid-change.
+- **Fix:** Set the named input between 30 and 360: a deploy at least 30 + the e2e test period (+30 when DAST is configured); a sequential rollback at least 30 + steps x the test period.
+- **More:** [docs/architecture/ROLLBACK_CONTRACT.md](../architecture/ROLLBACK_CONTRACT.md)
+
+### INTERRUPTED_DEPLOY_RECONCILIATION_REQUIRED (deploy_interruption)
+
+The last deploy or sequential rollback of this target was interrupted (cancelled, timed out, or it lost track) after it changed something. **[INTERRUPTED_DEPLOY_RECONCILIATION_REQUIRED]**
+
+- **Why it matters:** What that run left is not known, so deploying over it could hide or compound a half-applied change.
+- **Fix:** Reconcile live state by hand against that run's deploy-evidence (snapshot and manifest), then re-run naming its run id in reconciled_interrupted_run.
+- **More:** [docs/architecture/ROLLBACK_CONTRACT.md](../architecture/ROLLBACK_CONTRACT.md)
+
+### INTERRUPTED_PUSH_UNPROMOTABLE (deploy_interruption)
+
+The image push was killed, cancelled or failed before it ended proven and attested, so the tag may hold an image the kit never vouched for. **[INTERRUPTED_PUSH_UNPROMOTABLE]**
+
+- **Why it matters:** That image is never attested, so the promotion gate refuses it; only something pulling the tag outside the kit could pick it up.
+- **Fix:** Re-run the build. If anything outside the kit pulls that tag, re-point or remove it against the run's build-evidence (snapshot and manifest).
+- **More:** [docs/architecture/ROLLBACK_CONTRACT.md](../architecture/ROLLBACK_CONTRACT.md)
+
+### INTERRUPTION_CHECK_INCOMPLETE (deploy_interruption)
+
+The deploy could not read the target's last recorded deploy state. **[INTERRUPTION_CHECK_INCOMPLETE]**
+
+- **Why it matters:** Refused before changing anything: it would otherwise deploy blind over a possibly interrupted change.
+- **Fix:** Re-run; if it persists, check the deploy job has actions: read.
+- **More:** [docs/architecture/ROLLBACK_CONTRACT.md](../architecture/ROLLBACK_CONTRACT.md)
+
 ## deployment_outcome
 
 Not failures (nothing to do): `DEPLOY_HEALTHY`, `ROLLBACK_TO_EMPTY`.
@@ -865,6 +1012,26 @@ The kit could not tell whether code of one kind is present, so it scans for it a
 - **Fix:** Nothing for you; re-run if the discover job failed.
 - **More:** [docs/operations/FAILURE_MODES.md](../operations/FAILURE_MODES.md)
 
+## disposition_carry
+
+Not failures (nothing to do): `DISPOSITION_KEYED_DIRECTLY`, `DISPOSITION_NOT_FOUND`.
+
+### DISPOSITION_CARRIED_BY_LINEAGE (disposition_carry)
+
+A finding that moved (renamed file, rule or package, or a corrected extraction) has a decision approved on its earlier identity, and the report shows it as a pending decision that does not suppress. **[DISPOSITION_CARRIED_BY_LINEAGE]**
+
+- **Why it matters:** The approver approved the old identity, not this one, so the kit keeps the link and the decision visible but never lets an inference silently extend a risk acceptance; a split, merge, cyclic or tampered lineage ledger leaves the ticket for a person (BINDING_AMBIGUOUS).
+- **Fix:** Read PENDING DECISION -- carried by lineage in the scanner's section: if the old decision still holds, re-approve it keyed on the current identity shown there; otherwise fix the finding or decide it afresh.
+- **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
+
+### LINEAGE_RECONCILIATION_UNRESOLVED (disposition_carry)
+
+The lineage ledger is missing, and the register holds a decision on a finding this run no longer reports that matches this finding's scanner and rule or path; the report shows it as a pending decision that does not suppress. **[LINEAGE_RECONCILIATION_UNRESOLVED]**
+
+- **Why it matters:** Without the ledger the kit cannot tell whether this finding is the earlier one moved or a new one, so it names the earlier decision instead of treating the missing ledger as "no history".
+- **Fix:** Read PENDING DECISION in the scanner's section: if this is the earlier finding moved, record the lineage event (scripts/finding_lineage.py) or re-approve the decision keyed on the current identity; otherwise decide this finding on its own.
+- **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
+
 ## edge_purge
 
 Not failures (nothing to do): `EDGE_PURGED`, `EDGE_PURGE_NOT_APPLICABLE`.
@@ -887,7 +1054,15 @@ The edge endpoint the environment names is not a Front Door endpoint, so its cac
 
 ## environment_protection
 
-Not failures (nothing to do): `ENVIRONMENT_PROTECTION_NOT_REQUIRED`, `ENVIRONMENT_PROTECTION_VERIFIED`.
+Not failures (nothing to do): `ENVIRONMENT_PROTECTION_NOT_REQUIRED`, `ENVIRONMENT_PROTECTION_VERIFIED`, `ENVIRONMENT_PROTECTION_SMALL_TEAM_SELF_APPROVAL`.
+
+### ENVIRONMENT_APPROVERS_ALL_APP_TEAM (environment_protection)
+
+Every reviewer of the uat or prod environment is on the app team that wrote the change. **[ENVIRONMENT_APPROVERS_ALL_APP_TEAM]**
+
+- **Why it matters:** The team cannot approve its own production release; someone from platform or security must be able to; the deploy is refused before sign-in.
+- **Fix:** Add the platform or security team as a required reviewer of the environment (Settings > Environments > <env>), keeping Prevent self-review on.
+- **More:** [docs/adoption/BRANCH_PROTECTION_SETTINGS.md](../adoption/BRANCH_PROTECTION_SETTINGS.md)
 
 ### ENVIRONMENT_APPROVER_GROUP_MISSING (environment_protection)
 
@@ -896,6 +1071,30 @@ The environment's reviewers are not from the approver groups the policy names. *
 - **Why it matters:** Someone outside the named groups could approve a production release; refused.
 - **Fix:** Set the environment's required reviewers to the groups the summary names (for example platform or security).
 - **More:** [docs/adoption/SETUP.md](../adoption/SETUP.md)
+
+### ENVIRONMENT_APPROVER_POOL_MISSING (environment_protection)
+
+None of the uat or prod environment's reviewers is in the platform or security approver pool. **[ENVIRONMENT_APPROVER_POOL_MISSING]**
+
+- **Why it matters:** Approvals for production come from platform or security, outside the app team; the deploy is refused before sign-in.
+- **Fix:** Make a platform or security pool team (vars.KIT_APPROVER_POOLS, else approver_pools in .kit/settings.json) a required reviewer of the environment in Settings > Environments > <env>.
+- **More:** [docs/adoption/BRANCH_PROTECTION_SETTINGS.md](../adoption/BRANCH_PROTECTION_SETTINGS.md)
+
+### ENVIRONMENT_GOVERNED_SETTING_LOOSENED (environment_protection)
+
+A repository or environment setting tries to loosen who may approve a uat or prod release, which the organisation decides. **[ENVIRONMENT_GOVERNED_SETTING_LOOSENED]**
+
+- **Why it matters:** A repository value would otherwise shadow the organisation's (GitHub lets the most specific level win), so the deploy is refused before sign-in.
+- **Fix:** Remove the repository or environment value (KIT_APPROVER_POOLS, KIT_APP_TEAM, KIT_SMALL_TEAM_SELF_APPROVAL, or the key in .kit/settings.json), or ask the platform team to change the org overlay in the kit repository.
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
+
+### ENVIRONMENT_NOT_FOUND (environment_protection)
+
+The uat or prod environment this deploy names does not exist in the repository. **[ENVIRONMENT_NOT_FOUND]**
+
+- **Why it matters:** Without the environment GitHub has no reviewer to wait for, so a production deploy would need no approval; it is refused before sign-in.
+- **Fix:** Create the environment with its reviewers (the gh api -X PUT repos/<repo>/environments/<env> command in .kit/ADOPTION_CHECKLIST.md), or correct the github_environment name in the caller workflow.
+- **More:** [docs/adoption/BRANCH_PROTECTION_SETTINGS.md](../adoption/BRANCH_PROTECTION_SETTINGS.md)
 
 ### ENVIRONMENT_PROTECTION_NOT_ESTABLISHED (environment_protection)
 
@@ -907,11 +1106,27 @@ The deploy could not read the environment's protection rules (or the tier is not
 
 ### ENVIRONMENT_REVIEWERS_ABSENT (environment_protection)
 
-The uat or prod environment has no required reviewers, so anyone who can run the workflow could deploy. **[ENVIRONMENT_REVIEWERS_ABSENT]**
+The uat or prod environment has no required reviewers (no required-reviewers rule), so anyone who can run the workflow could deploy. **[ENVIRONMENT_REVIEWERS_ABSENT]**
 
 - **Why it matters:** A production deploy must be approved by someone other than the deployer; the deploy is refused.
 - **Fix:** A repository admin adds required reviewers (platform or security) in Settings > Environments > <env>; .kit/ADOPTION_CHECKLIST.md has the gh api command.
 - **More:** [docs/adoption/SETUP.md](../adoption/SETUP.md)
+
+### ENVIRONMENT_REVIEWERS_EMPTY (environment_protection)
+
+The uat or prod environment has a required-reviewers rule that names nobody, so nobody is waited for. **[ENVIRONMENT_REVIEWERS_EMPTY]**
+
+- **Why it matters:** A production deploy needs a person from platform or security to approve it; the deploy is refused before sign-in.
+- **Fix:** A repository admin adds the platform or security team as a required reviewer in Settings > Environments > <env>; .kit/ADOPTION_CHECKLIST.md has the exact gh api -X PUT command.
+- **More:** [docs/adoption/BRANCH_PROTECTION_SETTINGS.md](../adoption/BRANCH_PROTECTION_SETTINGS.md)
+
+### ENVIRONMENT_REVIEWER_OUTSIDE_POOL (environment_protection)
+
+Someone outside the platform or security approver pool is a reviewer of the uat or prod environment. **[ENVIRONMENT_REVIEWER_OUTSIDE_POOL]**
+
+- **Why it matters:** GitHub lets any one listed reviewer approve a deployment, so that person could approve production alone; the deploy is refused before sign-in.
+- **Fix:** In Settings > Environments > <env>, keep only the platform or security pool teams as required reviewers and remove everyone else.
+- **More:** [docs/adoption/BRANCH_PROTECTION_SETTINGS.md](../adoption/BRANCH_PROTECTION_SETTINGS.md)
 
 ### ENVIRONMENT_SELF_REVIEW_ALLOWED (environment_protection)
 
@@ -920,6 +1135,46 @@ The environment lets the person who started the deploy approve it themselves. **
 - **Why it matters:** Self-approval is not an independent check; the deploy is refused.
 - **Fix:** Tick "Prevent self-review" in Settings > Environments > <env> (or prevent_self_review: true in the gh api call).
 - **More:** [docs/adoption/SETUP.md](../adoption/SETUP.md)
+
+### ENVIRONMENT_SMALL_TEAM_SELF_APPROVAL_REFUSED (environment_protection)
+
+The environment lets the developer approve their own release, and the organisation's small-team permission does not apply to this repository. **[ENVIRONMENT_SMALL_TEAM_SELF_APPROVAL_REFUSED]**
+
+- **Why it matters:** Self-approval is allowed only for a declared team of two or fewer with no other approver available, recorded and time-boxed; otherwise it is not an independent check.
+- **Fix:** Tick "Prevent self-review" and add a reviewer outside the team, or ask the platform team to renew or correct the small-team declaration in the org overlay (the run names why it does not apply).
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
+
+### ENVIRONMENT_UNCLASSED (environment_protection)
+
+The deploy names no environment, or one the kit cannot tell is dev, test, uat or prod. **[ENVIRONMENT_UNCLASSED]**
+
+- **Why it matters:** An environment nobody has classed might be production, so it is refused at every tier rather than deployed without an approval.
+- **Fix:** Add the environment to .kit/environments.json with "class": "dev", "test", "uat" or "prod" (kit init writes this file), or use a name with dev, test, uat or prod in it.
+- **More:** [docs/adoption/BRANCH_PROTECTION_SETTINGS.md](../adoption/BRANCH_PROTECTION_SETTINGS.md)
+
+### OUTSIDE_POOL (environment_protection)
+
+Same meaning and fix as [`environment_protection.ENVIRONMENT_REVIEWER_OUTSIDE_POOL`](#environment_reviewer_outside_pool-environment_protection).
+
+## escalation_route
+
+Not failures (nothing to do): `ESCALATION_ROUTE_CONFIGURED`.
+
+### ESCALATION_ROUTE_PLACEHOLDER (escalation_route)
+
+The deploy escalation has no real channel or service level yet; the kit placeholder was used (below prod). **[ESCALATION_ROUTE_PLACEHOLDER]**
+
+- **Why it matters:** Below prod a placeholder is allowed but named; at prod it is refused.
+- **Fix:** Set escalation (owner_role, channel, service_level) in the org overlay kit-org-settings.json.
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
+
+### ESCALATION_ROUTE_REFUSED (escalation_route)
+
+A prod deploy needs a person and there is no real escalation channel or service level to send it to. **[ESCALATION_ROUTE_REFUSED]**
+
+- **Why it matters:** At prod a placeholder route is refused rather than silently used, so nobody is falsely assumed to be paged.
+- **Fix:** Set escalation (owner_role, channel, service_level) in the org overlay kit-org-settings.json, then escalate by hand this time.
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
 
 ## evidence_retention
 
@@ -1105,9 +1360,93 @@ An environment protection rule refused to run the job on this branch or ref. **[
 - **Fix:** Run it from a branch the environment allows (usually main), or ask an admin to check the environment's deployment branch policy.
 - **More:** [docs/adoption/SETUP.md](../adoption/SETUP.md)
 
+## external_findings_baseline
+
+Not failures (nothing to do): `BASELINE_SELECTED`, `EVIDENCE_ALREADY_ON_TICKET`, `MATCHED`, `MATCH_SEPARATE_INSTANCE`, `NO_MATCH`, `REGISTER_READ`.
+
+### BASELINE_INCOMPATIBLE (external_findings_baseline)
+
+The earlier scan's report is not in a shape this version of the kit can read. **[BASELINE_INCOMPATIBLE]**
+
+- **Why it matters:** Nothing can be matched against it, so every pulled finding goes to triage.
+- **Fix:** Re-run the security suite with this kit version, then pull again.
+- **More:** [docs/adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md](../adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md)
+
+### BASELINE_PARTIAL (external_findings_baseline)
+
+The newest default-branch scan did not cover this kind of finding completely. **[BASELINE_PARTIAL]**
+
+- **Why it matters:** A finding the scan missed could look new, so every pulled finding goes to triage.
+- **Fix:** Fix the scanner that did not run in full (see the coverage rows), re-run the suite, then pull again.
+- **More:** [docs/adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md](../adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md)
+
+### BASELINE_STALE (external_findings_baseline)
+
+The newest qualifying default-branch scan is older than the age limit. **[BASELINE_STALE]**
+
+- **Why it matters:** Matches against an old scan may be out of date, so the findings go to triage.
+- **Fix:** Run the security suite on the default branch, then pull again.
+- **More:** [docs/adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md](../adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md)
+
+### BASELINE_UNAVAILABLE (external_findings_baseline)
+
+No usable earlier security scan of this repository was found to match the pulled findings against. **[BASELINE_UNAVAILABLE]**
+
+- **Why it matters:** A match cannot be ruled out, so every pulled finding goes to triage with its evidence kept.
+- **Fix:** Run the security suite on the default branch, give the pull job actions: read, and pull again.
+- **More:** [docs/adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md](../adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md)
+
+### DISPOSITION_REEVALUATION_REQUIRED (external_findings_baseline)
+
+New evidence arrived for a finding that has an accepted risk, exception or false-positive ruling. **[DISPOSITION_REEVALUATION_REQUIRED]**
+
+- **Why it matters:** The ruling may no longer fit the evidence; it is never extended or cleared automatically.
+- **Fix:** The owner of the ruling re-checks its scope, validity and expiry against the new evidence.
+- **More:** [docs/adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md](../adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md)
+
+### MATCH_AMBIGUOUS (external_findings_baseline)
+
+A pulled finding matches more than one existing finding. **[MATCH_AMBIGUOUS]**
+
+- **Why it matters:** Merging into the wrong one would hide a vulnerability, so nothing is merged.
+- **Fix:** Pick the right existing finding in triage and link the ticket by hand.
+- **More:** [docs/adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md](../adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md)
+
+### MATCH_SCOPE_MISMATCH (external_findings_baseline)
+
+A pulled finding matches a finding in another repository, not this one. **[MATCH_SCOPE_MISMATCH]**
+
+- **Why it matters:** It is a separate problem in a separate place, so it is never merged.
+- **Fix:** Check the repository mapping (repo_map) in triage and ticket it for the right repository.
+- **More:** [docs/adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md](../adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md)
+
+### REGISTER_NOT_ESTABLISHED (external_findings_baseline)
+
+The ticket ledger was not read for this pull: none was named, or there is none at the path. **[REGISTER_NOT_ESTABLISHED]**
+
+- **Why it matters:** Without it a finding that already has a ticket could look new, so no pulled finding is treated as new.
+- **Fix:** Set the ledger_path input to the ticket ledger on the default branch (.security/ticket-ledger.json), then pull again.
+- **More:** [docs/adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md](../adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md)
+
+### REGISTER_UNREADABLE (external_findings_baseline)
+
+The ticket ledger exists but could not be read. **[REGISTER_UNREADABLE]**
+
+- **Why it matters:** An unreadable ledger is not an empty one; every pulled finding goes to triage with its evidence kept.
+- **Fix:** Repair the ledger file on the default branch (valid JSON from the reconciler), then pull again.
+- **More:** [docs/adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md](../adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md)
+
+### SEVERITY_MATERIAL_DISAGREEMENT (external_findings_baseline)
+
+The external tool and the existing ticket rate this finding two or more levels apart. **[SEVERITY_MATERIAL_DISAGREEMENT]**
+
+- **Why it matters:** Both ratings are kept; neither is applied automatically.
+- **Fix:** A person reviews the two ratings and sets the ticket severity.
+- **More:** [docs/adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md](../adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md)
+
 ## external_findings_pull
 
-Not failures (nothing to do): `DUPLICATE_OF_KIT_FINDING`, `SOURCE_PULLED`.
+Not failures (nothing to do): `CORROBORATES_PULLED_ITEM`, `ENHANCES_EXISTING_FINDING`, `SOURCE_PULLED`.
 
 ### NOT_MAPPED (external_findings_pull)
 
@@ -1267,6 +1606,154 @@ A finding carries a vulnerability id the kit does not recognise (not CVE, GHSA o
 - **Fix:** Nothing for you; the platform team maps it in id-mappings.json.
 - **More:** [docs/operations/FINDING_CLASSIFICATION.md](../operations/FINDING_CLASSIFICATION.md)
 
+## governance_gate_rule
+
+Not failures (nothing to do): `delegated_to_dependabot_triage`.
+
+### authorizer_unconfigured (governance_gate_rule)
+
+The personal profile still names the placeholder owner login, so nothing protected can be authorized. **[authorizer_unconfigured]**
+
+- **Why it matters:** A placeholder authorizes nothing.
+- **Fix:** Set `profiles.personal.owner_login` in governance-profile.json to the owner's login and merge that change yourself.
+- **More:** [docs/operations/GOVERNANCE_PROFILES.md](../operations/GOVERNANCE_PROFILES.md)
+
+### awaiting_authorizer (governance_gate_rule)
+
+This change touches protected paths and waits for the profile's authorizer. **[awaiting_authorizer]**
+
+- **Why it matters:** Security controls, operational boundaries and the merge machinery change only with the authorizer's recorded consent.
+- **Fix:** Personal: the owner comments `/kit-authorize <head sha>`. Employer: an assigned reviewer, not the author or a committer, approves this head.
+- **More:** [docs/operations/GOVERNANCE_PROFILES.md](../operations/GOVERNANCE_PROFILES.md)
+
+### change_record (governance_gate_rule)
+
+The change edits a guarded file and adds no matching row to the protected change log. **[change_record]**
+
+- **Why it matters:** A change to what the gate means must leave a record naming the decision and every path.
+- **Fix:** Add a row to docs/assurance/PROTECTED_CHANGE_LOG.md naming a decision id and each guarded path.
+- **More:** [docs/operations/GOVERNANCE_PROFILES.md](../operations/GOVERNANCE_PROFILES.md)
+
+### change_record_unreadable (governance_gate_rule)
+
+The protected change log's diff could not be read. **[change_record_unreadable]**
+
+- **Why it matters:** An unread record is not a present one.
+- **Fix:** Re-run the Governance gate workflow.
+- **More:** [docs/operations/GOVERNANCE_PROFILES.md](../operations/GOVERNANCE_PROFILES.md)
+
+### changes_requested (governance_gate_rule)
+
+A reviewer's latest review requests changes. **[changes_requested]**
+
+- **Why it matters:** An outstanding objection holds the merge.
+- **Fix:** Address the review and ask the reviewer to approve the new head.
+- **More:** [docs/operations/GOVERNANCE_PROFILES.md](../operations/GOVERNANCE_PROFILES.md)
+
+### check_failed (governance_gate_rule)
+
+The trusted check failed on the pull request's latest commit. **[check_failed]**
+
+- **Why it matters:** A red check holds the merge, in both profiles.
+- **Fix:** Fix what the failing check reports and push.
+- **More:** [docs/operations/GOVERNANCE_PROFILES.md](../operations/GOVERNANCE_PROFILES.md)
+
+### check_inconclusive (governance_gate_rule)
+
+The trusted check is still running, or ended skipped, neutral or cancelled. **[check_inconclusive]**
+
+- **Why it matters:** Only success counts: skipped is never green.
+- **Fix:** Let the check finish, or re-run it until it concludes.
+- **More:** [docs/operations/GOVERNANCE_PROFILES.md](../operations/GOVERNANCE_PROFILES.md)
+
+### check_missing (governance_gate_rule)
+
+The trusted check has not reported on the pull request's latest commit. **[check_missing]**
+
+- **Why it matters:** Missing is not passing.
+- **Fix:** Wait for Self-test to finish (the gate re-decides when it does), or re-run it.
+- **More:** [docs/operations/GOVERNANCE_PROFILES.md](../operations/GOVERNANCE_PROFILES.md)
+
+### diff_unreadable (governance_gate_rule)
+
+The changed files could not be read, or there are none, so the change was not classified. **[diff_unreadable]**
+
+- **Why it matters:** An unclassified change is not a routine one.
+- **Fix:** Re-run the Governance gate workflow once the pull request has commits.
+- **More:** [docs/operations/GOVERNANCE_PROFILES.md](../operations/GOVERNANCE_PROFILES.md)
+
+### draft (governance_gate_rule)
+
+The pull request is a draft, so it never merges on its own. **[draft]**
+
+- **Why it matters:** A draft says the author is not finished.
+- **Fix:** Mark the pull request ready for review.
+- **More:** [docs/operations/GOVERNANCE_PROFILES.md](../operations/GOVERNANCE_PROFILES.md)
+
+### floor_breached (governance_gate_rule)
+
+The base branch's floor checker refused this change because a scanner left the floor without a valid recorded tombstone. **[floor_breached]**
+
+- **Why it matters:** The floor is judged by the base's code, so the pull request cannot rewrite the judge.
+- **Fix:** Add a tombstone with a decision, or restore the scanner.
+- **More:** [docs/operations/GOVERNANCE_PROFILES.md](../operations/GOVERNANCE_PROFILES.md)
+
+### floor_unreadable (governance_gate_rule)
+
+The pull request's floor or scanner registry could not be read as data. **[floor_unreadable]**
+
+- **Why it matters:** An unreadable floor is not an empty one.
+- **Fix:** Fix the JSON or YAML syntax of capability-floor.json or scanner-registry.yaml.
+- **More:** [docs/operations/GOVERNANCE_PROFILES.md](../operations/GOVERNANCE_PROFILES.md)
+
+### impostor_check (governance_gate_rule)
+
+A check with a trusted name came from a workflow or app other than the trusted one. **[impostor_check]**
+
+- **Why it matters:** A check is trusted by where it came from; a pull request can add a workflow that reports any name.
+- **Fix:** Remove the workflow that reports the trusted check's name; only the trusted workflow may report it.
+- **More:** [docs/operations/GOVERNANCE_PROFILES.md](../operations/GOVERNANCE_PROFILES.md)
+
+### no_trusted_checks (governance_gate_rule)
+
+The governance profile names no trusted check, so nothing shows the change was tested. **[no_trusted_checks]**
+
+- **Why it matters:** A merge with no test behind it is untested code reaching the default branch.
+- **Fix:** Name the trusted check (Self-test required) in governance-profile.json `trusted_checks`.
+- **More:** [docs/operations/GOVERNANCE_PROFILES.md](../operations/GOVERNANCE_PROFILES.md)
+
+### policy_misconfigured (governance_gate_rule)
+
+The employer profile's required approvals is not a whole number of at least one. **[policy_misconfigured]**
+
+- **Why it matters:** Zero approvals would let a protected change merge with nobody's consent.
+- **Fix:** Set `profiles.employer.required_approvals` in governance-profile.json to 1 or more.
+- **More:** [docs/operations/GOVERNANCE_PROFILES.md](../operations/GOVERNANCE_PROFILES.md)
+
+### pr_unreadable (governance_gate_rule)
+
+The pull request's head commit or author could not be read, so it was not decided. **[pr_unreadable]**
+
+- **Why it matters:** A decision about an unknown change is no decision.
+- **Fix:** Re-run the Governance gate workflow; if it repeats, check the run's token permissions.
+- **More:** [docs/operations/GOVERNANCE_PROFILES.md](../operations/GOVERNANCE_PROFILES.md)
+
+### profile_unreadable (governance_gate_rule)
+
+The base branch's governance profile is missing or names an unknown profile, so nothing merges on its own. **[profile_unreadable]**
+
+- **Why it matters:** An unreadable profile must never be read as the permissive one.
+- **Fix:** Set `profile` in governance-profile.json on the default branch to personal or employer.
+- **More:** [docs/operations/GOVERNANCE_PROFILES.md](../operations/GOVERNANCE_PROFILES.md)
+
+### reviewers_unknown (governance_gate_rule)
+
+The assigned reviewers could not be read, so nobody can approve a protected change. **[reviewers_unknown]**
+
+- **Why it matters:** An approval from an unknown set is no separation of duties.
+- **Fix:** Add the org-read secret described in the guide, or list `reviewer_logins` in governance-profile.json.
+- **More:** [docs/operations/GOVERNANCE_PROFILES.md](../operations/GOVERNANCE_PROFILES.md)
+
 ## human_control_availability
 
 Not failures (nothing to do): `HUMAN_CONTROL_AVAILABLE`.
@@ -1286,6 +1773,42 @@ A control needs a second person, and this repository has only one. **[HUMAN_CONT
 - **Why it matters:** The control cannot exist here; it is recorded as unvalidated.
 - **Fix:** Name an approver from platform or security outside the team (docs/adoption/ROLLOUT_PLAN.md, small teams).
 - **More:** [docs/adoption/ROLLOUT_PLAN.md](../adoption/ROLLOUT_PLAN.md)
+
+## kit_adoption_state
+
+Not failures (nothing to do): `ADOPTED`, `KIT_HOST`, `NEVER`.
+
+### NOT_ESTABLISHED (kit_adoption_state)
+
+The survey could not tell whether this repository ever used the kit. **[NOT_ESTABLISHED]**
+
+- **Why it matters:** Its workflows or their history could not be read in full; "never" would be a guess.
+- **Fix:** Raise --history, or give the token Contents read on the repository, and run it again.
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
+### PARTIAL (kit_adoption_state)
+
+This repository calls the kit, but not all of it is in force. **[PARTIAL]**
+
+- **Why it matters:** A moving kit reference, a caller off the pull-request path or a declared weakening means a change can merge without the full check.
+- **Fix:** Read partial_because in KIT_ADOPTION_INVENTORY.md: pin the kit by commit SHA, add pull_request to the caller, or close the weakening by its expiry.
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
+### REASON_NOT_RECORDED (kit_adoption_state)
+
+The kit was turned off here and nobody wrote down why. **[REASON_NOT_RECORDED]**
+
+- **Why it matters:** Without the reason the same pain will turn it off again elsewhere.
+- **Fix:** Ask the team who made the commit named in the evidence column, and record the answer in the inventory.
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
+### TURNED_OFF (kit_adoption_state)
+
+This repository used the kit and switched it off. **[TURNED_OFF]**
+
+- **Why it matters:** Its changes are no longer checked, and whatever made the team switch it off is probably hurting other teams too.
+- **Fix:** Read the evidence and the stated reason in KIT_ADOPTION_INVENTORY.md, talk to the team about the pain point, fix that, then turn the caller back on.
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
 
 ## kit_api_refusal
 
@@ -1601,6 +2124,22 @@ kit init's own check of the files it generated failed, so it wrote nothing. **[K
 - **Fix:** Send the output to the platform team; pin a different kit commit meanwhile.
 - **More:** [docs/adoption/GETTING_STARTED_1_HOUR.md](../adoption/GETTING_STARTED_1_HOUR.md)
 
+### KIT_INIT_GOVERNED_SETTING_LOOSENED (kit_init_state)
+
+An option you gave kit init loosens what your organisation set, so it wrote nothing. **[KIT_INIT_GOVERNED_SETTING_LOOSENED]**
+
+- **Why it matters:** Teams and adoption level come from the organisation's overlay; a repository may only make them stricter.
+- **Fix:** Leave out --platform-team/--appsec-team (the overlay names them) and choose an adoption level at or above the overlay's.
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
+
+### KIT_INIT_HOST_MISMATCH (kit_init_state)
+
+kit init found two different GitHub hosts for this repository, so it wrote nothing. **[KIT_INIT_HOST_MISMATCH]**
+
+- **Why it matters:** The API address and the sign-in issuer depend on the host; a guess would point credentials at the wrong place.
+- **Fix:** Pass --host with the repository's real host (github.com or <tenant>.ghe.com), or correct the origin remote or the org overlay's host.
+- **More:** [docs/adoption/GETTING_STARTED_1_HOUR.md](../adoption/GETTING_STARTED_1_HOUR.md)
+
 ### KIT_INIT_HOST_UNSUPPORTED (kit_init_state)
 
 The repository's host is neither github.com nor a <tenant>.ghe.com host. **[KIT_INIT_HOST_UNSUPPORTED]**
@@ -1624,6 +2163,14 @@ This repository has more than one Dockerfile and kit init will not pick which on
 - **Why it matters:** Picking the wrong image would deploy the wrong thing.
 - **Fix:** Re-run with --dockerfile path/to/Dockerfile (in the workflow: re-run kit init locally with that flag).
 - **More:** [docs/adoption/GETTING_STARTED_1_HOUR.md](../adoption/GETTING_STARTED_1_HOUR.md)
+
+### KIT_INIT_OVERLAY_INVALID (kit_init_state)
+
+kit init found the organisation's overlay but cannot use it, so it wrote nothing. **[KIT_INIT_OVERLAY_INVALID]**
+
+- **Why it matters:** The overlay decides the approvers, CODEOWNERS and adoption level; a broken one cannot be applied halfway.
+- **Fix:** Run python3 scripts/org_settings.py validate overlays/<org>/kit-org-settings.json and fix what it names (a template placeholder still in it counts).
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
 
 ### KIT_INIT_PIN_MISSING (kit_init_state)
 
@@ -1664,6 +2211,66 @@ kit init did not recognise any language or deploy type in this repository, so it
 - **Why it matters:** It never guesses a pipeline: a wrong one would scan the wrong things and look green.
 - **Fix:** Add the missing manifest (requirements.txt, package.json, pom.xml, go.mod, a .csproj, composer.json, a Dockerfile, *.tf or *.bicep), or copy templates/security.yml by hand.
 - **More:** [docs/adoption/GETTING_STARTED_1_HOUR.md](../adoption/GETTING_STARTED_1_HOUR.md)
+
+## kit_survey_state
+
+Not failures (nothing to do): `SURVEY_COMPLETE`.
+
+### SURVEY_AUTH_REFUSED (kit_survey_state)
+
+GitHub refused the token the survey used, so it could not list the repositories. **[SURVEY_AUTH_REFUSED]**
+
+- **Why it matters:** Nothing can be compared without the list; an empty list would read as an empty estate.
+- **Fix:** Use a read-only token with Metadata, Contents, Actions, Administration, Secrets and Variables read across the organisation (the guide lists them), saved as KIT_SURVEY_TOKEN.
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
+### SURVEY_HOST_MISMATCH (kit_survey_state)
+
+The API answered for a different GitHub host than the one named, so the survey stopped. **[SURVEY_HOST_MISMATCH]**
+
+- **Why it matters:** The token goes only to the host that issued it; a mixed-up host could send it somewhere else or mix two estates in one report.
+- **Fix:** Make --host and --api-url (or GITHUB_API_URL) name the same host, and run the survey from a runner of that host.
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
+### SURVEY_HOST_NOT_NAMED (kit_survey_state)
+
+The survey was not told which GitHub host to read, so it read nothing. **[SURVEY_HOST_NOT_NAMED]**
+
+- **Why it matters:** It never assumes github.com: a token from a GHE.com tenant must never be sent there.
+- **Fix:** Pass --host github.com or --host <tenant>.ghe.com (in a workflow, GITHUB_API_URL names it for you).
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
+### SURVEY_HOST_UNSUPPORTED (kit_survey_state)
+
+The host named is neither github.com nor a <tenant>.ghe.com host. **[SURVEY_HOST_UNSUPPORTED]**
+
+- **Why it matters:** The kit supports those two kinds of host only (KDEC-027).
+- **Fix:** Name github.com or your <tenant>.ghe.com host.
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
+### SURVEY_OUT_IN_KIT (kit_survey_state)
+
+The survey refused to write its reports inside the kit repository. **[SURVEY_OUT_IN_KIT]**
+
+- **Why it matters:** The reports name private repositories and their settings; inside the kit they are one commit away from being shared.
+- **Fix:** Choose an output directory outside the repository (the workflow uses the runner temp directory and an artifact).
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
+### SURVEY_OWNER_NOT_FOUND (kit_survey_state)
+
+No organisation or user of that name exists on this host. **[SURVEY_OWNER_NOT_FOUND]**
+
+- **Why it matters:** A typo here would otherwise produce an empty survey.
+- **Fix:** Check the owner name (the part after the host in a repository URL).
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
+### SURVEY_PARTIAL (kit_survey_state)
+
+The survey finished, but some columns of some repositories could not be read. **[SURVEY_PARTIAL]**
+
+- **Why it matters:** An unread column is not the same as "nothing there": counting it as none would overstate what is missing or hide what is set.
+- **Fix:** Read the not_established column in KIT_SURVEY.csv, give the token read access to what it names (administration, secrets, variables), and run it again.
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
 
 ## kit_watermark
 
@@ -1861,6 +2468,18 @@ The kit could not read whether a secret-protection layer is on (this token canno
 - **Fix:** Ask a repository admin to confirm the layer in Settings > Code security, or grant the read the summary names.
 - **More:** [docs/adoption/LEAK_GATES.md](../adoption/LEAK_GATES.md)
 
+## live_target_authorisation
+
+Not failures (nothing to do): `LIVE_TARGET_AUTHORISED`.
+
+### PREREQUISITE_UNAVAILABLE (live_target_authorisation)
+
+No live-target authorisation is in force for this scan of this environment and target, so the scan was not run. **[PREREQUISITE_UNAVAILABLE]**
+
+- **Why it matters:** A DAST run or a deployed scan acts on a running target; its owner has to have agreed, for a stated period.
+- **Fix:** Add or renew an entry in .kit/live-target-authorisation.json on the default branch naming the scan, environment and target (schemas/live-target-authorisation.schema.json).
+- **More:** [schemas/live-target-authorisation.schema.json](../../schemas/live-target-authorisation.schema.json)
+
 ## oidc_subject_form
 
 Not failures (nothing to do): `ID_QUALIFIED`, `PLAIN`.
@@ -1872,6 +2491,46 @@ The identity GitHub presented does not match the federated credential's expected
 - **Why it matters:** Azure will refuse the sign-in (AADSTS700213); nothing was attempted.
 - **Fix:** Add a federated credential whose subject is exactly repo:<org>/<repo>:environment:<env> (case-sensitive), with this host's issuer.
 - **More:** [docs/adoption/SETUP.md](../adoption/SETUP.md)
+
+## org_init_result
+
+Not failures (nothing to do): `PASS`.
+
+### ACTION_NEEDED (org_init_result)
+
+An organisation setting the kit needs is not set the way it needs to be. **[ACTION_NEEDED]**
+
+- **Why it matters:** Until it is, the kit fails in a way that does not name the setting (for example "workflow not found" for a private kit).
+- **Fix:** Open ORG_INIT_CHECKLIST.md: each item says what to change, the exact command, and why. The check changed nothing; a person runs the commands.
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
+### NOT_ESTABLISHED (org_init_result)
+
+The organisation setup check could not read this setting. **[NOT_ESTABLISHED]**
+
+- **Why it matters:** An unread setting is not a passing one.
+- **Fix:** Run the check with an org owner's read-only token, or, on a user account, set the equivalent per repository as the item says.
+- **More:** [docs/adoption/ORG_SURVEY_AND_ORG_INIT.md](../adoption/ORG_SURVEY_AND_ORG_INIT.md)
+
+## org_settings
+
+Not failures (nothing to do): `ORG_OVERLAY_ABSENT`, `ORG_OVERLAY_APPLIED`.
+
+### ORG_OVERLAY_AMBIGUOUS (org_settings)
+
+Two overlays in the kit repository name the same organisation. **[ORG_OVERLAY_AMBIGUOUS]**
+
+- **Why it matters:** The kit will not choose between two sets of governed settings.
+- **Fix:** Keep one overlay per organisation in the kit repository.
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
+
+### ORG_OVERLAY_INVALID (org_settings)
+
+The organisation's overlay in the kit repository cannot be read or is not valid. **[ORG_OVERLAY_INVALID]**
+
+- **Why it matters:** The approver and cloud settings it governs are unknown, so production deploys are refused.
+- **Fix:** Run python3 scripts/org_settings.py validate overlays/<org>/kit-org-settings.json in the kit repository and fix what it names.
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
 
 ## platform_applicability
 
@@ -2179,6 +2838,14 @@ The image you are promoting is not the one the earlier environment verified. **[
 - **Fix:** Promote by run id with the template's promote job (it reads the digest from the record); do not type a digest.
 - **More:** [docs/adoption/USAGE.md](../adoption/USAGE.md)
 
+### PROMOTION_REFUSED_HISTORY_INCOMPLETE (promotion_gate)
+
+The predecessor's history of this target could not be read to its end (the bound is named). **[PROMOTION_REFUSED_HISTORY_INCOMPLETE]**
+
+- **Why it matters:** A history cut short cannot show that no newer build was verified; unread is never a pass.
+- **Fix:** Re-run the promotion; if it persists, delete expired record artifacts or raise it with the kit owners.
+- **More:** [docs/adoption/USAGE.md](../adoption/USAGE.md)
+
 ### PROMOTION_REFUSED_NEW_FINDING (promotion_gate)
 
 A fresh scan of the build found a high-severity issue that was not there at build time. **[PROMOTION_REFUSED_NEW_FINDING]**
@@ -2243,6 +2910,30 @@ The image's signed build record did not verify during promotion. **[PROMOTION_RE
 - **Fix:** Rebuild through the kit's build workflow from main; see the attestation entries in this catalogue.
 - **More:** [docs/architecture/PROVENANCE_AND_ATTESTATION.md](../architecture/PROVENANCE_AND_ATTESTATION.md)
 
+### PROMOTION_REFUSED_SOURCE_AMBIGUOUS (promotion_gate)
+
+The source run published records for more than one target in that environment with this digest. **[PROMOTION_REFUSED_SOURCE_AMBIGUOUS]**
+
+- **Why it matters:** The gate does not guess which target's record to promote.
+- **Fix:** Promote from a run that deployed this digest to one target in that environment.
+- **More:** [docs/adoption/USAGE.md](../adoption/USAGE.md)
+
+### PROMOTION_REFUSED_SOURCE_TARGET_MISMATCH (promotion_gate)
+
+The run you promoted from has no record of that environment for the promote_from_target_resource_id you named. **[PROMOTION_REFUSED_SOURCE_TARGET_MISMATCH]**
+
+- **Why it matters:** The gate promotes only what was verified on the predecessor target you named, never another app's record.
+- **Fix:** Check promote_from_target_resource_id is the predecessor target this app deployed to in that run, or promote from the run that deployed it.
+- **More:** [docs/adoption/USAGE.md](../adoption/USAGE.md)
+
+### PROMOTION_REFUSED_SOURCE_TARGET_REQUIRED (promotion_gate)
+
+A uat or prod promotion did not say which application it promotes from (promote_from_target_resource_id was empty). **[PROMOTION_REFUSED_SOURCE_TARGET_REQUIRED]**
+
+- **Why it matters:** Choosing the source by digest alone could take another app's record into production, so uat and prod must name the source.
+- **Fix:** Set promote_from_target_resource_id to the target_resource_id of the predecessor (test or uat) target this app deployed to in the source run, and dispatch again. Break-glass does not waive this.
+- **More:** [docs/adoption/USAGE.md](../adoption/USAGE.md)
+
 ### PROMOTION_REFUSED_SOURCE_UNREADABLE (promotion_gate)
 
 The run you promoted from has no readable promotion record for that environment. **[PROMOTION_REFUSED_SOURCE_UNREADABLE]**
@@ -2261,10 +2952,18 @@ The build was verified more than 14 days ago. **[PROMOTION_REFUSED_STALE]**
 
 ### PROMOTION_REFUSED_SUPERSEDED (promotion_gate)
 
-A newer build has been verified in the same environment since this one. **[PROMOTION_REFUSED_SUPERSEDED]**
+A newer build has been verified for the same deployment target in the same environment since this one. **[PROMOTION_REFUSED_SUPERSEDED]**
 
-- **Why it matters:** Promoting an older build would skip the newer one.
-- **Fix:** Promote the newest verified run instead.
+- **Why it matters:** Promoting an older build would skip the newer one. Another app's record in the same environment never counts.
+- **Fix:** Promote the newest verified run of this target instead.
+- **More:** [docs/adoption/USAGE.md](../adoption/USAGE.md)
+
+### PROMOTION_REFUSED_TARGET_UNKNOWN (promotion_gate)
+
+The source record does not name its deployment target (a canonical adapter id and target_resource_id). **[PROMOTION_REFUSED_TARGET_UNKNOWN]**
+
+- **Why it matters:** Without the target, a newer build of the same app cannot be told apart from another app's.
+- **Fix:** Re-deploy to the predecessor with this kit version (it records the target), then promote that run.
 - **More:** [docs/adoption/USAGE.md](../adoption/USAGE.md)
 
 ### PROMOTION_REFUSED_WRONG_PREDECESSOR (promotion_gate)
@@ -2389,9 +3088,57 @@ The readiness value is a labelled test fixture, not a real readiness. **[READINE
 - **Fix:** Nothing in a test repository; remove KIT_ZONE_READINESS_TEST_FIXTURE in a real one.
 - **More:** [docs/adoption/ZONE_READINESS_ATTESTATION.md](../adoption/ZONE_READINESS_ATTESTATION.md)
 
+## reconciliation_correlation
+
+Not failures (nothing to do): `CORRELATION_STRONG`, `CORRELATION_UNRELATED`.
+
+### CORRELATION_CONFLICT (reconciliation_correlation)
+
+A vanished ticket's finding and a new finding share the same subject and location but name disjoint advisory ids, which is a named conflict. **[CORRELATION_CONFLICT]**
+
+- **Why it matters:** Contradictory identity evidence cannot be settled automatically: the ids may come from different advisory namespaces or one may have replaced the other.
+- **Fix:** Resolve the held reconciliation with --resolve-reconciliation (a triager and a second person who approves).
+- **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
+
+### CORRELATION_INSUFFICIENT (reconciliation_correlation)
+
+A vanished ticket's finding and a new finding share too little to be called related, so no relationship was assumed and the normal clearance policy applied. **[CORRELATION_INSUFFICIENT]**
+
+- **Why it matters:** Same scanner and same rule alone is not identity evidence; inventing continuity from it held unrelated tickets open.
+- **Fix:** Nothing is owed. If they are in fact the same finding, record the lineage event (scripts/finding_lineage.py).
+- **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
+
+### CORRELATION_PLAUSIBLE (reconciliation_correlation)
+
+A vanished ticket's finding and a new finding share the scanner and rule and at least one weaker detail, so they may be the same finding moved. **[CORRELATION_PLAUSIBLE]**
+
+- **Why it matters:** That is enough to hold an automatic clearance but not enough to merge or carry anything, so a person decides.
+- **Fix:** Resolve the hold with --resolve-reconciliation (same or separate), a triager and a second person who approves, or record the lineage event.
+- **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
+
+## reconciliation_population
+
+Not failures (nothing to do): `SCANNER_INVENTORY_ESTABLISHED`.
+
+### APPLICABILITY_NOT_ESTABLISHED (reconciliation_population)
+
+A scanner row said not applicable without evidence the kit can check, so it was treated as not established and the clearance stayed provisional. **[APPLICABILITY_NOT_ESTABLISHED]**
+
+- **Why it matters:** Not applicable counts only when discovery completed and found nothing for that scanner, or the input that enables it was not set; a scanner the registry runs always is never not applicable.
+- **Fix:** Rerun once discovery completes (not DISCOVERY_PARTIAL); if the row is produced outside the kit's state builder, have it record applicability_basis.
+- **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
+
+### SCANNER_INVENTORY_NOT_ESTABLISHED (reconciliation_population)
+
+The ticket reconciliation had no declared scanner inventory to count the expected scanners against, so a clearance that depends on the whole population stayed provisional. **[SCANNER_INVENTORY_NOT_ESTABLISHED]**
+
+- **Why it matters:** The expected scanners must come from the kit's declared, versioned list (scanner-registry.yaml), not from whatever happened to run; without it a scanner that never ran is invisible.
+- **Fix:** Run the reconciler from the kit checkout so it reads scanner-registry.yaml, or pass --scanner-inventory with the kit's registry file; check the file is readable and names its scanner jobs.
+- **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
+
 ## release_approval
 
-Not failures (nothing to do): `RELEASE_APPROVAL_NOT_REQUIRED`, `RELEASE_APPROVAL_VERIFIED`.
+Not failures (nothing to do): `RELEASE_APPROVAL_NOT_REQUIRED`, `RELEASE_APPROVAL_VERIFIED`, `RELEASE_APPROVAL_SMALL_TEAM_SELF_APPROVAL`.
 
 ### RELEASE_APPROVAL_ABSENT (release_approval)
 
@@ -2421,7 +3168,7 @@ The deploy could not read who approved it, who requested it or who wrote the cha
 
 The person who approved this release is the one who requested it, or the author of the change. **[SELF_DEPLOYMENT_APPROVAL]**
 
-- **Why it matters:** Approving your own release is never accepted.
+- **Why it matters:** Approving your own release is not accepted, except where your organisation declared the small-team permission for this repository.
 - **Fix:** Re-run and have a reviewer who is neither the requester nor the author approve it.
 - **More:** [docs/ticketing/SEPARATION-OF-DUTIES.md](../ticketing/SEPARATION-OF-DUTIES.md)
 
@@ -2887,6 +3634,82 @@ A secret exception has no valid work-item ticket (PROJECT-1234). **[SECRET_EXCEP
 - **Fix:** Add the ticket key to the exception's ticket field.
 - **More:** [docs/adoption/POLICY_REGISTER.md](../adoption/POLICY_REGISTER.md)
 
+## small_team_self_approval
+
+Not failures (nothing to do): `SMALL_TEAM_SELF_APPROVAL_NOT_DECLARED`.
+
+### SMALL_TEAM_SELF_APPROVAL (small_team_self_approval)
+
+The developer approved their own deployment, which the organisation allows for this small team as a recorded, time-boxed exception. **[SMALL_TEAM_SELF_APPROVAL]**
+
+- **Why it matters:** A team of two or fewer with no other approver still gets a pause and a deliberate yes before uat or prod; the release record says who and under which decision.
+- **Fix:** Nothing to fix. Before the expiry the platform team reviews the declaration in the org overlay; add an approver outside the team as soon as one exists.
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
+
+### SMALL_TEAM_SELF_APPROVAL_BEYOND_REVIEW (small_team_self_approval)
+
+The small-team declaration expires later than its review allows. **[SMALL_TEAM_SELF_APPROVAL_BEYOND_REVIEW]**
+
+- **Why it matters:** The permission is time-boxed so that someone looks at it again (90 days unless the overlay says otherwise).
+- **Fix:** Set the expiry within review_days of the date in the org overlay.
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
+
+### SMALL_TEAM_SELF_APPROVAL_EXPIRED (small_team_self_approval)
+
+The small-team permission has expired. **[SMALL_TEAM_SELF_APPROVAL_EXPIRED]**
+
+- **Why it matters:** An expired weakening never renews itself.
+- **Fix:** Review it and, if it is still right, renew the date and expiry in the org overlay; otherwise add an outside reviewer.
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
+
+### SMALL_TEAM_SELF_APPROVAL_EXTERNAL_GROUP_AVAILABLE (small_team_self_approval)
+
+The small-team declaration does not state that no external approver group is available. **[SMALL_TEAM_SELF_APPROVAL_EXTERNAL_GROUP_AVAILABLE]**
+
+- **Why it matters:** The permission is only for teams with nobody else to approve.
+- **Fix:** Set external_approver_group_available to false in the org overlay if that is true, or use the external group as reviewers.
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
+
+### SMALL_TEAM_SELF_APPROVAL_INCOMPLETE (small_team_self_approval)
+
+The small-team declaration is missing who approved it, the reference, the date, the reason, the expiry, the team size or a readable review period. **[SMALL_TEAM_SELF_APPROVAL_INCOMPLETE]**
+
+- **Why it matters:** A weakening without all five fields cannot be audited.
+- **Fix:** Complete the declaration in the org overlay (approved_by, ref, date, reason, expires, size) and validate it with scripts/org_settings.py validate.
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
+
+### SMALL_TEAM_SELF_APPROVAL_NOT_KNOWN_SOLO_DEVELOPER (small_team_self_approval)
+
+Self-approval was asked for a repository whose developers are not on the org's list of known solo developers. **[SMALL_TEAM_SELF_APPROVAL_NOT_KNOWN_SOLO_DEVELOPER]**
+
+- **Why it matters:** Letting a developer approve their own production deployment is only allowed for people the org has named as working alone; it is never assumed from a small team size.
+- **Fix:** If this really is a known solo developer, ask platform or security to add the account or org and the developer's login to known_solo_developers in the org overlay, and list the login in the app team's members. Otherwise add a reviewer from outside the team to the environment.
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
+
+### SMALL_TEAM_SELF_APPROVAL_NOT_ORG_DECLARED (small_team_self_approval)
+
+The repository declared the small-team permission for itself. **[SMALL_TEAM_SELF_APPROVAL_NOT_ORG_DECLARED]**
+
+- **Why it matters:** Only the organisation's overlay in the kit repository may declare it; a repository cannot weaken its own approvals.
+- **Fix:** Remove KIT_SMALL_TEAM_SELF_APPROVAL or small_team_self_approval from the repository, and ask the platform team to declare it in the org overlay if it applies.
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
+
+### SMALL_TEAM_SELF_APPROVAL_POOLS_EXIST (small_team_self_approval)
+
+The small-team permission is declared, but the organisation has approver pools. **[SMALL_TEAM_SELF_APPROVAL_POOLS_EXIST]**
+
+- **Why it matters:** When platform or security approvers exist, a developer approving their own release is not allowed.
+- **Fix:** Make the platform or security team a reviewer of the environment and remove the declaration.
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
+
+### SMALL_TEAM_SELF_APPROVAL_TEAM_TOO_LARGE (small_team_self_approval)
+
+The small-team permission is declared for a team of more than two people. **[SMALL_TEAM_SELF_APPROVAL_TEAM_TOO_LARGE]**
+
+- **Why it matters:** With three or more people someone other than the author can approve.
+- **Fix:** Remove the declaration from the org overlay and have a teammate or the platform or security team approve.
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
+
 ## target_lease
 
 Not failures (nothing to do): `LEASE_ACQUIRED`, `LEASE_BROKEN`, `LEASE_FENCE_PASSED`, `LEASE_MUTATION_MARKED`, `LEASE_NOT_IN_FORCE`, `LEASE_RELEASED`, `LEASE_STATUS`, `MUTATED_UNDER_LEASE`.
@@ -2986,6 +3809,150 @@ This run's hold on the target was taken over or broken, so its change was not se
 - **Why it matters:** Another writer owns the target now.
 - **Fix:** Re-run the deploy once the target is free.
 - **More:** [docs/architecture/LZ_KIT_SEAM_CONTRACT.md](../architecture/LZ_KIT_SEAM_CONTRACT.md)
+
+## ticket_clearance_hold
+
+Not failures (nothing to do): `SAME_SCANNER_AND_RULE`.
+
+### ADVISORY_ID_CONFLICT (ticket_clearance_hold)
+
+A ticket whose finding vanished was kept open, because a new finding at the same place and of the same kind names different advisory ids. **[ADVISORY_ID_CONFLICT]**
+
+- **Why it matters:** Different advisory ids at the same subject and location can be another namespace or a replaced advisory, so they do not prove the findings are unrelated; closing the old ticket could drop the obligation.
+- **Fix:** Read both advisories and resolve it with --resolve-reconciliation (a triager decides same or separate, a second person approves), or record the lineage event.
+- **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
+
+### CLEARANCE_PROVISIONAL (ticket_clearance_hold)
+
+A ticket whose finding was proven absent in its own scope was not closed, because this run did not see the whole population the finding could have moved to. **[CLEARANCE_PROVISIONAL]**
+
+- **Why it matters:** The lineage ledger records that this finding moved, split or merged (or cannot be trusted), and a partial scope, a failed or missing scanner row, findings without identity or a paged ticket sweep means its successor may simply not have been seen; a later run could then no longer reconstruct the obligation.
+- **Fix:** Run the reconciliation over the whole repository with every scanner established and a complete ticket sweep; the ticket then clears, or the lineage hold names what continues it.
+- **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
+
+### LEDGER_TAMPERED (ticket_clearance_hold)
+
+A ticket whose finding was not reported this run was not closed, because the lineage ledger is present but failed its integrity check (or has a line that does not parse) and a new finding from the same scanner and rule appeared this run; it is held as potentially absent and names both. **[LEDGER_TAMPERED]**
+
+- **Why it matters:** A ledger that cannot be trusted cannot say whether the new finding is the old one moved, so closing the old ticket as fixed would claim a fix nobody showed.
+- **Fix:** Run scripts/finding_lineage.py --verify to see what is wrong with the ledger and restore it from its repository history; then the next run decides from the restored ledger. Until then a second person confirms the old finding is fixed and closes its ticket by hand.
+- **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
+
+### LINEAGE_CONFLICT_UNRESOLVED (ticket_clearance_hold)
+
+A ticket whose finding was not reported this run was not closed, because the lineage ledger records a split, a merge or a cycle that reaches this ticket's finding and the product that remains is held for a person (BINDING_AMBIGUOUS). **[LINEAGE_CONFLICT_UNRESOLVED]**
+
+- **Why it matters:** The lineage says this obligation continues somewhere a person has not yet decided, so closing the ticket as fixed would drop an unresolved obligation.
+- **Fix:** Read the POTENTIALLY_ABSENT entry and the decision owed for the held product: record which product continues this obligation (or that it is resolved), or a second person confirms the old finding is fixed and closes its ticket by hand.
+- **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
+
+### LINEAGE_RECONCILIATION_UNRESOLVED (ticket_clearance_hold)
+
+A ticket whose finding was not reported this run was not closed, because the lineage ledger cannot answer and a new finding this run is plausibly the same one moved (same scanner and rule plus another shared detail); it is held, names both tickets, and stays held across runs. **[LINEAGE_RECONCILIATION_UNRESOLVED]**
+
+- **Why it matters:** Without the ledger the kit cannot tell whether the new finding is the old one moved, so closing the old ticket as fixed would claim a fix nobody showed; closure is only by rescan or a second person, and no obligation is dropped.
+- **Fix:** Read the reconciliation_held entry in the ticket run record: if the new finding is the old one moved, record the lineage event (scripts/finding_lineage.py) or resolve it as same; if not, resolve it as separate (reconcile_tickets.py --resolve-reconciliation <ticket> --reconciliation-decision same|separate --triaged-by <role> --approved-by <another role> --approval-reason <why>) and the next rescan closes it.
+- **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
+
+### LINEAGE_RELATIONSHIP_PRESERVED (ticket_clearance_hold)
+
+A ticket whose finding was not reported this run was kept open, because a new finding this run is strongly related to it (same kind of finding and the same location, package or advisory) and the lineage ledger cannot say so itself. **[LINEAGE_RELATIONSHIP_PRESERVED]**
+
+- **Why it matters:** Strong identity evidence says the obligation continues in the new finding, so closing the old ticket as fixed would drop it; any approval it carried has to be reaffirmed on the new identity.
+- **Fix:** Nothing to close by hand: the ticket clears when the related finding's ticket does. Reaffirm any approval on the new finding, or record the lineage event (scripts/finding_lineage.py).
+- **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
+
+### LINEAGE_RULE_NOT_RECORDED (ticket_clearance_hold)
+
+A ticket whose finding was not reported this run was not closed, because the lineage ledger is missing, the same scanner reported a new finding, and the ticket ledger is older than the rule field so the rules cannot be compared. **[LINEAGE_RULE_NOT_RECORDED]**
+
+- **Why it matters:** An unrecorded rule cannot be read as a different rule, so the kit holds the ticket open and says so rather than closing it silently.
+- **Fix:** Do what LINEAGE_RECONCILIATION_UNRESOLVED says (record the lineage event, or a second person closes the old ticket after checking); the ticket ledger records the rule from the next run that sees the finding.
+- **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
+
+### RECONCILIATION_POPULATION_INCOMPLETE (ticket_clearance_hold)
+
+The run did not see a verified complete reconciliation population, so a clearance that depends on it was recorded as provisional. **[RECONCILIATION_POPULATION_INCOMPLETE]**
+
+- **Why it matters:** An automatic clearance of a finding with recorded lineage needs every scanner established over the whole repository, no findings withheld for want of identity, and a complete ticket sweep.
+- **Fix:** Read the named gaps in the reconciliation_held entry and rerun with the whole population.
+- **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
+
+## ticket_governance_state
+
+Not failures (nothing to do): `AREA_RESOLVED`, `PROVENANCE_ESTABLISHED`, `TAG_PRESERVATION_ESTABLISHED`.
+
+### AREA_UNRESOLVED (ticket_governance_state)
+
+No routing rule gave this finding an owning area, so it waits in triage with an owner role and a deadline. **[AREA_UNRESOLVED]**
+
+- **Why it matters:** A finding nobody owns is not worked; the triage owner must place it before the deadline.
+- **Fix:** The owner role adds a ticket_routing rule that covers this kind of finding (or records why it has none).
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### AREA_UNRESOLVED_OVERDUE (ticket_governance_state)
+
+A finding with no owning area is past its triage deadline. **[AREA_UNRESOLVED_OVERDUE]**
+
+- **Why it matters:** It is still unowned; every run reports it until it is routed.
+- **Fix:** Add a ticket_routing rule for it (the run names the owner role and the ticket).
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### CORRELATION_LABEL_COLLISION (ticket_governance_state)
+
+A ticket carries this finding's label but its full key belongs to a different finding. **[CORRELATION_LABEL_COLLISION]**
+
+- **Why it matters:** The full key is the only identity; a shared short label is a search ambiguity, not a match.
+- **Fix:** A person checks both tickets; nothing is merged unless a reviewer links them.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### CORRELATION_LABEL_UNVERIFIED (ticket_governance_state)
+
+A ticket carries the finding's label but not its full key, so it was shown to a person instead of being linked. **[CORRELATION_LABEL_UNVERIFIED]**
+
+- **Why it matters:** A label is only a search aid; linking on it alone could attach the finding to the wrong ticket.
+- **Fix:** Confirm the link in a finalized review (link_decisions); the kit then writes the full key into the ticket.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### PROVENANCE_MISMATCH (ticket_governance_state)
+
+The integration named on the ticket (the via label) is not the identity that actually wrote it. **[PROVENANCE_MISMATCH]**
+
+- **Why it matters:** A via label is a claim; a mismatch can mean a misconfigured integration or a ticket made to look automated.
+- **Fix:** Check KIT_INTEGRATION_IDENTITIES and who created the ticket; correct the mapping or investigate the ticket.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### PROVENANCE_NOT_ESTABLISHED (ticket_governance_state)
+
+The kit could not confirm who wrote the ticket. **[PROVENANCE_NOT_ESTABLISHED]**
+
+- **Why it matters:** Without the authenticated identity and the tracker's write record, the via claim is unproven.
+- **Fix:** Give the tracker credential read access to the creator or activity history, and register the integration in KIT_INTEGRATION_IDENTITIES.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### STAMP_FIELD_NOT_CONFIRMED (ticket_governance_state)
+
+The new Freshservice ticket's key field did not save the full key. **[STAMP_FIELD_NOT_CONFIRMED]**
+
+- **Why it matters:** The key field is how the kit finds the ticket again; the description still carries the key.
+- **Fix:** Check FRESHSERVICE_STAMP_FIELD is a single-line text field on the ticket form.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### TAG_PRESERVATION_NOT_ESTABLISHED (ticket_governance_state)
+
+Freshservice replaced the ticket's whole tag list and the kit could not prove nobody else's tag change was lost. **[TAG_PRESERVATION_NOT_ESTABLISHED]**
+
+- **Why it matters:** A person's tag may have been dropped by the kit's write.
+- **Fix:** Check the ticket's tags against its activity history (the kit left a private note saying so).
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### TICKET_WRITE_LOCK_HELD (ticket_governance_state)
+
+Another kit writer was updating the same ticket, so this write waited and then stopped. **[TICKET_WRITE_LOCK_HELD]**
+
+- **Why it matters:** Two writers on one Freshservice ticket can overwrite each other's tags.
+- **Fix:** Nothing to do; the next run makes the write. If it repeats, look for a stuck run.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
 
 ## ticket_intake_state
 
@@ -3095,9 +4062,35 @@ The ticket-number range in the workflow is set up wrongly (one bound missing, no
 - **Fix:** Ask the workflow owner to fix the min/max digit inputs of the ticket-reference job.
 - **More:** [docs/architecture/JIRA_AUTH_AND_ROUTING.md](../architecture/JIRA_AUTH_AND_ROUTING.md)
 
+## ticket_setting
+
+### TICKET_CEILING_OVERFLOW (ticket_setting)
+
+This run reached its ticket creation ceiling or the per-ticket instance limit. **[TICKET_CEILING_OVERFLOW]**
+
+- **Why it matters:** Nothing is dropped: findings past the creation ceiling are carried to the next run, extra instances are counted.
+- **Fix:** Decide whether to raise the number in the central policy register or let the carried work drain over the next runs.
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
+
+### TICKET_SETTING_ABOVE_GOVERNED (ticket_setting)
+
+A repository, environment or variable tried to raise a ticketing number above the organisation's value. **[TICKET_SETTING_ABOVE_GOVERNED]**
+
+- **Why it matters:** Those numbers are governed by the organisation; a narrower level may only lower them, so the organisation's value was used.
+- **Fix:** Lower the value, or change it in the central policy register if the organisation decides to.
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
+
+### TICKET_SETTING_INVALID (ticket_setting)
+
+A ticketing number is not a whole number in range (a creation ceiling must be at least 1). **[TICKET_SETTING_INVALID]**
+
+- **Why it matters:** An unreadable number is never guessed; the value from the level below was used.
+- **Fix:** Correct the number in the register or the variable named in the run summary.
+- **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
+
 ## ticket_template_outcome
 
-Not failures (nothing to do): `TEMPLATE_CLOSED_DUPLICATE`, `TEMPLATE_FIX_OBSERVED`, `TEMPLATE_LINKED_EXACT`, `TEMPLATE_PENDING_VERIFICATION`, `TEMPLATE_POSSIBLE_DUPLICATE`, `TEMPLATE_REGRESSION`, `TEMPLATE_REOPENED_AS_REMEDIATION`, `TEMPLATE_TICKET_BOUND`, `TEMPLATE_TICKET_CLOSED`, `TEMPLATE_TICKET_CREATED`, `TEMPLATE_TICKET_PLANNED`, `TEMPLATE_TICKET_UPDATED`, `TEMPLATE_TRIAGED_SEPARATE`.
+Not failures (nothing to do): `TEMPLATE_CLOSED_DUPLICATE`, `TEMPLATE_ENHANCED_EXISTING`, `TEMPLATE_FIX_OBSERVED`, `TEMPLATE_LINKED_EXACT`, `TEMPLATE_PENDING_VERIFICATION`, `TEMPLATE_POSSIBLE_DUPLICATE`, `TEMPLATE_REGRESSION`, `TEMPLATE_REOPENED_AS_REMEDIATION`, `TEMPLATE_TICKET_BOUND`, `TEMPLATE_TICKET_CLOSED`, `TEMPLATE_TICKET_CREATED`, `TEMPLATE_TICKET_PLANNED`, `TEMPLATE_TICKET_UPDATED`, `TEMPLATE_TRIAGED_SEPARATE`.
 
 ### TEMPLATE_DEDUPE_PENDING (ticket_template_outcome)
 
@@ -3106,6 +4099,14 @@ The duplicate search did not finish, so the ticket was created in triage marked 
 - **Why it matters:** It is never lost; the next run checks it again.
 - **Fix:** Nothing; a person triages it if the next run still cannot.
 - **More:** [docs/ticketing/TICKET-TYPES.md](../ticketing/TICKET-TYPES.md)
+
+### TEMPLATE_DUPLICATE_CLOSURE_REFUSED (ticket_template_outcome)
+
+A duplicate ticket was left open because the evidence copied to the main ticket could not be read back. **[TEMPLATE_DUPLICATE_CLOSURE_REFUSED]**
+
+- **Why it matters:** Closing it first could lose evidence; both tickets stay open and linked.
+- **Fix:** Check the main ticket has the evidence comment, then close the duplicate by hand.
+- **More:** [docs/adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md](../adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md)
 
 ### TEMPLATE_OUTBOX (ticket_template_outcome)
 
@@ -3132,6 +4133,14 @@ A verifier rejected the fix, so the ticket was reopened. **[TEMPLATE_VERIFICATIO
 - **More:** [docs/ticketing/TICKET-TYPES.md](../ticketing/TICKET-TYPES.md)
 
 ## ticket_template_refusal
+
+### CHILD_OBLIGATION_OPEN (ticket_template_refusal)
+
+The multicloud ticket cannot close yet: a child obligation (Azure or AWS) is still open. **[CHILD_OBLIGATION_OPEN]**
+
+- **Why it matters:** Each cloud has its own owner and its own fix; the parent closes only when every child is verified.
+- **Fix:** Close each child ticket first (its owner resolves it; a rescan or another person verifies it); the parent then closes itself.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
 
 ### CLOSURE_NOT_VERIFIED (ticket_template_refusal)
 
@@ -3449,6 +4458,9 @@ These taxonomy namespaces hold vocabulary a developer never sees as a run outcom
 
 | namespace | why it is not here |
 |---|---|
+| `actionlint_baseline_outcome` | why the kit's own actionlint baseline check refused, a kit maintainer's self-test outcome only |
+| `adoption_clock` | kit init writes the crawl dates into the checklist; never a run outcome |
+| `app_team_check` | a recorded note beside environment_protection; only its refusal, ENVIRONMENT_APPROVERS_ALL_APP_TEAM, is shown to developers |
 | `capability_maturity` | how far a kit capability is proven, read by kit maintainers and reviewers |
 | `capability_metadata` | capability-specific facts carried beside the shared vocabulary, not outcomes |
 | `capability_origin` | where a kit capability came from, read by kit maintainers |
@@ -3458,13 +4470,16 @@ These taxonomy namespaces hold vocabulary a developer never sees as a run outcom
 | `corpus_family_outcome` | the outcome of a kit scanner-corpus probe, run by kit maintainers only |
 | `cost_measurement_state` | what the kit's cost measurement can say, read by kit maintainers |
 | `credential_redaction` | a rule about redaction with no values of its own |
+| `dast_policy` | the promotion record's dast_basis; the refusal a developer sees is the missing promotion condition, explained by the promotion state |
 | `deferral_obligation` | whether a recorded deferral is in force, reported inside ticket records |
-| `disposition_carry` | how an approved exception reached a finding, internal to the register reader |
+| `disposition_decision` | the evaluated decision recorded on a finding in findings.json and the evidence export, read by the reviewer's tooling, never a run outcome |
+| `disposition_review` | the review-time evaluation of an exported approval, read by a reviewer and the evidence harness, never a pipeline error |
 | `disposition_type` | the four kinds of approved decision about a finding, a field of the register |
 | `enforcement_rung` | the rung names (crawl, walk, run), configuration rather than an outcome |
 | `environment_tier` | the tier names themselves (sandbox to prod), configuration rather than an outcome |
 | `epistemic_property` | words for dashboards and reports about coverage, never a run outcome |
 | `evidence_confidence` | how strongly a capability claim is supported, read by kit maintainers |
+| `evidence_harness_reading` | values the evidence harness derives and only the kit's cross-product proof reads back |
 | `finding_classification` | how a maintainer classifies a red kit result before changing anything |
 | `finding_confidence` | how strongly evidence supports a ticket cluster, a field of the ticket model |
 | `finding_identity_match` | matching a finding against the baseline ledger, internal to the gate |
@@ -3477,12 +4492,18 @@ These taxonomy namespaces hold vocabulary a developer never sees as a run outcom
 | `identity_refusal` | why a durable finding identity was not computed, read by the ledger and its proofs |
 | `identity_scope` | how far a finding identity may be trusted, a field of the evidence model |
 | `kit_api_data` | words the API writes inside result data, not refusals |
+| `kit_harness_pair_outcome` | why the kit and harness pair proof refused, a kit maintainer's test outcome only |
+| `kit_init_inventory` | kit init writes these into its checklist; never a run outcome |
+| `kit_survey_cell` | a per-cell read state inside the survey report, never a run outcome |
+| `kit_survey_comparison` | a comparison verdict in the survey report, read by a person, never a run outcome |
+| `legacy_inventory_state` | a row state of the read-only legacy-key inventory, read by the owner before the key window closes, never a run outcome |
 | `lineage_attribution` | who asserted a lineage link, recorded on ledger events for maintainers |
 | `lineage_cause` | why an identity moved, recorded on ledger events for maintainers |
 | `lineage_ledger_integrity` | whether the lineage ledger chain verifies, checked by kit maintainers |
 | `lineage_proof_failure` | the failure words of one kit proof, seen only by kit maintainers |
 | `lineage_relation` | how finding identities relate across an identity change, internal to the ledger |
 | `lineage_resolution` | what an identity resolves to now, internal to the ledger |
+| `local_tool_pin` | printed only by the kit maintainers' local battery, never a consumer pipeline |
 | `lz_drift_class` | the landing zone's drift severity, emitted by the deployed scan for the platform team |
 | `lz_drift_dimension` | the landing zone's drift vocabulary, emitted by the deployed scan for the platform team |
 | `mutation_class` | which ticket mutations need a person, internal to the reconciler |
@@ -3492,6 +4513,7 @@ These taxonomy namespaces hold vocabulary a developer never sees as a run outcom
 | `promotion_approval` | a field inside the promotion record, explained by release_approval refusals |
 | `promotion_record_state` | a field inside the promotion record, explained by promotion_gate refusals |
 | `provenance_identity` | a rule about binding identity at capture, with no values of its own |
+| `reconciliation_finding_state` | a finding state recorded beside a held ticket, never a refusal |
 | `release_ownership` | per-object attribution read during a reversal, internal to the rollback contract |
 | `reversal_conflict` | why one reversal entry could not be actioned, internal to the rollback contract |
 | `reversal_disposition` | what recovery may do to one object, internal to the rollback contract |
@@ -3500,6 +4522,7 @@ These taxonomy namespaces hold vocabulary a developer never sees as a run outcom
 | `scan_depth` | how hard a scan looks by trigger (pr, merge, nightly ...), configuration rather than an outcome |
 | `seam_field_drift` | a CANDIDATE vocabulary of the landing zone's seam detector, not emitted by the kit |
 | `selftest_reach` | how the kit's own CI exercises a workflow, read by kit maintainers |
+| `severity_comparison` | recorded in the enhancement comment on the existing ticket, never a run outcome |
 | `suppression_reason` | recorded per error-suppressing line of kit code, read by kit maintainers |
 | `task_state` | the lifecycle of a child task inside the tracker, not a run outcome |
 | `team_pattern` | team-size names, configuration rather than an outcome |

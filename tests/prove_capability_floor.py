@@ -10,8 +10,8 @@ THE EXACT MUTATION
 
 WHAT MUST HAPPEN
 
-    F1  the real tree holds the floor (static), and the floor file is under CODEOWNERS for both the
-        pipeline maintainers and the security approvers -- kit-owned, not a contributor row.
+    F1  the real tree holds the floor (static), and the floor file is under CODEOWNERS solely for the
+        declared protected owner (KDEC-050) -- kit-owned, not a contributor row.
     F2  THE CONTROL THAT IS NOT ENOUGH: tests/check_scanner_registry.py, run on the mutated pair,
         PASSES. A registry check alone has been taught the scanner was never expected.
     F3  the floor's static check, run on the same mutated pair with the floor unchanged, is
@@ -109,10 +109,13 @@ def main():
     p = cf.check_tree(floor, wf_text, reg)
     bad += ['F1 the real tree breaches the floor: %s' % x for x in p]
     owners = io.open(os.path.join(ROOT, 'CODEOWNERS'), encoding='utf-8').read()
+    # KDEC-050: one protected owner (GitHub accepts ANY one owner on a line, so two teams on the
+    # line never made both sign); scripts/protected_paths.py holds every protected path to it.
     m = re.search(r'(?m)^/capability-floor\.json\s+(.+)$', owners)
-    if not m or 'security-approvers' not in m.group(1) or 'pipeline-maintainers' not in m.group(1):
-        bad.append('F1 CODEOWNERS does not put /capability-floor.json under both the pipeline '
-                   'maintainers and the security approvers')
+    d = re.search(r'(?m)^#\s*kit-protected-owner:\s*(\S+)\s*$', owners)
+    if not m or not d or m.group(1).split() != [d.group(1)]:
+        bad.append('F1 CODEOWNERS does not put /capability-floor.json solely under the declared '
+                   'protected owner (kit-protected-owner)')
 
     # The mutation.
     mtext, mreg, mdoc = mutate(wf_text, reg)

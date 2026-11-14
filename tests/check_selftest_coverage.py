@@ -148,6 +148,26 @@ RUNTIME_TOOLS = {
                                   'which self-test runs, prove its behaviour',
 }
 UNWIRED = {
+    'prove_kit_harness_pair.py': {
+        'reason': 'needs a checkout of the evidence harness (a separate repository) beside the kit. The '
+                  'hosted job is BUILT (.github/workflows/kit-harness-pair.yml, KDEC-058) but reports '
+                  'HARNESS_LEG_NOT_RUN until the owner creates its read-only credential, so no workflow '
+                  'runs this proof yet (the job calls it through scripts/harness_pair_gate.py, which the '
+                  'census rightly does not count). Run locally with --harness-root (passed rc=0, 4/4 '
+                  'mutants, integ/r5-fixes-2026-11-11; via the gate rc=0, actionlint-pair 2026-11-13)',
+        'owner': 'kit-maintainer',
+        'closes': 'the owner, on the SAME host as the kit run (KDEC-027): (1) creates a GitHub App with '
+                  'repository permission Contents: Read-only and nothing else (Metadata: Read is implied; '
+                  'no webhook), installed on the evidence-harness repository ONLY (Only select '
+                  'repositories); (2) creates the kit repository environment kit-harness-pair with '
+                  'deployment branches limited to the default branch, and in it the secret '
+                  'KIT_HARNESS_APP_PRIVATE_KEY (the App private key) and the variable '
+                  'KIT_HARNESS_APP_CLIENT_ID (the App client id); (3) sets the repository variable '
+                  'KIT_HARNESS_REPOSITORY to OWNER/REPO of the harness (no host); (4) a reviewed PR sets '
+                  '.github/harness-pair.json commit to the merged harness commit (40-hex). When a '
+                  'kit-harness-pair run on the default branch shows the pair PASS, delete this entry and '
+                  'add a census line for the hosted run. Steps: docs/operations/HARNESS_PAIR_HOSTED.md',
+        'expires': '2026-12-31'},
     'check_context_current.py': {
         'reason': 'fails on the trunk today: the .context record was reconciled against 9b18e49 and '
                   'HEAD is further ahead than its limit. Wiring it now turns self-test red on a '

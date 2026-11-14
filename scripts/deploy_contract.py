@@ -25,6 +25,7 @@ import argparse
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1560,7 +1561,7 @@ def derive_outcome(adapter, live):
 # not-applicable there; DAST not configured is not a failure (decision 3: "where configured").
 PROMOTION_CONDITIONS = ['exact artefact identity established', 'expected artefact observed running',
                         'intended traffic observed', 'state reconciliation complete',
-                        'end-to-end test period passed', 'dynamic scan shows no new blocking finding',
+                        'end-to-end test period passed', 'dynamic scan passed, or recorded as not required',
                         'security-settings posture passed', 'required reviews and gates passed',
                         'built from the default branch']
 PASSIVE_OK = ('NOT_APPLICABLE_PASSIVE',)
@@ -1590,8 +1591,16 @@ def promotion(outcome, content_proven=False):
         if tp == 'PASSED' or tp in PASSIVE_OK:
             held.append('end-to-end test period passed')
         da = (read_evidence('dast.json') or {}).get('result')
-        if da in ('DAST_PASSED', 'NOT_CONFIGURED') or da in PASSIVE_OK:
-            held.append('dynamic scan shows no new blocking finding')
+        try:
+            pol = (json.loads(env('kit_org_settings') or '{}').get('dast') or {}).get('state') or 'DAST_NO_ORG_POLICY'
+        except ValueError:
+            pol = 'DAST_REQUIRED'      # an unreadable org policy never waives a scan
+        # R07 (external review 2026-11-07): NOT_CONFIGURED is never a passed scan. It satisfies the condition only
+        # when no org policy requires DAST, or the org recorded a decision that this repository does not need it.
+        if da == 'DAST_PASSED' or da in PASSIVE_OK or (da == 'NOT_CONFIGURED' and pol != 'DAST_REQUIRED'):
+            held.append('dynamic scan passed, or recorded as not required')
+        dast_basis = ('DAST_PASSED' if da == 'DAST_PASSED' else 'passive at prod' if da in PASSIVE_OK else
+                      'NOT_CONFIGURED: %s' % pol if da == 'NOT_CONFIGURED' else 'DAST result %s' % (da or 'absent'))
         if (read_evidence('security-settings.json') or {}).get('result') == 'POSTURE_PASSED':
             held.append('security-settings posture passed')
         if env('routing_result') in ('PROCEED', 'PROCEED_WITH_ADVISORY'):
@@ -1603,6 +1612,7 @@ def promotion(outcome, content_proven=False):
     missing = [c for c in PROMOTION_CONDITIONS if c not in held]
     return {'state': 'not-verified' if missing else 'verified-for-promotion',
             'established': held, 'missing': missing,
+            'dast_basis': dast_basis if outcome == 'DEPLOY_HEALTHY' else 'not reached',
             'note': 'KDEC-029: tested = health, the end-to-end test period, DAST where configured, '
                     'and the security-settings posture; identity needs the build-proven registry '
                     'identity and V1 verified in this deploy; prod runs passive checks only'}
@@ -1650,18 +1660,47 @@ SIX_QUESTIONS = {
 }
 
 
-def six_questions(outcome, why):
+# KREQ-706 (KDEC-060): the overlay's `escalation`; at prod a placeholder is refused.
+escalation_placeholder_channel = 'the deploy environment\'s change or incident queue (set by policy)'
+escalation_placeholder_service_level = 'placeholder: set by the adopting team\'s policy'
+ESCALATION_ROUTE_CONFIGURED, ESCALATION_ROUTE_PLACEHOLDER, ESCALATION_ROUTE_REFUSED = (
+    'ESCALATION_ROUTE_CONFIGURED', 'ESCALATION_ROUTE_PLACEHOLDER', 'ESCALATION_ROUTE_REFUSED')
+_PH = re.compile(r'placeholder|set by|<[^>]*>|YOUR_ORG|replace-me|^\s*(tbd|todo|n/?a|none|unset)?\s*$', re.I)
+
+
+def escalation_route(org, tier):
+    """-> (state, channel, service_level, owner_role, why). `org`: the overlay, or its JSON."""
+    try:
+        org = json.loads(org or '{}') if isinstance(org, str) else org
+    except ValueError:
+        org = {}
+    e = (org or {}).get('escalation') if isinstance(org, dict) else None
+    e = e if isinstance(e, dict) else {}
+    ch, sl, role = str(e.get('channel') or ''), str(e.get('service_level') or ''), e.get('owner_role')
+    bad = [n for n, v in (('channel', ch), ('service_level', sl)) if _PH.search(v)]
+    if not bad:
+        return ESCALATION_ROUTE_CONFIGURED, ch, sl, role, 'org overlay'
+    why = 'escalation %s unset or a placeholder in the org overlay' % '/'.join(bad)
+    if tier == 'prod':
+        return ESCALATION_ROUTE_REFUSED, None, None, role, why + '; refused at prod'
+    return (ESCALATION_ROUTE_PLACEHOLDER, escalation_placeholder_channel if 'channel' in bad else ch,
+            escalation_placeholder_service_level if 'service_level' in bad else sl, role, why)
+
+
+def six_questions(outcome, why, org_settings=None, tier=''):
     blocked, owner, known, may, nxt = SIX_QUESTIONS.get(
         outcome, (True, 'platform operations', 'no', False, 'Escalate: unrecognised outcome.'))
     q = {'progression_blocked': blocked, 'why': why, 'resolution_owner': owner,
          'remediation_known': known, 'automated_actor_may_proceed': may, 'next_action': nxt}
     esc = None
     if blocked and not may:
+        state, channel, sl, role, rwhy = escalation_route(org_settings, tier)
         esc = {'resolution_owner': owner,
-               'request_channel': 'the deploy environment\'s change or incident queue (set by policy)',
+               'request_channel': channel,
                'request_type': {'DEPLOY_REFUSED': 'refusal review'}.get(outcome, 'recovery decision'),
                'required_artefacts': EVIDENCE_FILES,
-               'service_level': 'placeholder: set by the adopting team\'s policy',
+               'service_level': sl,
+               'route_state': state, 'route_owner_role': role, 'route_why': rwhy,
                'permitted_agent_action': {'may': MAY, 'may_not': MAY_NOT}}
     return q, esc
 
@@ -1713,7 +1752,7 @@ def cmd_report(a):
                              'routing_result': env('attestation_route') or None,
                              'debt': env('attestation_debt') or None}
     report['promotion'] = promotion(outcome)
-    q, esc = six_questions(outcome, why)
+    q, esc = six_questions(outcome, why, env('kit_org_settings'), env('environment_tier'))
     report['six_questions'] = q
     report['escalation'] = esc
     write_evidence('outcome.json', report)
@@ -1754,9 +1793,11 @@ def cmd_report(a):
               % ('yes' if q['automated_actor_may_proceed'] else 'no'),
               '| What is the exact next action? | %s |' % q['next_action']]
     if esc:
-        lines += ['', '**Escalation contract.** Owner: %s. Channel: %s. Artefacts: %s. Service '
-                  'level: %s.' % (esc['resolution_owner'], esc['request_channel'],
-                                  ', '.join(esc['required_artefacts']), esc['service_level']),
+        if esc['route_state'] == ESCALATION_ROUTE_REFUSED:
+            print('::error title=%s::%s' % (esc['route_state'], esc['route_why']))
+        lines += ['', '**Escalation contract.** Owner: %s. Channel: %s. Artefacts: %s. Service level: %s. '
+                  'Route: `%s` (%s).' % (esc['resolution_owner'], esc['request_channel'], ', '.join(
+                      esc['required_artefacts']), esc['service_level'], esc['route_state'], esc['route_why']),
                   'An automated actor MAY: %s.' % '; '.join(esc['permitted_agent_action']['may']),
                   'It MAY NOT: %s.' % '; '.join(esc['permitted_agent_action']['may_not'])]
     summary('\n'.join(lines))

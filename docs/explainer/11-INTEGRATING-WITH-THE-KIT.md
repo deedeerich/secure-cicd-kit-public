@@ -104,6 +104,10 @@ kit's own callers and templates to this):
 | the policy gate (`workflow-policy-check.yml`) | `contents: read` |
 | the OIDC / boundary probe (`verify-azure-oidc.yml`) | `contents: read`, `id-token: write` |
 | the kit API (`reusable-kit-api.yml`; `templates/kit-api.yml`) | `contents: read`, `actions: read`, `checks: write`, `pull-requests: read` (KDEC-037), `deployments: read` (`evidence.export`, KDEC-039) |
+| the Dependabot configuration check (`reusable-dependabot-config-check.yml`; `templates/dependabot-config-check.yml`) | `contents: read`, `pull-requests: read` |
+| Dependabot keep-current (`reusable-dependabot-keep-current.yml`; the triage starter's `keep-current` job) | `contents: read`, `pull-requests: write` |
+| external findings (`reusable-external-findings.yml`; `templates/external-findings.yml`) | `contents: read`, `actions: write` |
+| kit init (`templates/kit-init.yml`, the `kit-init` composite) | `contents: read` (it opens its pull request with `KIT_INIT_TOKEN`) |
 | the Dependabot triage (`reusable-dependabot-triage.yml`; `templates/dependabot-triage.yml`, on `pull_request_target`) | `contents: write`, `pull-requests: write`, `issues: write` (each job holds only its part: classify reads, auto-merge writes contents, human-review labels, close writes the PR) |
 
 The ledger proposal is a **separate** reusable workflow so the security scan never needs a write scope.

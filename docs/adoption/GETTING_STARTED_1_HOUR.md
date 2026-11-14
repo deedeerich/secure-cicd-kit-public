@@ -37,6 +37,19 @@ python3 scripts/kit_init.py --target ../my-app --kit-repo YOUR_ORG/secure-cicd-k
 # on a <tenant>.ghe.com host, gh needs GH_HOST=<tenant>.ghe.com (kit init sets it for its own calls)
 ```
 
+**The host is detected** (owner, 2026-11-07): `github.com` (a personal repository, default branch `main`) and
+`<tenant>.ghe.com` (work) both work. kit init reads the host from `--host`, from the repository's own workflow
+(`GITHUB_SERVER_URL`, `GITHUB_API_URL`), from the `origin` remote and from your organisation's overlay, and derives
+the API address (`api.github.com` or `api.<tenant>.ghe.com`) and the sign-in issuer from it. Another host is
+refused by name (`KIT_INIT_HOST_UNSUPPORTED`); two sources that disagree are refused too (`KIT_INIT_HOST_MISMATCH`).
+
+**Your organisation's overlay is applied on day one.** If your organisation keeps an overlay in its kit repository
+(`overlays/<org>/kit-org-settings.json`), kit init takes from it the approver teams (uat/prod reviewers and the
+CODEOWNERS of `.github/workflows/`, `.kit/` and `id-mappings.json`), the adoption level, the Azure cloud of each
+environment and where tickets go. You may make these stricter, never looser
+([SETTINGS_PRECEDENCE.md](SETTINGS_PRECEDENCE.md)). Wired a repository by hand before? Read
+[MIGRATE_FROM_HAND_WIRED.md](MIGRATE_FROM_HAND_WIRED.md) first.
+
 If kit init refuses, it says why in one sentence with the fix, e.g. "kit init did not recognise any language
 or deploy type in this repository, so it wrote nothing. [KIT_INIT_STACK_UNKNOWN]". Every refusal is in
 [ERRORS.md](../errors/ERRORS.md#kit_init_state).
@@ -49,19 +62,26 @@ or deploy type in this repository, so it wrote nothing. [KIT_INIT_STACK_UNKNOWN]
 | `.github/workflows/dependabot-config-check.yml` and `.github/dependabot.yml` | every manifest kept up to date; a pull request that adds a manifest nobody updates fails with the fix |
 | `.github/workflows/kit-init.yml` | re-running kit init later is a button |
 | `.github/workflows/dependabot-triage.yml`, `kit-api.yml` | only if you asked for them |
-| a block in `CODEOWNERS` | AppSec and platform review changes to the kit's settings, the workflows, Dockerfiles and infrastructure code |
+| `.github/CODEOWNERS` (only when you have none) | a complete default: the approver teams own the workflows, `.kit/` and `id-mappings.json`, AppSec and platform the Dockerfiles and infrastructure code. **An existing CODEOWNERS is never changed**: kit init proposes its lines in `.kit/CODEOWNERS.proposed` and names any of your rules that would override them. `--codeowners customise` gives you a draft instead |
 | `.kit/environments.json`, `.kit/settings.json`, `.kit/ADOPTION_CHECKLIST.md` | the environments to create (a spec, not applied), your answers, and the checklist |
 
 Re-running kit init is safe: it updates its own files and **keeps any file you edited** (it lists them).
 
 ## Minutes 10-25: the checklist (some of it needs an admin)
 
-The pull request's description is the checklist of things only a person can do, each with the exact
-command. Typically:
+The pull request's description is the checklist of things only a person can do. Every item says **what** to
+do, **how** (the exact command) and **why it matters**. Typically:
 
 1. **Create the environments and their reviewers** (dev, test, uat, prod; `gh api` commands included). uat
-   and prod need a reviewer from platform or security who is not you: the kit refuses a production deploy
-   nobody else approved. Ask a repository admin if you are not one.
+   and prod always name a reviewer, and the deploy waits until that person says yes, even for a push straight
+   to main. The reviewer comes from platform or security and is not you; with no approver pools at all (a team
+   of one), the environment still names a person who is not the deployer. Ask a repository admin if you are not
+   one. Without an org overlay, set the variables the checklist names (`KIT_APPROVER_POOLS`, and `KIT_APP_TEAM` if
+   you gave `--app-team`); with one, leave them unset. An environment with a name other than dev, test, uat or
+   prod needs a `class` in `.kit/environments.json`, or the deploy refuses it (`ENVIRONMENT_UNCLASSED`).
+   **A team of two or fewer with no approver group** may approve its own deployments only when the organisation
+   declares it in its overlay, as a recorded, time-boxed exception; the run then says
+   **SMALL_TEAM_SELF_APPROVAL** ([SETTINGS_PRECEDENCE.md](SETTINGS_PRECEDENCE.md) section 4). **"Prevent self-review" is a GitHub *environment* protection setting.** It governs only the approval of deployment jobs that target that environment. It does not change branch protection, rulesets or pull request review rules, and the kit never sets it: kit init only prints the command, and the deploy only reads it back and checks it.
 2. **Add the OIDC federated credentials** (`az ad app federated-credential create ...`, one per
    environment). There is no client secret anywhere; the deploy signs in with a short-lived token. On a
    `<tenant>.ghe.com` host the issuer is `https://token.actions.<tenant>.ghe.com`; the checklist already
@@ -112,6 +132,33 @@ scanner that could not run says so; it is never shown as clean.
    from platform or security approves it the same business day ([ROLLOUT_PLAN.md](ROLLOUT_PLAN.md)).
 4. **Log your time**: add the `first_green` row (minutes from starting kit init to the green run) and any
    `stuck` rows to the friction log.
+
+## How long you stay at crawl
+
+Every repository **starts at crawl** unless your organisation's overlay sets a stricter level (owner, 2026-11-07).
+The optimal crawl is **4 weeks**; the summary flags it after **8 weeks** (prefer no more than two months); **six
+months** (26 weeks) is the hard maximum, where it is escalated to the platform lead. Nothing moves you to walk, or
+keeps you at crawl longer, by itself: a person changes the policy register. kit init writes the dates into the
+checklist.
+
+## FAQ
+
+**Do I have to write a positive and a negative test for every change I make to my application?**
+No. The positive/negative proof pairing is required **only for changes to the kit itself (and to the evidence
+harness)**: a new or changed kit control must prove both that it passes the normal path and that it refuses the
+bad one (`tests/check_positive_negative_pairing.py`, `docs/assurance/POSITIVE_NEGATIVE_MATRIX.md`). That check
+runs only in the kit's own self-test (`.github/workflows/self-test.yml`); none of the reusable workflows your
+repository calls runs it, or any of the kit's `tests/` scripts. **Your application code goes through the
+scanners and the gate only**: the security workflow scans it, and the gate decides at your adoption level. Your
+own tests are yours to choose (a deploy promotes only what passes your `KIT_E2E_TEST_COMMAND`).
+
+**Can I approve my own pull request?** No. GitHub does not let a pull request's author approve it. The small-team
+mode is about **deployments** only.
+
+**Why does the kit refuse a variable I set in my repository?** A repository value shadows the organisation's
+(GitHub uses the most specific level). For the few settings that decide who approves production and which cloud a
+deploy signs in to, the organisation's overlay decides and your value may only make it stricter
+([SETTINGS_PRECEDENCE.md](SETTINGS_PRECEDENCE.md)).
 
 ## Where to go next
 

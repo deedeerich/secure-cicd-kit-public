@@ -72,6 +72,19 @@ jobs:
       id-token: write   # the environment's federated reader identity; this job only reads
       actions: read     # the promotion records and the build SBOMs (artifacts)
     steps:
+      # KREQ-558: no deployed scan without a live-target authorisation record in force for this scan,
+      # environment and target (.kit/live-target-authorisation.json on the default branch). Absent,
+      # expired or out of scope is PREREQUISITE_UNAVAILABLE: this step fails and nothing below reads the
+      # target. tests/prove_live_target_authorisation.py.
+      - name: Live-target authorisation (KREQ-558, before any read of the target)
+        id: lta
+        uses: $/.github/actions/live-target-authorisation
+        with:
+          scan: deployed-scan
+          environment: ${{ matrix.environment }}
+          target: ${{ vars.KIT_APP_NAME }}
+          github-token: ${{ github.token }}
+
       - name: Azure login (OIDC)
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:

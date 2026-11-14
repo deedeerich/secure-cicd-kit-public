@@ -124,6 +124,7 @@ runs:
         disp=""
         ledger=""
         aliases=""
+        lineage=""
         def_branch="${DEFAULT_BRANCH:-main}"
         if git rev-parse --git-dir >/dev/null 2>&1; then
           # NO DEPTH LIMIT ON THIS FETCH. It used to be `--depth=1`, which makes even a full
@@ -163,6 +164,14 @@ runs:
             aliases="${RUNNER_TEMP}/rule-family-aliases.json"
             echo "rule-family alias table read from origin/$def_branch"
           fi
+
+          # R03: THE LINEAGE LEDGER and its head anchor, from the same protected branch. A decision
+          # approved on an identity a finding moved FROM is shown as a PENDING DECISION and never
+          # suppresses; an absent ledger is stated as LEDGER_ABSENT, a tampered one refuses the carry.
+          lineage="${RUNNER_TEMP}/finding-lineage.jsonl"
+          rm -f "$lineage" "${lineage}.head"
+          git show "FETCH_HEAD:.security/finding-lineage.jsonl" > "$lineage" 2>/dev/null || rm -f "$lineage"
+          git show "FETCH_HEAD:.security/finding-lineage.jsonl.head" > "${lineage}.head" 2>/dev/null             || rm -f "${lineage}.head"
         fi
         if [ -z "$disp" ]; then
           echo "::notice title=No disposition register::None found on origin/${def_branch}."
@@ -183,7 +192,7 @@ runs:
           ${src_root:+--source-root "$src_root"} \
           --repository "${GITHUB_REPOSITORY:-}" \
           ${disp:+--dispositions "$disp"} \
-          ${ledger:+--ledger "$ledger"} \
+          ${ledger:+--ledger "$ledger"}           ${lineage:+--lineage "$lineage"} \
           --environment "$ENVIRONMENT" \
           ${aliases:+--rule-families "$aliases"} \
           --expect "$EXPECT" \

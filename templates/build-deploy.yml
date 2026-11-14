@@ -52,6 +52,10 @@ on:
         description: "PROMOTE: the predecessor environment whose record is promoted"
         type: string
         default: "test"
+      promote_from_target_resource_id:
+        description: "PROMOTE: the resource id of the predecessor target (the app) promoted from. REQUIRED for uat and prod"
+        type: string
+        default: ""
       release_path:
         description: "normal | hotfix | rollback | break-glass"
         type: string
@@ -111,6 +115,10 @@ on:
         description: "PROMOTE: the predecessor environment whose record is promoted"
         type: string
         default: "test"
+      promote_from_target_resource_id:
+        description: "PROMOTE: the resource id of the predecessor target (the app) promoted from. REQUIRED for uat and prod"
+        type: string
+        default: ""
       release_path:
         description: "normal | hotfix | rollback | break-glass"
         type: string
@@ -554,6 +562,7 @@ jobs:
       github_environment: ${{ inputs.environment }}      # uat or prod; approvals live on the Environment
       promote_from_run_id: ${{ inputs.promote_from_run_id }}
       promote_from_environment: ${{ inputs.promote_from_environment }}
+      promote_from_target_resource_id: ${{ inputs.promote_from_target_resource_id }}   # REQUIRED at uat and prod
       # Product policy: prod's predecessor is test or uat (default test); uat's is always test.
       promotion_predecessor: ${{ inputs.environment == 'uat' && 'test' || vars.KIT_PROMOTION_PREDECESSOR || 'test' }}
       release_path: ${{ inputs.release_path || 'normal' }}

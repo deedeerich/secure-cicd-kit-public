@@ -218,6 +218,71 @@ exact commands in the repository's checklist (deployment branches limited to `ma
 `security / Security gate` only **after** the repository's first green run: a required check that has never
 passed blocks every pull request at once.
 
+### What the deploy refuses, and why a push to main cannot skip it (KDEC-042, owner 2026-11-06)
+
+"Never a prod deployment without a human approval." Two layers hold it:
+
+1. **GitHub's own wait.** Every kit deploy job declares `environment: ${{ inputs.github_environment }}`
+   from a required input, with nothing conditional on the trigger. A job in an environment with required
+   reviewers does not start until one approves. A push to main and a manual dispatch reach the same job,
+   so they wait on the same reviewers. The kit is pinned by SHA, so a caller cannot remove the
+   declaration. `tests/check_deploy_environment_declared.py` refuses a deploy job without it, a
+   conditional one, and a caller that picks the environment by trigger or passes an empty one.
+2. **The kit's read-back, before any cloud login** (`scripts/environment_protection.py`, the `protection`
+   step). It first **classes** the environment: the strongest of the bound tier (`KIT_ENVIRONMENT_TIER`),
+   the `class` in `.kit/environments.json` and the name (uat, stage, staging, preprod, prod, production or
+   prd gate it; dev, development, sandbox, test or testing do not). An explicit class can class a name
+   the pattern does not know, and can raise one, but **never lowers** a production name, because a push
+   to main can edit that file. A name nothing classes, or an empty one, is `ENVIRONMENT_UNCLASSED` and is
+   refused at every tier until you add it to `.kit/environments.json`. At uat and prod it then refuses:
+
+| refusal | the environment |
+|---|---|
+| `ENVIRONMENT_NOT_FOUND` | does not exist (GitHub would have nobody to wait for) |
+| `ENVIRONMENT_REVIEWERS_ABSENT` / `ENVIRONMENT_REVIEWERS_EMPTY` | has no required-reviewers rule / one naming nobody |
+| `ENVIRONMENT_SELF_REVIEW_ALLOWED` | lets the person who pushed or dispatched approve their own deploy |
+| `ENVIRONMENT_APPROVER_POOL_MISSING` | has no reviewer from the platform or security pool, when pools are named |
+| `ENVIRONMENT_APPROVERS_ALL_APP_TEAM` | can only be approved by the app team, when the team is named |
+| `ENVIRONMENT_PROTECTION_NOT_ESTABLISHED` | rules, class file, settings or the org overlay could not be read: unknown is never a pass |
+| `ENVIRONMENT_GOVERNED_SETTING_LOOSENED` | a repository or environment value loosens what the org overlay governs (pools, app team, small-team mode) |
+| `ENVIRONMENT_SMALL_TEAM_SELF_APPROVAL_REFUSED` | lets the deployer approve, and the org's small-team mode does not apply (too large, pools exist, incomplete, expired) |
+
+**No pools named is not a refusal** (owner O-42b, 2026-11-07): a team of one cannot have pools. The
+required-reviewers rule with a non-empty list is required at uat and prod always, so the deploy waits until a
+person says yes, even the person who pushed. **Small-team self-approval** (a team of two or fewer, no external
+approver group, declared only in the org overlay with five weakening fields and a review within 90 days) lets
+Prevent self-review be off; the deploy proceeds as `ENVIRONMENT_PROTECTION_SMALL_TEAM_SELF_APPROVAL` and the
+release record says `SMALL_TEAM_SELF_APPROVAL`. **"Prevent self-review" is a GitHub *environment* protection setting.** It governs only the approval of deployment jobs that target that environment. It does not change branch protection, rulesets or pull request review rules, and the kit never sets it: kit init only prints the command, and the deploy only reads it back and checks it. **The rollback runs the same read-back** before it signs in
+(owner O-42c). Explicit classes raise, never lower, a production name (O-42a, accepted).
+
+### The approver groups standard (KDEC-044, PROPOSED, for discussion)
+
+1. The approver pools are **GitHub team slugs** (for example a platform approvers team and a security approvers
+   team), defined **once**, in the org overlay in the organisation's kit repository.
+2. The **same teams** are the required reviewers of every uat and prod environment.
+3. The **same teams own the kit-governed paths** in each repository's CODEOWNERS: `/.github/workflows/`, `/.kit/`,
+   `/id-mappings.json` (kit init writes the lines from the overlay; CODEOWNERS exists only per repository).
+4. They are **never ruleset bypass actors**.
+5. A repository may narrow the pools, never widen them.
+
+Why from the org overlay and not a variable: a repository variable shadows an organisation variable of the same
+name, and a job cannot see which level it read ([SETTINGS_PRECEDENCE.md](SETTINGS_PRECEDENCE.md)).
+
+**Approver pools and the app team.** With an org overlay (owner, 2026-11-07), they come from it and a
+repository value may only narrow them (above). Without one, name them as repository (or organisation)
+variables, because a push to main cannot edit a variable: `KIT_APPROVER_POOLS` = `{"platform":["@org/platform"],"security":["@org/security"]}`
+and `KIT_APP_TEAM` = `@org/app-team` (or `{"team":"@org/app-team","members":["login",...]}`). When a
+variable is unset, the deploy reads `approver_pools` and `app_team` from `.kit/settings.json` (kit init
+writes both). A reviewer counts as in a pool when it is the pool's team, or a login listed in it. A
+reviewer counts as on the app team when it is the app team itself, or a login on its member list, either
+declared or read from `GET /orgs/{org}/teams/{slug}/members`. When membership cannot be read, the deploy
+records `app_team_check=NOT_ESTABLISHED`, does not guess, and decides on the environment's rules alone.
+**Small teams** (one developer, or two) are fine: the approvers come from the pools, outside the team, and
+self-review prevention stops the person who pushed from approving. A team of two or fewer with **no** pools
+anywhere uses the small-team mode declared in the org overlay (above), never a repository's own say-so.
+
+dev and test are not gated: no reviewers needed there.
+
 ## Break-glass, if you must have one
 
 One team, bypass mode "pull requests only" (it can merge a reviewed PR past a failing check, never push

@@ -17,6 +17,10 @@ THE ORDER, AND WHY
          exact           -> a CLOSED DUPLICATE under the original, which is told what it added; the same
                             contribution again adds nothing (BOUND); a closed original newly observed is a
                             REGRESSION
+         enhances        -> (an item naming an existing finding, KDEC-049) that finding's ticket, found by ITS
+                            key, gets one comment with every evidence field and additive labels: ENHANCED
+                            EXISTING; no ticket created, nothing overwritten; a higher source severity is
+                            flagged severity-review, never applied; its ticket not found -> CREATED in triage
          near            -> CREATED, flagged possible-duplicate, in triage; a person decides (template triage)
          not searched    -> CREATED in triage as DEDUPE PENDING; the next run re-runs its dedupe
          unreachable     -> the OUTBOX: a durable record kept as an artifact, alerted, drained by a later run
@@ -31,6 +35,7 @@ import finding_correlation as fc
 import review_finalize as rf
 import separation_of_duties as sod
 import ticket_intake as ti
+import ticket_governance as tg
 import ticket_model as tm
 import ticket_templates as tt
 
@@ -99,7 +104,9 @@ def dedupe_pending_pass(result, backend, sweep_map, today, apply_changes):
             if state != ti.TRACKER_INTAKE_COMPLETE:
                 done.append({'ref': hit['ref'], 'state': state, 'detail': sdetail})
                 continue
-            pool = [t for t in tickets if str(t['ref']) != str(hit['ref']) and not (t.get('stamp') and t['stamp'] != key)]
+            # Every other ticket: ticket_intake.match itself sets aside one whose full key is another finding's, and
+            # sends a label hit it cannot verify to a person (KDEC-043).
+            pool = [t for t in tickets if str(t['ref']) != str(hit['ref'])]
             m = ti.match({'correlation_key': key, 'rule': ident, 'aliases': [], 'asset_needle': _needle(akey),
                           'title': ''}, pool, _lab(stamp, 'ck-%s' % key), 'secure-cicd-kit-cluster:', 101)
             rec = {'ref': hit['ref'], 'cluster_key': key, 'state': state}
@@ -302,10 +309,22 @@ def submit(ctx, p, dry):
                                 '-- %s. It is NOT merged; a person decides merge or separate (template triage).'
                                 % (', '.join(c['key'] or c['ref'] for c in payload), '; '.join(
                                     '%s by %s' % (c['key'] or c['ref'], c['basis']) for c in payload)))
+            elif kind == 'enhance-missing':
+                backend.comment(pi[0]['ref'], 'ENHANCES AN EXISTING FINDING (secure-cicd-kit): this item adds evidence '
+                                'to %s, but that finding\'s ticket was not found (%s). It was CREATED in triage so the '
+                                'evidence is not lost; a person links or separates it (template triage).'
+                                % (tt.describe_enhances(payload[0]), payload[1]))
+            elif kind == 'match-review':
+                backend.comment(pi[0]['ref'], '%s (secure-cicd-kit): this observation shares an identity with %s but is '
+                                'NOT the same finding as any of them; it is kept as its own ticket, linked as related, '
+                                'never merged. A person confirms (template triage; KDEC-049).'
+                                % (payload.get('state'), ', '.join(payload.get('candidates') or []) or 'no named cluster'))
             elif kind == 'pending':
                 backend.comment(pi[0]['ref'], 'DEDUPE PENDING (secure-cicd-kit): the search of every ticket did not '
                                 'complete (%s), so this ticket was created in triage rather than lost; its dedupe is '
                                 're-run on the next run.' % payload)
+        if not dry:
+            _after_create(ctx, p, plan, stamp, data)
         if down:
             # A RECONCILER THAT COULD NOT CREATE IS AN UNREACHABLE TRACKER for those items: the outbox.
             return _outbox(ctx, p, data, plan, down, 'the reconciler could not create: %s' % '; '.join(
@@ -338,6 +357,10 @@ def _base(rec, conf, trust):
 def _plan_findings(ctx, p, plan, live, stamp, ck_prefix, sweep_map, adapter, decisions, prov, trust_ctx, numbers):
     backend, template, settings, today = ctx['backend'], p['template'], ctx['settings'], ctx['today']
     recs = [tt.normalize(template, p['items'][i], prov, i, stamp, settings, today, numbers) for i in live]
+    if p.get('via'):
+        # KDEC-043 rule 2: the via label is a CLAIM, set at creation; _after_create compares it with what was proven.
+        for rec in recs:
+            rec['template_labels'] = sorted(set(rec['template_labels']) | {tg.via_label(stamp, p['via'])})
     groups = {}
     for rec in recs:
         groups.setdefault(rec['correlation_key'], []).append(rec)
@@ -351,6 +374,7 @@ def _plan_findings(ctx, p, plan, live, stamp, ck_prefix, sweep_map, adapter, dec
         rec0 = grp[0]
         if template == 'finding':
             _fp_recheck(ctx, plan, rec0, sweep_map, stamp)
+            _route_review(plan, grp, ck, stamp)
         hits = sweep_map.get(ck) or []
         target, basis = None, ''
         cands = []
@@ -363,7 +387,7 @@ def _plan_findings(ctx, p, plan, live, stamp, ck_prefix, sweep_map, adapter, dec
             else:
                 tickets, state, sdetail = [], ti.TRACKER_INTAKE_NOT_CONFIGURED, adapter.search()['detail']
             if state == ti.TRACKER_INTAKE_COMPLETE:
-                pool = [t for t in tickets if not (t.get('stamp') and t.get('stamp') != ck)]
+                pool = list(tickets)
                 m = ti.match(dict(rec0), pool, ck_prefix + ck, 'secure-cicd-kit-cluster:', settings['fuzzy_title_percent'])
                 cands = [{'ref': t['ref'], 'key': t.get('key'), 'basis': b, 'score': s, 'summary': t.get('summary'),
                           'labels': t.get('labels'), 'state': t.get('state')} for t, b, s in m['candidates']]
@@ -387,6 +411,24 @@ def _plan_findings(ctx, p, plan, live, stamp, ck_prefix, sweep_map, adapter, dec
         if target is not None:
             _plan_exact(ctx, plan, grp, target, basis, stamp, conf, trust)
             continue
+        if template == 'finding' and rec0.get('enhances'):
+            # KDEC-049 (owner, 2026-11-11): "It should never drop the vuln it should enhance the existing ticket
+            # with additional evidence." The existing finding's ticket, found by ITS key, gets the evidence.
+            et, ebasis, ewhy = _enhance_target(adapter, sweep_map, ck_prefix, rec0['enhances'])
+            if et is not None:
+                _plan_enhance(plan, grp, et, ebasis, stamp, conf, trust)
+                continue
+            if state == ti.TRACKER_INTAKE_COMPLETE:
+                # Its ticket was not found: CREATED in triage, flagged, linked to the finding it names -- never lost.
+                for g in grp:
+                    g['template_labels'] = sorted(set(g['template_labels']) | {_lab(stamp, 'possible-duplicate'),
+                                                                                _lab(stamp, 'triage')})
+                plan.to_reconcile.extend(grp)
+                plan.post.append(('enhance-missing', ck, (rec0['enhances'], ewhy)))
+                for g in grp:
+                    plan.items.append(dict(_base(g, conf, trust), item=g['item'], outcome='reconcile-possible',
+                                           enhances=g['enhances'], detail=ewhy))
+                continue
         if state != ti.TRACKER_INTAKE_COMPLETE:
             for g in grp:
                 g['template_labels'] = sorted(set(g['template_labels']) | {_lab(stamp, 'dedupe-pending'),
@@ -412,6 +454,121 @@ def _plan_findings(ctx, p, plan, live, stamp, ck_prefix, sweep_map, adapter, dec
         for g in grp:
             plan.items.append(dict(_base(g, conf, trust), item=g['item'], outcome='reconcile', title=g.get('title')))
     return None
+
+
+BASELINE_SELECTED = 'BASELINE_SELECTED'
+REGISTER_READ = 'REGISTER_READ'
+SEVERITY_RANK = tt.SEVERITY_RANK   # the ordinal scale (info 0 .. critical 4)
+SEVERITY_MATERIAL_DISAGREEMENT = 'SEVERITY_MATERIAL_DISAGREEMENT'
+DISPOSITION_REEVALUATION_REQUIRED = 'DISPOSITION_REEVALUATION_REQUIRED'
+EVIDENCE_ALREADY_ON_TICKET = 'EVIDENCE_ALREADY_ON_TICKET'
+OBS_MARK = 'kit-observation sha256:'
+
+
+def _route_review(plan, grp, ck, stamp):
+    """KDEC-049 R1/R2: an item matched against no qualifying baseline, or whose match a person must review
+    (separate instance, ambiguous, out of scope), is routed to triage with its evidence kept -- never merged,
+    never assumed to be "no match"."""
+    rec0 = grp[0]
+    b = (rec0.get('baseline') or {}).get('state')
+    mr = rec0.get('match_review') or {}
+    labs = set()
+    if b and b != BASELINE_SELECTED:
+        labs |= {_lab(stamp, 'baseline-review'), _lab(stamp, 'triage')}
+    # THE REGISTER WAS NOT READ (lane ticket-defaults 2026-11-13): an unmatched item is not established as new,
+    # so it is created in triage and labelled for it, never as a plain new finding.
+    reg = (rec0.get('baseline') or {}).get('register')
+    if reg and reg != REGISTER_READ:
+        labs |= {_lab(stamp, 'register-review'), _lab(stamp, 'triage')}
+    if mr.get('state'):
+        labs |= {_lab(stamp, 'match-review'), _lab(stamp, 'triage')}
+        plan.post.append(('match-review', ck, mr))
+    if labs:
+        for g in grp:
+            g['template_labels'] = sorted(set(g['template_labels']) | labs)
+
+
+def fingerprint(rec):
+    """THE OBSERVATION'S FINGERPRINT (KDEC-049 R3): sha256 over what makes it one observation -- source tool,
+    source key, scope, identifier and every evidence sha256 it carries. A re-pull of it is the same print."""
+    import hashlib
+    p = rec.get('provenance') or {}
+    doc = {'tool': rec.get('tool'), 'source_key': rec.get('source_key'), 'uri': rec.get('uri'), 'line': rec.get('line'),
+           'component': rec.get('component') or '', 'rule': rec.get('rule'), 'evidence': p.get('evidence_sha256'),
+           'more': sorted(str((c.get('evidence') or {}).get('sha256') or '') for c in rec.get('corroborating_evidence') or [])}
+    return hashlib.sha256(json.dumps(doc, sort_keys=True).encode('utf-8')).hexdigest()
+
+
+def observation_record(rec, canonical_key, target, review):
+    """The AUTHORITATIVE structured record of one observation (the comment is its human projection)."""
+    p = rec.get('provenance') or {}
+    return {'fingerprint': fingerprint(rec), 'source_tool': rec.get('tool'), 'source_key': rec.get('source_key'),
+            'scope': {'asset': rec.get('uri'), 'line': rec.get('line'), 'component': rec.get('component') or ''},
+            'observed_at': p.get('submitted_at') or '', 'severity_as_rated': rec.get('severity'),
+            'aliases': list(rec.get('aliases') or []), 'evidence_ref': p.get('evidence_ref'),
+            'evidence_sha256': p.get('evidence_sha256'),
+            'corroborating': [{'source_key': c.get('source_key'), 'severity_as_rated': c.get('severity'),
+                               'evidence_sha256': (c.get('evidence') or {}).get('sha256')}
+                              for c in rec.get('corroborating_evidence') or []],
+            'baseline': rec.get('baseline'), 'canonical_finding': {'cluster_key': canonical_key,
+                                                                   'identity': (rec.get('enhances') or {}).get('identity')
+                                                                   or rec.get('identity')},
+            'ticket': {'ref': str(target.get('ref') or ''), 'key': target.get('key') or ''}, 'review_id': review}
+
+
+def record_observations(ledger, canonical_key, target, recs, review):
+    """-> the fingerprints NEWLY recorded. Kept in the ticket ledger (the reconciler's binding store, saved as
+    ticket-ledger-proposal.json and merged by reusable-propose-ledger) under the canonical finding's cluster key,
+    in `evidence_observations`. IDEMPOTENT BY FINGERPRINT: the same observation twice is one record."""
+    if ledger is None or not canonical_key:
+        return []
+    entry = dict(ledger.get(canonical_key) or {})
+    if not entry.get('ref') and target.get('ref'):
+        entry.update(ref=str(target['ref']), key=target.get('key') or '')
+    have = dict((o.get('fingerprint'), o) for o in entry.get('evidence_observations') or [] if isinstance(o, dict))
+    new = []
+    for r in recs:
+        o = observation_record(r, canonical_key, target, review)
+        if o['fingerprint'] not in have:
+            have[o['fingerprint']] = o
+            new.append(o['fingerprint'])
+    entry['evidence_observations'] = [have[k] for k in sorted(have)]
+    ledger[canonical_key] = entry
+    return new
+
+
+def _unfinished(plan, grp):
+    """A planned enhancement whose write failed is NOT done: it must be held by the outbox, never dropped
+    because its planned outcome was already a terminal one."""
+    idx = set(g['item'] for g in grp)
+    for pi in plan.items:
+        if pi.get('item') in idx and pi.get('outcome') in (tt.TEMPLATE_ENHANCED_EXISTING, tt.TEMPLATE_REGRESSION):
+            pi['outcome'] = 'write-failed'
+
+
+def _comment_texts(backend, ref):
+    """-> (texts, ok). A tracker that cannot list comments is not ok: nothing may be inferred from it."""
+    if not hasattr(backend, 'comment_texts'):
+        return [], False
+    texts, ok, _d = backend.comment_texts(ref)
+    return list(texts or []), bool(ok)
+
+
+def transfer_verified(backend, ledger, canonical_key, ref, fps):
+    """KDEC-049 R4: -> (True, '') only when the canonical ticket's comments carry every fingerprint's marker
+    AND the structured record holds every fingerprint, both READ BACK; else (False, why)."""
+    texts, ok = _comment_texts(backend, ref)
+    if not ok:
+        return False, 'the canonical ticket %s\'s comments could not be read back' % ref
+    blob = '\n'.join(texts)
+    missing = [f[:16] for f in fps if OBS_MARK + f not in blob]
+    if missing:
+        return False, 'the canonical ticket %s does not carry the evidence of %s' % (ref, ', '.join(missing))
+    have = set(o.get('fingerprint') for o in ((ledger or {}).get(canonical_key) or {}).get('evidence_observations') or [])
+    lost = [f[:16] for f in fps if f not in have]
+    if lost:
+        return False, 'the structured record under %s does not hold %s' % (canonical_key, ', '.join(lost))
+    return True, ''
 
 
 def _plan_exact(ctx, plan, grp, target, basis, stamp, conf, trust):
@@ -444,6 +601,81 @@ def _plan_exact(ctx, plan, grp, target, basis, stamp, conf, trust):
                                original_ref=str(target.get('ref') or '')))
 
 
+def _enhance_target(adapter, sweep_map, ck_prefix, enh):
+    """-> (the existing finding's ticket, basis, '') or (None, '', why). EXACT BY ITS FULL KEY only (the kit's
+    stamp sweep, else a search verified against the key, KDEC-043): a near match is never enhanced."""
+    kck = enh.get('correlation_key')
+    if not kck:
+        return None, '', 'the enhancement names no cluster key, so its ticket cannot be found by key'
+    hits = sweep_map.get(kck) or []
+    if hits:
+        return dict(hits[0]), 'stamp (the existing finding\'s key)', ''
+    if not hasattr(adapter, 'search_all'):
+        return None, '', 'the tracker cannot be searched by key'
+    tickets, state, detail = adapter.search_all(text=None, ck_label=ck_prefix + kck)
+    if state != ti.TRACKER_INTAKE_COMPLETE:
+        return None, '', 'the search for %s did not complete (%s: %s)' % (kck, state, detail)
+    m = ti.match({'correlation_key': kck, 'rule': '', 'aliases': [], 'asset_needle': '', 'title': ''}, tickets,
+                 ck_prefix + kck, 'secure-cicd-kit-cluster:', 100)
+    if m['exact']:
+        t0, b = m['exact'][0]
+        return ({'ref': t0['ref'], 'key': t0.get('key'), 'labels': t0.get('labels'), 'state': t0.get('state')},
+                '%s (the existing finding\'s key)' % b, '')
+    return None, '', 'no ticket carries the existing finding\'s key %s' % kck
+
+
+def _evidence_key(rec):
+    """The record's evidence label key: its own sha256, or -- when it carries corroborating records -- a hash over
+    every sha256 it carries, so a NEW corroborating record is never mistaken for evidence already appended."""
+    own = str(rec['provenance'].get('evidence_sha256') or '')
+    more = sorted(str((c.get('evidence') or {}).get('sha256') or '') for c in rec.get('corroborating_evidence') or [])
+    if not more:
+        return own[:16]
+    import hashlib
+    return hashlib.sha256(('|'.join([own] + more)).encode('utf-8')).hexdigest()[:16]
+
+
+def _plan_enhance(plan, grp, target, basis, stamp, conf, trust):
+    """KDEC-049: the existing ticket is told every evidence field (one comment) and labelled (additive). No ticket
+    is created, closed, reopened or edited. The same evidence again adds nothing (TEMPLATE_TICKET_BOUND)."""
+    labels = set(target.get('labels') or [])
+    new = [g for g in grp if not _has(labels, _lab(stamp, 'ev-%s' % _evidence_key(g)))]
+    sev, closed = None, False
+    if new:
+        pre = _lab(stamp, 'sev-')
+        tsev = [str(x)[len(pre):] for x in labels if str(x).startswith(pre)]
+        if not tsev and (new[0].get('enhances') or {}).get('severity'):
+            tsev = [str(new[0]['enhances']['severity']).lower()]
+        sev = tt.severity_comparison([g.get('severity') for g in new], tsev)
+        ranks = [SEVERITY_RANK[s] for s in tsev if s in SEVERITY_RANK]
+        src = [SEVERITY_RANK[str(g.get('severity'))] for g in new if str(g.get('severity')) in SEVERITY_RANK]
+        # BOTH ASSESSMENTS KEPT (KDEC-049 R2): two or more levels apart is a material disagreement for a person.
+        material = bool(ranks and src and max(abs(s - t) for s in src for t in ranks) >= 2)
+        disp = (new[0].get('enhances') or {}).get('dispositions') or []
+        # A CLOSED FINDING REAPPEARING: the kit's existing reopen policy for a closed original newly observed
+        # (_plan_exact: TEMPLATE_REGRESSION, reopened, said on the ticket), with the evidence attached.
+        closed = target.get('state') == 'closed' or (new[0].get('enhances') or {}).get('ticket_state') == 'closed'
+        plan.actions.append(('enhance', {'target': target, 'grp': new, 'severity': sev, 'material': material,
+                                         'dispositions': disp, 'reopen': closed}))
+    for g in grp:
+        row = dict(_base(g, conf, trust), item=g['item'],
+                   outcome=(tt.TEMPLATE_REGRESSION if closed else tt.TEMPLATE_ENHANCED_EXISTING) if g in new
+                   else tt.TEMPLATE_TICKET_BOUND,
+                   ref=str(target.get('ref') or ''), key=target.get('key') or '', basis=basis, enhances=g['enhances'])
+        if g in new:
+            row['severity_comparison'] = sev[0]
+            row['fingerprint'] = fingerprint(g)
+            if material:
+                row['severity_disagreement'] = SEVERITY_MATERIAL_DISAGREEMENT
+            if disp:
+                row['disposition_review'] = DISPOSITION_REEVALUATION_REQUIRED
+        if (g.get('baseline') or {}).get('state'):
+            row['baseline_state'] = g['baseline']['state']
+        if (g.get('baseline') or {}).get('register'):
+            row['register_state'] = g['baseline']['register']
+        plan.items.append(row)
+
+
 def _fp_recheck(ctx, plan, rec, sweep_map, stamp):
     """A false positive is re-checked when the rule, the tool version or the code changes."""
     import hashlib
@@ -470,7 +702,8 @@ def _plan_updates(ctx, p, plan, live, stamp, ck_prefix, sweep_map, approver, dat
             labels, ok, detail = backend.labels_of(ref) if hasattr(backend, 'labels_of') else ([], False, 'no read')
             if not ok:
                 return tt.refusal(tt.TICKET_NOT_KIT_LINKED, 'item %d: ticket %s could not be read (%s)' % (i, ref, detail), i)
-            mine = stampk or any(str(x).startswith(ck_prefix) for x in labels)
+            # A kit child obligation (KDEC-043 rule 4) names its parent; it carries no stamp of its own.
+            mine = stampk or any(str(x).startswith(ck_prefix) for x in labels) or bool(tg.parent_of(labels, stamp))
             if not mine and not (template == 'triage' and ref == it.get('original_ref')):
                 return tt.refusal(tt.TICKET_NOT_KIT_LINKED, 'item %d: ticket %s carries neither the kit\'s stamp nor a '
                                   'link to a kit finding' % (i, ref), i)
@@ -500,6 +733,11 @@ def _plan_closure(ctx, plan, i, it, labels, stampk, approver, data):
     rt, settings, today, stamp = ctx['rt'], ctx['settings'], ctx['today'], (
         getattr(ctx['backend'], 'stamp_label', '') or 'secure-cicd-kit')
     action, kind = it['action'], it['verification']['kind']
+    if action == 'verify' and (tg.children_of(labels, stamp) or tg.expected_children(labels, stamp)):
+        # KDEC-043 rule 4: THE PARENT CLOSES ONLY WHEN EVERY CHILD OBLIGATION IS CLOSED-VERIFIED.
+        ok_p, _open, why_p = tg.parent_may_close(ctx['backend'], labels, stamp)
+        if not ok_p:
+            return tt.refusal(tg.CHILD_OBLIGATION_OPEN, 'item %d: ticket %s: %s' % (i, it['ref'], why_p), i)
     if action == 'resolve' or (action == 'verify' and kind == 'reviewer' and
                                sod.violations({'fixer': it['fixed_by']}, approver)):
         note = '' if action == 'resolve' else 'the fixer\'s own verification is PENDING, never final'
@@ -582,7 +820,7 @@ def _write(ctx, p, plan, stamp, ck_prefix, approver, approval, dry, data):
                 failed.append((g0['item'], 'the duplicate record under %s was not created: %s' % (t['ref'], dd)))
                 continue
             backend.mark(dref, labels=[_lab(stamp, 'duplicate')])
-            backend.close(dref)
+            text += '\n' + '\n'.join('- %s%s' % (OBS_MARK, fingerprint(g)) for g in grp)
             sev_note = ''
             sevs = [x[len(_lab(stamp, 'sev-')):] for x in t.get('labels') or [] if str(x).startswith(_lab(stamp, 'sev-'))]
             if sevs and g0.get('severity') not in sevs:
@@ -594,11 +832,101 @@ def _write(ctx, p, plan, stamp, ck_prefix, approver, approval, dry, data):
                                                 _lab(stamp, 'ev-%s' % (g0['provenance'].get('evidence_sha256') or '')[:16]),
                                                 _lab(stamp, 'sev-%s' % tt._slug(g0.get('severity')))] +
                              ([ck_prefix + g0['correlation_key'], _lab(stamp, 'linked')] if t.get('manual') else []))
+            r3 = (True, '')
+            if t.get('manual'):
+                # KDEC-043: the label is a search aid; the FULL key goes in the kit's own block on the person's
+                # ticket, so the next lookup verifies the label against it instead of trusting the label.
+                r3 = tg.write_link(backend, t['ref'], g0['correlation_key'])
             for pi in plan.items:
                 if pi.get('correlation_key') == g0['correlation_key']:
                     pi['duplicate_ref'] = dref
-            if not ok_all(r1, r2):
+            if not ok_all(r1, r2, r3):
                 failed.append((g0['item'], 'the original %s was not updated' % t['ref']))
+                continue
+            # KDEC-049 R4: THE REDUNDANT RECORD CLOSES ONLY AFTER THE TRANSFER IS PROVEN by reading back the canonical
+            # ticket's comments and the structured record; unproven -> both stay open, linked, named.
+            data.setdefault('observations_recorded', []).extend(
+                record_observations(ctx.get('ledger'), g0['correlation_key'], t, grp, review))
+            ok_v, why_v = transfer_verified(backend, ctx.get('ledger'), g0['correlation_key'], t['ref'],
+                                            [fingerprint(g) for g in grp])
+            if ok_v:
+                backend.close(dref)
+            else:
+                backend.comment(dref, '%s (secure-cicd-kit, review %s): this duplicate of %s was NOT closed because the '
+                                'evidence transfer could not be proven (%s). Both stay open and linked; a person closes '
+                                'this one after checking %s.' % (tt.TEMPLATE_DUPLICATE_CLOSURE_REFUSED, review, t['ref'],
+                                                                why_v, t['ref']))
+                for pi in plan.items:
+                    if pi.get('correlation_key') == g0['correlation_key']:
+                        pi.update(outcome=tt.TEMPLATE_DUPLICATE_CLOSURE_REFUSED, detail=why_v)
+        elif kind == 'enhance':
+            # KDEC-049: APPEND ONLY. One comment carrying every evidence field, and additive labels; nothing is
+            # created, closed, reopened, re-prioritised or written over (the description stays the person's/kit's).
+            t, grp = a['target'], a['grp']
+            sstate, stext = a['severity']
+            canon = (grp[0].get('enhances') or {}).get('correlation_key') or grp[0]['correlation_key']
+            # IDEMPOTENT UNDER RETRY, CONCURRENCY AND PARTIAL FAILURE (KDEC-049 R5): the ticket's comments are read
+            # immediately before the write; an observation whose marker is already there is not written again
+            # (EVIDENCE_ALREADY_ON_TICKET). Writers are serialised per repository by the kit API's concurrency
+            # group (reusable-kit-api.yml kit-ticket-writes-<repo>); a failed write goes to the outbox.
+            texts, readable = _comment_texts(backend, t['ref'])
+            blob = '\n'.join(texts)
+            todo = [g for g in grp if not (readable and OBS_MARK + fingerprint(g) in blob)]
+            r1 = (True, EVIDENCE_ALREADY_ON_TICKET)
+            if todo:
+                body = []
+                for g in todo:
+                    body += tt.evidence_lines(g) + ['- %s%s' % (OBS_MARK, fingerprint(g))]
+                extra = ''
+                if a.get('material'):
+                    extra += ('\n- %s: the source and this ticket rate it two or more levels apart; both assessments '
+                              'are kept, a person decides' % SEVERITY_MATERIAL_DISAGREEMENT)
+                for d in a.get('dispositions') or []:
+                    extra += ('\n- %s: this finding carries an approved %s%s. The new evidence does NOT extend or clear '
+                              'it: a person re-evaluates its scope, validity and expiry' % (
+                                  DISPOSITION_REEVALUATION_REQUIRED, d.get('type'),
+                                  (' (expires %s)' % d['expires']) if d.get('expires') else ''))
+                b = (todo[0].get('baseline') or {})
+                if b.get('state') and b['state'] != BASELINE_SELECTED:
+                    extra += '\n- baseline: %s -- matched against the register; a person confirms (triage)' % b['state']
+                r1 = backend.comment(t['ref'], 'ADDITIONAL EVIDENCE (secure-cicd-kit, review %s; %s): %d record(s) add '
+                                     'evidence to this existing finding. Nothing on this ticket was overwritten or closed, '
+                                     'and no other ticket was created (KDEC-049).\n%s\n- severity: %s%s'
+                                     % (review, tt.TEMPLATE_ENHANCED_EXISTING, len(todo), '\n'.join(body), stext, extra))
+            if r1[0]:
+                data.setdefault('observations_recorded', []).extend(
+                    record_observations(ctx.get('ledger'), canon, t, grp, review))
+            labs = [_lab(stamp, 'enhanced')]
+            if a.get('material'):
+                labs += [_lab(stamp, 'severity-disagreement'), _lab(stamp, 'triage')]
+            if a.get('dispositions'):
+                labs += [_lab(stamp, 'disposition-reevaluate'), _lab(stamp, 'triage')]
+            if any((g.get('baseline') or {}).get('state') not in (None, BASELINE_SELECTED) for g in grp):
+                labs += [_lab(stamp, 'baseline-review'), _lab(stamp, 'triage')]
+            if a.get('reopen'):
+                ok_r, why = backend.reopen(t['ref'])
+                backend.comment(t['ref'], 'REGRESSION (secure-cicd-kit, review %s): this finding was closed and is '
+                                'observed again by %s. Reopened as a regression under the kit\'s reopen policy.%s'
+                                % (review, grp[0].get('tool'), '' if ok_r else ' The reopen was refused (%s): a '
+                                   'person reopens it.' % why))
+                labs.append(_lab(stamp, 'regression'))
+            for g in grp:
+                labs += [_lab(stamp, 'tool-%s' % tt._slug(g.get('tool'))),
+                         _lab(stamp, 'src-%s' % tt._slug(g.get('source_type'))),
+                         _lab(stamp, 'ev-%s' % (g['provenance'].get('evidence_sha256') or '')[:16]),
+                         _lab(stamp, 'ev-%s' % _evidence_key(g))]
+            if sstate in ('HIGHER', 'NOT_COMPARED'):
+                labs += [_lab(stamp, 'severity-review'), _lab(stamp, 'triage')]
+            if not r1[0]:
+                # THE EVIDENCE LABEL NEVER PRECEDES THE EVIDENCE: a label without its comment would make the retry
+                # read "already there" (TEMPLATE_TICKET_BOUND) and lose it. The whole item goes to the outbox.
+                failed.append((grp[0]['item'], 'the evidence comment on %s was not written: %s' % (t['ref'], r1[1])))
+                _unfinished(plan, grp)
+                continue
+            r2 = backend.mark(t['ref'], labels=sorted(set(labs)))
+            if not ok_all(r1, r2):
+                failed.append((grp[0]['item'], 'the existing ticket %s was not given the additional evidence' % t['ref']))
+                _unfinished(plan, grp)
         elif kind == 'regression':
             t, g0 = a['target'], a['grp'][0]
             ok_r, why = backend.reopen(t['ref'])
@@ -697,6 +1025,10 @@ def _write(ctx, p, plan, stamp, ck_prefix, approver, approval, dry, data):
                             '(sha256 %s). The fixer did not verify it.' % (review, a['by'], it['fixed_by'],
                                                                            it['evidence']['ref'], it['evidence']['sha256']))
             backend.mark(it['ref'], labels=[_lab(stamp, 'verified'), _lab(stamp, 'remediated')])
+            child_labels, ok_cl, _d_cl = backend.labels_of(it['ref'])
+            parent = tg.parent_of(child_labels, stamp) if ok_cl else ''
+            if parent:
+                _close_parent_if_done(backend, parent, it['ref'], stamp, review, approval, data)
         elif kind == 'observed':
             it = a['it']
             backend.comment(it['ref'], 'FIX OBSERVED on %s (secure-cicd-kit): run %s no longer reports the finding there. '
@@ -726,7 +1058,104 @@ def _write(ctx, p, plan, stamp, ck_prefix, approver, approval, dry, data):
                                 'concurred by %s): %s.' % (it['original_ref'], review, it['triaged_by'], approver,
                                                            it['reason']))
                 backend.mark(it['ref'], labels=[_lab(stamp, 'triaged-separate')])
+    if data.get('observations_recorded') and not dry:
+        # THE STRUCTURED RECORD, KEPT (KDEC-049 R3): the ledger proposal reusable-propose-ledger merges.
+        _save(ctx, 'ticket-ledger-proposal.json', {'schema': 1, 'clusters': ctx.get('ledger') or {}})
     return failed
+
+
+# ═════════════════════════════════════════════════════════════════════════════════════
+# KDEC-043: PROVENANCE AND CHILD OBLIGATIONS, after the reconciler created
+# ═════════════════════════════════════════════════════════════════════════════════════
+
+_CREATED = (tt.TEMPLATE_TICKET_CREATED, tt.TEMPLATE_POSSIBLE_DUPLICATE, tt.TEMPLATE_DEDUPE_PENDING)
+
+
+def _after_create(ctx, p, plan, stamp, data):
+    recs = {}
+    for r in plan.to_reconcile:
+        recs.setdefault(r['correlation_key'], r)
+    done = {}
+    for pi in plan.items:
+        ref, ck = pi.get('ref'), pi.get('correlation_key')
+        if not ref or pi.get('outcome') not in _CREATED:
+            continue
+        if (ck, ref) not in done:
+            got = {'provenance': _provenance(ctx, p, ref, stamp, data)}
+            rec = recs.get(ck) or {}
+            if rec.get('obligations'):
+                got['children'] = _children(ctx, rec, ref, stamp, data)
+            done[(ck, ref)] = got
+        pi.update(done[(ck, ref)])
+
+
+def _provenance(ctx, p, ref, stamp, data):
+    """KDEC-043 rule 2: the via CLAIM against the authenticated identity and the tracker's own record of the write."""
+    backend = ctx['backend']
+    claimed = p.get('via') or ''
+    ident = backend.authenticated_identity() if hasattr(backend, 'authenticated_identity') else None
+    actor, detail = backend.write_event(ref) if hasattr(backend, 'write_event') else (
+        None, 'this tracker adapter reads no write event')
+    rec = tg.provenance(claimed, ident, actor, ctx.get('integrations') or {})
+    rec['write_event_detail'] = detail
+    if rec['state'] == tg.PROVENANCE_MISMATCH or (claimed and rec['state'] == tg.PROVENANCE_NOT_ESTABLISHED):
+        word = 'provenance-mismatch' if rec['state'] == tg.PROVENANCE_MISMATCH else 'provenance-unverified'
+        backend.comment(ref, '%s (secure-cicd-kit): %s. The via label on this ticket is a claim; a person checks who '
+                             'wrote it.' % (rec['state'], '; '.join(rec['reasons']) or 'not established'))
+        backend.mark(ref, labels=[_lab(stamp, word)])
+        data['alerts'].append('%s on ticket %s: %s' % (rec['state'], ref, '; '.join(rec['reasons'])))
+    return rec
+
+
+def _children(ctx, rec, parent_ref, stamp, data):
+    """KDEC-043 rule 4: one child obligation per cloud asset, under the parent, each with its own owner role."""
+    rt, backend = ctx['rt'], ctx['backend']
+    out = []
+    for ob in rec['obligations']:
+        labels = [tg.obligation_label(stamp, ob['id']), tg.owner_label(stamp, ob['owner_role']),
+                  tg.parent_label(stamp, parent_ref)]
+        body = '\n'.join([
+            'Child obligation %s of %s (secure-cicd-kit, KDEC-043): %s, %s.' % (ob['id'], parent_ref, ob['cloud'],
+                                                                              ob['display']),
+            '', 'Owner role: %s.' % ob['owner_role'],
+            'Closes ONLY by the kit\'s rescan or a verification by someone other than the fixer (template closure,',
+            'on this ticket). The parent closes when every child obligation is closed-verified.', '',
+            'secure-cicd-kit-obligation-of: %s' % rec['correlation_key']])
+        title = rt.bounded_title('[%s obligation %s] %s' % (ob['cloud'], ob['id'], rec.get('title') or rec.get('rule')))
+        cref, d = backend.create_instance(parent_ref, {'identity': '%s:%s' % (rec['identity'], ob['id']),
+                                                       'labels': labels}, body, title)
+        if not cref:
+            data['alerts'].append('CHILD OBLIGATION NOT CREATED: %s of ticket %s (%s); the parent cannot close until '
+                                  'it exists' % (ob['id'], parent_ref, d))
+            out.append({'id': ob['id'], 'cloud': ob['cloud'], 'owner_role': ob['owner_role'], 'ref': None, 'detail': d})
+            continue
+        backend.mark(cref, labels=labels)
+        backend.mark(parent_ref, labels=[tg.child_label(stamp, ob['id'], cref)])
+        out.append({'id': ob['id'], 'cloud': ob['cloud'], 'owner_role': ob['owner_role'], 'ref': cref})
+    return out
+
+
+def _close_parent_if_done(backend, parent, child, stamp, review, approval, data):
+    labels, ok, d = backend.labels_of(parent)
+    if not ok:
+        data['alerts'].append('the parent %s of %s could not be read (%s): it stays open' % (parent, child, d))
+        return
+    ok_p, open_, why = tg.parent_may_close(backend, labels, stamp)
+    if not ok_p:
+        backend.comment(parent, 'CHILD OBLIGATION CLOSED (secure-cicd-kit, review %s): %s is closed-verified. %s.'
+                        % (review, child, why))
+        return
+    if tm.authorise('ticket.close.' + tm.ALL_CHILDREN_RESOLVED, approval):
+        data['alerts'].append('the parent %s was not closed: the closure was not authorised' % parent)
+        return
+    ok_x, d_x = backend.close(parent)
+    if not ok_x:
+        data['alerts'].append('the parent %s could not be closed: %s' % (parent, d_x))
+        return
+    backend.comment(parent, 'CLOSED - EVERY CHILD OBLIGATION VERIFIED (secure-cicd-kit, review %s): %s.'
+                    % (review, why))
+    backend.mark(parent, labels=[_lab(stamp, 'verified'), _lab(stamp, 'remediated')])
+    data.setdefault('parents_closed', []).append(parent)
 
 
 # ═════════════════════════════════════════════════════════════════════════════════════

@@ -47,6 +47,8 @@
       "properties": {
         "max_exception_renewals": {"type": "integer", "minimum": 0, "maximum": 5, "description": "KDEC-018: how many times one exception (a secret exception, a softening decision, a deploy's version-gap exception) may be renewed -- the number of prior grants in its `renews`. CENTRAL ONLY (the authority's scope). Kit default 2. Never unlimited: 0 means no renewal, 5 bounds one exception at six grants. Over it: EXCEPTION_RENEWAL_LIMIT."}
       }},
+    "environment_numbers": {"type": "object", "description": "KREQ-674 / KDEC-052 item 7: per-environment ticketing numbers, {<GitHub environment name>: {numbers}}, the ENVIRONMENT level of scripts/ticket_settings.py (kit_default < org < repo < environment < variable). A narrower level may only lower a governed number; a raise is refused TICKET_SETTING_ABOVE_GOVERNED and recorded.",
+      "additionalProperties": {"type": "object"}},
     "policies": {"type": "array", "items": {"$ref": "#/$defs/entry"}}
   },
   "$defs": {

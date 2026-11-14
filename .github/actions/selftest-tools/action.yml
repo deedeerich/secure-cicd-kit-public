@@ -7,7 +7,8 @@ description: >-
   as much as the drift job does (a test whose tool is missing reports UNKNOWN, which the sweep
   does not fail). Pinned and verified (ledger L84): a release, never a branch script or `latest`;
   pip by exact version; every downloaded archive against the release's published checksums, or a
-  digest written here. tests/check_pinned_installs.py holds this file to that; tests/prove_tree_clean_job.py
+  digest written here. Every version here is the one .github/tool-pins.json names, and the one
+  every job installs (tests/check_tool_pins_single_version.py). tests/check_pinned_installs.py holds this file to that; tests/prove_tree_clean_job.py
   holds the two jobs to this file. Downloads go to $RUNNER_TEMP, never the checkout (a scanner
   archive left in the working tree was exported by prove_export_scope.py, hosted run 39618329392).
 runs:
@@ -17,7 +18,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        python3 -m pip install --quiet PyYAML==6.0.2
+        python3 -m pip install --quiet PyYAML==6.0.3
         # The release the sast-semgrep image is (tests/_semgrep_pin.py holds the two equal).
         python3 -m pip install --quiet semgrep==1.178.0
         # The release the sast-python job pins.
@@ -40,17 +41,17 @@ runs:
         rm -rf "$d"
         trivy --version | head -n 1
 
-    - name: osv-scanner v2.6.0, gosec 2.24.6, syft 1.52.0, gitleaks 8.21.2 (release assets, checksummed)
+    - name: osv-scanner v2.7.0, gosec 2.24.6, syft 1.54.1, gitleaks 8.21.2 (release assets, checksummed)
       shell: bash
       run: |
         set -euo pipefail
         dl="$RUNNER_TEMP/selftest-tools"; mkdir -p "$dl"; cd "$dl"
         # osv-scanner: the release the deps-scan job pins, against a digest written here (copied
         # from the release's osv-scanner_SHA256SUMS).
-        v=v2.6.0
+        v=v2.7.0
         curl -sSfL --retry 3 -o osv-scanner \
           "https://github.com/google/osv-scanner/releases/download/${v}/osv-scanner_linux_amd64"
-        echo "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108  osv-scanner" | sha256sum -c -
+        echo "160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b  osv-scanner" | sha256sum -c -
         sudo install -m 0755 osv-scanner /usr/local/bin/osv-scanner && rm -f osv-scanner
         # gosec: the release the sast-go container pins, against its published checksums.
         v=2.24.6; t=gosec_${v}_linux_amd64.tar.gz
@@ -58,8 +59,8 @@ runs:
         curl -sSfL --retry 3 "https://github.com/securego/gosec/releases/download/v${v}/gosec_${v}_checksums.txt" \
           | grep " ${t}\$" | sha256sum -c -
         tar -xzf "$t" gosec && sudo install -m 0755 gosec /usr/local/bin/gosec && rm -f gosec "$t"
-        # syft: the release the sbom job pins, against its published checksums.
-        v=1.52.0; t=syft_${v}_linux_amd64.tar.gz
+        # syft: the release the sbom job and both build paths pin, against its published checksums.
+        v=1.54.1; t=syft_${v}_linux_amd64.tar.gz
         curl -sSfLO --retry 3 "https://github.com/anchore/syft/releases/download/v${v}/${t}"
         curl -sSfL --retry 3 "https://github.com/anchore/syft/releases/download/v${v}/syft_${v}_checksums.txt" \
           | grep " ${t}\$" | sha256sum -c -

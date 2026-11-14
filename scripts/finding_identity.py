@@ -599,6 +599,19 @@ def _derive_what(record):
     )
 
 
+def identity_for_advisory_aliases(subject, aliases, where, content):
+    """-> the identity a finding of `subject` at locus `where` with construct `content` WOULD have
+    if its advisory alias set were `aliases`. The same composition `identify` uses (WHAT/ADVISORY
+    over the sorted, upper-cased set; IDENTITY over what/where/content), so a caller can check
+    that two records differ ONLY in their alias set (review round 2 F17,
+    finding_lineage.alias_continuity). Returns '' when any part is missing."""
+    subject = str(subject or '').strip()
+    vals = sorted(set(str(a).strip().upper() for a in aliases or [] if str(a or '').strip()))
+    if not subject or not vals or not where or not content:
+        return ''
+    return _h('IDENTITY/' + subject, [_h('WHAT/ADVISORY', vals), str(where), str(content)])
+
+
 def _what_is_coarse(described):
     """CWE-only WHAT is coarse enough to collide across genuinely different findings (section 5.6, last
     row), so it requires a symbol-level WHERE. An advisory id or PURL does not."""

@@ -47,7 +47,8 @@ WARN_NAMESPACES = {'advisory_cause', 'policy_notice', 'control_weakening', 'leak
                    'tier_source', 'tier_reality', 'kit_watermark', 'evidence_retention', 'exception_resurfacing',
                    'edge_purge', 'api_boundary', 'publication_state', 'dependabot_triage_rule',
                    'human_control_availability', 'remediation_track_state', 'capability_floor_state'}
-WARN_STATES = {'routing_result.PROCEED_WITH_ADVISORY', 'routing_result.DECISION_REQUIRED',
+WARN_STATES = {'small_team_self_approval.SMALL_TEAM_SELF_APPROVAL',   # a declared weakening in force (2026-11-07)
+               'routing_result.PROCEED_WITH_ADVISORY', 'routing_result.DECISION_REQUIRED',
                'kit_init_state.KIT_INIT_HUMAN_EDIT_PRESERVED', 'known_exploited.UNAVAILABLE',
                'known_exploited.EXCEPTED'}
 ERROR_STATES = {'capability_floor_state.BREACHED'}

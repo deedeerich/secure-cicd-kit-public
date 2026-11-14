@@ -513,6 +513,27 @@ namespaces:
           deferral wearing a technical costume.
 
   # ─────────────────────────────────────────────────────────────────────────────
+  local_tool_pin:
+    description: >-
+      Whether a scanner the local battery found (tools/battery.py, KIT_LOCAL_TOOLS) is the release
+      the kit pins: the selftest-tools composite's and self-test.yml's release downloads. Its
+      siblings OK (the pinned release answered) and ABSENT (not found; that tool's checks stay
+      UNKNOWN, as before) are ordinary words; only the mismatch is a state with consequences.
+    consumers: [tools/battery.py, tests/prove_battery_mirrors_selftest.py]
+    rule: >-
+      A PASS ON ANOTHER RELEASE IS NOT THE HOSTED PROOF. A check that passed with a scanner other
+      than the pin proved something about that other scanner; the battery may not read it as the
+      result the runner would have given.
+    values:
+      VERSION_MISMATCH:
+        definition: >-
+          The tool resolved on the battery's PATH printed a version other than the pin (a near miss
+          such as 1.2.30 for 1.2.3 included), or printed no version at all.
+        rule: >-
+          Fails the battery (rc 1) even when every check passed. Not ABSENT: an absent tool leaves
+          its checks UNKNOWN; a mismatched one lets them run and pass on the wrong release, which is
+          the silent pass this value exists to stop. Moves to OK only by placing the pinned release.
+
   artifact_identity:
     description: >-
       Whether the artefact a control inspected is provably the artefact that was published. Emitted
@@ -993,7 +1014,8 @@ namespaces:
     description: >-
       How an approved exception reached the finding it is being applied to. Read from the
       register; this never re-keys an approval.
-    consumers: [scripts/finding_lineage.py, tests/prove_lineage_durability.py]
+    consumers: [scripts/finding_lineage.py, tests/prove_lineage_durability.py,
+                scripts/scan_report.py, scripts/reconcile_tickets.py, tests/prove_lineage_consumers.py]
     rule: >-
       AN INFERENCE NEVER OVERWRITES AN OBSERVATION. The approver approved a specific key. A
       carried approval is a human decision extended by machine assertions, so it is reported as
@@ -1021,6 +1043,263 @@ namespaces:
         rule: >-
           Carries the lineage_resolution state alongside it, so "untriaged and new to the estate"
           stays distinct from "untriaged, but the live form of something with a history".
+      LINEAGE_RECONCILIATION_UNRESOLVED:
+        definition: >-
+          The lineage ledger is ABSENT and the register indicates a prior relationship: an entry
+          keyed on something this scanner did not report this run, on the same scanner as this
+          undecided finding and on the same rule or path (review 2026-11-09 finding 8).
+        rule: >-
+          Never suppresses and never assumes either way. Reported as a PENDING DECISION naming
+          the earlier decision; a person records the lineage event or decides the finding
+          directly. Absence of the ledger is not absence of a prior relationship.
+
+  legacy_inventory_state:
+    description: >-
+      The row state of the READ-ONLY legacy-key inventory (scripts/legacy_inventory.py): one
+      register entry keyed on the legacy fingerprint, and what must happen to it before the
+      KDEC-008 OD-6 key migration window closes. Read by the owner; never a run outcome.
+    consumers: [scripts/legacy_inventory.py, tests/prove_legacy_inventory.py]
+    rule: >-
+      THE INVENTORY NEVER RE-KEYS. Re-keying is a new approval by a person on the durable key;
+      the inventory names what to re-key and writes nothing. A durable identity is read from a
+      findings file the report wrote, never computed from or guessed for a legacy hash.
+    values:
+      REKEY_REQUIRED:
+        definition: >-
+          The entry suppresses on its own terms and resolves to exactly one durable identity
+          that has no entry of its own.
+        rule: Reaffirmation required on that identity before the window closes.
+      REKEY_REQUIRED_IDENTITY_UNRESOLVED:
+        definition: >-
+          The entry suppresses on its own terms, but no single durable identity was resolved:
+          no findings file, the finding was not seen, its identity was not computed, or the
+          legacy key matches more than one identity.
+        rule: Reaffirmation required; the owner locates the finding, never a guessed identity.
+      ALREADY_REKEYED:
+        definition: >-
+          Every durable identity the key resolves to has its own entry AND each such entry
+          suppresses today under scan_report.not_suppressed_because (the rule applied to the
+          legacy row), not merely exists.
+        rule: No reaffirmation; a person may retire the legacy entry.
+      REKEYED_REPLACEMENT_NOT_EFFECTIVE:
+        definition: >-
+          The legacy entry suppresses, and every durable identity has an entry, but at least one
+          of those entries does not suppress today (expired, rejected or proposed, outside the
+          schema). Existence of a record is not an effective approval.
+        rule: >-
+          Reaffirmation required (counted as needing action); the row names why the replacement
+          does not suppress.
+      NOT_SUPPRESSING:
+        definition: >-
+          The entry does not suppress even inside the window (expired, not approved, outside
+          the schema).
+        rule: No reaffirmation needed to keep anything; the reason is named.
+
+  ticket_clearance_hold:
+    description: >-
+      Why a ticket whose finding was not reported this run, with coverage established, is held
+      POTENTIALLY_ABSENT instead of closed as a verified clearance, when the lineage ledger is
+      ABSENT (review 2026-11-09 finding 8, ticket side; scripts/reconcile_tickets.py
+      lineage_clearance_hold).
+    consumers: [scripts/reconcile_tickets.py, tests/prove_lineage_consumers.py]
+    rule: >-
+      AN ABSENT LEDGER IS NOT A VERIFIED CLEARANCE WHEN A SAME-SCANNER, SAME-RULE FINDING IS NEW
+      THIS RUN. Closure only by rescan or a second person; dedupe never loses an obligation. The
+      hold closes nothing and merges nothing; the newcomer keeps its own ticket and both are named.
+      Any ledger state that is not intact (LEDGER_ABSENT, LEDGER_TAMPERED,
+      LEDGER_LINE_UNPARSEABLE) holds; an intact ledger recording no move is the answer. For a
+      present-but-untrusted ledger the newcomer may be BINDING_AMBIGUOUS, and it counts.
+    values:
+      LINEAGE_RECONCILIATION_UNRESOLVED:
+        definition: >-
+          The lineage ledger is ABSENT, this ticket's finding was not reported this run, and a
+          cluster new this run (BINDING_ABSENT) is related to it by PLAUSIBLE evidence
+          (reconciliation_correlation; review round 2: same scanner and rule alone no longer is).
+        rule: >-
+          Held (reconciliation_held, a ticket state) naming both identities and the newcomer's
+          ticket, and the hold persists on the ticket ledger across runs until a person resolves it
+          (--resolve-reconciliation, triager plus a second-person approval) or records the lineage
+          event.
+      SAME_SCANNER_AND_RULE:
+        definition: The basis of the hold when both sides record the rule and it matches.
+      ADVISORY_ID_CONFLICT:
+        definition: >-
+          Review round 3 F20 (KDEC-047): the basis of the hold when the pair shares the finding
+          subject and the locus but their advisory id sets are disjoint (CORRELATION_CONFLICT).
+        rule: Held for a person (--resolve-reconciliation, triager plus second-person approval); never read as unrelated, never closed automatically.
+      LEDGER_TAMPERED:
+        definition: >-
+          The basis of the hold when the lineage ledger is present but fails its integrity check
+          (also LEDGER_LINE_UNPARSEABLE, named the same way): nothing in it can be trusted to say A
+          did or did not move.
+      LINEAGE_CONFLICT_UNRESOLVED:
+        definition: >-
+          The basis of the hold when the lineage ledger is INTACT and records a split, a merge or a
+          cycle whose ancestry reaches this ticket's identity, and the product that remains is held
+          BINDING_AMBIGUOUS for a person this run: the obligation the lineage carries is
+          unresolved, so the ticket is not closed as a verified clearance (R03 acceptance).
+      LINEAGE_RULE_NOT_RECORDED:
+        definition: >-
+          The basis of the hold when the ticket ledger was written before members recorded their
+          rule, so whether the rule matches cannot be told.
+        rule: Said, and held -- never read as "a different rule" and never a silent close.
+      LINEAGE_RELATIONSHIP_PRESERVED:
+        definition: >-
+          Review round 2 (F15, the F8 policy): the lineage ledger is not intact and a newcomer is
+          related to this ticket's finding by STRONG identity evidence (reconciliation_correlation).
+          The relationship is preserved: the ticket stays open while the related obligation is
+          open, and any approval it carried must be reaffirmed on the new identity.
+        rule: Not closed and not merged; it clears when the related obligation does. A ticket state, never an active finding.
+      CLEARANCE_PROVISIONAL:
+        definition: >-
+          Review round 2 (F14): the finding is proven absent in its own scope, but the run did not
+          see a verified complete reconciliation population for the scope that matters (the lineage
+          ledger records a successor of this finding, or is not intact): a partial scope, a scanner
+          row failed or missing (interrupted), findings withheld for want of identity, or a paged
+          ticket sweep.
+        rule: The ticket is NOT closed. A later run with the whole population clears it, or the lineage hold applies.
+      RECONCILIATION_POPULATION_INCOMPLETE:
+        definition: The basis of a CLEARANCE_PROVISIONAL, naming each part of the population the run did not see.
+
+  reconciliation_population:
+    description: >-
+      Review round 3 (2026-11-10) F19: the DENOMINATOR of the full-population gate
+      (scripts/reconcile_tickets.py population_gaps). The expected scanner population is the
+      kit's declared, versioned scanner inventory (scanner-registry.yaml, read by
+      load_scanner_inventory; its sha256 is on the run record as population_inventory), never
+      whatever happened to run. The ticket sweep must be affirmatively complete (True; unknown is
+      a gap).
+    consumers: [scripts/reconcile_tickets.py, scripts/scan_report.py, tests/prove_lineage_consumers.py]
+    rule: >-
+      A declared scanner job with no coverage row, a coverage row whose job the inventory does not
+      declare, a sweep that is not True, and a NOT_APPLICABLE row the kit's own applicability
+      evidence does not back are each a named gap: CLEARANCE_PROVISIONAL, the ticket not closed.
+    values:
+      SCANNER_INVENTORY_ESTABLISHED:
+        definition: The declared inventory was read and names at least one scanner job; its source and sha256 are recorded.
+      SCANNER_INVENTORY_NOT_ESTABLISHED:
+        definition: >-
+          No declared inventory was available to the run (not supplied, unreadable, or naming no
+          scanner job), so the denominator is not established.
+        rule: Under the full-population gate it is a gap -- clearance stays provisional, never silently complete.
+      APPLICABILITY_NOT_ESTABLISHED:
+        definition: >-
+          A coverage row says NOT_APPLICABLE without the evidence the kit validates: its job is
+          declared `applies: always`, or the row lacks the state builder's applicability_basis
+          (discovery:COMPLETE for a discover.* condition, input:<name> for an input.* condition).
+        rule: Read as NOT_ESTABLISHED, a gap; never as nothing to find.
+
+  reconciliation_correlation:
+    description: >-
+      Review round 2 (2026-11-09) F15 and the F8 policy: how a ticket whose finding vanished is
+      correlated with a finding new this run when the lineage ledger cannot answer
+      (scripts/reconcile_tickets.py correlation_tier). Same scanner and same rule ALONE is not a
+      relationship. Only fields the ticket ledger (ledger_members) and findings.json carry.
+    consumers: [scripts/reconcile_tickets.py, tests/prove_lineage_consumers.py]
+    rule: >-
+      Another finding subject is UNRELATED; disjoint advisory ids are CONFLICT when the subject AND
+      the locus are shared (review round 3 F20, KDEC-047), else UNRELATED; then STRONG; then
+      PLAUSIBLE; else INSUFFICIENT. The tier is
+      on the run record (reconciliation_held, reconciliation_gaps, cleared) and on the ticket. A
+      held reconciliation is a ticket state, separate from the finding's state (VERIFIED_ABSENT,
+      POTENTIALLY_ABSENT, VERIFIED_ABSENT_IN_OWN_SCOPE), and never counted as an active finding. A
+      person resolves a hold with --resolve-reconciliation (same or separate): ticket.triage_merge,
+      a triager and a second person who approves (separation_of_duties).
+    values:
+      CORRELATION_STRONG:
+        definition: The same finding subject AND the same locus (where) or a shared advisory id.
+        rule: LINEAGE_RELATIONSHIP_PRESERVED, reaffirmation required.
+      CORRELATION_PLAUSIBLE:
+        definition: >-
+          The same scanner and rule plus at least one weaker shared attribute (matched construct,
+          file, file name, symbol, line), or the same scanner where the ticket ledger did not record
+          the rule.
+        rule: LINEAGE_RECONCILIATION_UNRESOLVED, both tickets named, held until a person resolves it.
+      CORRELATION_CONFLICT:
+        definition: >-
+          Review round 3 F20 (KDEC-047): the same finding subject AND the same locus (where), with
+          both advisory id sets present and disjoint. Disjoint ids are not proof of unrelatedness
+          (another advisory namespace, a replaced advisory): contradictory evidence.
+        rule: LINEAGE_RECONCILIATION_UNRESOLVED on ADVISORY_ID_CONFLICT, held until a person resolves it; a ticket state, never an active finding.
+      CORRELATION_UNRELATED:
+        definition: Contradicting identity evidence (another subject, disjoint advisory ids without a shared subject and locus, or the same scanner with another rule and no shared locus).
+        rule: Normal independent lifecycles.
+      CORRELATION_INSUFFICIENT:
+        definition: Not even a plausible relationship (e.g. the same scanner and rule and nothing else).
+        rule: No continuity is invented; the evidence gap is recorded; the normal clearance policy applies.
+
+  reconciliation_finding_state:
+    description: >-
+      Review round 2 (the F8 policy): the FINDING's state recorded beside a held ticket
+      (reconciliation_held[].finding_state in the ticket run record), kept apart from the ticket's
+      reconciliation state so a hold is never read or counted as an active finding.
+    consumers: [scripts/reconcile_tickets.py, tests/prove_lineage_consumers.py]
+    values:
+      VERIFIED_ABSENT:
+        definition: Not reported this run, and every scanner that saw it established coverage over its file.
+      POTENTIALLY_ABSENT:
+        definition: Not reported this run, without positive coverage; also listed in the run record's potentially_absent.
+      VERIFIED_ABSENT_IN_OWN_SCOPE:
+        definition: >-
+          Proven absent where it lived, while the run's population was not verified complete for
+          where it may have moved (CLEARANCE_PROVISIONAL).
+      ACTIVE:
+        definition: >-
+          Reported this run (review round 2 F17): a ticket held on an unresolved advisory alias
+          change names a finding that is still present.
+
+  alias_continuity:
+    description: >-
+      Review round 2 (2026-11-09) F17 and the owner's alias policy: whether a change in a finding's
+      advisory alias set (WHAT hashes the set) continues its identity. ONE decision,
+      scripts/finding_lineage.py alias_continuity, consumed by the report (scan_report
+      alias_disposition, via alias_predecessors) and by the ticket reconciler (reconcile_tickets
+      alias_decisions); a scanner-attested decision carries one derived SUPERSEDES /
+      ADVISORY_ALIAS_ADDED event (actor_class ADVISORY_FEED) whose decision_id both record. Review
+      round 3 F21: the rule is deterministic over the scanner's own data, so the continuity is
+      SCANNER-ATTESTED, never independently verified; every decision carries assurance
+      SCANNER_ATTESTED, corroboration ALIAS_AUTHORITY_NOT_CONSULTED and its provenance (scanner,
+      scanner version, advisory source, observation), NOT_ESTABLISHED where the input lacks it.
+    consumers: [scripts/finding_lineage.py, scripts/scan_report.py, scripts/reconcile_tickets.py, tests/prove_lineage_consumers.py]
+    rule: >-
+      Only SCANNER_ATTESTED_ALIAS_CONTINUITY continues identity, and it says it is scanner-attested. Every other decided state stays UNRESOLVED:
+      the report carries nothing (an unverified addition is named LINEAGE_RECONCILIATION_UNRESOLVED,
+      pending, never suppressing) and the ticket is held LINEAGE_RECONCILIATION_UNRESOLVED with the
+      alias state as its basis -- never continued silently, never closed -- until a person resolves
+      it or records the lineage event. A carried decision is pending (reaffirmation), never suppressing.
+    values:
+      SCANNER_ATTESTED_ALIAS_CONTINUITY:
+        definition: >-
+          The new alias set is a strict superset of the old, added ids are only in namespaces the
+          old set lacks, every id is co-declared by the scanner's advisory record (rule id and the
+          structured aliases list, never prose), and subject, locus and construct are unchanged.
+          Attested by the scanner's own advisory record, not by an independent advisory authority
+          (review round 3 F21; was ALIAS_CONTINUITY_VERIFIED).
+        rule: Identity continuity is established automatically; A's decision is carried pending reaffirmation; the output names the attestation and its provenance.
+      SCANNER_ATTESTED:
+        definition: The assurance of an alias decision -- the scanner's own data, deterministically evaluated.
+      ALIAS_AUTHORITY_NOT_CONSULTED:
+        definition: >-
+          No authoritative advisory record was consulted to corroborate the alias equivalence; the
+          higher-assurance tier is not built (R-44).
+      ALIAS_CONTRADICTORY:
+        definition: An id added in a namespace the old set already names (two CVEs for one finding).
+        rule: Unresolved; held for a person.
+      ALIAS_REMOVED:
+        definition: The new alias set is a strict subset of the old.
+        rule: Unresolved; held for a person.
+      ALIAS_REPLACED:
+        definition: The sets share no id, or ids were removed and others added.
+        rule: Unresolved; held for a person.
+      ALIAS_UNVERIFIED:
+        definition: An addition the scanner's advisory record does not itself state (found only in message text or references).
+        rule: Unresolved; held for a person; the report names LINEAGE_RECONCILIATION_UNRESOLVED.
+      ALIAS_UNCHANGED:
+        definition: The alias set did not change. No alias decision.
+      ALIAS_NOT_APPLICABLE:
+        definition: >-
+          The records differ in something other than the alias set, or are not advisory-keyed: not
+          an alias change (another mechanism, decided elsewhere).
 
   identity_proof_failure:
     description: >-
@@ -2851,6 +3130,82 @@ namespaces:
         definition: >-
           The marker, the commit or the comparison could not be read: refused before login, with the reason.
 
+  # KREQ-717 / KREQ-558 (lane deploy-safety, 2026-11-13, KDEC-061 PROPOSED). Emitted by
+  # scripts/deploy_interruption.py and scripts/live_target_authorisation.py through their composites.
+  deploy_interruption:
+    description: >-
+      What a deploy reusable decided, before login, about its own time bound and about the newest
+      recorded state of its target (scripts/deploy_interruption.py check, the deploy-interruption
+      composite). Exactly one value per deploy that reached the check. The always() record of every run
+      that reached the target names INTERRUPTED_DEPLOY_RECONCILIATION_REQUIRED when it owes one. KDEC-061 M2
+      (lane deploy-bounds): the sequential rollback runs the same check and record (one state artifact per
+      target, shared with the deploys); the build-and-push job runs the bound alone and records its push.
+    consumers: [scripts/deploy_interruption.py, .github/actions/deploy-interruption, reusable-deploy-appservice,
+                reusable-deploy-containerapp, reusable-deploy-staticwebapp, reusable-rollback-sequence,
+                reusable-build-docker, live-deploy-acceptance, tests/prove_deploy_interruption.py]
+    rule: >-
+      A mutating job is bounded (deploy_timeout_minutes 30..360, at least its own configured work) and a
+      kill is designed, never assumed clean: the manifest at the kill decides PARTIAL_APPLY or
+      STATUS_UNTRUSTED (DCR-8), and the next run of the target reconciles it by name. Only a person who
+      reconciled it by hand releases the target, by naming the run; an unreadable state never deploys blind.
+    values:
+      INTERRUPTION_CHECK_CLEAR:
+        definition: >-
+          The bound is governed and the newest state of the target owes nothing (none recorded, or the
+          last run reached a reconciled outcome). The deploy proceeds.
+      INTERRUPTED_DEPLOY_RECONCILIATION_REQUIRED:
+        definition: >-
+          The newest state of the target is a run that changed something and did not establish the
+          result -- PARTIAL_APPLY, STATUS_UNTRUSTED, or cancelled or timed out mid-change. Refused before
+          login, naming the run, its outcome, what it changed and its evidence, until a person names it
+          in reconciled_interrupted_run. Also the name the interrupted run's own record gives what it owes.
+      INTERRUPTED_DEPLOY_RECONCILED_BY_HAND:
+        definition: >-
+          The caller named the interrupted run in reconciled_interrupted_run: a person reconciled live
+          state against its snapshot and manifest by hand. The deploy proceeds, recorded; its own state
+          then supersedes the interrupted one.
+      INTERRUPTION_CHECK_INCOMPLETE:
+        definition: The target's state record could not be listed or read; refused before login, with the reason.
+      DEPLOY_REFUSED_TIME_BOUND:
+        definition: >-
+          deploy_timeout_minutes is outside 30..360 or below 30 + the e2e test period (+30 with DAST):
+          refused before login. The job's own timeout-minutes clamps such a value to 90, so it is never
+          unbounded even before this refusal. The same for the sequential rollback's rollback_timeout_minutes
+          (below 30 + steps x the test period; clamped to 180) and the build's build_timeout_minutes (clamped
+          to 90); the refusal names the job's own input.
+      INTERRUPTED_PUSH_UNPROMOTABLE:
+        definition: >-
+          The build-and-push job's record (into its build evidence) of a push that was reached and did not end
+          proven and attested: killed or failed inside the push (manifest planned, PARTIAL_APPLY), pushed with
+          the identity never proven (STATUS_UNTRUSTED), or proven and then cancelled before the attest job.
+          Whatever it left under the tag is never attested -- the attest job signs only a successful build
+          job's REGISTRY_IDENTITY_PROVEN digest -- so V1 and the promotion gate (PROMOTION_REFUSED_SIGNATURE,
+          which break-glass never lifts) refuse it.
+        rule: >-
+          Never read as clean and never as owed to the next run: nothing the kit promotes can be it, so the next
+          push is not refused. A tag pulled outside the kit is a person's to re-point against the build evidence.
+
+  live_target_authorisation:
+    description: >-
+      Whether a live-target authorisation record is in force for a scan of a running target
+      (.kit/live-target-authorisation.json on the default branch; schemas/live-target-authorisation.schema.json),
+      read before DAST in the deploy reusables and before the deployed scan reads anything.
+    consumers: [scripts/live_target_authorisation.py, .github/actions/live-target-authorisation,
+                reusable-deploy-appservice, reusable-deploy-containerapp, reusable-deploy-staticwebapp,
+                reusable-deployed-scan, tests/prove_live_target_authorisation.py]
+    rule: >-
+      Configuration is not authorisation. An entry names the scan, the environment and the target
+      exactly, a role that authorised it, the dates (at most 366 days) and the change that records the
+      owner's agreement. Anything else is PREREQUISITE_UNAVAILABLE and the scan is not run; for DAST the
+      deploy evidence says so and the release is not verified for promotion.
+    values:
+      LIVE_TARGET_AUTHORISED:
+        definition: An entry in force names this scan, environment and target; the scan may run.
+      PREREQUISITE_UNAVAILABLE:
+        definition: >-
+          No entry in force: the record is absent, unreadable, malformed, expired, not yet valid, over
+          366 days, or out of scope. The scan is not run; the reason is recorded.
+
   # KDEC-030 DRAFT (PROPOSED, lane L-SEAM, 2026-10-26; docs/architecture/LZ_KIT_SEAM_CONTRACT.md).
   # target_lease is emitted by scripts/target_lease.py (the model and, since lane L-SEAM2 2026-10-27,
   # its CLI through the target-lease composite), proven by tests/prove_target_lease.py and
@@ -4151,8 +4506,12 @@ namespaces:
       reviewers give what the policy demands at this tier (one approver, from the named groups,
       self-review prevented). Emitted by the deploy reusables' `protection` step, before login.
     consumers: [scripts/environment_protection.py, reusable-deploy-appservice.yml,
-                reusable-deploy-containerapp.yml, tests/prove_deploy_environment_protection.py]
+                reusable-deploy-containerapp.yml, reusable-deploy-staticwebapp.yml,
+                tests/prove_deploy_environment_protection.py, tests/prove_uat_prod_gating.py]
     rule: >-
+      THE ENVIRONMENT IS CLASSED FIRST (KDEC-042): the strongest of the bound tier, the caller's
+      .kit/environments.json class and the name; an explicit class never lowers a production name, and an
+      empty or unclassed name is ENVIRONMENT_UNCLASSED, refused at every tier.
       AT uat AND prod ONLY VERIFIED AND NOT_REQUIRED PROCEED. The kit cannot set an environment's
       reviewers; it can read them, so an unprotected production environment is a refusal, not a
       hand-off note. A rule that could not be read is not a rule that was satisfied. Below uat every
@@ -4164,7 +4523,37 @@ namespaces:
       ENVIRONMENT_PROTECTION_NOT_REQUIRED:
         definition: Nothing is demanded at this tier (below uat, by default); the rules were not consulted.
       ENVIRONMENT_REVIEWERS_ABSENT:
-        definition: No required-reviewer rule, or one with no reviewers -- anyone who can run the workflow deploys.
+        definition: No required-reviewer rule -- anyone who can run the workflow deploys.
+      ENVIRONMENT_REVIEWERS_EMPTY:
+        definition: A required-reviewer rule that names nobody, so nobody is waited for (KDEC-042).
+      ENVIRONMENT_NOT_FOUND:
+        definition: >-
+          The GitHub environment a uat or prod deploy names does not exist (the API answered 404), so GitHub
+          has no reviewer to wait for (KDEC-042).
+      ENVIRONMENT_UNCLASSED:
+        definition: >-
+          No environment is named, or nothing classes the name: no class in the caller's
+          .kit/environments.json and no dev/test/uat/prod word in it. Refused at EVERY tier until it is
+          classed, because a name nobody can class cannot be shown to be below production (KDEC-042).
+      ENVIRONMENT_REVIEWER_OUTSIDE_POOL:
+        definition: >-
+          Approver pools are named and a reviewer of the uat or prod environment is outside them. GitHub waits for one
+          approval from any listed reviewer, so that reviewer could approve alone (external review 2026-11-07 R09).
+      OUTSIDE_POOL:
+        definition: >-
+          The deploy gate's in-code name for ENVIRONMENT_REVIEWER_OUTSIDE_POOL (the constant the uat/prod gating
+          proof's outside_pool mutant edits). It is the same state, never a second one: it emits only
+          ENVIRONMENT_REVIEWER_OUTSIDE_POOL.
+        rule: Never emitted or consumed under this short name; it must not be read as a pass or as a different refusal.
+      ENVIRONMENT_APPROVER_POOL_MISSING:
+        definition: >-
+          Approver pools are named (vars.KIT_APPROVER_POOLS, else .kit/settings.json approver_pools) and
+          none of the environment's reviewers is a platform or security pool team or member (KDEC-042).
+      ENVIRONMENT_APPROVERS_ALL_APP_TEAM:
+        definition: >-
+          The app team is named (vars.KIT_APP_TEAM, else .kit/settings.json app_team) and every reviewer is
+          on it, so nobody outside the team approves. Membership the kit cannot read is never assumed: it is
+          recorded as app_team_check NOT_ESTABLISHED and the decision rests on the rules (KDEC-042).
       ENVIRONMENT_SELF_REVIEW_ALLOWED:
         definition: Self-review must be prevented and the environment lets the deployer approve their own deploy.
       ENVIRONMENT_APPROVER_GROUP_MISSING:
@@ -4173,9 +4562,48 @@ namespaces:
           the reviewers is one of them.
       ENVIRONMENT_PROTECTION_NOT_ESTABLISHED:
         definition: >-
-          The environment API could not be read, the demand could not be read, or the tier is not
-          a registered one.
+          The environment API could not be read, the demand could not be read, the org overlay could not be
+          read, or the tier is not a registered one.
         rule: Refused at uat and prod. Unknown is not protected.
+      ENVIRONMENT_GOVERNED_SETTING_LOOSENED:
+        definition: >-
+          A repository or environment value loosens a setting the org overlay governs (owner 2026-11-07): approver
+          pools the overlay does not name, another app team, or a small-team self-approval the repository declared
+          for itself (vars.KIT_SMALL_TEAM_SELF_APPROVAL or .kit/settings.json). A repository may only tighten.
+        rule: Refused at uat and prod; recorded below. docs/adoption/SETTINGS_PRECEDENCE.md.
+      ENVIRONMENT_PROTECTION_SMALL_TEAM_SELF_APPROVAL:
+        definition: >-
+          The org overlay's small-team self-approval is in force for this repository (a team of two or fewer, no
+          external approver group, five weakening fields, inside its review): the environment still has a
+          required-reviewers rule naming someone, and that reviewer may be on the app team, the developer who
+          started the deploy included. It proceeds, and the run summary and release record say
+          SMALL_TEAM_SELF_APPROVAL in plain words.
+      ENVIRONMENT_SMALL_TEAM_SELF_APPROVAL_REFUSED:
+        definition: >-
+          Prevent self-review is off (or only the app team can approve) and the org overlay's small-team
+          self-approval is declared but not in force: too large a team, approver pools exist, an external group
+          is available, a weakening field is missing, it runs past its review, or it expired.
+        rule: Refused at uat and prod, naming small_team_self_approval's state.
+
+  app_team_check:
+    description: >-
+      Whether a uat or prod environment's required reviewers include someone outside the app team, when the
+      team is named (vars.KIT_APP_TEAM, else .kit/settings.json app_team). Printed by the deploy's
+      `protection` step beside environment_protection (KDEC-042).
+    consumers: [scripts/environment_protection.py, tests/prove_uat_prod_gating.py]
+    rule: >-
+      MEMBERSHIP IS READ, NEVER INVENTED. A Team reviewer is the app team only when it IS the app team; a
+      User reviewer only when the declared or readable member list names them. Only APP_TEAM_ONLY refuses
+      (as ENVIRONMENT_APPROVERS_ALL_APP_TEAM); NOT_ESTABLISHED is recorded and the rules decide.
+    values:
+      APP_TEAM_NOT_DECLARED:
+        definition: No app team is named, so the check is not made.
+      APP_TEAM_INDEPENDENT:
+        definition: At least one reviewer is shown to be outside the app team.
+      APP_TEAM_ONLY:
+        definition: Every reviewer is shown to be on the app team.
+      NOT_ESTABLISHED:
+        definition: Some membership could not be read and no reviewer is shown to be outside the team.
 
   # ─────────────────────────────────────────────────────────────────────────
   # OF-5 (the LZ-vs-kit deployment review, 2026-10-28; KDEC-034 PROPOSED). The landing zone's stronger
@@ -4284,6 +4712,146 @@ namespaces:
         definition: >-
           The approvals, the requester, the released commit's author (an author email not linked to an
           account included) or the demand could not be read, or the tier is not registered. Refused.
+      RELEASE_APPROVAL_SMALL_TEAM_SELF_APPROVAL:
+        definition: >-
+          The approver is the requester or the release's author, which the org overlay's small-team self-approval
+          allows (the protection step said it is in force); an approval exists and quotes the digest. It proceeds,
+          recorded as SMALL_TEAM_SELF_APPROVAL (owner 2026-11-07). Pull requests are unaffected: GitHub never lets
+          a pull request's author approve it.
+
+  small_team_self_approval:
+    description: >-
+      Whether the org overlay (overlays/<org>/kit-org-settings.json in the kit copy) lets a team of two or fewer
+      with no external approver group approve its own uat/prod deployment (owner 2026-11-07). A declared
+      WEAKENING with five fields (approved_by, ref, date, reason, expires), time-boxed by a review (review_days,
+      default 90). scripts/org_settings.py decides it; the deploys' protection and approval steps obey it.
+    consumers: [scripts/org_settings.py, scripts/environment_protection.py, scripts/release_gates.py,
+                .github/actions/org-settings, tests/prove_org_settings.py, tests/prove_uat_prod_gating.py]
+    rule: >-
+      ONLY THE ORG OVERLAY DECLARES IT. A repository that declares it is ENVIRONMENT_GOVERNED_SETTING_LOOSENED.
+      In force, the required-reviewers rule must still exist and name someone; only self-review prevention and
+      the app-team rule are waived. Refused when the team is larger than two or approver pools exist.
+    values:
+      SMALL_TEAM_SELF_APPROVAL:
+        definition: In force; the developer may approve their own deployment, and it is said in plain words.
+      SMALL_TEAM_SELF_APPROVAL_NOT_DECLARED:
+        definition: The org overlay declares nothing for this repository; self-review stays required.
+      SMALL_TEAM_SELF_APPROVAL_TEAM_TOO_LARGE:
+        definition: The declared app team has more than two people.
+      SMALL_TEAM_SELF_APPROVAL_POOLS_EXIST:
+        definition: The org overlay names approver pools, so an external approver group exists.
+      SMALL_TEAM_SELF_APPROVAL_EXTERNAL_GROUP_AVAILABLE:
+        definition: The declaration does not say external_approver_group_available false.
+      SMALL_TEAM_SELF_APPROVAL_INCOMPLETE:
+        definition: A weakening field (approved_by, ref, date, reason, expires), the team size or review_days is missing or unreadable.
+      SMALL_TEAM_SELF_APPROVAL_BEYOND_REVIEW:
+        definition: It expires later than its date plus review_days (default 90).
+      SMALL_TEAM_SELF_APPROVAL_EXPIRED:
+        definition: Its expiry has passed; renew it in the org overlay after a review.
+      SMALL_TEAM_SELF_APPROVAL_NOT_ORG_DECLARED:
+        definition: A repository value declared it; only the org overlay may (ENVIRONMENT_GOVERNED_SETTING_LOOSENED).
+      SMALL_TEAM_SELF_APPROVAL_NOT_KNOWN_SOLO_DEVELOPER:
+        definition: The repository's owner is not in the org overlay's known_solo_developers, or its app team members are not all listed developers of that owner (owner ruling 2026-11-07).
+
+  dast_policy:
+    description: >-
+      Whether a lower-environment DAST result is required before promotion, resolved from the org overlay by
+      scripts/org_settings.py dast_policy and read by scripts/deploy_contract.py promotion (external review
+      2026-11-07 R07). Recorded in the promotion record's dast_basis.
+    consumers: [scripts/org_settings.py, scripts/deploy_contract.py, tests/prove_dast_applicability.py]
+    rule: >-
+      AN UNCONFIGURED DAST IS NEVER A PASSED SCAN. NOT_CONFIGURED satisfies the promotion condition only under
+      DAST_NO_ORG_POLICY or DAST_NOT_REQUIRED_BY_DECISION; under DAST_REQUIRED the condition stays missing; an
+      unreadable org policy reads as DAST_REQUIRED.
+    values:
+      DAST_REQUIRED:
+        definition: The org overlay requires a lower-environment DAST result before promotion.
+      DAST_NOT_REQUIRED_BY_DECISION:
+        definition: The org overlay records, for this repository, a decision that DAST is not required (approved_by, ref, date, reason).
+      DAST_NO_ORG_POLICY:
+        definition: No org overlay policy requires DAST (KDEC-029, where configured).
+  azure_cloud:
+    description: >-
+      Which Azure cloud (commercial or gov) a deploy, the build or the rollback signs in to, decided per
+      environment before login by scripts/org_settings.py (owner 2026-11-07). KIT_CLOUD is Azure-only; no AWS job
+      reads it (tests/check_kit_cloud_scope.py).
+    consumers: [scripts/org_settings.py, .github/actions/org-settings, tests/prove_org_settings.py]
+    rule: >-
+      WITH TWO AZURE CLOUDS DECLARED, THE ORG OVERLAY'S MAP DECIDES. An organisation-wide KIT_CLOUD would classify
+      every tenant alike and a job cannot see which level a variable came from, so an unmapped environment is
+      refused, and a call or a KIT_CLOUD that disagrees with the overlay is refused. Only the first four values sign in.
+    values:
+      AZURE_CLOUD_FROM_ORG_MAP:
+        definition: The org overlay maps this repository's environment (owner/repo:env), or the environment, to the cloud.
+      AZURE_CLOUD_ORG_SINGLE:
+        definition: The org overlay declares one Azure cloud; it is every environment's.
+      AZURE_CLOUD_FROM_ENVIRONMENT:
+        definition: No overlay declares clouds; the environment's KIT_CLOUD decides.
+      AZURE_CLOUD_FROM_INPUT:
+        definition: No overlay and no KIT_CLOUD; the call's cloud input decides (empty is commercial, as before).
+      AZURE_CLOUD_UNSET_FOR_ENVIRONMENT:
+        definition: The org overlay declares more than one Azure cloud and maps neither the repository's environment nor the environment.
+      AZURE_CLOUD_CONFLICTS_WITH_ORG:
+        definition: The call's cloud input or the environment's KIT_CLOUD names another cloud than the org overlay gives.
+      AZURE_CLOUD_VALUE_UNKNOWN:
+        definition: A cloud value is neither commercial nor gov (public and AzureCloud read as commercial; usgov as gov).
+      AZURE_CLOUD_NOT_ESTABLISHED:
+        definition: The org overlay could not be read, so the clouds it declares are unknown.
+
+  adoption_clock:
+    description: >-
+      How long a repository has been at crawl, against the owner's O-41b durations (2026-11-07): 4 weeks optimal,
+      8 weeks an advisory, 26 weeks (six months) the hard maximum. scripts/org_settings.py crawl_clock; kit init
+      writes the dates into the checklist.
+    consumers: [scripts/org_settings.py, scripts/kit_init.py, tests/prove_org_settings.py]
+    rule: It reports and escalates; nothing promotes or extends by itself.
+    values:
+      CRAWL_ON_TRACK:
+        definition: Less than the optimal crawl (4 weeks by default).
+      CRAWL_PAST_OPTIMAL:
+        definition: Past the optimal crawl, before the advisory.
+      CRAWL_ADVISORY:
+        definition: Past the advisory (8 weeks by default); prefer no more than two months.
+      CRAWL_MAXIMUM_ESCALATE:
+        definition: At or past the hard maximum (26 weeks); escalated to the platform lead, never auto-promoted or extended.
+      CRAWL_START_UNKNOWN:
+        definition: The crawl start date is missing, unreadable or in the future.
+
+  kit_init_inventory:
+    description: >-
+      Where kit init's checklist got the CODEOWNERS teams and the connector names it lists (owner additions
+      2026-11-07): read-only, names only, never a value.
+    consumers: [scripts/kit_init.py, tests/prove_kit_init.py]
+    rule: A listing that could not be made is said, never left out.
+    values:
+      TEAMS_FROM_OVERLAY:
+        definition: The approver teams come from the org overlay.
+      TEAMS_FROM_OPTIONS:
+        definition: The teams were given as options.
+      TEAMS_LISTED:
+        definition: The organisation's teams were listed with the token (--list-teams).
+      TEAMS_NOT_ESTABLISHED:
+        definition: No overlay names them, none were given, and they were not listed.
+      PARTLY_LISTED:
+        definition: Some of the environment, secret and variable names could be listed; the rest are NOT_ESTABLISHED.
+      NOT_LISTED:
+        definition: The environment, secret and variable names were not listed (no --inventory-api).
+
+  org_settings:
+    description: >-
+      Whether the org overlay in the kit copy governs this repository (owner 2026-11-07; scripts/org_settings.py,
+      docs/adoption/SETTINGS_PRECEDENCE.md).
+    consumers: [scripts/org_settings.py, .github/actions/org-settings, scripts/kit_init.py, tests/prove_org_settings.py]
+    rule: An unreadable or ambiguous overlay is never read as absent.
+    values:
+      ORG_OVERLAY_APPLIED:
+        definition: One overlay names the repository's owner and is valid; its governed settings apply.
+      ORG_OVERLAY_ABSENT:
+        definition: No overlay in the kit copy names the owner; the kit behaves as it did without one.
+      ORG_OVERLAY_INVALID:
+        definition: An overlay is unreadable, fails the schema, carries an unknown key, or (for kit init) a template placeholder.
+      ORG_OVERLAY_AMBIGUOUS:
+        definition: Two overlays name the same organisation.
 
   policy_source:
     description: >-
@@ -4969,7 +5537,31 @@ namespaces:
       PROMOTION_REFUSED_STALE:
         definition: Verified more than 14 days ago, with no attributed rollback or hotfix decision.
       PROMOTION_REFUSED_SUPERSEDED:
-        definition: A newer build was verified in the same predecessor after this one.
+        definition: >-
+          A newer build was verified in the same predecessor after this one, for the same target
+          (adapter + target_resource_id); another target's record never supersedes (external review
+          2026-11-07 R08).
+      PROMOTION_REFUSED_TARGET_UNKNOWN:
+        definition: >-
+          The source record names no target_resource_id, or no adapter that is exactly a canonical adapter id
+          (containerapp, appservice, staticwebapp; never re-cased or padded), so supersession cannot be scoped to it.
+        rule: A record with no target never supersedes; break-glass may lift this refusal.
+      PROMOTION_REFUSED_HISTORY_INCOMPLETE:
+        definition: >-
+          The predecessor history of the target was not read to its end: the page cap, a later page
+          failing, a next link off the API host, fewer than total_count, or more records than the read bound.
+        rule: COULD-NOT-ESTABLISH IS NEVER ESTABLISHED.
+      PROMOTION_REFUSED_SOURCE_AMBIGUOUS:
+        definition: The source run published records for two or more targets in the environment with this digest.
+      PROMOTION_REFUSED_SOURCE_TARGET_MISMATCH:
+        definition: >-
+          The request named promote_from_target_resource_id and the source run published no record of the
+          environment for that target (independent review 2026-11-09 F5); another target's record is never taken.
+      PROMOTION_REFUSED_SOURCE_TARGET_REQUIRED:
+        definition: >-
+          A uat or prod promotion left promote_from_target_resource_id empty (policy 2026-11-09: the source
+          application is named, never inferred from the digest; optional only in dev and test).
+        rule: Not overridden by break-glass.
       PROMOTION_REFUSED_NO_PREDECESSOR:
         definition: A uat or prod deploy named no promotion source and is not break-glass.
       PROMOTION_REFUSED_PATH_UNKNOWN:
@@ -5015,6 +5607,103 @@ namespaces:
     values:
       BREAK_GLASS:
         definition: A healthy deploy that proceeded on an approved, time-limited exception; testing owed.
+
+  break_glass_discharge:
+    description: >-
+      The daily deployed scan's answer to "is this break-glass deploy's testing obligation met?"
+      (deployed-scan break_glass_discharge.state; independent review 2026-11-09 F3).
+    consumers: [scripts/promotion.py]
+    rule: >-
+      BOUND TO THE RECORDED PREDECESSOR. Only a verified record of the digest for the target the
+      deploy was promoted from (predecessor.promoted_from.target) discharges it; another target's
+      record of the same digest and adapter never does. Could-not-establish is never not-found.
+    values:
+      BREAK_GLASS_DISCHARGED:
+        definition: A verified record of this digest for the recorded predecessor target, in a listing read to its end.
+      BREAK_GLASS_OWED:
+        definition: Every listing of the recorded predecessor target was read to its end and holds no verified record of this digest.
+      BREAK_GLASS_DISCHARGE_NOT_ESTABLISHED:
+        definition: >-
+          No predecessor target is recorded, the predecessor history was not read to its end, or it could
+          not be read. The obligation stays flagged.
+        rule: COULD-NOT-ESTABLISH IS NEVER ESTABLISHED.
+
+  evidence_harness_reading:
+    description: >-
+      What the evidence harness's bundle says about a kit qualifier, as the kit's cross-product proof
+      (tests/prove_evidence_export.py QE3, with EVIDENCE_HARNESS_SRC set) reads it back: ApprovalStatus and
+      ReconciliationState columns, finding and promotion flags, and the promotion facts
+      history_completeness_state and target_identity_state (integration round 3, 2026-11-09; risk R-45).
+    consumers: [tests/prove_evidence_export.py, docs/architecture/ARCH_06_EVIDENCE_TO_THE_HARNESS.md]
+    rule: >-
+      NEVER STRONGER THAN THE KIT. The kit never emits these; the harness derives them from the export.
+      A carried, refused or unresolved lineage decision is never an approval, and a refused, overridden or
+      target-less promotion is never an established one. The kit's proof fails when the harness reads any of
+      them as settled.
+    values:
+      CARRIED_PENDING_REAFFIRMATION:
+        definition: ReconciliationState of a finding whose decision was carried by the lineage ledger and awaits a person's reaffirmation.
+      LINEAGE_REFUSED:
+        definition: >-
+          ReconciliationState of a finding whose lineage carry was refused (disposition_basis lineage-refused):
+          a person decides the identity directly. Also the name of scan_report's constant for that basis.
+      RECONCILIATION_UNRESOLVED:
+        definition: ReconciliationState of a finding under LINEAGE_RECONCILIATION_UNRESOLVED; nothing is carried until people resolve it.
+      NOT_AN_APPROVAL:
+        definition: The suffix of every ApprovalStatus the harness gives a carried, refused or unresolved lineage basis.
+        rule: Never read as an approval.
+      PENDING_DECISION:
+        definition: The flag on an open finding whose basis needs a person's decision; the finding stays open.
+      PROMOTION_NOT_ESTABLISHED:
+        definition: The flag on a promotion record that was refused, overridden by break-glass, hotfix or rollback, or names no target.
+      KIT_EXPORT_QUALIFIER_CONFLICT:
+        definition: A loose record or findings file differs from the export only in a security qualifier; named, never a silent choice.
+      HISTORY_INCOMPLETE:
+        definition: >-
+          history_completeness_state when PROMOTION_REFUSED_HISTORY_INCOMPLETE is in the gate or an override:
+          the predecessor history the gate read was not complete.
+      TARGET_UNKNOWN:
+        definition: target_identity_state of a promotion record that names no target_resource_id (or carries PROMOTION_REFUSED_TARGET_UNKNOWN).
+      CARRIED_BY_LINEAGE_NOT_AN_APPROVAL:
+        definition: ApprovalStatus of a finding whose decision was carried by the lineage ledger; never an approval.
+      DIRECT_DECISION_NOT_EFFECTIVE:
+        definition: >-
+          ApprovalStatus of a direct register decision the kit's evaluator found not in force (the exported
+          disposition_decision says NOT_EFFECTIVE: proposed, expired, schema-invalid, a closed legacy key).
+      DIRECT_DECISION_NOT_ESTABLISHED:
+        definition: >-
+          ApprovalStatus when the exported disposition_decision says DECISION_NOT_ESTABLISHED, or the harness
+          found it malformed or self-contradictory. Never an approval.
+      INTEGRITY_NOT_VERIFIED:
+        definition: >-
+          record_integrity_state of a promotion record when no integrity verification ran (no digest verified
+          against the record's bytes); two present fields never establish integrity (harness HDEC-017).
+
+  disposition_decision:
+    description: >-
+      The kit's EVALUATED disposition decision for one finding (scan_report.evaluated_decision, schema
+      kit-disposition-decision/1), written into findings.json at the run's date and carried by the evidence
+      export (R-45 M5, KDEC-048). What the authoritative evaluator decided, never the register's raw status.
+    consumers: [scripts/scan_report.py, scripts/evidence_export.py, tests/prove_evidence_export.py]
+    rule: >-
+      ONLY THE EVALUATOR APPROVES. APPROVED_EFFECTIVE only when disposition_for, not_suppressed_because and
+      is_suppressed agree that the record is approved, schema-valid and in date on this finding's own key. A
+      carried decision is PENDING_REAFFIRMATION whatever its predecessor's status. An effective decision
+      suppresses the gate and never clears the finding.
+    values:
+      APPROVED_EFFECTIVE:
+        definition: An approved, schema-valid, in-date register decision keyed on this finding (durable or in-window legacy key) that suppresses the gate on the evaluation date.
+        rule: Never clears the finding; finding_cleared is always false.
+      NOT_EFFECTIVE:
+        definition: A register decision applies under this finding's key but does not buy passage (proposed, expired, schema-invalid, or a legacy key past its window); the evaluator's reason says which.
+      PENDING_REAFFIRMATION:
+        definition: A decision on a predecessor reaches this finding through recorded lineage; it never suppresses until a decision is keyed on this identity.
+      DECISION_NOT_ESTABLISHED:
+        definition: >-
+          The export's reading of an object it could not accept (malformed, outside the allowlist, or
+          self-contradictory, e.g. a carried basis reading APPROVED_EFFECTIVE). Exported with the reason, never repaired.
+      EVALUATOR_DISAGREEMENT:
+        definition: The reason given when not_suppressed_because and is_suppressed disagree; the stronger claim is withdrawn (NOT_EFFECTIVE).
 
   promotion_check:
     description: The result of one "tested" check after a deploy serves (DAST, security settings), or why it was not run.
@@ -5541,6 +6230,12 @@ namespaces:
           A scan verification did not establish the fix: the kit's scan never observed the finding,
           the run still reports it, or its scanners did not cover where it lived.
 
+      CHILD_OBLIGATION_OPEN:
+        definition: >-
+          KDEC-043 (PROPOSED): a verification asked to close a multicloud PARENT while a child obligation
+          (one per cloud asset, each with its own owner role) is not closed-verified, was never created, or
+          cannot be read. The parent closes only when every child is closed by the kit's rescan or a second
+          person; it closes itself when the last child is verified.
       SOD_SELF_APPROVAL:
         definition: >-
           Separation of duties (owner, 2026-11-04; docs/ticketing/SEPARATION-OF-DUTIES.md): the person
@@ -5629,6 +6324,34 @@ namespaces:
       TEMPLATE_TRIAGED_SEPARATE:
         definition: >-
           A person decided a possible duplicate is a separate finding: the flag is cleared and recorded.
+      TEMPLATE_ENHANCED_EXISTING:
+        definition: >-
+          KDEC-049 (owner, 2026-11-11): an item that names an existing finding (`enhances`) found that
+          finding's ticket by ITS full key, and the ticket was given ONE comment with every evidence field
+          (source tool, vendor key, evidence ref and sha256, aliases incl. the CVE, severity as the source
+          rated it, title, every corroborating record) and additive labels. No ticket was created, closed or
+          reopened; nothing was overwritten. A higher source severity is flagged severity-review for a
+          person, never applied. The same evidence again is TEMPLATE_TICKET_BOUND; a ticket not found is
+          TEMPLATE_POSSIBLE_DUPLICATE, created in triage.
+      TEMPLATE_DUPLICATE_CLOSURE_REFUSED:
+        definition: >-
+          KDEC-049 R4: a redundant ticket was NOT closed because the evidence transfer to the canonical ticket
+          could not be proven by reading it back (the canonical ticket's comment and the structured record in
+          the ticket ledger). Both tickets stay open, linked; a person closes the duplicate.
+  severity_comparison:
+    description: >-
+      KDEC-049 (scripts/ticket_templates.py severity_comparison): the severity an external source gave a
+      finding, compared with the existing ticket's when the finding enhances that ticket. Recorded in the
+      enhancement comment; the kit never raises or lowers the ticket's severity or priority.
+    consumers: [scripts/ticket_templates.py, scripts/ticket_submit.py, tests/prove_external_findings_pull.py]
+    rule: A severity the kit could not compare is flagged for a person exactly like a higher one, never assumed equal.
+    values:
+      HIGHER:
+        definition: The source rates the finding above the ticket's severity; the ticket is labelled severity-review and triage for a person.
+      SAME_OR_LOWER:
+        definition: The source rates it the same or lower; recorded in the comment, nothing flagged, nothing lowered.
+      NOT_COMPARED:
+        definition: The ticket's severity could not be read (no severity label and no severity on the linked finding); flagged severity-review and triage, never assumed.
   review_finalize_state:
     description: >-
       Whether a review's tickets may be written (KDEC-037; scripts/review_finalize.py): a finalized
@@ -5665,12 +6388,78 @@ namespaces:
           The search did not answer, or ran past its page bound; what was not read is not absent.
       TRACKER_INTAKE_NOT_CONFIGURED:
         definition: >-
-          No intake adapter serves this tracker (FreshService is the seam not yet built; Azure DevOps and
-          GitHub Issues have none: work tickets are Jira only, KDEC-017 item 5).
+          No intake adapter serves this tracker: the adapter asked for is not this run's tracker (a
+          Freshservice search against a Jira run), or no tracker is configured. Jira, Azure DevOps, GitHub
+          Issues and Freshservice (KDEC-043) each have one.
       TRACKER_QUERY_REFUSED:
         definition: >-
           The query named a project outside this repository's ticket projects, or its JQL carried ORDER BY
           or a statement break.
+
+  ticket_governance_state:
+    description: >-
+      KDEC-043 PROPOSED (lane tickets, 2026-11-06): what the ticket governance rules every tracker shares
+      established -- the correlation key's identity, a `via` claim's provenance, an unrouted finding's triage,
+      and Freshservice's whole-list tag write (scripts/ticket_governance.py, scripts/tracker_freshservice.py).
+    consumers: [scripts/ticket_governance.py, scripts/tracker_freshservice.py, scripts/ticket_intake.py,
+                scripts/ticket_submit.py, scripts/reconcile_tickets.py, tests/prove_ticket_governance.py,
+                tests/prove_freshservice_tracker.py]
+    rule: >-
+      NOTHING HERE IS ASSUMED. The full key decides identity and a label never does; a claim is compared, never
+      trusted; a preservation the history cannot show is NOT_ESTABLISHED and goes to a person.
+    values:
+      CORRELATION_LABEL_UNVERIFIED:
+        definition: >-
+          A correlation-key label (or its short search form) is on a ticket that carries no full key in a governed
+          place (the stamp field, a stamp or link line). A candidate for a person, never an exact match.
+      CORRELATION_LABEL_COLLISION:
+        definition: >-
+          A correlation-key label is on a ticket whose governed full key is ANOTHER key: a search ambiguity, for a
+          person. The full key is the sole authority; nothing is merged.
+      PROVENANCE_ESTABLISHED:
+        definition: >-
+          The `via` claim (if any), the identity the kit's credential authenticated as, and the tracker's own
+          record of who made the write all agree.
+      PROVENANCE_MISMATCH:
+        definition: >-
+          Two of the three disagree: the ticket is labelled `<stamp>-provenance-mismatch`, a comment names the
+          sides, and the API answer carries an alert. A person checks who wrote it.
+      PROVENANCE_NOT_ESTABLISHED:
+        definition: >-
+          A side could not be read (the identity at run start, the tracker's write record, or the claim's
+          registered identity in KIT_INTEGRATION_IDENTITIES). With a claim present the ticket is labelled
+          `<stamp>-provenance-unverified`.
+      AREA_UNRESOLVED:
+        definition: >-
+          Routing is configured and no rule and no default gave this finding an owning area, so it was created
+          with the kit default, `<stamp>-area-unresolved` and `<stamp>-triage`, an owner role and a deadline.
+          A triage state, not a dead end.
+      AREA_UNRESOLVED_OVERDUE:
+        definition: >-
+          An AREA_UNRESOLVED ticket past its deadline: in every reconcile run's output and the scheduled clock's,
+          unasked, as a decision owed to its owner role (exit 1), until a routing rule resolves it.
+      AREA_RESOLVED:
+        definition: >-
+          A later run's routing gave a once-unresolved finding its area; recorded with the rule and the date, and
+          said on the ticket.
+      TAG_PRESERVATION_ESTABLISHED:
+        definition: >-
+          Freshservice: a tag write was re-read and verified, and the activity history shows no one else's tag
+          change was lost (or a concurrent one was reconciled from it and verified). A marker written as a
+          note is established by construction: notes are never replaced.
+      TAG_PRESERVATION_NOT_ESTABLISHED:
+        definition: >-
+          Freshservice: after a whole-list tag write the kit could not prove that no one else's tag change was
+          lost -- the history could not be read, the kit's identity is unknown, a concurrent change could not be
+          parsed, or the retries ran out. A private note asks a person to check; the write is reported failed.
+      TICKET_WRITE_LOCK_HELD:
+        definition: >-
+          Another kit writer held this ticket's per-ticket lock for longer than the bounded wait; nothing was
+          written and the write is owed to the next run.
+      STAMP_FIELD_NOT_CONFIRMED:
+        definition: >-
+          Freshservice: a created ticket's governed stamp field did not read back as the full key. The block's
+          stamp line still carries it; the run records the field's failure rather than assume it.
 
   # ─────────────────────────────────────────────────────────────────────────
   # KDEC-036 PROPOSED (2026-11-03): what a security reviewer could not see from the kit. Each is
@@ -5809,6 +6598,100 @@ namespaces:
           NO_KIT_ADAPTER:<kind> -- aks, vm, function_app_code, or a vended kind no adapter serves;
           NO_KIT_ADAPTER:UNDETERMINED when the survey could not run.
 
+  kit_survey_state:
+    description: >-
+      scripts/kit_survey.py and scripts/kit_org_init.py (owner, 2026-11-07: "a scanner of what's already running in
+      the org first"): what one read-only survey of an organisation or user account did. Both send GET only and
+      never change a setting; their outputs name private repositories and are written outside the kit.
+    consumers: [scripts/kit_survey.py, scripts/kit_org_init.py, .github/workflows/reusable-kit-survey.yml, scripts/plain_errors.py, docs/adoption/ORG_SURVEY_AND_ORG_INIT.md]
+    rule: >-
+      Only SURVEY_COMPLETE and SURVEY_PARTIAL are done (PARTIAL names every cell it could not read); every other
+      state exits 1 and writes nothing. A host is never assumed (KDEC-027).
+    values:
+      SURVEY_COMPLETE:
+        definition: Every repository of the owner was read in every column the survey reads.
+      SURVEY_PARTIAL:
+        definition: The survey finished, and at least one cell is NOT_ESTABLISHED (a permission, a rate limit) or the repository list was cut at --max-repos.
+        rule: Each unread cell is named in its row; it is never read as "none".
+      SURVEY_HOST_NOT_NAMED:
+        definition: No host was named (--host, GITHUB_API_URL or GH_HOST); the survey never assumes github.com.
+      SURVEY_HOST_UNSUPPORTED:
+        definition: The host is neither github.com nor a <tenant>.ghe.com host.
+      SURVEY_HOST_MISMATCH:
+        definition: The API URL is not the named host's API, or the API answered for a repository (or offered a next page) on another host.
+        rule: Nothing is written and the token is sent nowhere else.
+      SURVEY_AUTH_REFUSED:
+        definition: The API refused the token reading the owner or its repository list.
+      SURVEY_OWNER_NOT_FOUND:
+        definition: No organisation or user of that name on the host.
+      SURVEY_OUT_IN_KIT:
+        definition: The output directory is inside the kit repository; the outputs name private repositories, so they are refused there.
+  kit_survey_cell:
+    description: >-
+      One column of one repository in scripts/kit_survey.py (and one read in scripts/kit_org_init.py): read, absent,
+      or not established. A 403, 401, 429 or 5xx is NOT_ESTABLISHED, never absent.
+    consumers: [scripts/kit_survey.py, scripts/kit_org_init.py]
+    values:
+      READ:
+        definition: The API answered 200 and the value was read.
+      ABSENT:
+        definition: The API answered 404 (or 409 for an empty repository) -- the thing is not there.
+      NOT_ESTABLISHED:
+        definition: The API did not answer with the value (a permission, a rate limit, an error).
+  kit_survey_comparison:
+    description: >-
+      Per kit capability, how the organisation's OWN practice (never a kit caller) compares with the kit
+      (scripts/kit_survey.py compare). ORG_BETTER and ORG_ONLY carry an "adopt via overlay" proposal and the
+      by-hand steps; proprietary or vendor practice stays in overlays/<org>/.
+    consumers: [scripts/kit_survey.py, docs/adoption/ORG_SURVEY_AND_ORG_INIT.md]
+    values:
+      KIT_BETTER:
+        definition: The org does it, and lacks an attribute the kit holds (pinned, on the pull request, blocking, a review rule ...).
+      ORG_BETTER:
+        definition: The org does it with an attribute the kit lacks (a schedule, broader CodeQL queries, signed commits, a wait timer, a Dependabot cooldown); credited by repository.
+      EQUIVALENT:
+        definition: The org does it with every attribute the kit compares, and nothing the kit lacks.
+      ORG_ONLY:
+        definition: The org does something the kit does not do at all (SonarQube, Snyk, Aikido, runner hardening ...).
+      KIT_ONLY:
+        definition: The kit does it and no surveyed repository does.
+      GAP:
+        definition: 'Neither does it, and it is on the kit''s expected baseline (signing, DAST, runner hardening): a kit gap to build.'
+  kit_adoption_state:
+    description: >-
+      Per repository, how far the kit is in use (scripts/kit_survey.py adopt), with the evidence and, for a
+      turn-off, the stated reason or REASON_NOT_RECORDED.
+    consumers: [scripts/kit_survey.py, docs/adoption/ORG_SURVEY_AND_ORG_INIT.md]
+    rule: >-
+      NEVER only when the whole workflow history was read; a cut or unreadable history is NOT_ESTABLISHED. The kit
+      repository itself (KIT_HOST), archived repositories and forks are out of the denominator, and named.
+    values:
+      ADOPTED:
+        definition: An active kit security or deploy caller, pinned by commit SHA, on the pull request path, with no declared weakening; its rung from the repository's registration (crawl when none).
+      PARTIAL:
+        definition: A kit caller is active but the kit is referenced by a moving ref, runs off the pull request path, carries a declared weakening, or only non-security kit workflows are called.
+      TURNED_OFF:
+        definition: 'A kit caller was removed by a commit, disabled with `if: false`, or its workflow disabled through the API; the commit or state is the evidence.'
+      NEVER:
+        definition: No kit caller now and none anywhere in the workflow history, read in full.
+      NOT_ESTABLISHED:
+        definition: The workflows or their history could not be read in full (a permission, or --history cut it short); never read as NEVER.
+      KIT_HOST:
+        definition: The kit repository itself; out of the denominator.
+      REASON_NOT_RECORDED:
+        definition: A turn-off whose commit message (a UI default such as "Update security.yml"), pull request and weakening record give no reason.
+  org_init_result:
+    description: >-
+      One item of scripts/kit_org_init.py, the one-time organisation setup check. It never performs a change: each
+      ACTION_NEEDED item carries WHAT, HOW (the exact command) and WHY, and the dry-run plan lists them in order.
+    consumers: [scripts/kit_org_init.py, docs/adoption/ORG_SURVEY_AND_ORG_INIT.md]
+    values:
+      PASS:
+        definition: The setting was read and is what the kit needs.
+      ACTION_NEEDED:
+        definition: The setting was read and must change; the checklist says what, how and why.
+      NOT_ESTABLISHED:
+        definition: The setting could not be read (a permission), or a user account has no such setting.
   dependabot_config:
     description: >-
       The Dependabot configuration check (owner, 2026-11-06: no developer bitten by a missing
@@ -5834,7 +6717,7 @@ namespaces:
     rule: Only SOURCE_PULLED carries items; every other state carries none and fails the run.
     values:
       SOURCE_PULLED:
-        definition: Every page of the source was read with an accepted credential; items, duplicates, closed and unmapped are listed.
+        definition: Every page of the source was read with an accepted credential; items (enhancements of existing findings included), corroborating records, closed and unmapped are listed.
         rule: Zero items under SOURCE_PULLED is a result; zero items under any other state is not.
       SOURCE_NOT_CONFIGURED:
         definition: A required secret or setting was absent; nothing was requested.
@@ -5852,8 +6735,85 @@ namespaces:
         definition: The host was not https (plain http is allowed only to 127.0.0.1), so no credential was sent.
       NOT_MAPPED:
         definition: A source finding that cannot become a finding item (no mapped repository, no file, an unknown severity), listed with the reason.
-      DUPLICATE_OF_KIT_FINDING:
-        definition: A source finding the kit's own scan already holds (same path and CVE, or same path, line and CWE); listed, not submitted.
+      ENHANCES_EXISTING_FINDING:
+        definition: A source finding the kit's own scan already holds (same path and CVE, or same path, line and CWE). It stays an ITEM carrying `enhances` (the kit finding's cluster key, identity, rule, path, line, severity, match basis), goes through the same review gate, and on submit its evidence is appended to the existing finding's ticket (ticket_template_outcome TEMPLATE_ENHANCED_EXISTING). Replaces the retired duplicate-of-kit drop (KDEC-049, owner 2026-11-11).
+        rule: Never dropped. "It should never drop the vuln it should enhance the existing ticket with additional evidence." (owner, 2026-11-11)
+      CORROBORATES_PULLED_ITEM:
+        definition: A second record of the same identity in the same pull. Its whole evidence (source tool, vendor key, evidence ref and sha256, aliases, severity as rated, title, line) is carried in the first item's `corroborating_evidence`; it is listed, never collapsed to its aliases.
+  external_findings_baseline:
+    description: >-
+      scripts/external_findings_baseline.py (KDEC-049 R1-R2; reviewer requirements adopted by the coordinator):
+      the baseline an external finding is matched against -- the latest qualifying security-suite run of the
+      same repository on its default branch (successful, an ancestor of or equal to the head, its scanner
+      population COMPLETE for the capability) AND the ticket ledger (the durable register) -- and the
+      identity model of the match. Recorded in the pull output as `baseline` and on every item.
+    consumers: [scripts/external_findings_baseline.py, scripts/external_findings_pull.py, scripts/ticket_submit.py,
+                .github/workflows/reusable-external-findings.yml, docs/adoption/EXTERNAL_FINDINGS_SONAR_AIKIDO.md]
+    rule: Anything but BASELINE_SELECTED routes every item to triage with its evidence kept; it is never read as "no match".
+    values:
+      BASELINE_SELECTED:
+        definition: A qualifying run was found; its receipt (repository, run id, commit SHA, timestamp, artifact digest, completeness) is in the pull.
+      BASELINE_UNAVAILABLE:
+        definition: No qualifying run, the runs could not be read, or the register could not be read.
+        rule: Never "no match"; the register match still runs when the register is readable.
+      BASELINE_PARTIAL:
+        definition: The newest candidate's coverage rows for the capability are not all ESTABLISHED.
+      BASELINE_STALE:
+        definition: The latest qualifying run is older than the age limit (PROPOSED 7 days); matches against it are kept and the items go to triage.
+      BASELINE_INCOMPATIBLE:
+        definition: The run's artifact is not the findings.json + findings-coverage/1 shape this reader knows.
+      MATCHED:
+        definition: The same vulnerability identity AND the same affected asset (repository + path, and the component when both name one), in exactly one kit cluster.
+      MATCH_SEPARATE_INSTANCE:
+        definition: The same identity on a different component or path. A separate affected instance, linked as related, never merged.
+      MATCH_AMBIGUOUS:
+        definition: More than one kit cluster qualifies. Both kept, flagged for a person, never merged.
+      MATCH_SCOPE_MISMATCH:
+        definition: The same identity and path in another repository. Never merged; routed to triage.
+      NO_MATCH:
+        definition: Nothing in the baseline or the register qualifies.
+      SEVERITY_MATERIAL_DISAGREEMENT:
+        definition: The source and the ticket rate the same finding two or more levels apart. Both assessments are kept (comment and structured record); a person decides.
+      DISPOSITION_REEVALUATION_REQUIRED:
+        definition: The matched finding carries an active disposition (accepted risk, exception, false positive). The evidence is attached and the disposition is marked for re-evaluation of its scope, validity and expiry; it is never extended or cleared.
+      EVIDENCE_ALREADY_ON_TICKET:
+        definition: The observation's fingerprint is already in the structured record or the ticket's comments; nothing is written twice (retry, concurrent submission, partial failure).
+      REGISTER_READ:
+        definition: The ticket ledger (the register) was read from the default branch and its bound clusters were matched. The only register state under which an unmatched item may be treated as new.
+      REGISTER_NOT_ESTABLISHED:
+        definition: No ticket ledger was read -- none was named, or none exists at the named path. Every item carries the state in `baseline.register` and goes to triage; an unmatched item is never classified as definitively new.
+        rule: A missing register is not an empty one for matching; the receipt, every item, the workflow output and the ticket labels say so (lane ticket-defaults, 2026-11-13).
+      REGISTER_UNREADABLE:
+        definition: A ticket ledger exists at the named path and could not be read. The receipt is BASELINE_UNAVAILABLE and every item carries both states; nothing is matched against an empty stand-in.
+  ticket_setting:
+    description: >-
+      scripts/ticket_settings.py and scripts/reconcile_tickets.py (KREQ-590, 674, 676; owner KDEC-052 item 7): the
+      ticketing numbers (deadlines, grace, stall, no-fix re-check, instance threshold, creation ceiling), resolved
+      kit_default < org < repo < environment < variable, each recorded with its level and source in the run record
+      (`ticket_settings`). The org's value is governed; a narrower level may only lower it.
+    consumers: [scripts/ticket_settings.py, scripts/reconcile_tickets.py, tests/prove_ticket_defaults.py]
+    rule: A refused value is named in the run record and the summary and the governed value stands; an overflow is never silent.
+    values:
+      TICKET_SETTING_ABOVE_GOVERNED:
+        definition: A repository, environment or variable value that would RAISE a governed number above the org's (or the kit default). Refused; the governed value is used and the refusal is recorded.
+      TICKET_SETTING_INVALID:
+        definition: A value that is not a whole number in range (a creation ceiling below 1, a word). Refused; the value from the level below stands.
+      TICKET_CEILING_OVERFLOW:
+        definition: A run reached the creation ceiling (obligations past it are carried in consequence order) or the instance threshold (instances past it are counted on the ledger). Named in the run record and the summary; a creation overflow is also a decision owed to a person (needs_decision, exit 1). Nothing past a ceiling is dropped.
+  escalation_route:
+    description: >-
+      scripts/deploy_contract.py `escalation_route` (KREQ-706; owner KDEC-052 item 7): the channel and service level
+      of the escalation contract a blocked deploy outcome carries, read from the org overlay's `escalation`
+      (scripts/org_settings.py). The neutral kit ships a placeholder.
+    consumers: [scripts/deploy_contract.py, scripts/org_settings.py, tests/prove_ticket_defaults.py]
+    rule: At prod a placeholder or missing channel or service level is refused, never used.
+    values:
+      ESCALATION_ROUTE_CONFIGURED:
+        definition: The org overlay names a real channel and service level; the escalation contract carries them.
+      ESCALATION_ROUTE_PLACEHOLDER:
+        definition: Below prod, the overlay names none (or a placeholder); the kit placeholder is used and named as one.
+      ESCALATION_ROUTE_REFUSED:
+        definition: At prod, the channel or service level is missing or a placeholder. The contract carries no stand-in, names the refusal, and the run annotates it as an error.
   finding_id_form:
     description: >-
       scripts/finding_ids.py (owner, 2026-11-06): THE normaliser for weakness and vulnerability ids across
@@ -5906,6 +6866,16 @@ namespaces:
         definition: The SHA to pin is not the HEAD of the kit checkout the files are generated from.
       KIT_INIT_HOST_UNSUPPORTED:
         definition: The repository's host is neither github.com nor a <tenant>.ghe.com host (KDEC-027).
+      KIT_INIT_HOST_MISMATCH:
+        definition: >-
+          The host sources disagree (--host, GITHUB_SERVER_URL, GITHUB_API_URL, the origin remote, the org overlay's
+          host), so the API base and the OIDC issuer cannot be derived with certainty.
+      KIT_INIT_OVERLAY_INVALID:
+        definition: The org overlay for this repository's owner is unreadable, ambiguous, invalid or still holds template placeholders.
+      KIT_INIT_GOVERNED_SETTING_LOOSENED:
+        definition: >-
+          An option loosens what the org overlay governs: a team outside its approver pools, or an adoption level
+          below the overlay's. Options may only tighten.
       KIT_INIT_API_NEEDS_CONTAINER:
         definition: The kit API caller was asked for a repository whose deploy shape is not container (it calls build-deploy.yml).
       KIT_INIT_SECRET_REFUSED:
@@ -5921,3 +6891,132 @@ namespaces:
       KIT_INIT_HUMAN_EDIT_PRESERVED:
         definition: A managed file, or the CODEOWNERS block, differed from what kit init last wrote; it was kept and listed.
         rule: A notice, not a refusal. A person's edit always wins over a re-run.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  disposition_review:
+    description: >-
+      KDEC-051 / HDEC-020 (2026-11-11, KE-07): the REVIEW-TIME evaluation of an exported disposition decision
+      (api/v1/disposition-review.contract.json, kit-disposition-review/1). A review adds its own dated evaluation
+      BESIDE the original record; the record's dates and effective_decision are never changed.
+    consumers: [api/v1/disposition-review.contract.json, scripts/evidence_export.py, tests/prove_approval_review_contract.py,
+                tests/prove_kit_harness_pair.py, the evidence harness (src/app_evidence_bundle.py)]
+    rule: >-
+      A REVIEW NEVER RE-DATES OR UPGRADES A DECISION. The checks run in the contract's check_order (expiry,
+      revocation, scope, approver_authority, separation_of_duties); the first failing check names the review
+      state, else any check not established gives REVIEW_NOT_ESTABLISHED, and EFFECTIVE_AT_REVIEW needs every
+      check to pass. Staleness is a review POLICY flag, never an expiry, and never moves the review state. A
+      legacy-keyed record is never EFFECTIVE_AT_REVIEW.
+    transitions: >-
+      A later review writes a NEW evaluation with its own review_evaluated_on; it never edits an earlier one.
+      Nothing moves a record from NOT_AN_EFFECTIVE_APPROVAL to EFFECTIVE_AT_REVIEW: only a new kit decision can.
+    values:
+      EFFECTIVE_AT_REVIEW:
+        definition: The decision was APPROVED_EFFECTIVE and every review check passed on the review date.
+      REVIEW_NOT_ESTABLISHED:
+        definition: No check failed, but at least one could not be established; the checks are named.
+        rule: Never read as effective. The kit export carries no approver, so this is the expected state until a review source names one.
+      NOT_AN_EFFECTIVE_APPROVAL:
+        definition: The exported effective_decision is not APPROVED_EFFECTIVE; there is nothing to re-check and nothing is upgraded.
+      EXPIRED_AT_REVIEW:
+        definition: The decision's expires date is before the review date (the expiry check failed).
+      REVOKED_AT_REVIEW:
+        definition: A revocation is dated on or before the review date (the revocation check failed).
+      OUT_OF_SCOPE_AT_REVIEW:
+        definition: The decision's scanner, rule or scope_path does not cover the finding (the scope check failed).
+      APPROVER_NOT_AUTHORISED:
+        definition: The approver did not hold the authority the review policy names (the authority check failed).
+      SOD_CONFLICT_APPROVER_IS_REQUESTER:
+        definition: The approver is the requester or the author (the separation-of-duties check failed).
+        rule: The submitter never approves their own work (ticket SoD ruling); a conflict is a failure, never a warning.
+      EVALUATION_CURRENT:
+        definition: The kit's evaluated_on is within the staleness policy's days before the review date.
+      DECISION_EVALUATION_STALE:
+        definition: >-
+          The kit's evaluation is older than the staleness policy (PROPOSED 30 days unless set). A flag for the
+          reviewer; it is not expiry and changes neither the decision nor the review state.
+      EVALUATION_DATE_NOT_ESTABLISHED:
+        definition: The record's evaluated_on is missing or not a date, so staleness cannot be judged.
+        rule: Named as not established, never as current.
+      DURABLE_KEYED:
+        definition: The decision is keyed on the durable finding identity.
+      LEGACY_KEYED_COMPATIBILITY:
+        definition: >-
+          The decision is keyed on the legacy fingerprint and read only through compatibility parsing inside the
+          legacy window (scripts/scan_report.py legacy_key_window_days).
+        rule: Always labelled; never EFFECTIVE_AT_REVIEW. Re-key it to the durable identity.
+      DECISION_OBJECT_NOT_ESTABLISHED:
+        definition: >-
+          The evidence harness's raw ApprovalStatus for a decision object that is malformed or contradicts itself
+          (for example an expiry before its own evaluation, or a claimed separation of duties the kit cannot
+          establish). It is never approved.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  kit_harness_pair_outcome:
+    description: >-
+      KDEC-051 / KREQ-302: why tests/prove_kit_harness_pair.py refused the kit-export / harness-import pair. Both
+      legs read the same fixture (tests/fixtures/approval_review/cases.json) and report the sha256 of what they read.
+    consumers: [tests/prove_kit_harness_pair.py, scripts/harness_pair_gate.py, .github/workflows/kit-harness-pair.yml,
+                tests/prove_harness_pair_gate.py, docs/assurance/POSITIVE_NEGATIVE_MATRIX.md]
+    rule: >-
+      A LEG THAT DID NOT RUN IS A FAILURE, NEVER "NOT RUN, EXIT 0". The pair is proven only when both legs ran on
+      every case, the harness's vendored copies are byte-identical to the kit's, and every case agrees.
+    values:
+      KIT_LEG_NOT_RUN:
+        definition: The kit leg produced no result for the fixture (skipped, crashed or short).
+      HARNESS_LEG_NOT_RUN:
+        definition: >-
+          The harness leg produced no result, or results for fewer cases than the fixture holds; also the outcome
+          when no harness checkout was given.
+      COPY_DIFFERS:
+        definition: The harness's vendored export schema, review contract or shared fixture is not byte-identical to the kit's.
+        rule: Re-vendor from the kit commit the harness pins; never edit the harness copy by hand.
+      LEG_DISAGREES:
+        definition: Both legs ran, and a case's kit effective_decision or harness review fields differ from the fixture's expectation.
+      HARNESS_PAIR_RUN:
+        definition: >-
+          scripts/harness_pair_gate.py (KDEC-058): the hosted pair may run -- a push to, or a dispatch from, the
+          default branch, the read-only App credential present, the harness repository named, and a full 40-hex pin.
+        rule: >-
+          A plan, never a result. The pair is proven only when tests/prove_kit_harness_pair.py then passes at the
+          pinned commit; HARNESS_PIN_MISMATCH or any refusal above still ends HARNESS_LEG_NOT_RUN.
+      CREDENTIAL_ABSENT:
+        definition: The hosted pair's read-only GitHub App private key or client id is not configured (KDEC-058).
+        rule: A reason for HARNESS_LEG_NOT_RUN, which exits 1; never read as a pass or as "not applicable".
+      EVENT_NOT_TRUSTED:
+        definition: >-
+          The hosted pair was asked to run on an event or ref other than a push to, or a dispatch from, the
+          default branch; the token is never minted where pull-request code runs (KDEC-058).
+        rule: A reason for HARNESS_LEG_NOT_RUN. Adding pull_request to the trusted events is the defect it refuses.
+      HARNESS_REPOSITORY_NOT_SET:
+        definition: The harness repository variable is empty or not OWNER/REPO on the run host (no host part, KDEC-027).
+      PIN_NOT_SET:
+        definition: .github/harness-pair.json names no harness commit.
+      PIN_NOT_A_COMMIT:
+        definition: >-
+          The harness pin is a branch, tag, short SHA or HEAD rather than a full lower-case 40-hex commit; a moving
+          ref would let the pair pass against code nobody reviewed.
+      HARNESS_CHECKOUT_MISSING:
+        definition: The gate was told to run but no harness checkout exists (the mint or checkout step failed).
+      HARNESS_PIN_MISMATCH:
+        definition: The harness checkout's HEAD is not the pinned commit; the pair proof is not run.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  actionlint_baseline_outcome:
+    description: >-
+      KDEC-058: why tests/check_actionlint.py refused the actionlint findings against the classified baseline
+      docs/assurance/ACTIONLINT_BASELINE.md (its other outcomes, UNCLASSIFIED and STALE, are ordinary words).
+    consumers: [tests/check_actionlint.py, tests/prove_actionlint_baseline.py]
+    rule: >-
+      A FINDING IS CLASSIFIED OR IT FAILS; A DEFECT IS FIXED, NEVER BASELINED. The comparison is exact on file,
+      kind, message and count; no substring exclusion.
+    values:
+      DEFECT_BASELINED:
+        definition: The baseline holds a class-2 (genuine defect) row.
+        rule: Fails the check (exit 1) even when the finding still occurs; the fix removes the finding and the row.
+      ACTIONLINT_VERSION_UNCLASSIFIED:
+        definition: >-
+          The running actionlint is not a version the baseline names under "Verified with actionlint"; its findings
+          have not been classified.
+        rule: >-
+          UNKNOWN (exit 2), never PASS and never VERSION_MISMATCH (that is the battery's pin check). Cleared by
+          classifying that version's findings and adding it to the verified list.

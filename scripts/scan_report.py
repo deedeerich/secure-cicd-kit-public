@@ -69,6 +69,7 @@ CVE_ID = re.compile(r'CVE-\d{4}-\d{4,}', re.I)
 import finding_match                       # noqa: E402
 import rule_family                         # noqa: E402
 import code_finding_key                    # noqa: E402
+import finding_lineage                     # noqa: E402  (R03: the one lineage resolver)
 import finding_ids                         # noqa: E402  (one id normaliser, owner 2026-11-06)
 import unknown_ids                         # noqa: E402  (unknown ids logged, owner ruling 2026-11-06)
 UNKNOWN = unknown_ids.UnknownLog()        # one per reporter process; written beside findings.json
@@ -252,6 +253,21 @@ def fingerprint(scanner, rule_id, uri, message):
     norm = re.sub(r'\d+', '#', (message or ''))[:200]
     raw = '|'.join([scanner, rule_id or '', uri or '', norm])
     return hashlib.sha256(raw.encode('utf-8', 'replace')).hexdigest()[:12]
+
+
+FIXED_IN_MESSAGE = re.compile(r'Fixed Version:\s*([^\s,;]+)', re.I)
+
+
+def fixed_version_of(result):
+    """The scanner's own "fixed in" version for a finding, or ''. From the SARIF properties a scanner sets
+    (fixed_version / fixedVersion), else Trivy's SARIF message line "Fixed Version: <v>". Never invented:
+    '' means the scanner did not say, which is NOT "no fix exists" (KREQ-590)."""
+    props = (result.get('properties') or {})
+    fixed = props.get('fixed_version') or props.get('fixedVersion')
+    if not fixed:
+        m = FIXED_IN_MESSAGE.search(((result.get('message') or {}).get('text') or ''))
+        fixed = m.group(1) if m else ''
+    return str(fixed or '').strip()[:100]
 
 
 def remediation_of(result, rules):
@@ -510,6 +526,7 @@ def _parse_runs(doc, scanner, table, mode='', source_root='', repository=''):
                                        version=version, table=table)
             family_refusal = what.pop('_family_refusal', '')
             cwe_reported = what.pop('cwe_reported', '')
+            alias_evidence = what.pop('_alias_evidence', [])
             rec = {
                 'finding_subject': subj,
                 'scanner': scanner, 'tool': tool, 'rule_id': rid,
@@ -609,6 +626,8 @@ def _parse_runs(doc, scanner, table, mode='', source_root='', repository=''):
                 'severity': severity_of(res, rules),
                 'message': redact(msg), 'uri': uri, 'line': line,
                 'remediation': redact(remediation_of(res, rules)),
+                # KREQ-590: the scanner's fixed-in version, the data source of the ticket's fix_availability.
+                'fixed_version': redact(fixed_version_of(res)),
                 'fp': fingerprint(scanner, rid, uri, msg),
                 'identity': ident.get('identity') or '',
                 'identity_state': ident.get('state') or 'UNFINGERPRINTABLE',
@@ -630,6 +649,8 @@ def _parse_runs(doc, scanner, table, mode='', source_root='', repository=''):
                 'content': ident.get('content') or '',
                 'identity_scope': ident.get('identity_scope') or '',
                 'what_aliases': list(ident.get('what_aliases') or []),
+                # F17: the ids the scanner's advisory record co-declares (what_of).
+                'alias_evidence': list(alias_evidence),
                 'cwe': what.get('cwe') or '',
                 'canonical_path': rec['canonical_path'],
                 'scanner_version': version,
@@ -701,6 +722,25 @@ def what_of(rule, res, rid, msg, scanner='', tool='', version='', table=None):
             # THE shared normaliser (scripts/finding_ids.py): one canonical spelling per id.
             out[key] = finding_ids.normalize_vuln_id(m.group(1))[0] or m.group(1).upper()
             basis.append('%s from %s' % (label, 'ruleId' if rx.search(rid or '') else 'rule metadata'))
+
+    # Review round 2 F17: WHICH of those ids the scanner's ADVISORY RECORD itself co-declares -- the
+    # rule id and a structured `aliases` list on the rule or the result. An id found only in prose
+    # (the message, a references list) is not advisory evidence of equivalence, so an alias added
+    # that way is ALIAS_UNVERIFIED (finding_lineage.alias_continuity) and never continues identity.
+    declared = [rid or '']
+    for src in (props, res.get('properties') or {}):
+        vals = src.get('aliases') if isinstance(src, dict) else None
+        if isinstance(vals, (list, tuple)):
+            declared.extend(str(v) for v in vals)
+    found = set(str(out[k]).strip().upper() for k in ('cve', 'ghsa', 'osv') if out.get(k))
+    evidence = set()
+    for d in declared:
+        for rx in (_CVE, _GHSA, _OSV):
+            for mm in rx.finditer(d):
+                v = (finding_ids.normalize_vuln_id(mm.group(1))[0] or mm.group(1)).strip().upper()
+                if v in found:
+                    evidence.add(v)
+    out['_alias_evidence'] = sorted(evidence)
 
     m = _PURL.search(hay)
     if m:
@@ -1320,8 +1360,10 @@ rationale_min_length = 20
 # date rather than each record's own date because the window is one migration, not a per-record
 # grace period: a record keyed last year and a record keyed yesterday both have until the same
 # day. The owner may move either number by a new decision; nothing else here depends on them.
+# KDEC-052 (owner, 2026-11-13): extended from 30 days to 78 (the close is derived below; never restate it), so the work
+# inventory is checked first. A legacy-keyed record stays labelled and never gains review authority (KDEC-051).
 legacy_key_window_opened = '2026-10-14'
-legacy_key_window_days = 30
+legacy_key_window_days = 78
 legacy_key_window_closes = (datetime.date(*[int(x) for x in legacy_key_window_opened.split('-')])
                             + datetime.timedelta(days=legacy_key_window_days)).isoformat()
 
@@ -1383,8 +1425,203 @@ def not_suppressed_because(d, today=None):
     return ''
 
 
-def disposition_for(f, disp, today=None):
+# ── R03: THE LINEAGE LEDGER'S DECISIONS REACH THE REPORT ─────────────────────────────────────
+# `finding_lineage.disposition_for` answers DISPOSITION_CARRIED_BY_LINEAGE for a finding whose
+# identity moved (path, rule, package, extraction) with an approval on the identity it moved FROM.
+# Before R03 nothing asked it, so the approval on A was orphaned on B exactly as if the ledger did
+# not exist. The report now asks -- through that resolver, never a second ledger -- and SHOWS the
+# carried decision as a PENDING DECISION. It never suppresses: the approver approved A, not B, and
+# an inference never overwrites an observation. A ledger that is not intact, and a cyclic ancestry,
+# refuse the carry BY NAME (`lineage-refused`) and still name the decision they would have carried,
+# so the obligation stays visible rather than vanishing with the evidence for it.
+LINEAGE_CARRIED = finding_lineage.DISPOSITION_CARRIED_BY_LINEAGE
+LINEAGE_REFUSED = 'lineage-refused'
+# Review 2026-11-09 finding 8: the ledger is ABSENT and the register still indicates a prior
+# relationship (see `unresolved_reconciliation`). Never suppresses; it is an obligation, named.
+LINEAGE_UNRESOLVED = 'LINEAGE_RECONCILIATION_UNRESOLVED'
+LINEAGE_PENDING = (LINEAGE_CARRIED, LINEAGE_REFUSED, LINEAGE_UNRESOLVED)
+
+
+def with_observed(lineage, findings):
+    """-> the lineage context with `observed` (every identity and legacy key this scanner reported
+    this run) added, so an absent ledger can tell an orphaned decision from a live one."""
+    if not lineage or 'observed' in lineage:
+        return lineage
+    seen = set()
+    for f in findings or []:
+        seen.update(x for x in (str(f.get('identity') or ''), str(f.get('fp') or '')) if x)
+    return dict(lineage, observed=frozenset(seen))
+
+
+def unresolved_reconciliation(f, disp, lineage, today=None):
+    """-> (None, LINEAGE_UNRESOLVED, note) or None. Only when the lineage ledger is LEDGER_ABSENT.
+
+    An absent ledger cannot say a finding moved, and it cannot say it did not. Before this the
+    report read that silence as "no prior relationship": an approval on A, with A gone and the
+    same weakness now reported as B, left B untriaged and A's decision unnamed. No second ledger is
+    kept. "INDICATED" IS READ FROM THE REGISTER AND THIS RUN ONLY: a register entry keyed on
+    something this scanner did NOT report this run (an orphaned decision), on the same scanner as
+    this undecided finding, and on the same rule or the same path. That is the shape of every move
+    the ledger records (path, rule rename, extraction change); it never suppresses, it names the
+    obligation, and a person records the lineage event or decides this finding directly."""
+    if not lineage or lineage.get('integrity') != finding_lineage.LEDGER_ABSENT or not disp:
+        return None
+    ident, fp = str(f.get('identity') or ''), str(f.get('fp') or '')
+    if (ident and ident in disp) or (fp and fp in disp):
+        return None
+    observed = lineage.get('observed')
+    if observed is None:
+        observed = frozenset(x for x in (ident, fp) if x)
+    rule, path = str(f.get('rule') or ''), str(f.get('uri') or '')
+    hits = []
+    for key in sorted(disp):
+        d = disp[key] if isinstance(disp[key], dict) else {}
+        if str(key) in observed or str(d.get('scanner') or '') != str(f.get('scanner') or ''):
+            continue
+        if (rule and str(d.get('rule') or '') == rule) or (path and str(d.get('scope_path') or '') == path):
+            hits.append((str(key), d))
+    if not hits:
+        return None
+    return (None, LINEAGE_UNRESOLVED,
+            '%s: the lineage ledger `%s` is %s, and the register holds %d decision(s) on the same '
+            'scanner and rule or path that this run did not report: %s. Whether `%s` is one of them '
+            'moved cannot be established without the ledger, and is never assumed either way. '
+            'PENDING DECISION (pending, not suppressing): record the lineage event, or decide this '
+            'finding directly; the earlier decision is kept.'
+            % (LINEAGE_UNRESOLVED, lineage.get('path'), lineage.get('integrity'), len(hits),
+               '; '.join(_decision_text(k, d, today) for k, d in hits[:5]), ident or fp))
+
+
+def load_lineage(path):
+    """-> the ledger as every consumer reads it ({path, events, integrity, notes}), or None for
+    no path. The same loader the ticket reconciler uses, so the two cannot disagree."""
+    return finding_lineage.consumer_context(path)
+
+
+def _lineage_hops(events, chain, ident):
+    """Every recorded event that moved this identity's ancestry toward it: relation, cause, id."""
+    nodes = set(chain) | set([ident])
+    out = []
+    for e in events:
+        src = finding_lineage._as_list(e.get('from_identities'))
+        dst = finding_lineage._as_list(e.get('to_identities'))
+        if any(x in chain for x in src) and any(x in nodes for x in dst):
+            out.append('%s/%s (event `%s`: %s)' % (e.get('relation'), e.get('cause'),
+                                                    str(e.get('event_id') or '?')[:16],
+                                                    str(e.get('cause_detail') or '')[:120]))
+    return out
+
+
+def _decision_text(key, d, today):
+    ns = not_suppressed_because(d, today)
+    return ('`%s`: %s by %s, expires %s, rationale "%s" [%s]'
+            % (key, d.get('disposition_type') or d.get('state') or 'NONE',
+               d.get('approver_role') or d.get('approved_by') or 'NO APPROVER ROLE',
+               d.get('expires') or 'NONE', str(d.get('rationale') or '')[:200],
+               ns or 'approved, in date on the identity it was keyed on'))
+
+
+def alias_disposition(f, disp, today=None):
+    """-> (record or None, basis, note) for a register decision on the identity this finding had
+    under a SUBSET of its own advisory alias set, or None. Review round 2 F17, the alias policy.
+
+    The decision is finding_lineage.alias_continuity -- the one the ticket reconciler makes from its
+    ledger member (reconcile_tickets.alias_decisions) -- so both record the same decision_id.
+    SCANNER-ATTESTED ADDITIVE (review round 3 F21: the scanner's own advisory record, not an
+    independent authority): continuity is established automatically, and A's decision is CARRIED exactly
+    as a recorded lineage event carries it (pending, reaffirmation required, never suppressing).
+    UNVERIFIED (the added id is not co-declared by the advisory record): nothing is carried; the
+    obligation is named LINEAGE_RECONCILIATION_UNRESOLVED (pending, never suppressing). A removed,
+    replaced or contradictory alias leaves no subset of B's set equal to A's, so nothing reaches B
+    here: B is undecided on the report and the ticket side holds the reconciliation by name."""
+    ident = str(f.get('identity') or '')
+    if not ident or not disp or ident in disp:
+        return None
+    hits = [d for d in finding_lineage.alias_predecessors(f) if d['from_identity'] in disp]
+    if not hits:
+        return None
+    ver = [d for d in hits if d['state'] == finding_lineage.SCANNER_ATTESTED_ALIAS_CONTINUITY]
+    if ver:
+        d = ver[0]
+        note = ['%s to `%s` from %s.' % (LINEAGE_CARRIED, ident, '; '.join(
+            _decision_text(x['from_identity'], disp[x['from_identity']], today) for x in ver))]
+        note.append('Through: %s/%s (derived event `%s`, asserted by %s): %s' % (
+            finding_lineage.SUPERSEDES, finding_lineage.ADVISORY_ALIAS_ADDED, d['decision_id'],
+            finding_lineage.ADVISORY_FEED, d['why']))
+        if len(ver) > 1:
+            note.append('MERGE: %d prior decisions reach this identity and none is chosen for it.'
+                        % len(ver))
+        note.append('PENDING DECISION: reaffirmation required on `%s` (pending, not suppressing until '
+                    'a decision is keyed on it directly). The link is kept.' % ident)
+        return (disp[d['from_identity']], LINEAGE_CARRIED, ' '.join(note))
+    d = hits[0]
+    return (None, LINEAGE_UNRESOLVED,
+            '%s (%s): the register holds %s, and `%s` differs from it only in its advisory aliases. '
+            '%s PENDING DECISION (pending, not suppressing): record the lineage event, or decide '
+            'this finding directly; the earlier decision is kept.'
+            % (LINEAGE_UNRESOLVED, d['state'], _decision_text(d['from_identity'],
+                                                               disp[d['from_identity']], today),
+               ident, d['why']))
+
+
+def lineage_disposition(f, disp, lineage, today=None):
+    """-> (record or None, basis, note) from the lineage ledger, or None when it has nothing to say.
+
+    `record` is the ancestor's register entry UNMODIFIED (carried) or None (refused). The basis is
+    LINEAGE_CARRIED or LINEAGE_REFUSED and neither suppresses (see is_suppressed)."""
+    if not lineage:
+        return None
+    ident = str(f.get('identity') or '')
+    if not ident:
+        return None
+    disp = disp or {}
+    events = lineage.get('events') or []
+    integrity = lineage.get('integrity')
+    if integrity == finding_lineage.LEDGER_ABSENT:
+        return alias_disposition(f, disp, today) or unresolved_reconciliation(f, disp, lineage, today)
+    if integrity not in finding_lineage.RESOLVABLE:
+        would = finding_lineage.disposition_for(events, disp, ident)
+        if would['basis'] != LINEAGE_CARRIED:
+            return None
+        return (None, LINEAGE_REFUSED,
+                'the lineage ledger `%s` is %s, so the carry to `%s` of the decision %s is REFUSED: '
+                'a link read from a record nobody can verify extends no approval. PENDING DECISION '
+                '(pending, not suppressing): decide `%s` directly, or restore the ledger.'
+                % (lineage.get('path'), integrity, ident,
+                   _decision_text(would['identity_keyed'], would['disposition'], today), ident))
+    res = finding_lineage.disposition_for(events, disp, ident, integrity=integrity)
+    if res['lineage_state'] == finding_lineage.LINEAGE_CYCLE_REFUSED \
+            and res['basis'] != LINEAGE_CARRIED:
+        return (None, LINEAGE_REFUSED,
+                'LINEAGE_CYCLE_REFUSED: %s No carry is made to `%s`. PENDING DECISION (pending, not '
+                'suppressing): correct the ledger, or decide `%s` directly.'
+                % (res['why'], ident, ident))
+    if res['basis'] != LINEAGE_CARRIED:
+        return alias_disposition(f, disp, today)
+    chain, _cycle = finding_lineage.ancestors(events, ident)
+    carried = finding_lineage.carried_from_all(events, disp, ident)
+    note = ['%s to `%s` from %s.' % (LINEAGE_CARRIED, ident,
+                                     '; '.join(_decision_text(k, d, today) for k, d in carried))]
+    hops = _lineage_hops(events, chain, ident)
+    if hops:
+        note.append('Through: %s.' % '; '.join(hops))
+    if len(carried) > 1:
+        note.append('MERGE: %d prior decisions reach this identity and none is chosen for it.'
+                    % len(carried))
+    for src, others in sorted(finding_lineage.split_siblings(events, ident).items()):
+        note.append('SPLIT: `%s` was split; its decision reaches every product, and the other '
+                    'product(s) %s are each decided on their own.'
+                    % (src, ', '.join('`%s`' % o for o in others) or '(none recorded)'))
+    note.append('PENDING DECISION: reaffirmation required on `%s` (pending, not suppressing until '
+                'a decision is keyed on it directly). The link is kept.' % ident)
+    return (res['disposition'], LINEAGE_CARRIED, ' '.join(note))
+
+
+def disposition_for(f, disp, today=None, lineage=None):
     """-> (record or None, key basis, note). Which register entry applies to this finding.
+
+    R03: with `lineage` (load_lineage), a decision on an identity this one descends from is
+    returned as LINEAGE_CARRIED, or LINEAGE_REFUSED when the ledger cannot support the carry.
 
     THE DURABLE IDENTITY FIRST, THE LEGACY FINGERPRINT INSIDE THE WINDOW, NOTHING AFTER IT.
     The basis is returned so a reader can see WHICH key an approval rode in on, and the note is
@@ -1404,6 +1641,10 @@ def disposition_for(f, disp, today=None):
                     'keyed on the legacy fingerprint, honoured until %s (KDEC-008 OD-6), after '
                     'which it stops suppressing; re-key it to the durable identity %s'
                     % (legacy_key_window_closes, ('`%s`' % ident) if ident else '(NOT COMPUTED for this finding)'))
+    carried = lineage_disposition(f, disp, lineage, today=today)
+    if carried is not None:
+        return carried
+    if fp and fp in disp:
         return (None, 'legacy-closed',
                 'a disposition keyed on the legacy fingerprint `%s` exists and the %d-day window '
                 'closed on %s, so it NO LONGER SUPPRESSES. Re-key it to the durable identity %s'
@@ -1412,17 +1653,86 @@ def disposition_for(f, disp, today=None):
     return (None, '', '')
 
 
-def is_suppressed(f, disp, today=None):
-    rec, _basis, _note = disposition_for(f, disp, today)
-    return rec is not None and not not_suppressed_because(rec, today)
+def is_suppressed(f, disp, today=None, lineage=None):
+    """A CARRIED decision never suppresses: it is a pending decision until keyed on this identity."""
+    rec, basis, _note = disposition_for(f, disp, today, lineage=lineage)
+    return (rec is not None and basis not in LINEAGE_PENDING
+            and not not_suppressed_because(rec, today))
 
 
-def blocking_of(findings, disp, today=None):
+# ── R-45 M5 (KDEC-048): THE EVALUATED DECISION, NOT THE REGISTER'S RAW STATUS ─────────────────
+# The evidence export carried each finding's disposition_basis (which key a decision rode in on) but
+# not whether that decision is in force, so a reader could only say "a direct decision exists".
+# This object is what THIS evaluator decided, at the date it decided it: disposition_for() picks the
+# record, is_suppressed() / not_suppressed_because() say whether it buys passage. Nothing here is a
+# second policy: every value is read off those calls or the record verbatim. A carried decision is
+# PENDING_REAFFIRMATION whatever its predecessor's status; refused / unresolved lineage is
+# PENDING_DECISION; an effective approval suppresses the gate and NEVER clears the finding (only a
+# rescan that stops reporting it does). Separation of duties is NOT_ESTABLISHED: a register entry
+# names an approver ROLE and no requester, and this evaluator does not decide it.
+DECISION_SCHEMA = 'kit-disposition-decision/1'
+DECISION_APPROVED_EFFECTIVE = 'APPROVED_EFFECTIVE'
+DECISION_NOT_EFFECTIVE = 'NOT_EFFECTIVE'
+DECISION_PENDING_REAFFIRMATION = 'PENDING_REAFFIRMATION'
+DECISION_PENDING = 'PENDING_DECISION'
+DECISION_EFFECTIVE_VALUES = (DECISION_APPROVED_EFFECTIVE, DECISION_NOT_EFFECTIVE, DECISION_PENDING_REAFFIRMATION,
+                             DECISION_PENDING)
+DECISION_SOD_NOT_ESTABLISHED = 'NOT_ESTABLISHED'
+DECISION_REASON_MAX = 300
+
+
+def evaluated_decision(f, disp, today, lineage=None, register=''):
+    """-> the bounded decision object for this finding, or None when no register decision applies
+    (basis ''). `today` is the date the evaluation used: pass the run's date, never None."""
+    rec, basis, note = disposition_for(f, disp, today, lineage=lineage)
+    if not basis:
+        return None
+    rec = rec if isinstance(rec, dict) else None
+    # the lineage notes quote the predecessor's rationale (free text): the object carries fixed text only
+    if basis == LINEAGE_CARRIED:
+        effective, why = DECISION_PENDING_REAFFIRMATION, ('%s: a decision on a predecessor reaches this finding; '
+                                                          'reaffirmation required on this identity, never '
+                                                          'suppressing until a decision is keyed on it' % basis)
+    elif basis in LINEAGE_PENDING:
+        effective, why = DECISION_PENDING, '%s: pending, never suppressing; decide this finding directly' % basis
+    elif rec is None:
+        effective, why = DECISION_NOT_EFFECTIVE, note or 'no register record applies under this key'
+    else:
+        ns = not_suppressed_because(rec, today)
+        effective = DECISION_NOT_EFFECTIVE if ns else DECISION_APPROVED_EFFECTIVE
+        why = ns or 'approved, schema-valid and in date on %s, keyed on the %s key' % (today.isoformat(), basis)
+    if effective == DECISION_APPROVED_EFFECTIVE and not is_suppressed(f, disp, today, lineage=lineage):
+        # the two readers must never disagree; if they do, the stronger claim is withdrawn, by name
+        effective, why = DECISION_NOT_EFFECTIVE, 'EVALUATOR_DISAGREEMENT: is_suppressed() says no'
+    s = lambda v: str(v).strip()[:200] if v is not None and str(v).strip() else None  # noqa: E731
+    return {
+        'schema': DECISION_SCHEMA,
+        'basis': basis,
+        'recorded_decision': {'disposition_type': s(rec.get('disposition_type')) if rec else None,
+                              'state': s(rec.get('state')) if rec else None,
+                              'recorded_on': ('predecessor' if basis == LINEAGE_CARRIED else
+                                              'this_finding' if rec else None)},
+        'effective_decision': effective,
+        'finding_cleared': False,
+        'scope': ({'scanner': s(rec.get('scanner')), 'rule': s(rec.get('rule')),
+                   'scope_path': s(rec.get('scope_path'))} if rec else None),
+        'expires': s(rec.get('expires')) if rec else None,
+        'separation_of_duties': DECISION_SOD_NOT_ESTABLISHED,
+        'source_register': {'register': s(os.path.basename(register or '')) if register else None,
+                            'key': s(rec.get('fingerprint')) if rec else
+                            (s(f.get('fp')) if basis == 'legacy-closed' else None)},
+        'evaluated_on': today.isoformat(),
+        'reason': str(why or '')[:DECISION_REASON_MAX],
+    }
+
+
+def blocking_of(findings, disp, today=None, lineage=None):
     """THE definition of a blocking finding. Called by both the summary table and the detail
     section, because computing it twice is how a report comes to disagree with itself -- the
     table saying 2 while the list beneath it shows 1, and a reader trusting whichever they read
     first. One truth, one function."""
-    return [f for f in findings if f['severity'] in BLOCKING and not is_suppressed(f, disp, today)]
+    return [f for f in findings if f['severity'] in BLOCKING
+            and not is_suppressed(f, disp, today, lineage=lineage)]
 
 
 def counts_of(findings):
@@ -1432,7 +1742,7 @@ def counts_of(findings):
     return c
 
 
-def render(cfg, findings, parse_state, disp, disp_state, examination, today=None):
+def render(cfg, findings, parse_state, disp, disp_state, examination, today=None, lineage=None):
     """The five sections. Written once so sixteen scanners cannot invent sixteen dialects.
 
     `examination` is `(state, witnesses)` from `examination_of`, and it is REQUIRED rather than
@@ -1440,6 +1750,7 @@ def render(cfg, findings, parse_state, disp, disp_state, examination, today=None
     every caller that forgot it would get the permissive answer, which is exactly how
     `--execution` came to default to COMPLETE. There is no safe default, so there is no default.
     """
+    lineage = with_observed(lineage, findings)   # finding 8: what this scanner reported this run
     L = []
     add = L.append
     scanner = cfg['scanner']
@@ -1548,7 +1859,7 @@ def render(cfg, findings, parse_state, disp, disp_state, examination, today=None
         add('')
 
     # ---- ACTION REQUIRED ----------------------------------------------------
-    blocking = blocking_of(findings, disp, today)
+    blocking = blocking_of(findings, disp, today, lineage=lineage)
     add('**ACTION REQUIRED**')
     add('')
     if not established:
@@ -1614,7 +1925,7 @@ def render(cfg, findings, parse_state, disp, disp_state, examination, today=None
         add('Blocking findings: **%d**' % len(blocking))
         add('')
         for i, f in enumerate(blocking[:cfg['max_detail']], 1):
-            rec, basis, note = disposition_for(f, disp, today)
+            rec, basis, note = disposition_for(f, disp, today, lineage=lineage)
             d = rec or {}
             add('%d. `%s`' % (i, f['rule'] or '(no rule id)'))
             add('   - Severity: %s' % f['severity'])
@@ -1630,14 +1941,18 @@ def render(cfg, findings, parse_state, disp, disp_state, examination, today=None
             # A blocking finding with a record is a record that does NOT suppress, and the reason
             # is printed beside it: the lifecycle, the missing field, the lapsed date, or the
             # legacy key whose window closed.
-            why = not_suppressed_because(d, today) if d else (note or 'no disposition recorded')
+            lapsed = not_suppressed_because(d, today) if d else ''
+            why = lapsed if d else (note or 'no disposition recorded')
+            if basis == LINEAGE_CARRIED:
+                why = ('%s -- PENDING DECISION, not suppressing%s; see PENDING DECISION below'
+                       % (LINEAGE_CARRIED, ('; on its own key: %s' % lapsed) if lapsed else ''))
             add('   - Disposition: %s%s' % ((d.get('disposition_type') or d.get('state') or 'NONE'),
                                             '' if (not d and not note) else
                                             ('  (%s)' % why if why else '  -- honoured')))
             if d.get('expires'):
                 add('   - Expires: %s%s' % (d['expires'],
                                             '  -- LAPSED, no longer suppressing'
-                                            if why.startswith('EXPIRED') else
+                                            if lapsed.startswith('EXPIRED') else
                                             '  -- revalidate before expiry'))
             add('   - Identity: `%s`' % (f.get('identity') or ('NOT COMPUTED (%s)' % (f.get('identity_reason') or 'no reason'))))
             add('   - Legacy fingerprint: `%s`' % f['fp'])
@@ -1655,7 +1970,7 @@ def render(cfg, findings, parse_state, disp, disp_state, examination, today=None
     if established and findings:
         # Every finding a register entry applies to, under either key, suppressing or not --
         # including a legacy key whose window has closed, which is the one the run must name.
-        held = [(f,) + disposition_for(f, disp, today) for f in findings]
+        held = [(f,) + disposition_for(f, disp, today, lineage=lineage) for f in findings]
         held = [h for h in held if h[1] is not None or h[2]]
         add('**TRACKING / DISPOSITION**')
         add('')
@@ -1671,6 +1986,12 @@ def render(cfg, findings, parse_state, disp, disp_state, examination, today=None
             for f, d, basis, note in held[:cfg['max_detail']]:
                 d = d or {}
                 why = not_suppressed_because(d, today) if d else note
+                if basis == LINEAGE_CARRIED:
+                    why = 'PENDING DECISION%s' % ((', ' + why) if why else '')
+                elif basis == LINEAGE_REFUSED:
+                    why = 'carry refused, PENDING DECISION'
+                elif basis == LINEAGE_UNRESOLVED:
+                    why = 'lineage ledger absent, reconciliation unresolved, PENDING DECISION'
                 add('| `%s` | %s%s | %s | %s | %s |'
                     % (f.get('identity') or ('legacy `%s`' % f['fp']),
                        d.get('disposition_type') or d.get('state') or 'NONE',
@@ -1685,12 +2006,26 @@ def render(cfg, findings, parse_state, disp, disp_state, examination, today=None
                 for n in closed[:cfg['max_detail']]:
                     add('- %s' % n)
         add('')
+        pending = [(f, note) for f, _d, basis, note in held if basis in LINEAGE_PENDING]
+        if pending:
+            # R03: shown, never applied. Each stays blocking until decided on its own identity.
+            add('**PENDING DECISION -- carried by lineage**')
+            add('')
+            add('%d finding(s) descend, through the lineage ledger, from an identity that carries '
+                'a decision. It is shown here, not applied: the approver approved that key, not '
+                'this one. Reaffirm it on the current identity, or decide afresh.' % len(pending))
+            for f, note in pending[:cfg['max_detail']]:
+                add('- `%s`: %s' % (f.get('identity') or f['fp'], note))
+            add('')
 
     # ---- DETAILS / EVIDENCE -------------------------------------------------
     add('**DETAILS / EVIDENCE**')
     add('')
     add('- Artifact: %s' % (cfg['sarif'] or 'none'))
     add('- GitHub Security: %s' % cfg['upload'])
+    if lineage is not None:
+        add('- Lineage ledger: `%s` -- %s (%s)' % (lineage.get('path'), lineage.get('integrity'),
+                                                   '; '.join(lineage.get('notes') or [])[:300]))
     if cfg['run_url']:
         add('- Run: %s' % cfg['run_url'])
     return '\n'.join(L)
@@ -1767,10 +2102,21 @@ observation_fields = ('scanner', 'tool', 'scanner_version', 'rule_id', 'severity
                       'fp', 'job', 'row_established',
                       # KDEC-038: the code and secret keys (hashes and names; never text or a value)
                       'rule_family', 'cwe_reported', 'symbol_path', 'ticket_anchor', 'ticket_key_state',
-                      'secret_family', 'secret_key', 'is_secret_finding')
+                      'secret_family', 'secret_key', 'is_secret_finding',
+                      # R03: which key a register decision rode in on -- durable, legacy,
+                      # legacy-closed, DISPOSITION_CARRIED_BY_LINEAGE, lineage-refused, or ''.
+                      # Carried into the evidence export so its history keeps direct and carried apart.
+                      'disposition_basis',
+                      # Review round 2 F17: the advisory ids the scanner's advisory record
+                      # co-declares, so the ticket reconciler decides alias continuity on the
+                      # same evidence the report does (finding_lineage.alias_continuity).
+                      'alias_evidence',
+                      # R-45 M5 (KDEC-048): what the disposition evaluator decided for this finding, at
+                      # the run's date (evaluated_decision); None when no register decision applies.
+                      'disposition_decision')
 
 
-def observation_of(f, job, established):
+def observation_of(f, job, established, disposition_basis='', decision=None):
     """One finding -> the record the findings file carries. Nothing else is copied."""
     o = {
         'scanner': f['scanner'], 'tool': f['tool'], 'scanner_version': f.get('scanner_version', ''),
@@ -1787,6 +2133,9 @@ def observation_of(f, job, established):
         'symbol_path': f.get('symbol_path', ''), 'ticket_anchor': f.get('ticket_anchor', ''),
         'ticket_key_state': f.get('ticket_key_state', ''), 'secret_family': f.get('secret_family', ''),
         'secret_key': f.get('secret_key', ''), 'is_secret_finding': bool(f.get('is_secret_finding')),
+        'disposition_basis': disposition_basis or '',
+        'alias_evidence': list(f.get('alias_evidence') or []),
+        'disposition_decision': decision,
     }
     assert tuple(o) == observation_fields
     return o
@@ -1834,7 +2183,8 @@ def fitness_note(notes, job):
 
 def batch(state_dir, disp_path, max_detail, run_url, expect=(), summary=None, findings_out='',
           ledger=None, environment='', rule_families='', today=None, capped_jobs=(),
-          not_selected_jobs=(), fitness_notes='', source_root='', repository=''):
+          not_selected_jobs=(), fitness_notes='', source_root='', repository='',
+          lineage_path=''):
     """Render every scanner from the state files they each dropped. One contract, N inputs.
 
     WHY BATCH RATHER THAN SIXTEEN PER-JOB REPORTERS
@@ -1923,6 +2273,9 @@ def batch(state_dir, disp_path, max_detail, run_url, expect=(), summary=None, fi
                            '_missing': True})
 
     disp, disp_state = load_dispositions(disp_path)
+    eval_day = today or datetime.date.today()     # R-45 M5: the one date the exported decision states
+    lineage = load_lineage(lineage_path) if lineage_path else None    # R03
+    lineage_pending = 0
     blocks, index, observations, legacy_closed = [], [], [], 0
     coverage_rows = []
     for st in states:
@@ -1977,7 +2330,9 @@ def batch(state_dir, disp_path, max_detail, run_url, expect=(), summary=None, fi
                 cfg['fitness'] = ('NOT_SELECTED', fitness_note(fitness_notes, cap_job) or
                                   'another carried scanner was selected for a target this one '
                                   'cannot read; it carries the claim (SUBSTITUTION, not equivalence)')
-        blocks.append(render(cfg, findings, parse_state, disp, disp_state, examination, today))
+        lin = with_observed(lineage, findings)      # finding 8: per scanner, this run
+        blocks.append(render(cfg, findings, parse_state, disp, disp_state, examination, today,
+                             lineage=lin))
 
         # A STATE FILE THAT DECLARES NEITHER FIELD IS A ROSTER FAULT, not merely a weak row.
         # Degrading the verdict keeps the report honest; the fault is what stops the wiring defect
@@ -1992,9 +2347,13 @@ def batch(state_dir, disp_path, max_detail, run_url, expect=(), summary=None, fi
                        and cfg['execution'] not in NO_COUNT_STATES
                        and cfg['applicability'] not in NO_COUNT_APPLIC
                        and examination[0] in COUNTABLE_EXAMINATION)
-        blk = blocking_of(findings, disp, today)
+        blk = blocking_of(findings, disp, today, lineage=lin)
         coverage_rows.append({'scanner': cfg['scanner'], 'job': st.get('job') or '',
                               'applicability': cfg['applicability'],
+                              # Review round 3 F19: the evidence behind the applicability (the
+                              # state builder's discovery:<state> / input:<name>), so the ticket
+                              # reconciler can validate a NOT_APPLICABLE row, never take its word.
+                              'applicability_basis': str(st.get('applicability_basis') or ''),
                               'execution': cfg['execution'], 'gate': cfg['gate'],
                               'scope': cfg['scope'] or '', 'parse_state': parse_state,
                               'scanner_version': sarif_tool_version(sarif) if sarif else '',
@@ -2019,16 +2378,19 @@ def batch(state_dir, disp_path, max_detail, run_url, expect=(), summary=None, fi
                     tok = '%s:%s:%s' % (job, f['fp'], c.upper())
                     if tok not in cve_tokens:
                         cve_tokens.append(tok)
-        held = len([f for f in findings if is_suppressed(f, disp, today)])
-        legacy_closed += len([f for f in findings
-                              if disposition_for(f, disp, today)[1] == 'legacy-closed'])
+        held = len([f for f in findings if is_suppressed(f, disp, today, lineage=lin)])
+        bases = [disposition_for(f, disp, today, lineage=lin)[1] for f in findings]
+        legacy_closed += bases.count('legacy-closed')
+        lineage_pending += len([b for b in bases if b in LINEAGE_PENDING])
         index.append((cfg['scanner'], cfg['applicability'], cfg['execution'],
                       ('%d' % len(blk)) if established else 'NOT ESTABLISHED',
                       ('%d' % len(findings)) if established else '--',
                       ('%d' % held) if established else '--',
                       cfg['gate']))
-        for f in findings:
-            observations.append(observation_of(f, job, established))
+        for f, basis in zip(findings, bases):
+            observations.append(observation_of(f, job, established, basis,
+                                               evaluated_decision(f, disp, eval_day, lineage=lin,
+                                                                  register=disp_path)))
 
     # ── THE BASELINE CASCADE (L44/L45), over the observations of this run ─────────────────
     #
@@ -2119,6 +2481,13 @@ def batch(state_dir, disp_path, max_detail, run_url, expect=(), summary=None, fi
     if corr['proposals']:
         L.append('**Proposed correlations (not applied):** %d -- a heuristic agreement for a person '
                  'to confirm or split; each member acts on its own until then.' % len(corr['proposals']))
+        L.append('')
+    # R03: the lineage ledger this run read, stated on every run that was given one.
+    if lineage is not None:
+        L.append('**Lineage ledger** `%s`: %s. %d finding(s) carry a decision from an earlier '
+                 'identity as a PENDING DECISION (%s), never suppressing; each is named in its '
+                 'scanner\'s TRACKING section.'
+                 % (lineage.get('path'), lineage.get('integrity'), lineage_pending, LINEAGE_CARRIED))
         L.append('')
     # THE KEY MIGRATION, STATED ON EVERY RUN THAT READS A REGISTER (KDEC-008 OD-6).
     if disp_state == 'LOADED':
@@ -2568,7 +2937,17 @@ def self_test():
         fails.append('detail section disagreed with the summary table on blocking count')
     if legacy_key_window_closes not in txt:
         fails.append('a run inside the window does not say until when legacy keys are honoured')
+    # R-45 M5: the findings file carries the EVALUATED decision, at the run's date
+    dec = [o.get('disposition_decision') for o in json.load(io.open(os.path.join(td, findings_filename),
+                                                                     encoding='utf-8')) if o.get('fp') == fp1]
+    if not dec or (dec[0] or {}).get('effective_decision') != DECISION_APPROVED_EFFECTIVE             or dec[0].get('evaluated_on') != inside.isoformat() or dec[0].get('finding_cleared') is not False:
+        fails.append('inside the window the findings file does not carry the evaluated decision '
+                     'APPROVED_EFFECTIVE at the run date: %r' % (dec,))
     txt, _f = batch(td, os.path.join(td, 'd.json'), 5, '', [], today=after)
+    dec = [o.get('disposition_decision') for o in json.load(io.open(os.path.join(td, findings_filename),
+                                                                     encoding='utf-8')) if o.get('fp') == fp1]
+    if not dec or (dec[0] or {}).get('effective_decision') != DECISION_NOT_EFFECTIVE             or dec[0].get('basis') != 'legacy-closed':
+        fails.append('after the window the findings file does not carry NOT_EFFECTIVE (legacy-closed): %r' % (dec,))
     row = [ln for ln in txt.splitlines() if ln.startswith('| acc |')]
     if not row or '| 2 | 2 | 0 |' not in row[0]:
         fails.append('after the window a legacy-keyed approval still counted as dispositioned: %s'
@@ -2629,6 +3008,9 @@ def main():
     ap.add_argument('--upload', default='UNKNOWN')
     ap.add_argument('--gate', default='UNDETERMINED')
     ap.add_argument('--dispositions', default='')
+    ap.add_argument('--lineage', default='',
+                    help='the finding_lineage.py ledger (R03). A decision on an identity a finding '
+                         'descends from is shown as a PENDING DECISION, never suppressing')
     ap.add_argument('--max-detail', type=int, default=20)
     ap.add_argument('--run-url', default=os.environ.get('RUN_URL', ''))
     ap.add_argument('--out', default=os.environ.get('GITHUB_STEP_SUMMARY', ''))
@@ -2675,6 +3057,7 @@ def main():
         text, faults = batch(a.batch, a.dispositions, a.max_detail, a.run_url,
                              [x.strip() for x in a.expect.split(',') if x.strip()], summary,
                              findings_out=a.findings_out, ledger=load_ledger(a.ledger),
+                             lineage_path=a.lineage,
                              environment=a.environment, rule_families=a.rule_families,
                              capped_jobs=a.capped_jobs.split(),
                              not_selected_jobs=a.not_selected_jobs.split(),
@@ -2724,7 +3107,8 @@ def main():
     cfg = dict(scanner=a.scanner, applicability=a.applicability, execution=a.execution,
                scope=a.scope, artifact=a.artifact, upload=a.upload, gate=a.gate,
                sarif=a.sarif, run_url=a.run_url, max_detail=a.max_detail)
-    text = render(cfg, findings, parse_state, disp, disp_state, examination)
+    text = render(cfg, findings, parse_state, disp, disp_state, examination,
+                  lineage=load_lineage(a.lineage) if a.lineage else None)
 
     # Both destinations, deliberately. The step summary is where a reviewer looks; the run log is
     # where an engineer already is when the job goes red.

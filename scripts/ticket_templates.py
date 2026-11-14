@@ -110,12 +110,19 @@ TEMPLATE_VERIFICATION_REJECTED = 'TEMPLATE_VERIFICATION_REJECTED'
 TEMPLATE_FIX_OBSERVED = 'TEMPLATE_FIX_OBSERVED'
 TEMPLATE_REOPENED_AS_REMEDIATION = 'TEMPLATE_REOPENED_AS_REMEDIATION'
 TEMPLATE_TRIAGED_SEPARATE = 'TEMPLATE_TRIAGED_SEPARATE'
+# KDEC-049 (owner, 2026-11-11): "It should never drop the vuln it should enhance the existing ticket with
+# additional evidence." An item that `enhances` an existing finding appends its evidence to that ticket.
+TEMPLATE_ENHANCED_EXISTING = 'TEMPLATE_ENHANCED_EXISTING'
+# KDEC-049 R4: a redundant ticket is closed only after the evidence transfer is read back; unproven -> refused.
+TEMPLATE_DUPLICATE_CLOSURE_REFUSED = 'TEMPLATE_DUPLICATE_CLOSURE_REFUSED'
 # EVERY ACCEPTED ITEM ENDS IN ONE OF THESE (owner, 2026-11-04: "not just lost to the bits").
 TERMINAL_OUTCOMES = (TEMPLATE_TICKET_CREATED, TEMPLATE_TICKET_PLANNED, TEMPLATE_TICKET_BOUND, TEMPLATE_LINKED_EXACT,
                      TEMPLATE_CLOSED_DUPLICATE, TEMPLATE_REGRESSION, TEMPLATE_POSSIBLE_DUPLICATE,
                      TEMPLATE_DEDUPE_PENDING, TEMPLATE_OUTBOX, TEMPLATE_SENT_BACK, TEMPLATE_TICKET_UPDATED,
                      TEMPLATE_TICKET_CLOSED, TEMPLATE_PENDING_VERIFICATION, TEMPLATE_VERIFICATION_REJECTED,
-                     TEMPLATE_FIX_OBSERVED, TEMPLATE_REOPENED_AS_REMEDIATION, TEMPLATE_TRIAGED_SEPARATE)
+                     TEMPLATE_FIX_OBSERVED, TEMPLATE_REOPENED_AS_REMEDIATION, TEMPLATE_TRIAGED_SEPARATE,
+                     TEMPLATE_ENHANCED_EXISTING, TEMPLATE_DUPLICATE_CLOSURE_REFUSED)
+SEVERITY_RANK = {'info': 0, 'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
 
 # compliance template -> (the requested_disposition word reconcile_tickets reads, the ticket class)
 COMPLIANCE_MAP = {'false-positive': ('false_positive', 'FALSE_POSITIVE_REQUEST'),
@@ -289,6 +296,20 @@ def asset_key(asset):
         _s(asset['engagement_id']).lower(), ''
 
 
+def multicloud_children(f):
+    """-> the child obligations of a multicloud finding (KDEC-043 rule 4), each with its asset's key, or []."""
+    out = []
+    for o in (f or {}).get('obligations') or []:
+        if not isinstance(o, dict):
+            continue
+        k, d, _n, bad = asset_key(o.get('asset'))
+        if bad:
+            continue
+        out.append({'id': _slug(o.get('id')), 'cloud': o.get('cloud'), 'owner_role': str(o.get('owner_role') or ''),
+                    'asset_key': k, 'display': d})
+    return out
+
+
 def identity_of(akey, identifier):
     """THE DURABLE IDENTITY of an external finding: the asset and the identifier, nothing about who
     reported it -- so two sources agreeing are one identity (anchored, automatically)."""
@@ -309,6 +330,11 @@ def _validate_finding(f, where):
     _k, _d, _n, bad = asset_key(f.get('asset'))
     if bad:
         return refusal(TEMPLATE_ASSET_IDENTITY_INVALID, '%s.asset: %s' % (where, bad))
+    if f.get('obligations') is not None:
+        import ticket_governance as tg
+        why = tg.validate_obligations(f.get('obligations'), asset_key, where)
+        if why:
+            return refusal(TEMPLATE_FIELD_INVALID, why)
     return None
 
 
@@ -492,6 +518,69 @@ def _facts_for_request(template, item):
     return rows
 
 
+def describe_enhances(e):
+    """One line: the existing finding an item adds evidence to (KDEC-049)."""
+    parts = ['the existing finding %s' % (('`%s`' % e['correlation_key']) if e.get('correlation_key')
+                                          else '(no cluster key: a person finds its ticket)')]
+    for k, label in (('scanner', 'scanner'), ('rule_id', 'rule'), ('repository', 'repository'), ('path', 'path'),
+                     ('line', 'line'), ('component', 'component'), ('identity', 'identity'),
+                     ('severity', 'its severity'), ('register', 'found in'), ('ticket_state', 'its ticket')):
+        if e.get(k) not in (None, ''):
+            parts.append('%s %s' % (label, e[k]))
+    parts.append('matched by %s' % e.get('basis'))
+    return '; '.join(parts)
+
+
+def describe_corroboration(c):
+    ev = c.get('evidence') or {}
+    return '%s %s, severity %s as that source rated it%s; aliases %s; evidence %s (sha256 `%s`)%s' % (
+        c.get('source_tool'), c.get('source_key'), c.get('severity'),
+        (', line %s' % c['line']) if c.get('line') else '', ', '.join(c.get('aliases') or []) or 'none',
+        ev.get('ref'), ev.get('sha256'), ('; title: %s' % c['title']) if c.get('title') else '')
+
+
+def evidence_lines(rec):
+    """-> the lines an existing ticket is told: EVERY evidence field the record carries, nothing summarised."""
+    p = rec.get('provenance') or {}
+    out = ['- source: %s via %s%s' % (rec.get('source_type'), rec.get('tool'),
+                                      (' %s' % rec['scanner_version']) if rec.get('scanner_version') else ''),
+           '- source key: %s' % (rec.get('source_key') or 'none'),
+           '- evidence: %s (sha256 %s)%s' % (p.get('evidence_ref'), p.get('evidence_sha256'),
+                                            (', receipt %s' % p['evidence_receipt']) if p.get('evidence_receipt') else ''),
+           '- identifier: %s' % rec.get('rule'),
+           '- aliases: %s' % (', '.join(rec.get('aliases') or []) or 'none'),
+           '- severity as the source rated it: %s' % rec.get('severity'),
+           '- title: %s' % rec.get('title'),
+           '- asset / location: %s%s' % (rec.get('uri'), (' line %s' % rec['line']) if rec.get('line') else '')]
+    if rec.get('cwe'):
+        out.append('- cwe: %s' % rec['cwe'])
+    if rec.get('enhances'):
+        out.append('- enhances: %s' % describe_enhances(rec['enhances']))
+    for c in rec.get('corroborating_evidence') or []:
+        out.append('- corroborating evidence: %s' % describe_corroboration(c))
+    return out
+
+
+def severity_comparison(source_sevs, ticket_sevs):
+    """-> (state, text). HIGHER: a source rates it above the ticket -- recorded and flagged for a person; the
+    ticket is never raised or lowered by the kit. NOT_COMPARED: the ticket's severity could not be read --
+    flagged, never assumed. SAME_OR_LOWER: recorded."""
+    known = [SEVERITY_RANK[s] for s in ticket_sevs if s in SEVERITY_RANK]
+    src = [s for s in source_sevs if s in SEVERITY_RANK]
+    top = max(src, key=lambda s: SEVERITY_RANK[s]) if src else None
+    if not known:
+        return 'NOT_COMPARED', ('the ticket\'s severity could not be read (%s); the source rates it %s -- a person '
+                                'compares; nothing was changed' % ('/'.join(ticket_sevs) or 'no severity label',
+                                                                  top or 'unknown'))
+    have = max(known)
+    name = [k for k, v in SEVERITY_RANK.items() if v == have][0]
+    if top and SEVERITY_RANK[top] > have:
+        return 'HIGHER', ('SEVERITY HIGHER AT THE SOURCE: the source rates it %s, the ticket is %s. Flagged for a '
+                          'person (severity-review); the ticket\'s severity and priority were NOT changed' % (top, name))
+    return 'SAME_OR_LOWER', ('the source rates it %s, the ticket is %s; the ticket\'s severity is unchanged'
+                             % (top or 'unknown', name))
+
+
 def normalize(template, item, provenance, index=0, stamp_label='', settings=None, today=None, numbers=None):
     """-> one kit-shaped finding record (scripts/reconcile_tickets.py reads it; finding_correlation
     clusters it), with its provenance. Pure."""
@@ -499,6 +588,12 @@ def normalize(template, item, provenance, index=0, stamp_label='', settings=None
     settings = settings or settings_from({})[0]
     f = item if template == 'finding' else item.get('finding') or {}
     akey, disp, needle, _bad = asset_key(f.get('asset'))
+    obligations = multicloud_children(f)
+    if obligations:
+        # KDEC-043 rule 4: ONE identity across the clouds -- the identifier in this environment -- with one child
+        # obligation per cloud asset. The top-level asset is the one the submitter named first; it does not key.
+        akey = 'multicloud:%s' % (_slug(f.get('environment')) or 'unscoped')
+        disp = 'multicloud: %s' % '; '.join('%s %s' % (o['cloud'], o['display']) for o in obligations)
     ident_f = identity_of(akey or '', f.get('identifier') or '')
     subject = f.get('finding_subject') or _SUBJECT_BY_SCHEME.get((f.get('asset') or {}).get('scheme'), 'SOURCE')
     # THE ANCHOR IS THE IDENTIFIER, alone (two submissions with different alias lists are one finding).
@@ -530,6 +625,14 @@ def normalize(template, item, provenance, index=0, stamp_label='', settings=None
     }
     if f.get('kev'):
         rec['kit_class'] = 'kev'
+    # KDEC-049: what this finding adds to an existing one, and every further record of it, carried whole.
+    rec['enhances'] = dict(f['enhances']) if isinstance(f.get('enhances'), dict) else None
+    rec['corroborating_evidence'] = [dict(c) for c in f.get('corroborating_evidence') or [] if isinstance(c, dict)]
+    rec['source_key'] = str((f.get('aliases') or [''])[0])
+    # KDEC-049 R1-R2: the baseline it was matched against, a match a person must review, its component.
+    for k in ('baseline', 'match_review'):
+        rec[k] = dict(f[k]) if isinstance(f.get(k), dict) else None
+    rec['component'] = str(f.get('component') or '')
     code_facts = _code_finding_facts(f, rec)
     facts = [('template', '%s (version %d)' % (template, TEMPLATE_VERSION)),
              ('source', '%s via %s%s' % (f.get('source_type'), f.get('source_tool'),
@@ -544,6 +647,21 @@ def normalize(template, item, provenance, index=0, stamp_label='', settings=None
              ('requested by', rec['provenance']['requested_by'] or 'not stated')]
     if rec['provenance']['review_id']:
         facts.append(('review', '%s (finalized, human-concurred)' % rec['provenance']['review_id']))
+    if rec['enhances']:
+        facts.append(('enhances', describe_enhances(rec['enhances'])))
+    for c in rec['corroborating_evidence']:
+        facts.append(('corroborating evidence', describe_corroboration(c)))
+    if rec['baseline']:
+        facts.append(('baseline', '%s%s' % (rec['baseline']['state'], (' (run %s, commit `%s`)' % (
+            rec['baseline'].get('run_id'), rec['baseline'].get('commit_sha'))) if rec['baseline'].get('run_id') else '')))
+        if rec['baseline'].get('register') and rec['baseline']['register'] != 'REGISTER_READ':
+            facts.append(('register', '%s -- the ticket ledger was not read for this match, so this is not '
+                                      'established as a new finding (template triage)' % rec['baseline']['register']))
+    if rec['match_review']:
+        facts.append(('match review', '%s -- related: %s; never merged, a person decides (template triage)' % (
+            rec['match_review']['state'], ', '.join(rec['match_review'].get('candidates') or []) or 'none named')))
+    if rec['component']:
+        facts.append(('component', rec['component']))
     facts += code_facts
     labels = tag_labels(stamp_label, template, f, finding_ck, rec['provenance']['review_id'])
     if template in COMPLIANCE_TEMPLATES:
@@ -576,6 +694,15 @@ def normalize(template, item, provenance, index=0, stamp_label='', settings=None
                                                            settings['nofix_review_days']))]
         labels.append('%s-nofix' % (stamp_label or 'secure-cicd-kit'))
     rec['template_facts'] = facts
+    if obligations:
+        import ticket_governance as tg
+        rec['obligations'] = obligations
+        # Set AT CREATION: how many children the parent must see closed-verified before it may close.
+        labels = list(labels) + [tg.expected_label(stamp_label, len(obligations))]
+        facts.append(('multicloud', '%d child obligation(s): %s -- the parent closes only when every child is closed '
+                                    'by a rescan or a second person' % (len(obligations), ', '.join(
+                                        '%s (%s, owner role %s)' % (o['id'], o['cloud'], o['owner_role'])
+                                        for o in obligations))))
     rec['template_labels'] = sorted(set(labels))
     rec['correlation_key'] = fc.cluster_key(subject, rec['where'], rec['what_aliases'][0] or rec['identity'])
     return rec

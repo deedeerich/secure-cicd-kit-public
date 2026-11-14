@@ -65,7 +65,7 @@ jobs:
           fi
 
       - name: PyYAML (to read dependabot.yml)
-        run: python3 -m pip install --quiet pyyaml==6.0.2
+        run: python3 -m pip install --quiet pyyaml==6.0.3
 
       - name: Check every manifest has an entry, and every entry a manifest
         id: check

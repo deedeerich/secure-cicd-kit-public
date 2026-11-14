@@ -210,7 +210,8 @@ CONTROL_KEYS = rl.control_classes + JOBS
 JOB_DEFAULT_CLASS = 'new_critical_high'
 
 TOP_KEYS = ('schema_version', 'register_id', 'sign_off', 'proposed_by', 'notes', 'environment_names',
-            'orgs', 'repositories', 'numbers', 'policies', 'approver_lists', 'approver_lists_source')
+            'orgs', 'repositories', 'numbers', 'environment_numbers', 'policies', 'approver_lists',
+            'approver_lists_source')
 ORG_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
 ENTRY_KEYS = ('id', 'scope', 'rung', 'controls', 'team_pattern', 'merge_reaches_tier', 'deploy_approval',
               'decision', 'notes', 'secret_exceptions', 'known_exploited_exceptions', 'ticket_routing')

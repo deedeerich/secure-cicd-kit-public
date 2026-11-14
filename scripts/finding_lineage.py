@@ -754,6 +754,244 @@ def disposition_for(events, dispositions, identity, integrity=None):
                    'answers.' % state}
 
 
+def consumer_context(ledger_path):
+    """-> {path, events, integrity, notes} for a CONSUMER of the ledger (R03), or None for no path.
+
+    ONE LOADER FOR EVERY CONSUMER. The report (`scan_report.py --lineage`) and the ticket
+    reconciler (`reconcile_tickets.py --lineage`) read the ledger through this, so the two cannot
+    disagree about whether it is intact. A path that does not exist is LEDGER_ABSENT, stated by
+    each consumer -- never a silent "nothing moved".
+    """
+    if not ledger_path:
+        return None
+    events, integrity, notes = load(ledger_path)
+    return {'path': ledger_path, 'events': events, 'integrity': integrity, 'notes': list(notes)}
+
+
+def carried_from_all(events, dispositions, identity):
+    """-> [(ancestor, disposition)] for EVERY ancestor of `identity` that carries a disposition,
+    nearest first. `disposition_for` returns the nearest one; a MERGE survivor descends from
+    several, and a consumer that named only one would hide the others' decisions (R03)."""
+    chain, cycle = ancestors(events, identity)
+    if cycle:
+        return []
+    return [(a, dispositions[a]) for a in chain if a in (dispositions or {})]
+
+
+def split_siblings(events, identity):
+    """-> {split source: [the OTHER products]} for every SPLIT among this identity's ancestry."""
+    chain, _cycle = ancestors(events, identity)
+    out = {}
+    for item in events:
+        if str(item.get('relation') or '') != SPLIT_INTO:
+            continue
+        dst = _as_list(item.get('to_identities'))
+        for src in _as_list(item.get('from_identities')):
+            if src in chain and (identity in dst or any(d in chain for d in dst)):
+                out[src] = [d for d in dst if d != identity and d not in chain]
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ADVISORY ALIAS CONTINUITY (review round 2, F17; owner policy relayed 2026-11-09).
+#
+# WHAT hashes the advisory alias SET, so a feed adding GHSA to a CVE moves the durable identity.
+# The policy: a SCANNER-ATTESTED ADDITIVE alias change (named VERIFIED before review round 3) establishes identity continuity AUTOMATICALLY --
+# the new set is a strict superset of the old, the finding is otherwise the same (subject, locus,
+# construct), and the equivalence is stated by the advisory evidence the scanner output itself
+# carries (the ids are co-declared in the advisory record: the rule id and the structured
+# `aliases` list, never prose). Conflicting, replacement, removed or unverified aliases stay
+# UNRESOLVED. THIS FUNCTION IS THE ONE DECISION: the report (scan_report.lineage_disposition) and
+# the ticket reconciler (reconcile_tickets.alias_decisions) both call it, and a verified decision
+# carries ONE derived event whose `decision_id` both record -- neither side "wins".
+#
+# Review round 3 (2026-11-10) F21: the rule is deterministic over the SCANNER'S OWN data, so the
+# continuity it establishes is SCANNER-ATTESTED, not independently verified: a wrong or compromised
+# feed can supply a coherent alias record. The state, the event and every output say so, and carry
+# the provenance the inputs hold (scanner, version, advisory source, observation); what they do not
+# hold is recorded NOT_ESTABLISHED, never invented. Corroboration against an authoritative advisory
+# record is NOT built (R-44): ALIAS_AUTHORITY_NOT_CONSULTED on every decision.
+SCANNER_ATTESTED_ALIAS_CONTINUITY = 'SCANNER_ATTESTED_ALIAS_CONTINUITY'
+ALIAS_ASSURANCE_SCANNER_ATTESTED = 'SCANNER_ATTESTED'
+ALIAS_AUTHORITY_NOT_CONSULTED = 'ALIAS_AUTHORITY_NOT_CONSULTED'
+ALIAS_PROVENANCE_NOT_ESTABLISHED = 'NOT_ESTABLISHED'
+ALIAS_CONTRADICTORY = 'ALIAS_CONTRADICTORY'
+ALIAS_REMOVED = 'ALIAS_REMOVED'
+ALIAS_REPLACED = 'ALIAS_REPLACED'
+ALIAS_UNVERIFIED = 'ALIAS_UNVERIFIED'
+ALIAS_UNCHANGED = 'ALIAS_UNCHANGED'
+ALIAS_NOT_APPLICABLE = 'ALIAS_NOT_APPLICABLE'
+ALIAS_UNRESOLVED_STATES = (ALIAS_CONTRADICTORY, ALIAS_REMOVED, ALIAS_REPLACED, ALIAS_UNVERIFIED)
+ALIAS_DECIDED_STATES = (SCANNER_ATTESTED_ALIAS_CONTINUITY,) + ALIAS_UNRESOLVED_STATES
+# Bounded: an alias set larger than this is not expanded into candidate predecessors (2^n).
+ALIAS_SUBSET_LIMIT = 6
+
+
+def _alias_namespace(alias):
+    return str(alias or '').strip().upper().split('-', 1)[0]
+
+
+def _alias_view(rec):
+    rec = rec or {}
+    aliases = rec.get('what_aliases')
+    if aliases is None:
+        aliases = rec.get('aliases')
+    return {'identity': str(rec.get('identity') or ''),
+            'subject': str(rec.get('finding_subject') or rec.get('subject') or ''),
+            'aliases': sorted(set(str(a).strip().upper() for a in aliases or [] if str(a or '').strip())),
+            'where': str(rec.get('where') or ''), 'content': str(rec.get('content') or ''),
+            'evidence': sorted(set(str(a).strip().upper() for a in rec.get('alias_evidence') or []
+                                   if str(a or '').strip()))}
+
+
+def _alias_identity(view, aliases=None):
+    import finding_identity
+    return finding_identity.identity_for_advisory_aliases(
+        view['subject'], view['aliases'] if aliases is None else aliases, view['where'],
+        view['content'])
+
+
+def alias_provenance(rec):
+    """-> what the scanner's record says about where an alias decision's evidence came from (review
+    round 3 F21). Only what `rec` carries; absent fields are NOT_ESTABLISHED, never invented."""
+    rec = rec or {}
+
+    def got(*keys):
+        for k in keys:
+            v = str(rec.get(k) or '').strip()
+            if v:
+                return v
+        return ALIAS_PROVENANCE_NOT_ESTABLISHED
+    return {'scanner': got('scanner', 'tool'), 'scanner_version': got('scanner_version'),
+            'advisory_source': got('advisory_source'),
+            'attested_by': 'the scanner advisory record (ruleId and structured aliases)',
+            'observation': {'identity': got('identity'), 'rule_id': got('rule_id', 'rule'),
+                            'locus': got('where'), 'location': got('uri', 'canonical_path', 'path'),
+                            'alias_evidence': _alias_view(rec)['evidence']}}
+
+
+def alias_continuity(old, new):
+    """-> {state, from_identity, to_identity, added, removed, event, decision_id, why, assurance,
+    corroboration, provenance}.
+
+    `old` and `new` are finding records (a findings.json observation, a scan_report finding, or a
+    ticket-ledger member record): identity, finding_subject|subject, what_aliases|aliases, where,
+    content; `new` also carries `alias_evidence`, the ids its advisory record co-declares.
+
+        SCANNER_ATTESTED_ALIAS_CONTINUITY  strict superset, added ids only in namespaces the old
+                                   set lacks, every new id co-declared by the scanner's advisory
+                                   record: the derived SUPERSEDES / ADVISORY_ALIAS_ADDED event is
+                                   returned. SCANNER-ATTESTED (review round 3 F21): the scanner's
+                                   own data, not an independent advisory authority.
+        ALIAS_CONTRADICTORY        an id replaced by another of the SAME namespace (two CVEs for
+                                   one finding is a conflict, not an alias)
+        ALIAS_REMOVED              the new set is a strict subset
+        ALIAS_REPLACED             disjoint sets, or ids removed and others added
+        ALIAS_UNVERIFIED           an addition the advisory record itself does not state
+        ALIAS_UNCHANGED / ALIAS_NOT_APPLICABLE   no alias decision (same set; or the two records
+                                   differ in something other than the alias set, or are not
+                                   advisory-keyed -- another mechanism, never this one)
+    """
+    o, n = _alias_view(old), _alias_view(new)
+    out = {'state': ALIAS_NOT_APPLICABLE, 'from_identity': o['identity'], 'to_identity': n['identity'],
+           'old_aliases': o['aliases'], 'new_aliases': n['aliases'], 'added': [], 'removed': [],
+           'event': None, 'decision_id': '', 'why': '',
+           'assurance': ALIAS_ASSURANCE_SCANNER_ATTESTED, 'corroboration': ALIAS_AUTHORITY_NOT_CONSULTED,
+           'provenance': alias_provenance(new)}
+    if not o['aliases'] or not n['aliases'] or not o['identity'] or not n['identity']:
+        out['why'] = 'one side carries no advisory alias set or no identity'
+        return out
+    if not (o['subject'] and o['subject'] == n['subject'] and o['where'] and o['where'] == n['where']
+            and o['content'] and o['content'] == n['content']):
+        out['why'] = ('the records differ in subject, locus or construct (or do not record them): '
+                      'not an alias change')
+        return out
+    if _alias_identity(o) != o['identity'] or _alias_identity(n) != n['identity']:
+        out['why'] = 'an identity is not the advisory-keyed composition of its own record'
+        return out
+    if o['aliases'] == n['aliases']:
+        out['state'], out['why'] = ALIAS_UNCHANGED, 'the alias set did not change'
+        return out
+    old_s, new_s = set(o['aliases']), set(n['aliases'])
+    added, removed = sorted(new_s - old_s), sorted(old_s - new_s)
+    out.update(added=added, removed=removed)
+    old_ns = set(_alias_namespace(a) for a in old_s)
+    clash = sorted(set(_alias_namespace(a) for a in added) & old_ns)
+    if not (old_s & new_s):
+        out['state'] = ALIAS_REPLACED
+        out['why'] = ('%s: no advisory id is common to %s and %s. A replacement is not an alias; '
+                      'continuity stays unresolved.' % (ALIAS_REPLACED, o['aliases'], n['aliases']))
+    elif clash:
+        out['state'] = ALIAS_CONTRADICTORY
+        out['why'] = ('%s: %s added in namespace(s) %s that %s already names (%s). Two ids of one '
+                      'namespace for one finding contradict each other; continuity stays unresolved.'
+                      % (ALIAS_CONTRADICTORY, ', '.join(added), ', '.join(clash), o['identity'][:12],
+                         ', '.join(sorted(a for a in old_s if _alias_namespace(a) in clash))))
+    elif removed and not added:
+        out['state'] = ALIAS_REMOVED
+        out['why'] = ('%s: %s no longer reported. A narrower set is not evidence of the same '
+                      'advisory; continuity stays unresolved.' % (ALIAS_REMOVED, ', '.join(removed)))
+    elif removed:
+        out['state'] = ALIAS_REPLACED
+        out['why'] = ('%s: %s removed and %s added. Continuity stays unresolved.'
+                      % (ALIAS_REPLACED, ', '.join(removed), ', '.join(added)))
+    elif not new_s <= set(n['evidence']):
+        out['state'] = ALIAS_UNVERIFIED
+        out['why'] = ('%s: the scanner\'s advisory record co-declares %s, not %s. An id found '
+                      'elsewhere (message text, references) does not establish equivalence; '
+                      'continuity stays unresolved.'
+                      % (ALIAS_UNVERIFIED, ', '.join(n['evidence']) or 'nothing',
+                         ', '.join(sorted(new_s - set(n['evidence'])))))
+    else:
+        out['state'] = SCANNER_ATTESTED_ALIAS_CONTINUITY
+        payload = {'from': o['identity'], 'to': n['identity'], 'cause': ADVISORY_ALIAS_ADDED,
+                   'added': added, 'aliases': n['aliases']}
+        out['decision_id'] = hashlib.sha256(_canonical(payload)).hexdigest()
+        pv = out['provenance']
+        out['why'] = ('%s: %s added to %s; the scanner\'s advisory record co-declares %s; subject, '
+                      'locus and construct unchanged. Identity continuity is established as attested '
+                      'by the scanner (%s %s, advisory source %s), not independently verified: %s '
+                      '(decision %s).'
+                      % (SCANNER_ATTESTED_ALIAS_CONTINUITY, ', '.join(added), ', '.join(o['aliases']),
+                         ', '.join(n['aliases']), pv['scanner'], pv['scanner_version'],
+                         pv['advisory_source'], ALIAS_AUTHORITY_NOT_CONSULTED, out['decision_id'][:16]))
+        out['event'] = {
+            'relation': SUPERSEDES, 'from_identities': [o['identity']],
+            'to_identities': [n['identity']], 'cause': ADVISORY_ALIAS_ADDED,
+            'cause_detail': out['why'], 'finding_subject': n['subject'],
+            'asserted_by': {'actor': 'the advisory record in the scanner output',
+                            'actor_class': ADVISORY_FEED,
+                            'method': 'finding_lineage.alias_continuity (scanner-attested additive '
+                                      'alias; no independent advisory authority consulted)'},
+            'assurance': ALIAS_ASSURANCE_SCANNER_ATTESTED,
+            'corroboration': ALIAS_AUTHORITY_NOT_CONSULTED, 'provenance': out['provenance'],
+            'event_id': out['decision_id'], 'derived': True}
+    return out
+
+
+def alias_predecessors(new):
+    """-> [decision] for every identity `new` would have had under a nonempty STRICT SUBSET of its
+    own alias set, decided by alias_continuity. What a consumer holding only the CURRENT finding
+    (the report: the register is keyed by identity) uses to find the identity it moved from; the
+    decision is the same one a consumer holding the old record (the ticket ledger) computes."""
+    n = _alias_view(new)
+    if len(n['aliases']) < 2 or len(n['aliases']) > ALIAS_SUBSET_LIMIT:
+        return []
+    import itertools
+    out = []
+    for size in range(len(n['aliases']) - 1, 0, -1):
+        for sub in itertools.combinations(n['aliases'], size):
+            ident = _alias_identity(n, list(sub))
+            if not ident:
+                continue
+            old = {'identity': ident, 'finding_subject': n['subject'], 'what_aliases': list(sub),
+                   'where': n['where'], 'content': n['content']}
+            d = alias_continuity(old, new)
+            if d['state'] in ALIAS_DECIDED_STATES:
+                out.append(d)
+    return out
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 def _mkevent(src, dst, relation=SUPERSEDES, cause=EXTRACTION_CORRECTED, detail='test event',
              actor='tests/prove_lineage_durability.py', actor_class=TOOL, when='2026-10-08T00:00:00Z'):

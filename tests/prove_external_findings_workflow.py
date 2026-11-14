@@ -7,14 +7,17 @@ against a `gh` shim that records each dispatch.
 
   POSITIVE
     W1  the pull step: SOURCE_PULLED, the item count as an output, the summary written, batches cut for a
-        review id with their evidence hashes
-    W2  the submit step sends each batch, unchanged, as a tickets.submit request the kit's own intake
+        review id with their evidence hashes; the baseline receipt named on the pull and every item
+    W1b the baseline selection step fails outright: the pull still completes (SOURCE_PULLED) and every item
+        names the baseline unavailable (MUTANT: the pull exits 2 on the missing selection file)
+    W2 the submit step sends each batch, unchanged, as a tickets.submit request the kit's own intake
         accepts, with an idempotency key derived from the evidence hash, to the kit API workflow
   NEGATIVE
     W3  a refused pull (bad token) fails the step with its named state, never "no findings"
     W4  the token is masked before anything runs, and appears nowhere else in the log
     W5  a batch cut for another review is refused before anything is sent; no batches -> fails
-    W6  structure: the pull job reads only (contents read); submit waits in the review environment and
+    W6  structure: the pull job reads only (contents read, actions read for the baseline) and checks out
+        the default branch; submit waits in the review environment and
         holds actions write only for the dispatch; top-level permissions {}; no expression inside a run:
         block; the secrets reach the script only through env:; the callers grant exactly what the jobs ask
 
@@ -69,7 +72,11 @@ def main():
 
     # W6 structure
     check(doc.get('permissions') == {}, 'W6 top-level permissions: {}')
-    check(jobs['pull'].get('permissions') == {'contents': 'read'}, 'W6 the pull job reads only')
+    # KDEC-049 R1: the pull also READS this repository's runs/compare/artifacts to select the baseline.
+    check(jobs['pull'].get('permissions') == {'contents': 'read', 'actions': 'read'}, 'W6 the pull job reads only')
+    co = next((s for s in jobs['pull']['steps'] if 'actions/checkout@' in str(s.get('uses', ''))), {})
+    check('github.event.repository.default_branch' in str((co.get('with') or {}).get('ref')),
+          'W6 the pull checks out the default branch (the register is read from it)')
     check(jobs['submit'].get('permissions') == {'contents': 'read', 'actions': 'write'} and
           '${{ inputs.review_environment }}' in str(jobs['submit'].get('environment')),
           'W6 submit waits in the review environment, with actions write for the dispatch only')
@@ -91,22 +98,53 @@ def main():
     host = 'http://127.0.0.1:%d' % srv.server_address[1]
     work = tempfile.mkdtemp(prefix='efw-')
     try:
-        def run_pull(token, review=''):
+        def run_pull(token, review='', no_selector=False):
             ws = tempfile.mkdtemp(dir=work)
             for d in ('scripts', 'api'):
                 shutil.copytree(os.path.join(ROOT, d), os.path.join(ws, d))
+            if no_selector:
+                # the baseline selection step fails outright (the step tolerates it with `|| true`); the module
+                # stays importable (the pull uses it), only its command dies before writing a selection
+                sp = os.path.join(ws, 'scripts', 'external_findings_baseline.py')
+                src = io.open(sp, encoding='utf-8', newline='').read()
+                cut = src.rindex("if __name__ == '__main__':")
+                io.open(sp, 'w', encoding='utf-8', newline='').write(
+                    src[:cut] + "if __name__ == '__main__':\n    raise SystemExit('selection failed (proof)')\n")
             rt = tempfile.mkdtemp(dir=work)
             ctx = {'inputs.source': 'sonar', 'secrets.SONAR_TOKEN': token, 'secrets.SONAR_HOST_URL': host,
                    'inputs.sonar_organization': 'example-org', 'inputs.sonar_projects': 'proj-a',
                    'inputs.repo_map': json.dumps({'proj-a': 'example-org/app-a'}), 'inputs.environment_label': 'code',
                    'inputs.review_id': review, 'inputs.aikido_api_base': '', 'secrets.AIKIDO_CLIENT_ID': '',
-                   'secrets.AIKIDO_CLIENT_SECRET': ''}
-            r = H.run(bash, pull, ctx, ws, extra_env={'RUNNER_TEMP': rt})
+                   'secrets.AIKIDO_CLIENT_SECRET': '', 'inputs.ledger_path': '.security/ticket-ledger.json',
+                   'github.event.repository.default_branch || github.ref_name': 'main', 'github.token': 'ghs_proof'}
+            # THE RUNNER'S OWN ENVIRONMENT: GITHUB_REPOSITORY is always set on a runner. No API host is named
+            # here, so the selection names the baseline unavailable (it never assumes github.com, KDEC-027).
+            r = H.run(bash, pull, ctx, ws, extra_env={'RUNNER_TEMP': rt, 'GITHUB_REPOSITORY': 'example-org/kit-host',
+                                                       'GITHUB_API_URL': '', 'GH_HOST': '', 'KIT_API_URL': ''})
             return r, rt
+
+        def pulled(rt):
+            p = os.path.join(rt, 'external-findings', 'pulled.json')
+            return json.load(io.open(p, encoding='utf-8')) if os.path.exists(p) else {}
         r, rt = run_pull(PF.SONAR_TOKEN, review='REV-2026-11-06')
         check(r['rc'] == 0 and r['outputs'].get('state') == 'SOURCE_PULLED' and r['outputs'].get('items') == '5'
               and 'External findings: sonar -- SOURCE_PULLED' in r['summary'],
               'W1 the pull step: SOURCE_PULLED, 5 items, the summary written', r['log'])
+        doc1 = pulled(rt)
+        check(doc1.get('baseline', {}).get('state') == 'BASELINE_UNAVAILABLE'
+              and 'no API client' in str(doc1.get('baseline', {}).get('detail'))
+              and doc1.get('items') and all((i.get('baseline') or {}).get('state') == 'BASELINE_UNAVAILABLE'
+                                            for i in doc1['items']),
+              'W1 the baseline is named on the pull and on every item (unavailable here: no API host named)',
+              doc1.get('baseline'))
+        r_ns, rt_ns = run_pull(PF.SONAR_TOKEN, no_selector=True)
+        doc_ns = pulled(rt_ns)
+        check(r_ns['rc'] == 0 and r_ns['outputs'].get('state') == 'SOURCE_PULLED'
+              and 'was not written' in str(doc_ns.get('baseline', {}).get('detail'))
+              and doc_ns.get('items') and all((i.get('baseline') or {}).get('state') == 'BASELINE_UNAVAILABLE'
+                                              for i in doc_ns['items']),
+              'W1b a failed baseline selection: the pull still completes, the baseline named unavailable on every item',
+              (r_ns['outputs'], doc_ns.get('baseline'), r_ns['log'][-400:]))
         bdir = os.path.join(rt, 'external-findings', 'batches')
         batches = sorted(os.listdir(bdir)) if os.path.isdir(bdir) else []
         check(batches == ['batch-001.params.json'] and 'evidence_sha256' in r['summary'],

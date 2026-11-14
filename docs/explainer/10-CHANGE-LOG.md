@@ -5,6 +5,59 @@ Commit ids are on the build trunk `fix/normalization-and-discovery`. Versions 1.
 entries are in `10a-CHANGE-LOG-OCTOBER.md`; 1.11 and earlier in `10b-CHANGE-LOG-EARLIER.md`. A reader whose last copy was v1.10 (`a907dc8`) reads
 `12-CHANGES-SINCE-A907DC8.md` first: it groups every change since by what an integrator must do.
 
+## Unreleased — one version per tool (2026-11-07)
+
+Proven locally (`check_tool_pins_single_version.py`: red on fa88322 with 29 violations, green after; 14 sample
+mutants and 4 old pins put back into the real tree, each refused). The re-measured proofs ran on the new releases:
+`check_actionlint.py` (actionlint 1.7.12), `prove_sbom_licence_verdict.py` and `prove_build_push_round_trip.py`
+(syft 1.54.1), `prove_malicious_deps_enforces.py` and `prove_feed_mirror_gaps.py` G8 (osv-scanner 2.7.0).
+
+| change | parts affected |
+|---|---|
+| `.github/tool-pins.json`: the one pin list -- every scanner, linter and CLI the kit installs, by one version and the vendor's published digest, with its source; a second version only as a scoped, reasoned exception (semgrep 1.172.0 inside mobsfscan's venv; trivy 0.70.0 as the corpus probe's comparison leg) | 04, 08 |
+| syft 1.52.0 -> 1.54.1 in the flagship's sbom job and the self-test tools (the build paths, the static-site packager and the probe already ran 1.54.1); actionlint 1.7.7 -> 1.7.12 in self-test (deps-scan and the probe already ran it); osv-scanner v2.6.0 -> v2.7.0 in the malicious-deps job and the self-test tools (the probe already ran it); PyYAML 6.0.2 -> 6.0.3 (8 installs); checkov 3.3.29 -> 3.3.30 in the probe's pip install (the image was already 3.3.30) | 04, 08, 11 |
+| `tests/check_tool_pins_single_version.py` (self-test, "Installed tools must be a chosen version with verified bytes"): refuses another version or digest of a registered tool anywhere in the kit's code -- an asset name, a release URL's tag (shell variable, env key, input default or matrix leg), a step name, a pip/npm pin, a test literal, a digest beside the tool, an image digest or tag -- and an unregistered download or image outside overlays/ | 08 |
+| The tests that copied a pin now read the registry (`prove_battery_mirrors_selftest.py` T6, `prove_feed_mirror_gaps.py`' osv-scanner digests) | 08 |
+
+## Unreleased — ticket governance and the Freshservice tracker (KDEC-043 PROPOSED, 2026-11-06)
+
+Proven locally against stand-ins only (`prove_ticket_governance.py` G1-G4, `prove_freshservice_tracker.py` F1-F12 on
+127.0.0.1; 8 mutants killed). No live tracker call; no hosted run yet.
+
+| change | parts affected |
+|---|---|
+| The correlation key is never truncated as identity: a label is a verified search aid (GitHub's 50-character form is a hashed short form); a label hit is exact only when the stamp field or the block carries the full key; a collision or an unverified label goes to a person; a reviewer's link writes the full key into the kit's block on the person's ticket; `tickets.search` links only governed keys (`label_key_hints` for labels) | 06, 11 |
+| `via` is a claim: `tickets.submit` takes `via`; provenance compares it with the authenticated identity and the tracker's write record (`KIT_INTEGRATION_IDENTITIES`); a mismatch is labelled and alerted | 06, 11 |
+| `area-unresolved`: an unrouted finding is created in triage with an owner role and a deadline (`ticket_routing.unresolved`); overdue ones are a decision owed in every reconcile run | 06 |
+| Multicloud findings (`obligations` on a finding): one parent, one owned child per Azure/AWS asset; the parent closes only when every child is verified (`CHILD_OBLIGATION_OPEN`) | 06, 11 |
+| Freshservice, the fourth tracker (`scripts/tracker_freshservice.py`; TICKETING_BACKENDS.md 4A): search-first, tags at creation, markers as notes, read-merge-write-verify under a per-ticket lock, a person's simultaneous tag edit reconciled from the activity history, `TAG_PRESERVATION_NOT_ESTABLISHED` when unprovable; wired through the reusable ticket workflows | 06, 11 |
+
+## Unreleased — governed settings from the org overlay, small-team self-approval, kit init's CODEOWNERS and connectors (owner rulings 2026-11-07)
+
+Proven locally (`prove_org_settings.py`, `prove_uat_prod_gating.py` P7-P14 / N18-N30 / G6, `prove_kit_init.py` P9-P19 /
+N9-N17, `check_kit_cloud_scope.py`, `check_settings_precedence.py`). No hosted deploy has run them yet.
+
+| change | parts affected |
+|---|---|
+| Governed settings (approver pools, app team, small-team self-approval, adoption level, the Azure cloud per environment, ticket routing) come from the org overlay in the kit copy; a repository value may only tighten (`ENVIRONMENT_GOVERNED_SETTING_LOOSENED`); `docs/adoption/SETTINGS_PRECEDENCE.md` | 03, 07, 11 |
+| No pools named is not a refusal; a non-empty reviewers rule at uat/prod always is (O-42b); the rollback runs the same read-back (O-42c); small-team self-approval, declared only in the overlay, said as `SMALL_TEAM_SELF_APPROVAL` | 03, 07 |
+| KIT_CLOUD is Azure-only and per environment; with two Azure clouds an unmapped environment is refused before sign-in | 07, 11 |
+| kit init detects the host, applies the overlay, starts at crawl with its clock, never overwrites a CODEOWNERS (proposes its lines, flags overriding rules), inventories the connectors, and says what/how/why per checklist item | 11 |
+| The AM template passes `JIRA_HOST` to both ticket jobs (instructions audit C2) | 11 |
+
+## Unreleased — never a uat or prod deploy without a human approval (KDEC-042 PROPOSED, 2026-11-06)
+
+Proven locally against a stand-in API on 127.0.0.1 (`prove_uat_prod_gating.py` P1-P6, N1-N17, 13 mutants;
+`check_deploy_environment_declared.py` 9 mutants; `prove_deploy_environment_protection.py`; `prove_kit_init.py` P5).
+No hosted deploy has run it yet: whether a run token reads the reviewer list and `prevent_self_review` is owed.
+
+| change | parts affected |
+|---|---|
+| The deploy's `protection` step CLASSES the environment first (the strongest of the bound tier, `.kit/environments.json` `class` and the name; an explicit class never lowers a production name) and refuses an empty or unclassed name at every tier (`ENVIRONMENT_UNCLASSED`) | 03, 07, 11 |
+| At uat and prod it also refuses an environment that does not exist (`ENVIRONMENT_NOT_FOUND`), a reviewer rule naming nobody (`ENVIRONMENT_REVIEWERS_EMPTY`), no platform or security pool reviewer (`ENVIRONMENT_APPROVER_POOL_MISSING`) and app-team-only reviewers (`ENVIRONMENT_APPROVERS_ALL_APP_TEAM`); pools and team from `vars.KIT_APPROVER_POOLS` / `vars.KIT_APP_TEAM`, else `.kit/settings.json`; unreadable membership is `app_team_check=NOT_ESTABLISHED`, never guessed | 03, 07, 11 |
+| `tests/check_deploy_environment_declared.py`: every kit deploy job (and the rollback) runs in `environment: ${{ inputs.github_environment }}` from a required input, never conditional, so a push to main waits on the same reviewers as a dispatch; callers may not pass an empty environment or pick one by trigger | 07, 08, 11 |
+| `kit init`: `class` per environment, `approver_pools` and `app_team` (`--app-team`) in `.kit/settings.json`, the `gh variable set` commands in the checklist; SETUP.md 1.4, BRANCH_PROTECTION_SETTINGS.md, AUTOMERGE_RISKS_AND_ROLLOUT.md risk 4 (now enforced), GETTING_STARTED_1_HOUR.md; risks R-27, R-28 | 09, 11 |
+
 ## Unreleased — adoption without "a million hoops" (KDEC-041 PROPOSED, 2026-11-06)
 
 Proven locally (`prove_kit_init.py`, `prove_plain_errors.py`, `prove_friction_summary.py`, `prove_adoption_guides.py` R1/N4; 13 mutants killed). No hosted run yet.

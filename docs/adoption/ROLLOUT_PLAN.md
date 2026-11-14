@@ -20,6 +20,12 @@ each wave is the owner's decision.
 The rung never drops below crawl, at any wave (KDEC-018). "Report-only" means crawl, not "off": a
 committed secret still blocks in week one.
 
+**How long crawl lasts (owner O-41b, 2026-11-07).** Adoption always starts at **crawl** unless the org overlay
+sets a stricter level (the owner's own repositories are set stricter for testing). N = **4 weeks** is the
+optimal (the default); prefer **no more than 2 months** (the summary flags it at 8 weeks); **6 months** (26 weeks)
+is the hard maximum, an escalation to the platform lead. Nothing promotes or extends by itself: a person changes the
+policy register (`scripts/org_settings.py` `crawl_clock`; kit init writes the dates into each repository's checklist).
+
 ## 2. Why this order
 
 - **Greenfield first** costs least: no backlog, and kit init (or the vend) wires it before the first line of
@@ -43,6 +49,14 @@ deploying team needs approvers who are available:
 - **Small teams** (one to four developers): the approvers come from **platform or security, outside the
   team**. A teammate approving a teammate's release is not separation of duties when the team is the whole
   chain (`HUMAN_CONTROL_UNVALIDATED`, `HUMAN_CONTROL_NO_SEPARATION`).
+- **A team of two or fewer with no approver group at all** (owner, 2026-11-07): the organisation may declare
+  **small-team self-approval** in its overlay, as a weakening with all five fields (who approved it, a
+  reference, the date, the reason, the expiry), reviewed at least every 90 days. uat and prod keep their
+  required reviewers and the wait still happens; only Prevent self-review is off, so the developer approves their
+  own deployment, and the run and the release record say `SMALL_TEAM_SELF_APPROVAL`. It is refused for a larger
+  team or once approver pools exist, and a repository cannot declare it for itself
+  ([SETTINGS_PRECEDENCE.md](SETTINGS_PRECEDENCE.md) section 4). Pull requests are unaffected: GitHub never lets
+  their author approve them. **"Prevent self-review" is a GitHub *environment* protection setting.** It governs only the approval of deployment jobs that target that environment. It does not change branch protection, rulesets or pull request review rules, and the kit never sets it: kit init only prints the command, and the deploy only reads it back and checks it.
 - **When the SLA is missed**, the requester escalates: (1) the backup approver, (2) at the next business day's
   start, the platform lead, (3) for a production incident, the break-glass path with its five-field exception
   record (KDEC-036). **A missed SLA never auto-approves anything**, and nobody lowers the environment's

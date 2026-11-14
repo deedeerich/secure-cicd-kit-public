@@ -242,6 +242,17 @@ on:
         type: string
         required: false
         default: ""
+      promote_from_target_resource_id:
+        description: >-
+          PROMOTION MODE: the resource id of the predecessor target this deploy promotes from. REQUIRED
+          when environment_tier is uat or prod: empty is refused (PROMOTION_REFUSED_SOURCE_TARGET_REQUIRED),
+          never inferred from the digest. Set, the gate takes only that target's record from the source run
+          (and the digest must match it); a run with no record for it is refused, never another app's
+          record. Optional in dev and test: empty, the record is chosen by digest, and two targets with
+          that digest refuse as ambiguous.
+        type: string
+        required: false
+        default: ""
       promotion_predecessor:
         description: >-
           Product policy: the environment whose verified record a promotion INTO this environment
@@ -284,6 +295,16 @@ on:
         type: number
         required: false
         default: 10
+      deploy_timeout_minutes:
+        description: "KREQ-717: the job's time bound, 30..360 min and >= 30 + test period (+30 with DAST); else refused before login."
+        type: number
+        required: false
+        default: 90
+      reconciled_interrupted_run:
+        description: "KREQ-717: the run id of an interrupted deploy of this target a person reconciled by hand."
+        type: string
+        required: false
+        default: ""
       dast_command:
         description: >-
           DAST where configured: the caller's command (run by /bin/sh in the caller's checkout,
@@ -461,21 +482,7 @@ on:
         description: "KDEC-036 G5: review-signals.json (also in the deploy evidence), compact."
         value: ${{ jobs.deploy.outputs.review_signals }}
 
-# Concurrency for a CHANGE workflow is the opposite of concurrency for a validation
-# workflow. Validation cancels the superseded run — the answer is stale, killing it costs
-# nothing. A deployment must NEVER be cancelled mid-mutation: the run dies between the
-# change and its verification, leaving a half-applied state with no rollback and no record
-# of what it owned. See docs/architecture/ROLLBACK_CONTRACT.md — a cancelled run cannot honour a
-# contract that depends on completing its own change manifest.
-#
-# So: serialize per target, never cancel in flight. GitHub keeps at most one run PENDING
-# per group and discards older pending ones, which is safe — a pending run has mutated
-# nothing.
-#
-# KDEC-021 (owner, 2026-10-23): "A deployment rolling mid rollback means the deployment has to be
-# rolled back." The group is the TARGET's, shared with reusable-rollback-sequence.yml
-# (kit-target-<environment>-<resource group>-<name>, no adapter prefix), so a deploy queues behind a
-# rollback of the same target instead of racing it. Proven by tests/prove_rollback_sequence.py S19.
+# Why serialize per target and never cancel (KDEC-021): docs/architecture/ROLLBACK_CONTRACT.md "Deploy concurrency".
 concurrency:
   group: kit-target-${{ inputs.github_environment }}-${{ inputs.resource_group }}-${{ inputs.site_name }}
   cancel-in-progress: false
@@ -493,6 +500,8 @@ jobs:
     # ONE caller-owned runner for this job: the lease store (KDEC-030) and the feed mirrors (KDEC-032)
     # are both private, so the private-network runner named here serves both.
     runs-on: ${{ inputs.runner_label }}
+    # KREQ-717: governed; out of 30..360 clamps to 90 and is refused before login.
+    timeout-minutes: ${{ (inputs.deploy_timeout_minutes >= 30 && inputs.deploy_timeout_minutes <= 360) && inputs.deploy_timeout_minutes || 90 }}
     environment: ${{ inputs.github_environment }}
     outputs:
       app_url: ${{ steps.serving.outputs.app_url }}
@@ -577,6 +586,7 @@ jobs:
       # KDEC-029: promotion and the checks that make a deploy "tested".
       PROMOTE_FROM_RUN_ID: ${{ inputs.promote_from_run_id }}
       PROMOTE_FROM_ENVIRONMENT: ${{ inputs.promote_from_environment }}
+      PROMOTE_FROM_TARGET_RESOURCE_ID: ${{ inputs.promote_from_target_resource_id }}
       PROMOTION_PREDECESSOR: ${{ inputs.promotion_predecessor }}
       RELEASE_PATH: ${{ inputs.release_path }}
       E2E_TEST_COMMAND: ${{ inputs.e2e_test_command }}
@@ -608,30 +618,12 @@ jobs:
           #!/usr/bin/env python3
           """The deploy contract, executed: what a deploy run captured, changed, verified and now serves.
 
-          WHY THIS EXISTS (docs/architecture/DEPLOYMENT_CONTRACT_RECONCILIATION.md, ROLLBACK_CONTRACT.md)
-
-              Both deploy reusables reported the digest the run TRIED to deploy beside a health result,
-              with nothing read back from the target. This module is the part of each deploy job that
-              talks to live state and decides what may be claimed about it. The workflows call it one
-              subcommand per step, so the ORDER of the contract (capture, mutate, verify, reverse,
-              provenance, report) stays visible in the workflow file where a reviewer reads it.
-
-              It is INLINED into both deploy reusables by scripts/inline_deploy_scripts.py (a reusable
-              workflow called cross-repo cannot read this repository's scripts/), and the copies are
-              checked for drift in self-test.
-
-          LABELS (assurance-taxonomy.yaml serving_claim)
-              ATTEMPTED     what the run tried to deploy; may be echoed from inputs
-              NOW SERVING   read back from live state; echoing an input here is the defect. When it cannot
-                            be read the value is `unknown` -- never the attempted value.
-
-          USAGE (from a workflow step; names and the digest arrive through env:)
-              deploy_contract.py report --adapter containerapp|appservice
-          """
+          INLINED COPY (scripts/inline_deploy_scripts.py): the full text is scripts/deploy_contract.py at this kit commit."""
           import argparse
           import io
           import json
           import os
+          import re
           import shutil
           import subprocess
           import sys
@@ -2167,7 +2159,7 @@ jobs:
           # not-applicable there; DAST not configured is not a failure (decision 3: "where configured").
           PROMOTION_CONDITIONS = ['exact artefact identity established', 'expected artefact observed running',
                                   'intended traffic observed', 'state reconciliation complete',
-                                  'end-to-end test period passed', 'dynamic scan shows no new blocking finding',
+                                  'end-to-end test period passed', 'dynamic scan passed, or recorded as not required',
                                   'security-settings posture passed', 'required reviews and gates passed',
                                   'built from the default branch']
           PASSIVE_OK = ('NOT_APPLICABLE_PASSIVE',)
@@ -2197,8 +2189,16 @@ jobs:
                   if tp == 'PASSED' or tp in PASSIVE_OK:
                       held.append('end-to-end test period passed')
                   da = (read_evidence('dast.json') or {}).get('result')
-                  if da in ('DAST_PASSED', 'NOT_CONFIGURED') or da in PASSIVE_OK:
-                      held.append('dynamic scan shows no new blocking finding')
+                  try:
+                      pol = (json.loads(env('kit_org_settings') or '{}').get('dast') or {}).get('state') or 'DAST_NO_ORG_POLICY'
+                  except ValueError:
+                      pol = 'DAST_REQUIRED'      # an unreadable org policy never waives a scan
+                  # R07 (external review 2026-11-07): NOT_CONFIGURED is never a passed scan. It satisfies the condition only
+                  # when no org policy requires DAST, or the org recorded a decision that this repository does not need it.
+                  if da == 'DAST_PASSED' or da in PASSIVE_OK or (da == 'NOT_CONFIGURED' and pol != 'DAST_REQUIRED'):
+                      held.append('dynamic scan passed, or recorded as not required')
+                  dast_basis = ('DAST_PASSED' if da == 'DAST_PASSED' else 'passive at prod' if da in PASSIVE_OK else
+                                'NOT_CONFIGURED: %s' % pol if da == 'NOT_CONFIGURED' else 'DAST result %s' % (da or 'absent'))
                   if (read_evidence('security-settings.json') or {}).get('result') == 'POSTURE_PASSED':
                       held.append('security-settings posture passed')
                   if env('routing_result') in ('PROCEED', 'PROCEED_WITH_ADVISORY'):
@@ -2210,6 +2210,7 @@ jobs:
               missing = [c for c in PROMOTION_CONDITIONS if c not in held]
               return {'state': 'not-verified' if missing else 'verified-for-promotion',
                       'established': held, 'missing': missing,
+                      'dast_basis': dast_basis if outcome == 'DEPLOY_HEALTHY' else 'not reached',
                       'note': 'KDEC-029: tested = health, the end-to-end test period, DAST where configured, '
                               'and the security-settings posture; identity needs the build-proven registry '
                               'identity and V1 verified in this deploy; prod runs passive checks only'}
@@ -2257,18 +2258,47 @@ jobs:
           }
 
 
-          def six_questions(outcome, why):
+          # KREQ-706 (KDEC-060): the overlay's `escalation`; at prod a placeholder is refused.
+          escalation_placeholder_channel = 'the deploy environment\'s change or incident queue (set by policy)'
+          escalation_placeholder_service_level = 'placeholder: set by the adopting team\'s policy'
+          ESCALATION_ROUTE_CONFIGURED, ESCALATION_ROUTE_PLACEHOLDER, ESCALATION_ROUTE_REFUSED = (
+              'ESCALATION_ROUTE_CONFIGURED', 'ESCALATION_ROUTE_PLACEHOLDER', 'ESCALATION_ROUTE_REFUSED')
+          _PH = re.compile(r'placeholder|set by|<[^>]*>|YOUR_ORG|replace-me|^\s*(tbd|todo|n/?a|none|unset)?\s*$', re.I)
+
+
+          def escalation_route(org, tier):
+              """-> (state, channel, service_level, owner_role, why). `org`: the overlay, or its JSON."""
+              try:
+                  org = json.loads(org or '{}') if isinstance(org, str) else org
+              except ValueError:
+                  org = {}
+              e = (org or {}).get('escalation') if isinstance(org, dict) else None
+              e = e if isinstance(e, dict) else {}
+              ch, sl, role = str(e.get('channel') or ''), str(e.get('service_level') or ''), e.get('owner_role')
+              bad = [n for n, v in (('channel', ch), ('service_level', sl)) if _PH.search(v)]
+              if not bad:
+                  return ESCALATION_ROUTE_CONFIGURED, ch, sl, role, 'org overlay'
+              why = 'escalation %s unset or a placeholder in the org overlay' % '/'.join(bad)
+              if tier == 'prod':
+                  return ESCALATION_ROUTE_REFUSED, None, None, role, why + '; refused at prod'
+              return (ESCALATION_ROUTE_PLACEHOLDER, escalation_placeholder_channel if 'channel' in bad else ch,
+                      escalation_placeholder_service_level if 'service_level' in bad else sl, role, why)
+
+
+          def six_questions(outcome, why, org_settings=None, tier=''):
               blocked, owner, known, may, nxt = SIX_QUESTIONS.get(
                   outcome, (True, 'platform operations', 'no', False, 'Escalate: unrecognised outcome.'))
               q = {'progression_blocked': blocked, 'why': why, 'resolution_owner': owner,
                    'remediation_known': known, 'automated_actor_may_proceed': may, 'next_action': nxt}
               esc = None
               if blocked and not may:
+                  state, channel, sl, role, rwhy = escalation_route(org_settings, tier)
                   esc = {'resolution_owner': owner,
-                         'request_channel': 'the deploy environment\'s change or incident queue (set by policy)',
+                         'request_channel': channel,
                          'request_type': {'DEPLOY_REFUSED': 'refusal review'}.get(outcome, 'recovery decision'),
                          'required_artefacts': EVIDENCE_FILES,
-                         'service_level': 'placeholder: set by the adopting team\'s policy',
+                         'service_level': sl,
+                         'route_state': state, 'route_owner_role': role, 'route_why': rwhy,
                          'permitted_agent_action': {'may': MAY, 'may_not': MAY_NOT}}
               return q, esc
 
@@ -2320,7 +2350,7 @@ jobs:
                                        'routing_result': env('attestation_route') or None,
                                        'debt': env('attestation_debt') or None}
               report['promotion'] = promotion(outcome)
-              q, esc = six_questions(outcome, why)
+              q, esc = six_questions(outcome, why, env('kit_org_settings'), env('environment_tier'))
               report['six_questions'] = q
               report['escalation'] = esc
               write_evidence('outcome.json', report)
@@ -2361,9 +2391,11 @@ jobs:
                         % ('yes' if q['automated_actor_may_proceed'] else 'no'),
                         '| What is the exact next action? | %s |' % q['next_action']]
               if esc:
-                  lines += ['', '**Escalation contract.** Owner: %s. Channel: %s. Artefacts: %s. Service '
-                            'level: %s.' % (esc['resolution_owner'], esc['request_channel'],
-                                            ', '.join(esc['required_artefacts']), esc['service_level']),
+                  if esc['route_state'] == ESCALATION_ROUTE_REFUSED:
+                      print('::error title=%s::%s' % (esc['route_state'], esc['route_why']))
+                  lines += ['', '**Escalation contract.** Owner: %s. Channel: %s. Artefacts: %s. Service level: %s. '
+                            'Route: `%s` (%s).' % (esc['resolution_owner'], esc['request_channel'], ', '.join(
+                                esc['required_artefacts']), esc['service_level'], esc['route_state'], esc['route_why']),
                             'An automated actor MAY: %s.' % '; '.join(esc['permitted_agent_action']['may']),
                             'It MAY NOT: %s.' % '; '.join(esc['permitted_agent_action']['may_not'])]
               summary('\n'.join(lines))
@@ -2401,62 +2433,45 @@ jobs:
           kit_deploy_contract_py
           cat > "$RUNNER_TEMP/kit-deploy/environment_protection.py" <<'kit_environment_protection_py'
           #!/usr/bin/env python3
-          """Read back the deployment protection of the GitHub environment a deploy runs in, and say whether
-          it is what the policy demands. Read-only; refuses before login at uat and prod. (owner, 2026-10-22)
+          """Read back the protection of the GitHub environment a deploy runs in; refuse an ungated uat or prod.
 
-          WHY
-
-              KDEC-014 made the uat/prod environment's REQUIRED REVIEWERS half of every exception, and the
-              owner's single-developer rule makes them the control itself: a prod or uat deploy needs ONE
-              approver from a named reviewer group (architect / security / platform) who is NOT the deploying
-              developer -- GitHub environment required reviewers with self-review prevented. The kit cannot SET
-              that, but it can READ it (GET /repos/{owner}/{repo}/environments/{name}, which anyone with read
-              access may call). A deploy to an unprotected prod environment is a real gap, so it is refused.
-
-          WHAT IS DEMANDED (per tier)
-
-              The security gate emits `deploy_approval` (the policy register's per-tier demand, or the kit
-              default) and the caller passes it to the deploy. The deploy holds the STRONGER of that and the
-              kit default for the tier, because it cannot tell a value the gate emitted from one a caller typed:
-              uat and prod always demand at least one required reviewer with self-review prevented. Approver
-              groups, when named, are a tightening and are honoured.
-
-          OUTCOMES (environment_protection in assurance-taxonomy.yaml)
-
-              ENVIRONMENT_PROTECTION_VERIFIED        the environment's reviewer rule satisfies the demand
-              ENVIRONMENT_PROTECTION_NOT_REQUIRED    nothing is demanded at this tier (below uat by default)
-              ENVIRONMENT_REVIEWERS_ABSENT           no required-reviewer rule, or one with no reviewers
-              ENVIRONMENT_SELF_REVIEW_ALLOWED        self-review must be prevented and is not
-              ENVIRONMENT_APPROVER_GROUP_MISSING     named groups are demanded and a reviewer outside them
-                                                     (or no reviewer from them) could approve
-              ENVIRONMENT_PROTECTION_NOT_ESTABLISHED the API could not be read, or the demand could not be
-
-              At uat and prod anything but VERIFIED or NOT_REQUIRED refuses the deploy before login. Below
-              uat it is recorded and warned, never refused.
-
-          USAGE
-              python3 environment_protection.py --repository owner/name --environment NAME --tier TIER \
-                  [--demand-json JSON] [--api-url URL] [--github-output FILE]      (token: $GH_TOKEN)
-              python3 environment_protection.py --self-test
-
-          EXIT 0 permitted   1 refused   2 usage or self-test failure
-          """
+          INLINED COPY (scripts/inline_deploy_scripts.py): the full text is scripts/environment_protection.py at this kit commit."""
           import argparse
+          import base64
           import json
           import os
+          import re
           import sys
+          import urllib.error
           import urllib.parse
           import urllib.request
 
           PRODUCTION_TIERS = ('uat', 'prod')
           TIERS = ('sandbox', 'dev', 'test', 'uat', 'prod')
+          RANK = dict((t, i) for i, t in enumerate(TIERS))
+          NAME_WORDS = {'uat': 'uat', 'stage': 'uat', 'staging': 'uat', 'preprod': 'uat', 'prod': 'prod',
+                        'production': 'prod', 'prd': 'prod', 'dev': 'dev', 'development': 'dev', 'sandbox': 'sandbox',
+                        'test': 'test', 'testing': 'test'}
           VERIFIED = 'ENVIRONMENT_PROTECTION_VERIFIED'
           NOT_REQUIRED = 'ENVIRONMENT_PROTECTION_NOT_REQUIRED'
+          NOT_FOUND = 'ENVIRONMENT_NOT_FOUND'
+          UNCLASSED = 'ENVIRONMENT_UNCLASSED'
           REVIEWERS_ABSENT = 'ENVIRONMENT_REVIEWERS_ABSENT'
+          REVIEWERS_EMPTY = 'ENVIRONMENT_REVIEWERS_EMPTY'
           SELF_REVIEW_ALLOWED = 'ENVIRONMENT_SELF_REVIEW_ALLOWED'
           GROUP_MISSING = 'ENVIRONMENT_APPROVER_GROUP_MISSING'
+          POOL_MISSING = 'ENVIRONMENT_APPROVER_POOL_MISSING'
+          OUTSIDE_POOL = 'ENVIRONMENT_REVIEWER_OUTSIDE_POOL'
+          ALL_APP_TEAM = 'ENVIRONMENT_APPROVERS_ALL_APP_TEAM'
           NOT_ESTABLISHED = 'ENVIRONMENT_PROTECTION_NOT_ESTABLISHED'
-          PERMITTED = (VERIFIED, NOT_REQUIRED)
+          LOOSENED = 'ENVIRONMENT_GOVERNED_SETTING_LOOSENED'
+          SMALL_TEAM_OK = 'ENVIRONMENT_PROTECTION_SMALL_TEAM_SELF_APPROVAL'
+          SMALL_TEAM_REFUSED = 'ENVIRONMENT_SMALL_TEAM_SELF_APPROVAL_REFUSED'
+          PERMITTED = (VERIFIED, NOT_REQUIRED, SMALL_TEAM_OK)
+          ST_IN_FORCE = 'SMALL_TEAM_SELF_APPROVAL'
+          ST_NOT_DECLARED = 'SMALL_TEAM_SELF_APPROVAL_NOT_DECLARED'
+          ST_NOT_ORG = 'SMALL_TEAM_SELF_APPROVAL_NOT_ORG_DECLARED'
+          ORG_APPLIED, ORG_ABSENT = 'ORG_OVERLAY_APPLIED', 'ORG_OVERLAY_ABSENT'
 
 
           def default_demand(tier):
@@ -2466,8 +2481,7 @@ jobs:
 
 
           def demand_for(tier, demand_json):
-              """-> (demand, note). The stronger of the supplied demand and the kit default; None when the
-              supplied value cannot be read (the demand is then not established)."""
+              """-> (demand, note): the stronger of the passed deploy_approval and the kit default; None if unreadable."""
               base = default_demand(tier)
               if not (demand_json or '').strip():
                   return base, 'no deploy_approval was passed; the kit default for %s applies' % tier
@@ -2490,79 +2504,324 @@ jobs:
                                                                            sup.get('self_review_prevented')) else 'not_required'}
               if out['approver_groups'] and not out['approvers_required']:
                   out['approvers_required'] = 1
-              note = 'the stronger of the passed deploy_approval and the kit default for %s' % tier
-              return out, note
+              return out, 'the stronger of the passed deploy_approval and the kit default for %s' % tier
 
 
-          def evaluate(env_doc, demand):
-              """-> (outcome, why). `env_doc`: the parsed API answer, or None when it could not be read."""
+          def name_class(name):
+              """The class a name's words give (the strongest word), or None."""
+              words = [NAME_WORDS[w] for w in re.split(r'[^a-z0-9]+', (name or '').lower()) if w in NAME_WORDS]
+              return max(words, key=lambda c: RANK[c]) if words else None
+
+
+          def explicit_class(spec, name):
+              """-> (class or None, problem or ''). spec: .kit/environments.json (list or {"classes": {}} form)."""
+              if spec is None:
+                  return None, ''
+              found = None
+              if isinstance(spec, dict) and isinstance(spec.get('classes'), dict):
+                  found = spec['classes'].get(name)
+              elif isinstance(spec, dict) and isinstance(spec.get('environments'), list):
+                  for e in spec['environments']:
+                      if isinstance(e, dict) and e.get('name') == name:
+                          found = e.get('class', e.get('tier'))
+              else:
+                  return None, '.kit/environments.json has neither an environments list nor a classes map'
+              if found is None:
+                  return None, ''
+              if found not in TIERS:
+                  return None, '.kit/environments.json classes %r as %r, not one of %s' % (name, found, ', '.join(TIERS))
+              return found, ''
+
+
+          def classify(name, tier, spec, spec_err='', org_classes=None):
+              """-> (effective class or None, source, refusal outcome or '', why). org_classes: the org overlay's map."""
+              if spec_err:
+                  return None, 'unread', NOT_ESTABLISHED, '.kit/environments.json could not be read (%s)' % spec_err
+              exp, prob = explicit_class(spec, name)
+              if prob:
+                  return None, 'unread', NOT_ESTABLISHED, prob
+              org = org_classes.get(name) if isinstance(org_classes, dict) else None
+              org = org if org in TIERS else None
+              pat = name_class(name)
+              if not (name or '').strip() or (exp is None and pat is None and org is None):
+                  return None, 'none', UNCLASSED, ('the environment %r is not classed: no .kit/environments.json or org overlay '
+                                                   'class and no dev/test/uat/prod word in its name' % (name or ''))
+              cands = [(c, s) for c, s in ((tier if tier in TIERS else None, 'tier'), (exp, '.kit/environments.json'),
+                                           (org, 'org overlay'), (pat, 'name')) if c]
+              cls, src = max(cands, key=lambda cs: RANK[cs[0]])
+              return cls, src, '', ''
+
+
+          def _norm(x):
+              return str(x or '').strip().lstrip('@').split('/')[-1].lower()
+
+
+          def parse_pools(raw):
+              """KIT_APPROVER_POOLS / settings approver_pools -> set of team slugs and logins (None when not named)."""
+              if raw in (None, '', {}, []):
+                  return None
+              if isinstance(raw, str):
+                  try:
+                      raw = json.loads(raw)
+                  except ValueError:
+                      raw = [p for p in raw.split(',')]
+              vals = [v for k, vs in raw.items() if k in ('platform', 'security') for v in (vs if isinstance(vs, list) else [vs])] \
+                  if isinstance(raw, dict) else (raw if isinstance(raw, list) else [raw])
+              out = set(_norm(v) for v in vals) - {''}
+              return out or None
+
+
+          def parse_team(raw):
+              """KIT_APP_TEAM / settings app_team -> {'team': slug, 'members': set or None} or None."""
+              if raw in (None, '', {}):
+                  return None
+              if isinstance(raw, str):
+                  try:
+                      raw = json.loads(raw)
+                  except ValueError:
+                      raw = {'team': raw}
+              if isinstance(raw, str):
+                  raw = {'team': raw}
+              if not isinstance(raw, dict):
+                  return None
+              mem = raw.get('members')
+              return {'team': _norm(raw.get('team')), 'members': set(_norm(m) for m in mem) if isinstance(mem, list) else None}
+
+
+          def _who(x):
+              r = x.get('reviewer') or {}
+              return x.get('type'), _norm(r.get('slug') or r.get('login') or r.get('name'))
+
+
+          def app_team_check(reviewers, team):
+              """-> APP_TEAM_NOT_DECLARED | APP_TEAM_INDEPENDENT | APP_TEAM_ONLY | NOT_ESTABLISHED. Never guesses."""
+              if not team:
+                  return 'APP_TEAM_NOT_DECLARED'
+              seen = []
+              for x in reviewers:
+                  kind, who = _who(x)
+                  if kind == 'Team':
+                      seen.append(who == team['team'])
+                  elif team['members'] is not None:
+                      seen.append(who in team['members'])
+                  else:
+                      seen.append(None)
+              if False in seen:
+                  return 'APP_TEAM_INDEPENDENT'
+              return 'APP_TEAM_ONLY' if seen and all(s is True for s in seen) else 'NOT_ESTABLISHED'
+
+
+          def governed(org, pools, team, consumer_small):
+              """-> (pools, team, problem or ''). The org overlay's pools and team; a consumer value may only tighten."""
+              if consumer_small:
+                  return pools, team, ('a repository value declares small-team self-approval; only the org overlay may '
+                                       'declare that weakening (%s)' % ST_NOT_ORG)
+              if not org or org.get('state') != ORG_APPLIED:
+                  return pools, team, ''
+              opools = set(org.get('pools') or [])
+              if opools:
+                  if pools is not None and not pools <= opools:
+                      return pools, team, ('the repository names approver pools (%s) the org overlay does not (%s): a '
+                                           'repository may narrow the pools, never widen them'
+                                           % (', '.join(sorted(pools - opools)), ', '.join(sorted(opools))))
+                  pools = pools if pools is not None else opools
+              ot = org.get('app_team')
+              if ot and ot.get('team'):
+                  if team and team.get('team') and team['team'] != ot['team']:
+                      return pools, team, ('the repository names the app team %s; the org overlay names %s'
+                                           % (team['team'], ot['team']))
+                  mem = (team or {}).get('members')
+                  if mem is None and ot.get('members') is not None:
+                      mem = set(ot['members'])
+                  team = {'team': ot['team'], 'members': mem}
+              return pools, team, ''
+
+
+          def evaluate(env_doc, demand, pools=None, team=None, small=None):
+              """-> (outcome, why, app_team_check). env_doc: the API answer, None when unreadable, 404 when absent.
+              small: the org overlay's small_team_self_approval state (None when no overlay applies)."""
               if demand is None:
-                  return NOT_ESTABLISHED, 'the policy\'s deploy approval could not be read, so what to verify is unknown'
+                  return NOT_ESTABLISHED, 'the policy\'s deploy approval could not be read, so what to verify is unknown', '-'
               if not demand['approvers_required'] and demand['self_review_prevented'] != 'required':
-                  return NOT_REQUIRED, 'no required reviewer is demanded at this tier'
-              if not isinstance(env_doc, dict):
-                  return NOT_ESTABLISHED, 'the environment\'s protection rules could not be read'
-              rules = env_doc.get('protection_rules')
-              if not isinstance(rules, list):
-                  return NOT_ESTABLISHED, 'the API answer carries no protection_rules list'
-              rv = [r for r in rules if isinstance(r, dict) and (r.get('type') == 'required_reviewers' or 'reviewers' in r)]
-              reviewers = [x for r in rv for x in (r.get('reviewers') or []) if isinstance(x, dict)]
+                  return NOT_REQUIRED, 'no required reviewer is demanded at this tier', '-'
+              if env_doc == 404:
+                  return NOT_FOUND, 'the environment does not exist, so no reviewer can be waited for', '-'
+              if not isinstance(env_doc, dict) or not isinstance(env_doc.get('protection_rules'), list):
+                  return NOT_ESTABLISHED, 'the environment\'s protection rules could not be read', '-'
+              rv = [r for r in env_doc['protection_rules'] if isinstance(r, dict) and r.get('type') == 'required_reviewers']
+              if not rv:
+                  return REVIEWERS_ABSENT, 'the environment has no required-reviewers rule: anyone who can run the workflow deploys', '-'
+              if any(not isinstance(r.get('reviewers'), list) for r in rv):
+                  return NOT_ESTABLISHED, 'the required-reviewers rule carries no readable reviewer list', '-'
+              reviewers = [x for r in rv for x in r['reviewers'] if isinstance(x, dict)]
               if not reviewers:
-                  return REVIEWERS_ABSENT, 'the environment has no required reviewers: anyone who can run the workflow deploys'
+                  return REVIEWERS_EMPTY, 'the required-reviewers rule names nobody, so nobody is waited for', '-'
+              small_used = False
               if demand['self_review_prevented'] == 'required' and not all(r.get('prevent_self_review') is True for r in rv):
-                  return SELF_REVIEW_ALLOWED, ('the environment lets the person who started the deploy approve it '
-                                               '(prevent_self_review is off)')
+                  if small == ST_IN_FORCE:
+                      small_used = True
+                  elif small and small != ST_NOT_DECLARED:
+                      return SMALL_TEAM_REFUSED, ('Prevent self-review is off, and the org\'s small-team self-approval does not '
+                                                  'apply (%s)' % small), '-'
+                  else:
+                      return SELF_REVIEW_ALLOWED, 'the person who started the deploy may approve it (prevent_self_review is off)', '-'
               groups = set(g.lower() for g in demand['approver_groups'])
               if groups:
-                  outside, inside = [], 0
-                  for x in reviewers:
-                      who = x.get('reviewer') or {}
-                      names = set(str(who.get(k, '')).lower() for k in ('slug', 'name')) - {''}
-                      if x.get('type') == 'Team' and names & groups:
-                          inside += 1
-                      else:
-                          outside.append(str(who.get('slug') or who.get('login') or who.get('name') or '?'))
-                  if outside or not inside:
+                  outside = [w for k, w in map(_who, reviewers) if not (k == 'Team' and w in groups)]
+                  if outside or not reviewers:
                       return GROUP_MISSING, ('a reviewer outside the named groups (%s) could approve: %s'
-                                             % (', '.join(sorted(groups)), ', '.join(sorted(outside)) or 'none from them'))
-              return VERIFIED, 'required reviewers%s, self-review %s' % (
-                  ' from %s' % ', '.join(sorted(groups)) if groups else '',
-                  'prevented' if all(r.get('prevent_self_review') is True for r in rv) else 'not demanded')
+                                             % (', '.join(sorted(groups)), ', '.join(sorted(outside)))), '-'
+              if pools is not None and not any(w in pools for _k, w in map(_who, reviewers)):
+                  return POOL_MISSING, ('no reviewer is in the platform or security pool (%s)' % ', '.join(sorted(pools))), '-'
+              if pools is not None and not small_used and small != ST_IN_FORCE:
+                  # GitHub waits for ONE approval from ANY listed reviewer: a reviewer outside the pools could approve alone
+                  # (external review R09). Every reviewer in the pools makes the approver a pool member by construction.
+                  outside = sorted(w for _k, w in map(_who, reviewers) if w not in pools)
+                  if outside:
+                      return OUTSIDE_POOL, ('reviewer(s) outside the platform or security pool (%s) can approve alone, because '
+                                            'GitHub needs one approval from any listed reviewer: %s' % (
+                                                ', '.join(sorted(pools)), ', '.join(outside))), '-'
+              tc = app_team_check(reviewers, team)
+              if small_used or (small == ST_IN_FORCE and tc == 'APP_TEAM_ONLY'):
+                  return SMALL_TEAM_OK, ('SMALL_TEAM_SELF_APPROVAL: the environment still waits for a named reviewer, and under '
+                                         'the org\'s declared small-team weakening that reviewer may be on the app team, the '
+                                         'developer who started the deploy included'), tc
+              if tc == 'APP_TEAM_ONLY':
+                  return ALL_APP_TEAM, 'every reviewer is on the app team (%s): nobody outside it approves' % team['team'], tc
+              return VERIFIED, 'required reviewers%s%s, self-review prevented' % (
+                  ' from %s' % ', '.join(sorted(groups)) if groups else '', ', a pool member among them' if pools else ''), tc
 
 
-          def fetch(api_url, repository, environment, token):
-              url = '%s/repos/%s/environments/%s' % (api_url.rstrip('/'), repository, urllib.parse.quote(environment, safe=''))
-              req = urllib.request.Request(url, headers={'Accept': 'application/vnd.github+json',
-                                                         'X-GitHub-Api-Version': '2022-11-28'})
+          def get(api_url, path, token, raw=False):
+              """-> (parsed JSON or text, error or ''); a 404 answers (404, '')."""
+              url = '%s/%s' % (api_url.rstrip('/'), path.lstrip('/'))
+              if url.startswith('file:'):  # a recorded API tree (the proofs): no query, and an absent path is a 404
+                  url = url.split('?')[0]
+                  if not os.path.exists(urllib.request.url2pathname(urllib.parse.urlsplit(url).path)):
+                      return 404, ''
+              req = urllib.request.Request(url, headers={'Accept': 'application/vnd.github.raw+json' if raw else
+                                                         'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'})
               if token and url.startswith('https://'):
                   req.add_header('Authorization', 'Bearer %s' % token)
               try:
                   with urllib.request.urlopen(req, timeout=30) as resp:
-                      return json.loads(resp.read().decode('utf-8')), None
+                      body = resp.read().decode('utf-8')
+              except urllib.error.HTTPError as exc:
+                  return (404, '') if exc.code == 404 else (None, 'GET %s answered %s' % (url.split('?')[0], exc.code))
               except Exception as exc:  # noqa: BLE001 -- any failure is "could not read", never a pass
                   return None, 'GET %s failed: %s' % (url.split('?')[0], type(exc).__name__)
+              try:
+                  doc = json.loads(body)
+              except ValueError:
+                  return None, 'GET %s did not answer JSON' % url.split('?')[0]
+              if raw and isinstance(doc, dict) and doc.get('encoding') == 'base64' and 'content' in doc:
+                  try:
+                      doc = json.loads(base64.b64decode(doc['content']).decode('utf-8'))
+                  except ValueError:
+                      return None, 'the file at %s is not JSON' % path.split('?')[0]
+              return doc, ''
+
+
+          def kit_file(api_url, repo, rel, ref, token):
+              """-> (doc or None when absent, error)."""
+              doc, err = get(api_url, 'repos/%s/contents/%s%s' % (repo, rel, '?ref=%s' % urllib.parse.quote(ref) if ref else ''),
+                             token, raw=True)
+              return (None, '') if doc == 404 else (doc, err)
 
 
           def _selftest():
               fails = []
               prot = {'protection_rules': [{'type': 'required_reviewers', 'prevent_self_review': True,
-                                            'reviewers': [{'type': 'Team', 'reviewer': {'slug': 'security', 'name': 'Security'}}]}]}
+                                            'reviewers': [{'type': 'Team', 'reviewer': {'slug': 'security'}}]}]}
               d, _n = demand_for('prod', '')
-              if evaluate(prot, d)[0] != VERIFIED:
-                  fails.append('a protected prod environment was not VERIFIED')
-              if evaluate({'protection_rules': []}, d)[0] != REVIEWERS_ABSENT:
-                  fails.append('an unprotected prod environment was not REVIEWERS_ABSENT')
-              if evaluate(None, d)[0] != NOT_ESTABLISHED:
-                  fails.append('an unreadable answer was not NOT_ESTABLISHED')
-              d, _n = demand_for('prod', json.dumps({'prod': {'approvers_required': 0, 'self_review_prevented': 'not_required'}}))
-              if d['approvers_required'] != 1:
+              mixed = {'protection_rules': [{'type': 'required_reviewers', 'prevent_self_review': True,
+                                             'reviewers': [{'type': 'Team', 'reviewer': {'slug': 'security'}},
+                                                           {'type': 'User', 'reviewer': {'login': 'app-dev'}}]}]}
+              for got, want in ((evaluate(prot, d)[0], VERIFIED), (evaluate({'protection_rules': []}, d)[0], REVIEWERS_ABSENT),
+                                (evaluate(None, d)[0], NOT_ESTABLISHED), (evaluate(404, d)[0], NOT_FOUND),
+                                (classify('qa-east', 'dev', None)[2], UNCLASSED), (classify('prod', 'dev', None)[0], 'prod'),
+                                (classify('prod', 'dev', {'classes': {'prod': 'dev'}})[0], 'prod'),
+                                (evaluate(prot, d, team={'team': 'security', 'members': None})[0], ALL_APP_TEAM),
+                                (evaluate(prot, d, pools={'platform'})[0], POOL_MISSING),
+                                (evaluate(mixed, d, pools={'security'})[0], OUTSIDE_POOL),
+                                (evaluate(prot, d, pools={'security'})[0], VERIFIED)):
+                  if got != want:
+                      fails.append('%s, expected %s' % (got, want))
+              if demand_for('prod', json.dumps({'prod': {'approvers_required': 0}}))[0]['approvers_required'] != 1:
                   fails.append('a passed demand weakened the prod default')
+              for f in fails:
+                  sys.stderr.write('FAIL: %s\n' % f)
               if fails:
-                  for f in fails:
-                      sys.stderr.write('FAIL: %s\n' % f)
                   return 2
-              print('environment_protection selftest ok. The full proof is tests/prove_deploy_environment_protection.py.')
+              print('environment_protection selftest ok. The full proof is tests/prove_uat_prod_gating.py.')
               return 0
+
+
+          def parse_org(raw):
+              """$KIT_ORG_SETTINGS (scripts/org_settings.py resolve) -> dict; empty -> ORG_OVERLAY_ABSENT; unreadable -> None."""
+              if not (raw or '').strip():
+                  return {'state': ORG_ABSENT}
+              try:
+                  doc = json.loads(raw)
+              except ValueError:
+                  return None
+              if not isinstance(doc, dict) or not doc.get('state'):
+                  return None
+              if doc.get('pools') is not None:
+                  doc['pools'] = set(_norm(p) for p in doc['pools']) - {''}
+              if doc.get('app_team') is not None and not isinstance(doc['app_team'], dict):
+                  return None
+              return doc
+
+
+          def decide(a, environ):
+              """-> (outcome, why, refused, effective class, class source, app team check, demand)."""
+              tier, env, token = a.tier.strip(), a.environment.strip(), environ.get('GH_TOKEN', '')
+              if tier == '' and getattr(a, 'tier_optional', False):
+                  tier = None   # the rollback names no tier: the class comes from the files and the name alone
+              elif tier not in TIERS:  # a tier nobody can name cannot be shown to be below production
+                  return NOT_ESTABLISHED, 'environment_tier %r is not a registered tier' % tier, True, '-', '-', '-', None
+              if not a.repository.strip():
+                  return NOT_ESTABLISHED, 'no repository is named, so nothing can be read', True, '-', '-', '-', None
+              org = parse_org(environ.get('KIT_ORG_SETTINGS'))
+              spec, err = kit_file(a.api_url, a.repository, '.kit/environments.json', a.ref, token)
+              cls, src, bad, why = classify(env, tier, spec, err, (org or {}).get('classes'))
+              if bad:
+                  return bad, why, True, '-', src, '-', None
+              demand, _note = demand_for(cls, a.demand_json)
+              production = cls in PRODUCTION_TIERS
+              if org is None or org.get('state') not in (ORG_APPLIED, ORG_ABSENT):
+                  return (NOT_ESTABLISHED, 'the org overlay could not be read (%s), so the governed approver settings are '
+                          'unknown' % ((org or {}).get('why') or 'KIT_ORG_SETTINGS is not readable'), production, cls, src, '-',
+                          demand)
+              settings = None
+              pools, team = parse_pools(environ.get('KIT_APPROVER_POOLS')), parse_team(environ.get('KIT_APP_TEAM'))
+              consumer_small = bool((environ.get('KIT_SMALL_TEAM_SELF_APPROVAL') or '').strip())
+              if production:
+                  settings, serr = kit_file(a.api_url, a.repository, '.kit/settings.json', a.ref, token)
+                  if serr or not isinstance(settings, (dict, type(None))):
+                      return (NOT_ESTABLISHED, '.kit/settings.json could not be read (%s), so its approver pools and app team '
+                              'are unknown' % (serr or 'not a JSON object'), True, cls, src, '-', demand)
+                  settings = settings or {}
+                  pools = pools if pools is not None else parse_pools(settings.get('approver_pools'))
+                  team = team if team is not None else parse_team(settings.get('app_team'))
+                  consumer_small = consumer_small or bool(settings.get('small_team_self_approval'))
+              pools, team, loosened = governed(org, pools, team, consumer_small)
+              if loosened:
+                  return LOOSENED, loosened, production, cls, src, '-', demand
+              small = (org.get('small_team') or {}).get('state') if org.get('state') == ORG_APPLIED else None
+              doc = None
+              if cls in PRODUCTION_TIERS or (demand or {}).get('approvers_required'):
+                  doc, err = get(a.api_url, 'repos/%s/environments/%s' % (a.repository, urllib.parse.quote(env, safe='')), token)
+              if team and team['members'] is None and team['team'] and doc not in (None, 404):
+                  owner = a.repository.split('/')[0]
+                  mem, _e = get(a.api_url, 'orgs/%s/teams/%s/members?per_page=100' % (owner, team['team']), token)
+                  if isinstance(mem, list):
+                      team = dict(team, members=set(_norm(m.get('login')) for m in mem if isinstance(m, dict)))
+              outcome, why, tc = evaluate(doc, demand, pools, team, small)
+              if doc is None and err and outcome == NOT_ESTABLISHED:
+                  why = '%s (%s)' % (why, err)
+              return outcome, why, outcome not in PERMITTED and production, cls, src, tc, demand
 
 
           def main(argv=None):
@@ -2572,34 +2831,25 @@ jobs:
               ap.add_argument('--environment', default='')
               ap.add_argument('--tier', default='')
               ap.add_argument('--demand-json', default='')
+              ap.add_argument('--ref', default=os.environ.get('GITHUB_SHA', ''))
               ap.add_argument('--api-url', default=os.environ.get('GITHUB_API_URL', 'https://api.github.com'))
               ap.add_argument('--github-output', default='')
+              ap.add_argument('--tier-optional', action='store_true',
+                              help='the caller names no tier (the rollback): the class comes from the files and the name alone')
               a = ap.parse_args(argv)
               if a.self_test:
                   return _selftest()
-              tier = a.tier.strip()
-              demand, note = demand_for(tier, a.demand_json)
-              if tier not in TIERS:
-                  # A tier nobody can name cannot be shown to be below production.
-                  outcome, why = NOT_ESTABLISHED, 'environment_tier %r is not a registered tier' % tier
-              elif demand is not None and not demand['approvers_required'] and demand['self_review_prevented'] != 'required':
-                  outcome, why = evaluate(None, demand)
-              elif not a.environment.strip() or not a.repository.strip():
-                  outcome, why = NOT_ESTABLISHED, 'no GitHub environment (or repository) is named, so none can be read'
-              else:
-                  doc, err = fetch(a.api_url, a.repository, a.environment, os.environ.get('GH_TOKEN', ''))
-                  outcome, why = evaluate(doc, demand)
-                  if err:
-                      why = '%s (%s)' % (why, err)
-              refused = outcome not in PERMITTED and (tier in PRODUCTION_TIERS or tier not in TIERS)
-              print('environment_protection=%s tier=%s refused=%s' % (outcome, tier or '(none)', str(refused).lower()))
+              outcome, why, refused, cls, src, tc, demand = decide(a, os.environ)
+              print('environment_protection=%s tier=%s refused=%s' % (outcome, a.tier.strip() or '(none)', str(refused).lower()))
               print('  ' + why)
-              print('  demand: %s (%s)' % (json.dumps(demand, sort_keys=True), note))
+              print('  environment %r classed %s (from %s); app_team_check=%s; demand %s'
+                    % (a.environment, cls, src, tc, json.dumps(demand, sort_keys=True)))
               if a.github_output:
                   with open(a.github_output, 'a', encoding='utf-8') as fh:
-                      fh.write('environment_protection=%s\n' % outcome)
-                      fh.write('environment_protection_refused=%s\n' % str(refused).lower())
-                      fh.write('environment_protection_why=%s\n' % why.replace('\n', ' '))
+                      fh.write('environment_protection=%s\nenvironment_protection_refused=%s\nenvironment_class=%s\n'
+                               'app_team_check=%s\nenvironment_protection_why=%s\n'
+                               % (outcome, str(refused).lower(), cls, tc, why.replace('\n', ' ')))
+                      fh.write('small_team_self_approval=%s\n' % (ST_IN_FORCE if outcome == SMALL_TEAM_OK else ''))
               return 1 if refused else 0
 
 
@@ -2609,68 +2859,8 @@ jobs:
           cat > "$RUNNER_TEMP/kit-deploy/rollback_hold.py" <<'kit_rollback_hold_py'
           #!/usr/bin/env python3
           """After a rollback: the target's rollback MARKER, and the DEPENDENCY CHECK every incoming deploy of
-          that target runs before it logs in. (KDEC-023 item 4, owner 2026-10-23, lane L-RB3.)
 
-          WHY THIS EXISTS
-
-              Owner, 2026-10-23, on a deploy that arrives while a rollback runs: "That's a conflict where the
-              rollback must finish and then the other one can deploy...problem is if someone is trying to
-              deploy they are probably trying to use the infrastructure and code from the one we just rolled
-              back". Her decision, the same day: "We need to do a dependency check on the incoming deployment
-              to ensure that it isn't reliant on things that were just rolled back and if they are you give a
-              report to the deploying team or pipeline or whatever and let them know there is an error because
-              of a rollback and what dependencies no longer are the same or no longer exist...and then they
-              correct. If there are no dependencies on rolled back items then deploy it."
-
-              The shared per-target concurrency group (KDEC-021) already makes the deploy WAIT for the
-              rollback. Waiting is not enough: when the rollback finishes, the queued deploy -- built before
-              it -- would put straight back what was just taken out, or stand on something that is gone.
-
-          THE MARKER (`marker`, run by reusable-rollback-sequence.yml when the sequence reversed anything)
-
-              Uploaded as the artifact `kit-rollback-marker-<target key>` (the deploy evidence channel: the
-              deploys already publish `deploy-evidence-*` artifacts; the marker is read the same way). It names
-              the target, the rollback run, when it completed, the releases it rolled back (run, commit,
-              images), and every node it changed with the state it left: gone (`absent`) or `restored`, with
-              each field old -> new.
-
-          THE CHECK (`check`, run by both deploy reusables before login)
-
-              No marker for the target                    ROLLBACK_CHECK_NOT_REQUIRED
-              The deploy's base commit is newer than the  ROLLBACK_CHECK_NOT_REQUIRED (it was built after the
-                rollback completed                          rollback, knowing it)
-              Otherwise the deploy is checked for a DEPENDENCY on what was rolled back:
-                release lineage    its commit contains a rolled-back release's commit (compare API)
-                image              it deploys an image a rolled-back release deployed
-                declared           each entry of `declared_dependencies` (resource ids, entry paths, host
-                                   names: app settings, connection strings, Key Vault references, NSG / Front
-                                   Door entries, schema or migration markers recorded as nodes) that names a
-                                   node the rollback removed or changed
-              Any dependency                              DEPLOY_REFUSED_ROLLBACK_DEPENDENCY -- refused, with a
-                                                          report: which rollback, and each dependency, old ->
-                                                          new or "no longer exists". The deploying team
-                                                          corrects the deploy and deploys again. THERE IS NO
-                                                          OVERRIDE INPUT (owner): the fix is the correction.
-              None                                        DEPLOY_NO_ROLLBACK_DEPENDENCY -- the deploy proceeds,
-                                                          with the note that the check ran and found none
-              The state cannot be read (the artifact list, ROLLBACK_DEPENDENCY_CHECK_INCOMPLETE -- refused
-                the marker, the commit, the comparison)     with the reason; never blind
-
-              The report is the run summary, an annotation and `rollback-check.json` in the deploy evidence.
-
-          USAGE
-              rollback_hold.py marker --record F --evidence-root D --environment E --resource-group G --name N
-                                      --run-id I --run-attempt A [--completed-at T] --out F [--github-output F]
-              rollback_hold.py check  --environment E --resource-group G --name N --commit SHA --run-id I
-                                      [--declared-dependencies JSON] [--image REF] --out F [--summary F]
-                                      [--github-output F]
-              rollback_hold.py --self-test
-              GitHub API: $GITHUB_API_URL, $GITHUB_REPOSITORY, $GH_TOKEN. A file:// API is the local stand-in
-              (tests): one recorded answer per path, with the `name` filter applied here as the server applies it.
-
-          EXIT  check: 0 not required / no dependency   1 refused (a dependency, or the check incomplete)
-                marker: 0 written or nothing to mark   2 usage
-          """
+          INLINED COPY (scripts/inline_deploy_scripts.py): the full text is scripts/rollback_hold.py at this kit commit."""
           import argparse
           import hashlib
           import io
@@ -2715,7 +2905,8 @@ jobs:
               return os.environ.get(name.upper(), default)
 
 
-          def _open(url):
+          def _open(url, headers_out=None):
+              """-> the body; the response headers into `headers_out` when given (a paged listing's Link)."""
               req = urllib.request.Request(url, headers={'Accept': 'application/vnd.github+json',
                                                          'X-GitHub-Api-Version': '2022-11-28'})
               token = _env('gh_token')
@@ -2723,6 +2914,8 @@ jobs:
                   # Unredirected: an artifact download redirects to storage, which must not get the token.
                   req.add_unredirected_header('Authorization', 'Bearer %s' % token)
               with urllib.request.urlopen(req, timeout=60) as resp:
+                  if headers_out is not None:
+                      headers_out.update(resp.headers.items())
                   return resp.read()
 
 
@@ -3060,55 +3253,8 @@ jobs:
           cat > "$RUNNER_TEMP/kit-deploy/promotion.py" <<'kit_promotion_py'
           #!/usr/bin/env python3
           """Build once, promote the same digest: the promotion record, the promotion gate, the checks that
-          make a deploy "tested", and the daily scan of what is actually serving. (KDEC-029, owner 2026-10-26.)
 
-          WHY THIS EXISTS
-
-              The deploy contract computed `promotion` and could never read "verified" (COMPLETION_LEDGER
-              DCR-11, open decision O-11): three of its conditions had no evidence source, and nothing
-              consumed the answer. The owner closed O-11 on 2026-10-26:
-
-                1  A merge to main builds ONCE; that exact digest moves through the environments.
-                2  dev and test deploy in parallel from the same build; uat and prod are PROMOTED from the
-                   prior environment (prod's predecessor is test or uat, per product; default test).
-                3  "Tested" = health, the end-to-end test period (KDEC-021), DAST (where configured) with
-                   no new blocking finding, and the security-settings posture check.
-                   Only then does the record read `verified-for-promotion`.
-                4  14 days is a MAXIMUM: a newer verified build in the same predecessor supersedes an older
-                   one; and eligibility is revocable at once (a new critical or known-exploited finding, a
-                   revoked signing identity, a revoked approval, invalidated test evidence).
-                5  The promotion gate refuses, naming its reason, before the deploy identity is used.
-                6  Hotfix = the same path compressed; break-glass = an approved, time-limited exception,
-                   recorded BREAK_GLASS, with the testing owed afterwards and flagged until done.
-                7  Prod gets passive checks only (health, posture); active DAST against prod is refused.
-                8  A daily scan reconciles what is serving, rescans that digest (never a rebuild), and
-                   reports artifact drift and security drift separately; it never rolls anything back.
-
-          WHERE IT RUNS
-
-              Inlined into both deploy reusables beside deploy_contract.py (scripts/inline_deploy_scripts.py),
-              one subcommand per step, and run from the kit checkout by the deployed-scan composite:
-
-                preflight     every deploy, before login: release path, DAST vs prod, uat/prod need a
-                              predecessor, the break-glass exception, the test-period bounds
-                gate-collect  promotion only, before login: the source record (exactly run Y, environment
-                              Y, digest X), the predecessor's history, the revocation register, the build's
-                              SBOM (sha256 checked) re-scanned by the pinned Trivy
-                gate-decide   promotion only, before login: the verdict, with the KEV re-check and V1
-                test-period   after serving: health + the caller's e2e command at start/intervals/end
-                dast          after serving: the caller's DAST command (its report as SARIF); never at prod
-
-              DAST IS A NEUTRAL HOOK. The owner's decision names ZAP baseline; ZAP is recorded as overlay
-              custody (the overlay's CAPABILITY_CUSTODY.csv, tests/check_custody.py), so the core runs the
-              caller's `dast_command` against PROMOTION_APP_URL and reads the SARIF it writes to
-              PROMOTION_DAST_SARIF; an overlay supplies ZAP baseline through it (docs/adoption/USAGE.md).
-                posture       after serving: the target's security settings, read live
-                record        always: the promotion record (schemas/promotion-record.schema.json)
-                deployed-scan the daily scan (reconcile, artifact drift, security drift, break-glass owed)
-
-              GitHub API: $GITHUB_API_URL, $GITHUB_REPOSITORY, $GH_TOKEN (rollback_hold's client). A file://
-              API is the local stand-in (tests).
-          """
+          INLINED COPY (scripts/inline_deploy_scripts.py): the full text is scripts/promotion.py at this kit commit."""
           import argparse
           import base64
           import datetime
@@ -3142,6 +3288,11 @@ jobs:
           TRIVY_VERSION = '0.71.2'
           REVOCATIONS_PATH = '.security/promotion-revocations.json'
           REVOCATION_KINDS = ('digest', 'signer', 'approval', 'test-evidence')
+          # R08 (external review 2026-11-07): every listing pages to its end (Link rel="next", the API host only,
+          # total_count checked) or says it did not; record downloads are bounded too. Never a silent cut.
+          PAGE_CAP = 30                # pages of 100 per listing, as evidence.export
+          MAX_RECORD_READS = 100       # records downloaded per history read
+          ADAPTERS = ('containerapp', 'appservice', 'staticwebapp')   # the canonical adapter ids (--adapter)
 
           # Every refusal the gate and the preflight can give. The code is the reason's name; the text says
           # what to do about it.
@@ -3159,7 +3310,19 @@ jobs:
               'PROMOTION_REFUSED_RECHECK_INCOMPLETE': 'the promotion-time re-check (SBOM re-scan, KEV) could '
                                                       'not be completed; never a pass',
               'PROMOTION_REFUSED_STALE': 'verified more than %d days ago' % MAX_AGE_DAYS,
-              'PROMOTION_REFUSED_SUPERSEDED': 'a newer build has since been verified in the same predecessor',
+              'PROMOTION_REFUSED_SUPERSEDED': 'a newer build has since been verified for the same target in the '
+                                              'same predecessor',
+              'PROMOTION_REFUSED_TARGET_UNKNOWN': 'the source record names no deployment target (a canonical adapter '
+                                                  'id and target_resource_id), so supersession cannot be scoped to it',
+              'PROMOTION_REFUSED_SOURCE_TARGET_MISMATCH': 'the source run published no record of this environment for '
+                                                          'the requested promote_from_target_resource_id',
+              'PROMOTION_REFUSED_SOURCE_TARGET_REQUIRED': 'a uat or prod promotion must name its source application: set '
+                                                          'promote_from_target_resource_id to the predecessor target (its target_resource_id) '
+                                                          '(optional only in dev and test)',
+              'PROMOTION_REFUSED_HISTORY_INCOMPLETE': 'the predecessor history of this target exceeds the bounded '
+                                                      'read, so no newer verified build is established absent',
+              'PROMOTION_REFUSED_SOURCE_AMBIGUOUS': 'the source run published records for more than one target in '
+                                                    'the environment with this digest',
               'PROMOTION_REFUSED_NO_PREDECESSOR': 'uat and prod are promoted from the prior environment, '
                                                   'never deployed from a build',
               'PROMOTION_REFUSED_PATH_UNKNOWN': 'release_path is not normal, hotfix, rollback or break-glass',
@@ -3177,7 +3340,8 @@ jobs:
           # substituted digest or a build from another branch is not an emergency the exception covers.
           BREAK_GLASS_OVERRIDES = ('PROMOTION_REFUSED_NOT_VERIFIED', 'PROMOTION_REFUSED_WRONG_PREDECESSOR',
                                    'PROMOTION_REFUSED_STALE', 'PROMOTION_REFUSED_SUPERSEDED',
-                                   'PROMOTION_REFUSED_NEW_FINDING', 'PROMOTION_REFUSED_RECHECK_INCOMPLETE')
+                                   'PROMOTION_REFUSED_NEW_FINDING', 'PROMOTION_REFUSED_RECHECK_INCOMPLETE',
+                                   'PROMOTION_REFUSED_TARGET_UNKNOWN', 'PROMOTION_REFUSED_HISTORY_INCOMPLETE')
 
           env = dc.env
           output = dc.output
@@ -3213,10 +3377,29 @@ jobs:
                   return None
 
 
-          def record_key(environment):
-              """The artifact name a record is published under: one per environment, every run."""
+          def record_key(environment, key=None):
+              """The artifact name a record is published under: one per environment AND target (R08: two targets
+              in one run under one environment name overwrote each other). A record with no target keeps the
+              legacy name `kit-promotion-record-<env>`; the readers read both, so no caller changes."""
               slug = re.sub(r'[^A-Za-z0-9._-]', '-', environment or 'env')[:40]
-              return 'kit-promotion-record-%s' % slug
+              return 'kit-promotion-record-%s%s' % (slug, '--' + hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]
+                                                    if key else '')
+
+
+          def target_key(envd):
+              """-> the deployment target a record is about: adapter | target_resource_id (Azure ids compare
+              case-insensitively), or None -- an UNKNOWN target, which never supersedes a keyed record. The
+              adapter must be one of ADAPTERS exactly as the kit writes it (review 2026-11-09 F4): a missing,
+              re-cased or padded adapter is never normalised into a key; it is an unknown target."""
+              rid = str((envd or {}).get('target_resource_id') or '').strip().lower()
+              adapter = (envd or {}).get('adapter')
+              return '%s|%s' % (adapter, rid) if rid and adapter in ADAPTERS else None
+
+
+          def in_family(name, environment):
+              """Is this artifact name a record of `environment` (the legacy name or any target's)?"""
+              base = record_key(environment)
+              return name == base or bool(re.match(re.escape(base) + r'--[0-9a-f]{12}$', name or ''))
 
 
           def default_branch():
@@ -3308,12 +3491,96 @@ jobs:
                   return 0
 
 
-          def artifacts(name):
-              """Every unexpired artifact of this name in the repository, newest first."""
-              listing = rh.api('actions/artifacts', {'name': name, 'per_page': 100})
-              found = [a for a in (listing or {}).get('artifacts') or []
-                       if isinstance(a, dict) and a.get('name') == name and not a.get('expired')]
-              return sorted(found, key=lambda a: a.get('created_at') or '', reverse=True)
+          def fetch_page(url, hdrs):
+              return rh._open(url, hdrs)
+
+
+          def _next_link(headers):
+              for k, v in (headers or {}).items():
+                  if str(k).lower() == 'link':
+                      for part in str(v).split(','):
+                          bits = part.split(';')
+                          if len(bits) > 1 and any(b.strip().replace(' ', '') in ('rel="next"', 'rel=next') for b in bits[1:]):
+                              return bits[0].strip().strip('<>')
+              return None
+
+
+          def _same_host(url, base):
+              u, b = rh.urllib.parse.urlsplit(url), rh.urllib.parse.urlsplit(base)
+              return (u.scheme, u.netloc) == (b.scheme, b.netloc)
+
+
+          _total_checked = True
+
+
+          def list_all(path, params, key='artifacts'):
+              """-> (items, short_why or None). evidence_export._get_all's pattern (that module is not materialised
+              in the deploy): Link rel="next" to the end, on the API host only (a run's token goes nowhere else),
+              PAGE_CAP pages, total_count checked. A later page failing, the cap, a foreign next link or fewer
+              items than total_count is a SHORT read, named. The first page failing raises rh.Unreadable."""
+              base = env('GITHUB_API_URL', 'https://api.github.com').rstrip('/')  # unset means github.com
+              if base.startswith('file:'):   # the local stand-in (tests): one recorded answer, no paging
+                  return list((rh.api(path, params) or {}).get(key) or []), None
+              url = '%s/repos/%s/%s?%s' % (base, env('github_repository'), path, rh.urllib.parse.urlencode(params or {}))
+              items, pages, total = [], 0, None
+              while url:
+                  hdrs = {}
+                  try:
+                      doc = json.loads(fetch_page(url, hdrs).decode('utf-8'))
+                      batch = doc.get(key) if isinstance(doc, dict) else None
+                      if not isinstance(batch, list):
+                          raise ValueError('no %s list' % key)
+                  except Exception as exc:  # noqa: BLE001 -- any failure is "could not read", never a pass
+                      if not pages:
+                          raise rh.Unreadable('GET %s failed: %s' % (url.split('?')[0], type(exc).__name__))
+                      return items, 'page %d could not be read (%s); %d read' % (pages + 1, type(exc).__name__, len(items))
+                  items.extend(batch)
+                  pages += 1
+                  if total is None and isinstance(doc.get('total_count'), int):
+                      total = doc['total_count']
+                  url = _next_link(hdrs)
+                  if url and not _same_host(url, base):
+                      return items, 'the next page is on %s, not the API host; %d read' % (
+                          rh.urllib.parse.urlsplit(url).netloc, len(items))
+                  if url and pages >= PAGE_CAP:
+                      return items, 'stopped after %d pages: %d read of %s' % (pages, len(items), total)
+              if _total_checked and total is not None and len(items) < total:
+                  return items, '%d read of %d (total_count)' % (len(items), total)
+              return items, None
+
+
+          def artifacts(name, path='actions/artifacts', short_ok=False):
+              """Every unexpired artifact of this name (None: every name) in the repository or under `path`,
+              newest first. A short listing raises rh.Unreadable, or with short_ok -> (artifacts, short)."""
+              found, short = list_all(path, dict({'per_page': 100}, **({'name': name} if name else {})))
+              found = sorted([a for a in found if isinstance(a, dict) and (name is None or a.get('name') == name)
+                              and not a.get('expired')], key=lambda a: a.get('created_at') or '', reverse=True)
+              if short_ok:
+                  return found, short
+              if short:
+                  raise rh.Unreadable('the listing of %s is incomplete: %s' % (name or path, short))
+              return found
+
+
+          def history(environment, key, since=None):
+              """-> (records of THIS target newest first, short_why or None, listed): the target's own name and
+              the legacy name (records written before R08 name their target inside), created after `since`, at
+              most MAX_RECORD_READS downloaded. A record of another or of no target is never returned.
+              `listed` is True only when EVERY listing was read to its end: then the records read are the newest
+              of the whole listing (sorted here by created_at, no API ordering assumed) and a short read is only
+              the read bound. A short LISTING (`listed` False) may miss any record, the newest included."""
+              arts, shorts, listed = [], [], True
+              for name in sorted(set([record_key(environment, key), record_key(environment)])):
+                  found, short = artifacts(name, short_ok=True)
+                  arts += found
+                  shorts += [short] if short else []
+                  listed = listed and not short
+              arts = sorted([a for a in arts if not since or (parse_ts(a.get('created_at')) or since) > since],
+                            key=lambda a: a.get('created_at') or '', reverse=True)
+              if len(arts) > MAX_RECORD_READS:
+                  shorts.append('%d records after %s; at most %d are read' % (len(arts), iso(since), MAX_RECORD_READS))
+              recs = [read_record(a) for a in arts[:MAX_RECORD_READS]]
+              return [r for r in recs if key and target_key(r.get('environment')) == key], '; '.join(shorts) or None, listed
 
 
           def download(artifact, suffix):
@@ -3406,9 +3673,18 @@ jobs:
               def refuse(code, why):
                   refusals.append({'code': code, 'why': why})
 
+              # Review 2026-11-09 policy: into uat or prod the source application must be named, never inferred from
+              # the digest. Not in BREAK_GLASS_OVERRIDES: break-glass lifts none of the source-identity refusals.
+              if ctx.get('destination_tier') in ('uat', 'prod') and not str(ctx.get('expected_target') or '').strip():
+                  refuse('PROMOTION_REFUSED_SOURCE_TARGET_REQUIRED', 'a %s promotion names no promote_from_target_resource_id; '
+                         'set it to the target_resource_id of the predecessor target (migration: existing callers add the input)'
+                         % ctx['destination_tier'])
+                  return finish_judgement(refusals, ctx)
               rec = ctx.get('source')
               if rec is None:
-                  refuse('PROMOTION_REFUSED_SOURCE_UNREADABLE', ctx.get('source_error') or 'no record')
+                  why = ctx.get('source_error') or 'no record'
+                  refuse(next((c for c in ('PROMOTION_REFUSED_SOURCE_AMBIGUOUS', 'PROMOTION_REFUSED_SOURCE_TARGET_MISMATCH')
+                               if c in why), 'PROMOTION_REFUSED_SOURCE_UNREADABLE'), why)
                   return finish_judgement(refusals, ctx)
               art, envd = rec.get('artifact') or {}, rec.get('environment') or {}
               if art.get('digest') != ctx['digest']:
@@ -3454,15 +3730,26 @@ jobs:
                               ctx['release_path'], (ctx.get('exception') or {}).get('exception_ref'))})
                   else:
                       refuse('PROMOTION_REFUSED_STALE', why)
+              # R08: supersession is per TARGET. Only a newer verified record of the source's own target
+              # (adapter + target_resource_id) supersedes it; a record of another target, or of no target, never does.
+              key = target_key(envd)
+              if key is None:
+                  refuse('PROMOTION_REFUSED_TARGET_UNKNOWN', 'the source record (run %s) names no environment '
+                         'target_resource_id and canonical adapter (adapter %r; one of %s)' % (
+                             (rec.get('run') or {}).get('id'), envd.get('adapter'), ', '.join(ADAPTERS)))
+              if ctx.get('history_short'):
+                  refuse('PROMOTION_REFUSED_HISTORY_INCOMPLETE', 'the %s history: %s' % (
+                      ctx['required_predecessor'], ctx['history_short']))
               newer = [h for h in ctx.get('history') or []
-                       if h.get('state') == VERIFIED and (h.get('artifact') or {}).get('digest') != art.get('digest')
+                       if key and target_key(h.get('environment')) == key
+                       and h.get('state') == VERIFIED and (h.get('artifact') or {}).get('digest') != art.get('digest')
                        and verified_at and (parse_ts((h.get('validity') or {}).get('verified_at')) or verified_at) > verified_at]
               if newer:
                   n = sorted(newer, key=lambda h: (h.get('validity') or {}).get('verified_at') or '')[-1]
                   ctx['superseded_by'] = {'digest': (n.get('artifact') or {}).get('digest'),
                                           'run_id': (n.get('run') or {}).get('id'),
                                           'verified_at': (n.get('validity') or {}).get('verified_at')}
-                  refuse('PROMOTION_REFUSED_SUPERSEDED', '%s was verified in %s at %s, after this one' % (
+                  refuse('PROMOTION_REFUSED_SUPERSEDED', '%s was verified for this target in %s at %s, after this one' % (
                       ctx['superseded_by']['digest'], ctx['required_predecessor'],
                       ctx['superseded_by']['verified_at']))
               return finish_judgement(refusals, ctx)
@@ -3585,21 +3872,41 @@ jobs:
               re-scan of the build's SBOM. Writes promotion/collected.json; the decision is gate-decide."""
               out = wdir()
               run_id, src_env = env('promote_from_run_id'), env('promote_from_environment')
-              col = {'run_id': run_id, 'source_environment': src_env,
+              # Optional (backward compatible): the predecessor target the caller promotes from. Empty: the
+              # source is chosen by digest among the run's records, and two targets with that digest refuse.
+              want = str(env('promote_from_target_resource_id') or '').strip().lower()
+              col = {'run_id': run_id, 'source_environment': src_env, 'expected_source_target': want or None,
                      'required_predecessor': env('promotion_predecessor') or 'test',
                      'source': None, 'source_error': '', 'history': [], 'revocations': [],
                      'rescan': {'state': 'NOT_ESTABLISHED', 'why': 'not reached', 'critical': [], 'high': []}}
               try:
-                  mine = [x for x in artifacts(record_key(src_env))
-                          if str((x.get('workflow_run') or {}).get('id') or '') == run_id]
+                  # The source run's OWN listing (R08): every target's record of src_env in that run.
+                  mine = [read_record(x) for x in artifacts(None, 'actions/runs/%s/artifacts' % run_id)
+                          if in_family(x.get('name'), src_env)]
+                  if want:   # the request names its source target (review 2026-11-09 F5): digest AND target
+                      hit = [r for r in mine if (target_key(r.get('environment')) or '|').split('|', 1)[1] == want]
+                      if not hit:
+                          raise rh.Unreadable('PROMOTION_REFUSED_SOURCE_TARGET_MISMATCH: run %s published no %s record for '
+                                              'the requested source target %s (its %s records name: %s)' % (
+                                                  run_id, src_env, want, src_env, ', '.join(sorted(
+                                                      str(target_key(r.get('environment'))) for r in mine)) or 'none'))
+                      mine = hit
+                  if len(mine) > 1:
+                      mine = [r for r in mine if (r.get('artifact') or {}).get('digest') == env('image_digest')] or mine
                   if not mine:
-                      raise rh.Unreadable('run %s published no %s' % (run_id, record_key(src_env)))
-                  col['source'] = read_record(mine[0])
+                      raise rh.Unreadable('run %s published no %s record' % (run_id, record_key(src_env)))
+                  if len(set(target_key(r.get('environment')) for r in mine)) > 1:
+                      raise rh.Unreadable('PROMOTION_REFUSED_SOURCE_AMBIGUOUS: run %s published %s records for %d targets '
+                                          'with this digest' % (run_id, src_env, len(mine)))
+                  col['source'] = mine[0]
               except Exception as exc:  # noqa: BLE001 -- any failure is "could not read", never a pass
                   col['source_error'] = str(exc)[:300]
               try:
-                  hist = artifacts(record_key(col['required_predecessor']))[:30]
-                  col['history'] = [read_record(x) for x in hist]
+                  src = col['source']
+                  if src:
+                      col['history'], col['history_short'], _listed = history(
+                          col['required_predecessor'], target_key(src.get('environment')),
+                          parse_ts((src.get('validity') or {}).get('verified_at')))
               except Exception as exc:  # noqa: BLE001
                   col['history_error'] = str(exc)[:300]
                   col['rescan']['why'] = 'the predecessor history could not be read'
@@ -3630,9 +3937,11 @@ jobs:
                      env('promotion_predecessor') or 'test',
                      'source_environment': col.get('source_environment') or env('promote_from_environment'),
                      'source': col.get('source'), 'source_error': col.get('source_error') or 'not collected',
-                     'history': col.get('history') or [], 'revocations': col.get('revocations') or [],
+                     'history': col.get('history') or [], 'history_short': col.get('history_short'),
+                     'revocations': col.get('revocations') or [],
                      'rescan': col.get('rescan') or {}, 'kev': kev, 'attestation': env('attestation_outcome'),
                      'release_path': env('release_path') or 'normal', 'exception': exception_record(),
+                     'destination_tier': env('environment_tier'), 'expected_target': col.get('expected_source_target'),
                      'now': now_dt()}
               if col.get('revocations_error'):
                   ctx['rescan'] = dict(ctx['rescan'], state='NOT_ESTABLISHED',
@@ -3642,7 +3951,8 @@ jobs:
               gate = {'promotion_gate': res['verdict'], 'refusals': res['refusals'],
                       'overridden': res['overridden'], 'superseded_by': res['superseded_by'],
                       'source': {'run_id': col.get('run_id'), 'environment': col.get('source_environment'),
-                                 'record_id': src.get('record_id'),
+                                 'record_id': src.get('record_id'), 'target': target_key(src.get('environment')),
+                                 'expected_target': col.get('expected_source_target'),
                                  'verified_at': (src.get('validity') or {}).get('verified_at')},
                       'required_predecessor': ctx['required_predecessor'],
                       'carried': {k: src.get(k) for k in ('artifact', 'provenance')},
@@ -3952,9 +4262,10 @@ jobs:
               out = wdir('record')
               jsave(os.path.join(out, 'promotion-record.json'), rec)
               dc.write_evidence('promotion-record.json', rec)
-              output(promotion_state=state, promotion_record_name=record_key(env('deploy_environment')))
+              name = record_key(env('deploy_environment'), target_key(rec['environment']))
+              output(promotion_state=state, promotion_record_name=name)
               summary('Promotion record (`%s`): **`%s`**%s' % (
-                  record_key(env('deploy_environment')), state,
+                  name, state,
                   '; not yet established: ' + ', '.join(rec['conditions']['missing']) if rec['conditions']['missing'] else ''))
               print('promotion record: %s' % state)
               return 0
@@ -4004,6 +4315,7 @@ jobs:
 
 
           DRIFT_RULES = {'KIT-ARTIFACT-DRIFT': 'the serving digest is not the last promoted digest',
+                         'KIT-PROMOTION-HISTORY-INCOMPLETE': 'no promotion record of this target was established',
                          'KIT-SERVING-UNREADABLE': 'what is serving could not be read',
                          'KIT-SECURITY-SETTINGS': 'the security-settings posture check failed',
                          'KIT-BREAK-GLASS-TESTING-OWED': 'a break-glass deploy is still owed its testing',
@@ -4018,6 +4330,7 @@ jobs:
           # Vocabulary: assurance-taxonomy.yaml :: lz_drift_dimension, lz_drift_class.
           LZ_DRIFT = {'KIT-ARTIFACT-DRIFT': ('release', 'operational'),
                       'KIT-SERVING-UNREADABLE': ('release', 'not_attempted'),
+                      'KIT-PROMOTION-HISTORY-INCOMPLETE': ('release', 'not_attempted'),
                       'KIT-SECURITY-SETTINGS': ('security_control', 'operational'),
                       'KIT-BREAK-GLASS-TESTING-OWED': ('release', 'operational'),
                       'KIT-RESCAN-NOT-ESTABLISHED': ('security_control', 'not_attempted'),
@@ -4047,6 +4360,64 @@ jobs:
               return view
 
 
+          def own_resource_id(adapter):
+              """-> the scanned target's resource id, read now (None when unreadable)."""
+              if adapter == 'staticwebapp':
+                  import static_site_contract as ss  # noqa: E402
+                  ok, shown, _ = ss.site()
+                  return shown.get('id') if ok and isinstance(shown, dict) else None
+              return dc.resource_id(adapter)[0]
+
+
+          def select_promoted(recs, key):
+              """-> (the last healthy record of THIS target, the digests verified for it, how many records were
+              of another or of no target and so ignored); newest first in."""
+              mine = [r for r in recs if key and target_key(r.get('environment')) == key]
+              healthy = [r for r in mine if (r.get('live_state') or {}).get('deployment_outcome') == 'DEPLOY_HEALTHY']
+              return (healthy[0] if healthy else None), set((r.get('artifact') or {}).get('digest') for r in mine
+                                                             if r.get('state') == VERIFIED), len(recs) - len(mine)
+
+
+          bg_discharged, bg_owed, bg_not_established = ('BREAK_GLASS_DISCHARGED', 'BREAK_GLASS_OWED',
+                                                        'BREAK_GLASS_DISCHARGE_NOT_ESTABLISHED')
+
+
+          def break_glass_discharge(last):
+              """-> {state, digest, predecessor_target, why}: is the break-glass record's testing obligation met?
+              Bound to the RECORDED predecessor identity (review 2026-11-09 F3): the predecessor environment and
+              the target the deploy was promoted from (predecessor.promoted_from.target, written by gate-decide).
+              Another target's verified record of the same digest and adapter never discharges it.
+                bg_discharged        a verified record of THIS digest for THAT target, in a listing read to its end
+                bg_owed              every listing of that target read to its end, and no such record (not found)
+                bg_not_established   no predecessor target recorded, a short listing, or the history unreadable:
+                                     could not establish, which is never discharged and never not-found."""
+              dig = (last.get('artifact') or {}).get('digest')
+              pred = (last.get('predecessor') or {}).get('required') or 'test'
+              pkey = ((last.get('predecessor') or {}).get('promoted_from') or {}).get('target') or None
+              out = {'state': bg_not_established, 'digest': dig, 'predecessor': pred, 'predecessor_target': pkey}
+              if not pkey or not dig:
+                  out['why'] = ('The record names no predecessor target (a break-glass deploy with no promotion source, '
+                                'or a record written before the target was recorded), so the obligation cannot be '
+                                'established; a normal promotion of a digest verified in %s replaces it' % pred)
+                  return out
+              try:
+                  recs, short, listed = history(pred, pkey)
+              except Exception as exc:  # noqa: BLE001 -- unreadable is could-not-establish, never not-found
+                  out['why'] = 'The %s history of %s could not be read: %s' % (pred, pkey, str(exc)[:200])
+                  return out
+              found = any(r.get('state') == VERIFIED and (r.get('artifact') or {}).get('digest') == dig for r in recs)
+              if not listed:
+                  out['why'] = 'The %s history of %s was not read to its end (%s)' % (pred, pkey, short)
+              elif found:
+                  out.update(state=bg_discharged, why='%s was verified for %s in %s' % (dig, pkey, pred))
+              elif short:
+                  out['why'] = ('No verified record of %s among the newest records of %s in %s (%s); older ones were '
+                                'not read' % (dig, pkey, pred, short))
+              else:
+                  out.update(state=bg_owed, why='No verified record of %s for %s in %s (every record read)' % (dig, pkey, pred))
+              return out
+
+
           def cmd_deployed_scan(a):
               """Phase 1 of the daily scan for ONE environment (the job's own): reconcile, then the two
               drifts. Writes promotion/deployed/: deployed-state.json, state SARIFs, and the re-scan SARIF the
@@ -4060,22 +4431,37 @@ jobs:
               where = 'deployed/%s/%s' % (envname, env('containerapp_name') or env('webapp_name') or env('site_name'))
               serving = serving_now(adapter)
               doc['serving'] = serving
+              # R08: THIS target's records only (adapter + its resource id, read now); another target's, or a
+              # record naming no target, is never compared with what this target serves.
+              doc['target'] = key = target_key({'adapter': adapter, 'target_resource_id': own_resource_id(adapter)})
+              recs = []
               try:
-                  recs = [read_record(x) for x in artifacts(record_key(envname))[:30]]
+                  if key:
+                      recs, doc['records_short'], doc['records_listed'] = history(envname, key)
               except Exception as exc:  # noqa: BLE001
-                  recs, doc['records_error'] = [], str(exc)[:300]
-              healthy = [r for r in recs if (r.get('live_state') or {}).get('deployment_outcome') == 'DEPLOY_HEALTHY']
-              last = healthy[0] if healthy else None
+                  doc['records_error'] = str(exc)[:300]
+              last, verified, doc['records_ignored'] = select_promoted(recs, key)
+              # Compared only when THIS target's newest records were read: a complete read, or one cut ONLY by
+              # the read bound (every listing read to its end, the newest of it read, sorted here) that still
+              # holds a healthy record. A short LISTING is never established, whatever it holds: no API ordering
+              # is assumed, so the newest record may be the one missing (review 2026-11-09 F2). No record of this
+              # target at all is named too: never a silent "no drift".
+              known = bool(key) and not doc.get('records_error') and (
+                  not doc.get('records_short') or bool(last and doc.get('records_listed')))
+              if not known or last is None:
+                  results.append(finding('KIT-PROMOTION-HISTORY-INCOMPLETE', 'No promotion record of this target (%s) '
+                                         'was established in %s: %s.' % (key or 'its resource id could not be read', envname,
+                                                                          doc.get('records_error') or doc.get('records_short') or
+                                                                          'none on record'), where))
               doc['promoted'] = {'digest': (last.get('artifact') or {}).get('digest'), 'run_id': (last.get('run') or {}).get('id'),
                                  'state': last.get('state')} if last else None
               if serving is None:
                   results.append(finding('KIT-SERVING-UNREADABLE', 'What %s serves could not be read; nothing '
                                          'about it is established.' % envname, where))
-              else:
+              elif known:   # an unestablished history is never compared: no drift claimed either way
                   want = (doc['promoted'] or {}).get('digest')
                   drift = [s for s in serving if s['weight'] > 0 and s['digest'] != want]
                   doc['artifact_drift'] = bool(drift) if want else None
-                  verified = set((r.get('artifact') or {}).get('digest') for r in recs if r.get('state') == VERIFIED)
                   for s in drift:
                       # A digest no kit run of this environment verified is serving: the landing zone's critical class.
                       results.append(lz_tag(finding('KIT-ARTIFACT-DRIFT', '%s serves %s at %d%%; the last promoted '
@@ -4109,19 +4495,15 @@ jobs:
                       dimension='network_exposure' if exposed else 'security_control',
                       cls='critical' if exposed else ('not_attempted' if result == 'POSTURE_UNREADABLE' else 'operational')))
               if last and last.get('state') == BREAK_GLASS:
-                  dig = (last.get('artifact') or {}).get('digest')
-                  pred = (last.get('predecessor') or {}).get('required') or 'test'
-                  try:
-                      done = any(r.get('state') == VERIFIED and (r.get('artifact') or {}).get('digest') == dig
-                                 for r in [read_record(x) for x in artifacts(record_key(pred))[:30]])
-                  except Exception:  # noqa: BLE001
-                      done = False
-                  doc['break_glass_owed'] = not done
-                  if not done:
+                  doc['break_glass_discharge'] = disc = break_glass_discharge(last)
+                  doc['break_glass_owed'] = {bg_discharged: False, bg_owed: True}.get(disc['state'])  # None: not established
+                  if disc['state'] != bg_discharged:
                       results.append(finding('KIT-BREAK-GLASS-TESTING-OWED', 'Break-glass deploy of %s (exception '
-                                             '%s) is still owed: %s.' % (dig, ((last.get('break_glass') or {}).get('exception') or {}).get('exception_ref'),
-                                                                         ', '.join((last.get('break_glass') or {}).get('testing_owed') or [])),
-                                             '%s/break-glass' % where))
+                                             '%s) is still owed: %s. %s' % (
+                                                 disc['digest'], ((last.get('break_glass') or {}).get('exception') or {}).get('exception_ref'),
+                                                 ', '.join((last.get('break_glass') or {}).get('testing_owed') or []),
+                                                 disc['why']),
+                                             '%s/break-glass' % where, props={'discharge': disc['state']}))
               for r in results:
                   if 'lz_drift_dimension' not in (r.get('properties') or {}):
                       lz_tag(r)
@@ -4220,9 +4602,9 @@ jobs:
               now = parse_ts('2026-10-26T12:00:00Z')
               d1, d2 = 'sha256:' + '1' * 64, 'sha256:' + '2' * 64
 
-              def rec(digest=d1, envname='test', tier='test', state=VERIFIED, at='2026-10-25T12:00:00Z'):
+              def rec(digest=d1, envname='test', tier='test', state=VERIFIED, at='2026-10-25T12:00:00Z', rid='/s/a'):
                   return {'schema': SCHEMA, 'state': state, 'artifact': {'digest': digest},
-                          'environment': {'name': envname, 'tier': tier},
+                          'environment': {'name': envname, 'tier': tier, 'adapter': 'containerapp', 'target_resource_id': rid},
                           'provenance': {'source_ref': 'refs/heads/main', 'build_workflow': 'o/k/.github/workflows/b.yml'},
                           'validity': {'verified_at': at}, 'run': {'id': '7'}, 'approval': {'approvers': []},
                           '_artifact': {'head_branch': 'main'}}
@@ -4240,6 +4622,8 @@ jobs:
                        ('swap', ctx(digest=d2), 'PROMOTION_REFUSED_DIGEST_MISMATCH'),
                        ('stale', ctx(source=rec(at='2026-10-01T00:00:00Z')), 'PROMOTION_REFUSED_STALE'),
                        ('super', ctx(history=[rec(digest=d2, at='2026-10-26T00:00:00Z')]), 'PROMOTION_REFUSED_SUPERSEDED'),
+                       ('other target', ctx(history=[rec(digest=d2, at='2026-10-26T00:00:00Z', rid='/s/b')]), 'PROMOTION_ALLOWED'),
+                       ('no target', ctx(source=rec(rid=None)), 'PROMOTION_REFUSED_TARGET_UNKNOWN'),
                        ('kev', ctx(kev={'state': 'AVAILABLE', 'blocking': ['CVE-1@x']}), 'PROMOTION_REFUSED_REVOKED')]
               for label, c, want in cases:
                   got = judge(c)['verdict']
@@ -4261,7 +4645,7 @@ jobs:
                       'deployed-finish': cmd_deployed_finish, 'deployed-report': cmd_deployed_report}
               for name in cmds:
                   p = sub.add_parser(name)
-                  p.add_argument('--adapter', choices=('containerapp', 'appservice', 'staticwebapp'), default='containerapp')
+                  p.add_argument('--adapter', choices=ADAPTERS, default='containerapp')
                   p.add_argument('--state-dir', default='')
               sub.add_parser('self-test')
               a = ap.parse_args(argv)
@@ -4276,56 +4660,8 @@ jobs:
           cat > "$RUNNER_TEMP/kit-deploy/target_lease.py" <<'kit_target_lease_py'
           #!/usr/bin/env python3
           """The cross-repository target lease, as a model: one lease per deploy target, a fencing token.
-          (KDEC-030 draft, lane L-SEAM; docs/architecture/LZ_KIT_SEAM_CONTRACT.md, "The lease".)
 
-          WHY THIS EXISTS
-
-              A GitHub Actions concurrency group is evaluated inside one repository. The landing-zone apply
-              runs in the platform repository and the kit's deploy runs in the application repository, so
-              the two never wait for each other, whatever their groups are called. KDEC-030 proposes ONE
-              lease per target that every pipeline mutating the target acquires first: an Azure Storage blob
-              lease on a blob named for the target, plus a GENERATION number kept in the blob's metadata.
-              The pair (lease id, generation) is the fencing token. A holder checks it again immediately
-              before every mutation, and once more after it; a holder that lost the lease -- broken, taken
-              over, past its own expiry -- is refused before it touches the target, or reported after.
-
-              This module is the model only: pure Python, standard library, no network. `BlobLeaseStore`
-              emulates the Lease Blob REST operation's documented states and status codes (Microsoft Learn,
-              "Lease Blob": acquire / renew / change / release / break; Available, Leased, Expired,
-              Breaking, Broken; 409 and 412). `TargetLease` is the seam protocol on top of it;
-              tests/prove_target_lease.py proves the protocol.
-
-              Since lane L-SEAM2 (2026-10-27): `AzureBlobLeaseStore` sends the same calls to the Blob REST
-              API with an Entra bearer token, keyed by the target's ARM resource id, and `run_cli` gives
-              each pipeline step a subcommand (acquire, begin, fence, end, release, status, break). The
-              composite .github/actions/target-lease runs it for BOTH sides -- the landing-zone apply and
-              the kit's deploy reusables (opt-in: KIT_TARGET_LEASE_ACCOUNT). tests/prove_target_lease_crossrepo.py
-              proves it across two independent callers against a local Blob-service emulation. Not yet
-              run against real Azure Storage.
-
-          THE PROTOCOL
-              acquire     an INFINITE blob lease (an apply runs 4-27 minutes, a rollback sequence up to 240;
-                          a 15-60 s lease would need a renewer that can die silently) with a LOGICAL expiry,
-                          `expires_at`, in the metadata, extended by heartbeat. Generation + 1. A target held
-                          by a live holder is refused LEASE_HELD, naming the holder.
-              takeover    a holder past `expires_at` that left the target CLEAN is broken and replaced
-                          automatically, recorded (`took_over`). One that left it MID-MUTATION is not:
-                          LEASE_ABANDONED_MID_MUTATION -- a human decides (the break authority).
-              fence       before every mutation: a read conditional on the lease id (the service answers
-                          409/412 when the id is no longer the blob's lease), the generation and holder
-                          compared with the token, and the logical expiry checked. Any miss is
-                          STALE_LEASE_HOLDER or LEASE_EXPIRED_HOLDER; the mutation does not happen.
-              mutate      fence, mark `mutating`, mutate, fence again. A lease lost during the mutation is
-                          MUTATED_WITHOUT_LEASE and ROLLBACK_REQUIRES_HUMAN_DECISION, never a clean result.
-              break       only an actor in the break authority (the platform admins by default). The blob
-                          service lets ANY caller with blob write break a lease (Lease Blob: "Any authorized
-                          request can break the lease"), so the authority is enforced by this protocol and by
-                          audit, not by Azure RBAC; the generation bump makes every broken holder fenced.
-
-          WHAT THE FENCE DOES NOT CLOSE (stated in the contract): fencing stops a stale holder before its
-          next call; it cannot recall an Azure mutation already sent. The Azure target itself does not check
-          the token, so a mutation already sent when the lease is lost lands. The after-fence detects it.
-          """
+          INLINED COPY (scripts/inline_deploy_scripts.py): the full text is scripts/target_lease.py at this kit commit."""
           import argparse
           import base64
           import copy
@@ -5072,56 +5408,8 @@ jobs:
           cat > "$RUNNER_TEMP/kit-deploy/release_gates.py" <<'kit_release_gates_py'
           #!/usr/bin/env python3
           """The release preconditions the landing zone's design is stronger on, enforced by the kit before
-          login (OF-5, the LZ-vs-kit deployment review, 2026-10-28; KDEC-034 PROPOSED).
 
-          WHY THIS EXISTS
-
-              The landing zone (LZ) and the kit were reviewed against each other step by step and the
-              stronger mechanism taken on each side. Three of the LZ's were missing from the kit's releases:
-
-                K-3  STOP. The LZ halts its own pipeline (ops/halt.json) and blocks applies on a budget cap or
-                     a TTL (apply_block). A release refused only on verdict, protection and policy, so a halted
-                     or capped platform still took releases. The vend now writes the block into every kit
-                     environment as KIT_RELEASE_BLOCK; anything but `none` refuses the release before login,
-                     at every tier (RELEASE_BLOCKED_BY_PLATFORM). Unset: no landing zone writes one; recorded.
-                K-2  READINESS. The LZ's eight behavioural readiness gates decide whether the ZONE may take
-                     anything beyond dev; UNKNOWN is never a pass. The vend writes the zone's readiness into
-                     every kit environment as KIT_ZONE_READINESS. At uat and prod only READY and
-                     READY_WITH_EXCEPTIONS release; NOT_READY, UNKNOWN, unset or an unregistered value refuses
-                     before login (RELEASE_REFUSED_ZONE_NOT_READY). Below uat it is recorded, never refused.
-                K-1  CONSENT BOUND TO THE CHANGE. The LZ's owner confirms the exact plan digest, and the
-                     approver, the confirmer and the requester are three people. GitHub's environment
-                     reviewers with self-review prevented exclude only the run's trigger: the author of the
-                     commit being released may approve it, and nothing ties the approval to the digest. So at
-                     uat and prod the kit reads the run's own approvals (GET .../actions/runs/{id}/approvals)
-                     and refuses before login unless an approval for THIS environment exists
-                     (RELEASE_APPROVAL_ABSENT -- an administrator bypass leaves none), no approving reviewer is
-                     the requester (the triggering actor or the actor) or the release's author (the author of
-                     the released commit, and of a merge commit's second parent) (SELF_DEPLOYMENT_APPROVAL,
-                     the LZ's own name for it), and an independent approval's comment names the digest being
-                     released -- the full digest or at least its first 12 hex characters
-                     (RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST). The approving reviewer who names the digest is
-                     the CONFIRMER: approver/confirmer, requester and author are distinct people. A second,
-                     separate confirmer is not possible inside one job (an environment admits on ONE
-                     approval). Anything that cannot be read is RELEASE_APPROVAL_NOT_ESTABLISHED, a refusal.
-                     Below uat it is recorded (RELEASE_APPROVAL_NOT_REQUIRED) unless the policy register's
-                     deploy_approval for the tier sets `confirm_digest: required`, which can only tighten.
-
-              Vocabulary: assurance-taxonomy.yaml :: release_block, zone_readiness, zone_readiness_gate,
-              release_approval. Proven by tests/prove_release_gates.py. Inlined into the deploy reusables by
-              scripts/inline_deploy_scripts.py (a reusable workflow called cross-repo has no scripts/).
-
-          USAGE (one subcommand per workflow step; inputs arrive through env:, as data -- the names below are
-                 the job's environment variables, written lower-case here and upper-cased on lookup)
-              release_gates.py zone                       kit_release_block, kit_zone_readiness, environment_tier
-              release_gates.py approval --digest D [--source-commit SHA]
-                                                          environment_tier, deploy_environment, deploy_approval,
-                                                          github_run_id, github_sha, github_triggering_actor,
-                                                          github_actor, github_repository, github_api_url, gh_token
-              release_gates.py --self-test
-
-          EXIT 0 permitted   1 refused (by name)   2 usage
-          """
+          INLINED COPY (scripts/inline_deploy_scripts.py): the full text is scripts/release_gates.py at this kit commit."""
           import argparse
           import io
           import json
@@ -5162,7 +5450,13 @@ jobs:
           SELF_APPROVAL = 'SELF_DEPLOYMENT_APPROVAL'
           NOT_BOUND = 'RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST'
           NOT_ESTABLISHED = 'RELEASE_APPROVAL_NOT_ESTABLISHED'
-          APPROVAL_PERMITS = (APPROVAL_VERIFIED, APPROVAL_NOT_REQUIRED)
+          # Owner 2026-11-07: a team of two or fewer with no external approver group, declared in the ORG overlay
+          # (scripts/org_settings.py, a five-field weakening, time-boxed): the developer may approve their own
+          # deployment. The approval must still exist and still quote the digest; only "not the requester or the
+          # author" is waived, and the outcome says so in plain words. The deploy's protection step decides whether
+          # the mode is in force (small_team_self_approval=SMALL_TEAM_SELF_APPROVAL); nothing a caller passes can.
+          SMALL_TEAM_APPROVAL = 'RELEASE_APPROVAL_SMALL_TEAM_SELF_APPROVAL'
+          APPROVAL_PERMITS = (APPROVAL_VERIFIED, APPROVAL_NOT_REQUIRED, SMALL_TEAM_APPROVAL)
           MIN_DIGEST_PREFIX = 12          # hex characters an approval comment must quote, at least
           DIGEST_RE = re.compile(r'^(?:sha256:)?([0-9a-f]{64})$')
 
@@ -5364,8 +5658,9 @@ jobs:
               return out
 
 
-          def decide_approval(tier, environment, digest, approvals, requesters, authors, confirm):
-              """Pure. -> (outcome, why, approvers). `approvals`/`authors` None = could not be read."""
+          def decide_approval(tier, environment, digest, approvals, requesters, authors, confirm, small_team=False):
+              """Pure. -> (outcome, why, approvers). `approvals`/`authors` None = could not be read.
+              small_team: the org's small-team self-approval is in force for this deploy (the protection step said so)."""
               if confirm is None:
                   return NOT_ESTABLISHED, 'the policy\'s deploy_approval could not be read', []
               production = tier in PRODUCTION_TIERS
@@ -5388,6 +5683,14 @@ jobs:
                   return NOT_ESTABLISHED, 'the released commit\'s author could not be read', who
               selfies = [(w, 'the requester') for w in who if w in req] + \
                         [(w, 'the release\'s author') for w in who if w in authors and w not in req]
+              if selfies and small_team:
+                  if confirm == 'required' and not any(digest_bound(a.get('comment'), digest) for a in mine):
+                      return NOT_BOUND, ('no approval comment names the digest being released; under small-team self-approval '
+                                         'the developer still confirms the exact artefact by quoting it (at least sha256:%s)'
+                                         % ((digest or '').split(':', 1)[-1][:MIN_DIGEST_PREFIX] or '<digest>')), who
+                  return SMALL_TEAM_APPROVAL, ('SMALL_TEAM_SELF_APPROVAL: approved by %s, who is the requester or the release\'s '
+                                               'author; allowed only by the org\'s declared small-team weakening, and recorded as such'
+                                               % ', '.join(shown(w) for w, _r in selfies)), who
               if selfies:
                   return SELF_APPROVAL, \
                       'approved by %s: the approver must be neither the requester nor the release\'s author' % ', '.join(
@@ -5433,7 +5736,8 @@ jobs:
                           authors = None
                           notes.append(str(exc))
                   requesters = [env('github_triggering_actor'), env('github_actor')]
-                  outcome, why, who = decide_approval(tier, environment, a.digest, approvals, requesters, authors, confirm)
+                  small = env('small_team_self_approval').strip() == 'SMALL_TEAM_SELF_APPROVAL'
+                  outcome, why, who = decide_approval(tier, environment, a.digest, approvals, requesters, authors, confirm, small)
               if notes:
                   why = '%s (%s)' % (why, '; '.join(notes))
               refused = outcome not in APPROVAL_PERMITS
@@ -5464,6 +5768,11 @@ jobs:
                   (decide_approval('prod', 'prod', d, [appr('dev2', d)], ['dev1'], {'dev2'}, 'required')[0], SELF_APPROVAL),
                   (decide_approval('prod', 'prod', d, [appr('rev', 'lgtm')], ['dev1'], {'dev2'}, 'required')[0], NOT_BOUND),
                   (decide_approval('prod', 'prod', d, [], ['dev1'], {'dev2'}, 'required')[0], APPROVAL_ABSENT),
+                  (decide_approval('prod', 'prod', d, [appr('dev1', d)], ['dev1'], {'dev1'}, 'required', True)[0],
+                   SMALL_TEAM_APPROVAL),
+                  (decide_approval('prod', 'prod', d, [appr('dev1', 'ok')], ['dev1'], {'dev1'}, 'required', True)[0], NOT_BOUND),
+                  (decide_approval('prod', 'prod', d, [], ['dev1'], {'dev1'}, 'required', True)[0], APPROVAL_ABSENT),
+                  (decide_approval('prod', 'prod', d, [appr('dev1', d)], ['dev1'], {'dev1'}, 'required', False)[0], SELF_APPROVAL),
               ]
               for i, (got, want) in enumerate(cases):
                   got = got[0] if isinstance(got, tuple) else got
@@ -5498,69 +5807,8 @@ jobs:
           cat > "$RUNNER_TEMP/kit-deploy/static_site_contract.py" <<'kit_static_site_contract_py'
           #!/usr/bin/env python3
           """The deploy contract for Azure Static Web Apps: package by content digest, stage in a preview
-          environment, release to production, read back what serves, reverse to the prior artefact.
-          (OF-5 K-8, the LZ-vs-kit deployment review; KDEC-034 PROPOSED)
 
-          WHY THIS EXISTS
-
-              The owner approved Static Web Apps for Phase 1 (landing zone G13). The kit released only containers
-              (App Service, Container Apps), so a static site was deployed around it -- GitHub's own SWA workflow,
-              a deployment token in a repository secret, no verdict, no digest, no read-back, no way back -- and
-              the landing zone could only report "target vended, release pending" (its no-kit-adapter report).
-              This module is the SWA half of reusable-deploy-staticwebapp.yml; everything that is not
-              SWA-specific (the verdict, the bind, the zone and approval gates, promotion, the lease, the posture
-              record, the six questions) is the other adapters' own code, shared.
-
-          THE ARTEFACT AND ITS DIGEST
-
-              A static site has no registry digest, so its identity is its CONTENT: the TREE digest is
-              sha256 over the lines "<posix relative path>\\0<sha256 hex of the file>\\n", sorted by path, for every
-              file of the site except the root's kit-release.json. `package` writes that marker (the digest and
-              the build's provenance) into the built site; the site is uploaded as the artifact
-              `kit-static-site-<hex>` (and its SBOM as `sbom-<hex>`, so the promotion re-scan works unchanged).
-              The marker is SERVED with the site, so what serves can be read back -- NOW SERVING is the live
-              marker's digest, never the input echoed. The build's attestation signs the marker file, which binds
-              the tree digest it holds (V1 here verifies that file, `attestation`).
-
-          THE STEPS (one subcommand per workflow step; names and the digest arrive through env:, as data)
-
-              package          --dir D   write the marker, print site_digest, artifact_name, marker_sha256
-              fetch            fetch the artifact by name from the run (GitHub API) into $RUNNER_TEMP/static-site
-              verify-artifact  recompute the tree digest: it must equal site_digest and the marker's, else
-                               SITE_DIGEST_MISMATCH -- refused before login (artifact_identity
-                               CONTENT_DIGEST_PROVEN when they agree)
-              attestation      V1 on the marker file: the five outcomes, routed by rung, refused before login
-              capture          previous_state: EXISTING_DEPLOYMENT (a readable kit marker in production), EMPTY
-                               (measured: no production build), UNKNOWN (content without a readable marker, or a
-                               failed read) -- UNKNOWN fails before any mutation
-              capability       AVAILABLE only when the prior digest's artefact is still retrievable; EMPTY ->
-                               NO_PRIOR_STATE; UNAVAILABLE refuses at uat and prod
-              deploy --env E   the deployment token read with the deploy identity, masked at once, handed to the
-                               pinned SWA CLI through its environment (never a command-line argument); the
-                               change manifest written `planned` first; production stamped with the release's
-                               ownership stamp before it changes; the lease fenced before the CLI call
-              verify --env E   the live marker of E must name site_digest, and E's health path answer 200
-              reverse          a preview this run deployed is removed; a production this run changed gets the
-                               prior artefact back (re-verified by digest, then on the live marker) -- unless
-                               another actor changed production since (refused, reported)
-              seam             KDEC-030 R3 / OF-5 K-6, opt-in with the lease (KIT_TARGET_LEASE_ACCOUNT): the
-                               production app settings read before the first mutation; KIT_SETTING_KEYS naming a
-                               key the landing zone backs with a Key Vault reference (secret-backed: the landing
-                               zone's) -> SEAM_SETTING_OWNERSHIP_CONFLICT; unreadable -> SEAM_OWNERSHIP_NOT_
-                               ESTABLISHED; both refuse. This adapter writes no app setting (its stamp is a tag)
-                               and has no swap, so the deploy contract's decide_seam runs with nothing planned
-              provenance       the kit's provenance tags on the static site, only after a live read
-              (purge)          KDEC-030 D-4 / OF-5 K-7: the step runs the deploy contract's own purge,
-                               `deploy_contract.py purge --adapter staticwebapp` -- ONLY the endpoint the landing
-                               zone vends in KIT_EDGE_ENDPOINT, after a verified release and its stamp
-              report           outcome.json in the deploy contract's vocabulary, with the six questions
-
-              Vocabulary: assurance-taxonomy.yaml (deployment_outcome, previous_state, rollback_capability,
-              artifact_identity CONTENT_DIGEST_PROVEN, static_site_artifact SITE_DIGEST_MISMATCH). Proven by
-              tests/prove_deploy_staticwebapp.py against a stub cloud; not run against Azure.
-
-          EXIT 0 done / permitted   1 refused or failed (by name)   2 usage
-          """
+          INLINED COPY (scripts/inline_deploy_scripts.py): the full text is scripts/static_site_contract.py at this kit commit."""
           import argparse
           import hashlib
           import io
@@ -6307,17 +6555,21 @@ jobs:
               sys.exit(main())
           kit_static_site_contract_py
 
+      - name: Org governed settings and this environment's Azure cloud (refuse before login)
+        id: org_settings
+        # Owner 2026-11-07: governed settings (approver pools, app team, small-team self-approval, classes,
+        # the Azure cloud per environment) come from the org overlay in the kit copy `$/` delivers, never
+        # from the caller; a repository value may only tighten them. It writes the cloud the sign-in uses
+        # to CLOUD. scripts/org_settings.py; docs/adoption/SETTINGS_PRECEDENCE.md; tests/prove_org_settings.py.
+        uses: $/.github/actions/org-settings
+        with:
+          environment: ${{ inputs.github_environment }}
+          cloud: ${{ inputs.cloud }}
+          bound-cloud: ${{ env.KIT_BOUND_CLOUD }}
+
       - name: Bind the tier and target to the GitHub environment (refuse before login)
         id: bind
-        # B-13 / LZ-1 (ledger P-01). The landing zone vends the tier and the target as VARIABLES of
-        # this job's GitHub environment (docs/architecture/LZ_KIT_HANDOFF_CONTRACT.md). A caller job
-        # cannot read them, so the tier was whatever string the caller typed -- `prod` in the
-        # starter template, for every target -- and the tier decides the production rules. This job
-        # runs IN the environment: an empty input is filled from the vended value (GITHUB_ENV, read
-        # by every later step), an input that disagrees with it is refused here, before the verdict
-        # is weighed and before login, and an environment that vends nothing leaves the inputs as
-        # given (UNBOUND, recorded). The body is identical in both deploy reusables.
-        # tests/prove_deploy_environment_binding.py.
+        # Why (B-13 / LZ-1, ledger P-01): docs/architecture/LZ_KIT_HANDOFF_CONTRACT.md "Tier and target binding".
         env:
           APP_VARIABLE: SITE_NAME
           APP_INPUT: site_name
@@ -6418,20 +6670,19 @@ jobs:
 
       - name: Verify the environment's deployment protection (refuse before login)
         id: protection
-        # Owner, 2026-10-22: uat and prod need ONE approver from a named reviewer group who is NOT
-        # the deploying developer -- the GitHub environment's required reviewers, self-review
-        # prevented. The kit cannot set that; it READS it back (read-only environments API) and,
-        # at uat and prod, refuses when the policy demands it and the environment lacks it, or when
-        # it cannot be read (NOT_ESTABLISHED is not a pass). Below uat it is recorded and warned.
-        # The body is identical in both deploy reusables. tests/prove_deploy_environment_protection.py.
+        # Why and how (owner 2026-10-22, KDEC-042): docs/architecture/03b_COMPONENTS_DEPLOY.md "Deployment protection".
         env:
           DEPLOY_APPROVAL: ${{ inputs.deploy_approval }}
           GH_TOKEN: ${{ github.token }}
+          KIT_APPROVER_POOLS: ${{ vars.KIT_APPROVER_POOLS }}
+          KIT_APP_TEAM: ${{ vars.KIT_APP_TEAM }}
+          KIT_SMALL_TEAM_SELF_APPROVAL: ${{ vars.KIT_SMALL_TEAM_SELF_APPROVAL }}
+          KIT_ORG_SETTINGS: ${{ steps.org_settings.outputs.org_settings }}
         run: |
           set -u
           python3 "$RUNNER_TEMP/kit-deploy/environment_protection.py" \
             --repository "${GITHUB_REPOSITORY:-}" --environment "${DEPLOY_ENVIRONMENT:-}" \
-            --tier "${ENVIRONMENT_TIER:-}" --demand-json "${DEPLOY_APPROVAL:-}" \
+            --tier "${ENVIRONMENT_TIER:-}" --demand-json "${DEPLOY_APPROVAL:-}" --ref "${GITHUB_SHA:-}" \
             > "$RUNNER_TEMP/environment-protection.txt" 2>&1
           rc=$?
           cat "$RUNNER_TEMP/environment-protection.txt"
@@ -6439,10 +6690,15 @@ jobs:
           # No outcome printed is not a pass: it is NOT_ESTABLISHED, and the exit code decides.
           [ -n "$outcome" ] || outcome=ENVIRONMENT_PROTECTION_NOT_ESTABLISHED
           echo "environment_protection=${outcome}" >> "$GITHUB_OUTPUT"
+          # The org's declared small-team weakening let the developer approve: say so, and tell the approval step.
+          if [ "$outcome" = "ENVIRONMENT_PROTECTION_SMALL_TEAM_SELF_APPROVAL" ]; then
+            echo "small_team_self_approval=SMALL_TEAM_SELF_APPROVAL" >> "$GITHUB_OUTPUT"
+            echo "**SMALL_TEAM_SELF_APPROVAL**: the org overlay's declared, time-boxed small-team weakening lets the developer approve this deployment." >> "$GITHUB_STEP_SUMMARY"
+          fi
           { echo "### GitHub environment protection"; echo ""
             echo "\`${outcome:-ENVIRONMENT_PROTECTION_NOT_ESTABLISHED}\` at tier \`${ENVIRONMENT_TIER:-none}\`."; } >> "$GITHUB_STEP_SUMMARY"
           if [ "$rc" != "0" ]; then
-            echo "::error title=Deploy refused before login (environment protection)::${outcome:-ENVIRONMENT_PROTECTION_NOT_ESTABLISHED}: the GitHub environment this deploy runs in does not have the required reviewers (one from the named group, self-review prevented) that ${ENVIRONMENT_TIER:-this tier} demands, or they could not be read. Set them on the environment; nothing was deployed."
+            echo "::error title=Deploy refused before login (environment protection)::${outcome:-ENVIRONMENT_PROTECTION_NOT_ESTABLISHED}: the GitHub environment ${DEPLOY_ENVIRONMENT:-(none)} is unclassed, or is a uat or prod environment without the required reviewers (a platform or security person, self-review prevented, not the app team alone), or its rules could not be read. Fix the environment or its class in .kit/environments.json (docs/errors/ERRORS.md); nothing was deployed."
             exit 1
           fi
           case "$outcome" in
@@ -6745,17 +7001,13 @@ jobs:
 
       - name: Release approval -- not the requester's or the author's own, bound to the digest (refuse before login)
         id: approval
-        # OF-5 K-1: the landing zone binds consent to the exact change (the plan digest) and to distinct
-        # people. GitHub's self-review prevention excludes only the run's trigger, so at uat and prod
-        # this reads the run's own approvals and refuses unless one exists for this environment
-        # (RELEASE_APPROVAL_ABSENT: an administrator bypass leaves none), no approver is the requester
-        # or the released commit's author (SELF_DEPLOYMENT_APPROVAL), and an independent approval quotes
-        # the digest (RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST). Unreadable is a refusal. After the
-        # promotion gate (its source commit's author counts too); the body is identical in both deploy
-        # reusables. scripts/release_gates.py; tests/prove_release_gates.py.
+        # OF-5 K-1: at uat/prod, refused unless an approval exists (RELEASE_APPROVAL_ABSENT), none is the
+        # requester's or the author's (SELF_DEPLOYMENT_APPROVAL), and one quotes the digest
+        # (RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST). scripts/release_gates.py; tests/prove_release_gates.py.
         env:
           DEPLOY_APPROVAL: ${{ inputs.deploy_approval }}
           GH_TOKEN: ${{ github.token }}
+          SMALL_TEAM_SELF_APPROVAL: ${{ steps.protection.outputs.small_team_self_approval }}
         run: |
           set -u
           source_commit="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(((d.get("carried") or {}).get("provenance") or {}).get("source_sha") or "")' \
@@ -6764,18 +7016,26 @@ jobs:
             --source-commit "$source_commit"
 
       - name: Reviewer signals -- verdict provenance, weakening authority, tier and readiness source (refuse before login)
-        # KDEC-036 G8: the kit-security-record of the run the verdict came from (this run, the promotion
-        # source, or security_run_id); a verdict more permissive than its gate's, or dropping a cause, is
-        # VERDICT_CONTRADICTED (refused at every tier); no record is TYPED_VERDICT (refused at uat/prod,
-        # warned below). G2/G3: an unverified weakening authority, or an expiry missing or past the
-        # ceiling, refused at uat/prod. G4/G1/G9/G10: the tier's and readiness's source, the kit copy's
-        # watermark, the hosting kind. tests/prove_reviewer_signals.py.
+        # KDEC-036 G8 (VERDICT_CONTRADICTED, TYPED_VERDICT), G2/G3 (weakening authority and expiry),
+        # G4/G1/G9/G10 (tier and readiness source, watermark, hosting). tests/prove_reviewer_signals.py.
         id: review_pre
         uses: $/.github/actions/reviewer-signals
         with:
           mode: deploy-pre
           adapter: staticwebapp
           token: ${{ github.token }}
+
+      - name: Time bound and interrupted deploys (KREQ-717, refuse before login)
+        id: interruption
+        uses: $/.github/actions/deploy-interruption
+        with:
+          op: check
+          target: ${{ inputs.site_name }}
+          timeout-minutes: ${{ inputs.deploy_timeout_minutes }}
+          test-period-minutes: ${{ inputs.e2e_test_command != '' && inputs.e2e_test_period_minutes || 0 }}
+          dast: ${{ inputs.dast_command != '' }}
+          reconciled-run: ${{ inputs.reconciled_interrupted_run }}
+          github-token: ${{ github.token }}
 
       - name: Azure login (OIDC)
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
@@ -6785,8 +7045,8 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
-          environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
-          audience: ${{ inputs.cloud == 'gov' && (vars.KIT_AZURE_OIDC_AUDIENCE || 'api://AzureADTokenExchangeUSGov') || 'api://AzureADTokenExchange' }}
+          environment: ${{ steps.org_settings.outputs.azure_cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
+          audience: ${{ steps.org_settings.outputs.azure_cloud == 'gov' && (vars.KIT_AZURE_OIDC_AUDIENCE || 'api://AzureADTokenExchangeUSGov') || 'api://AzureADTokenExchange' }}
 
       - name: Target lease -- acquire (KDEC-030, opt-in; refuse before the first capture)
         # The ONE lock the landing-zone apply and this deploy both take (a concurrency group
@@ -6798,7 +7058,7 @@ jobs:
         with:
           op: acquire
           account: ${{ env.KIT_TARGET_LEASE_ACCOUNT }}
-          cloud: ${{ inputs.cloud }}
+          cloud: ${{ steps.org_settings.outputs.azure_cloud }}
           resource-id: /subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${{ inputs.resource_group }}/providers/Microsoft.Web/staticSites/${{ inputs.site_name }}
           holder: kit-deploy:${{ github.repository }}/${{ github.run_id }}-${{ github.run_attempt }}
 
@@ -6972,11 +7232,22 @@ jobs:
         with:
           op: release
 
+      - name: Live-target authorisation before DAST (KREQ-558)
+        id: lta
+        if: "!cancelled() && steps.serving.outcome == 'success' && inputs.dast_command != '' && inputs.environment_tier != 'prod'"
+        uses: $/.github/actions/live-target-authorisation
+        with:
+          scan: dast
+          environment: ${{ inputs.github_environment }}
+          target: ${{ inputs.site_name }}
+          dast-evidence: ${{ runner.temp }}/deploy-evidence
+          github-token: ${{ github.token }}
+
       - name: DAST baseline against this environment (never prod)
         # "Tested" part 3: DAST where configured (the caller's command; an overlay supplies ZAP
         # baseline through it), no new blocking finding.
         id: dast
-        if: "!cancelled() && steps.serving.outcome == 'success'"
+        if: "!cancelled() && steps.serving.outcome == 'success' && (inputs.dast_command == '' || inputs.environment_tier == 'prod' || steps.lta.outputs.live_target_authorisation == 'LIVE_TARGET_AUTHORISED')"
         env:
           APP_URL: ${{ steps.serving.outputs.app_url }}
         run: python3 "$RUNNER_TEMP/kit-deploy/promotion.py" dast --adapter staticwebapp
@@ -7000,6 +7271,7 @@ jobs:
           ATTESTATION_DEBT: ${{ steps.attestation.outputs.debt }}
           CANCELLED: ${{ job.status == 'cancelled' }}   # cancelled() is not allowed in env: (actionlint)
           VERSION_GAP_RULING: ${{ steps.verdict.outputs.version_gap_ruling }}
+          KIT_ORG_SETTINGS: ${{ steps.org_settings.outputs.org_settings }}
         # Exit 0 only for DEPLOY_HEALTHY: this step's outcome IS the job's verdict.
         run: python3 "$RUNNER_TEMP/kit-deploy/static_site_contract.py" report
 
@@ -7059,6 +7331,7 @@ jobs:
           W_RELEASE_PATH: ${{ inputs.release_path }}
           W_E2E_TEST_COMMAND: ${{ inputs.e2e_test_command }}
           W_E2E_TEST_PERIOD_MINUTES: ${{ inputs.e2e_test_period_minutes }}
+          W_RECONCILED_INTERRUPTED_RUN: ${{ inputs.reconciled_interrupted_run }}
           ROLLBACK_CHECK: ${{ steps.rollback_check.outputs.rollback_check }}
           ROLLBACK_CAPABILITY: ${{ steps.capability.outputs.rollback_capability }}
           REPORT_OUTCOME: ${{ steps.report.outcome }}
@@ -7160,6 +7433,7 @@ jobs:
           posture attestation_rung        GATE_SOFTENED         "run"           attestation-verify "$W_ATTESTATION_RUNG"
           posture promote_from_run_id      NOT_A_CONTROL_SURFACE - -
           posture promote_from_environment NOT_A_CONTROL_SURFACE - -
+          posture promote_from_target_resource_id NOT_A_CONTROL_SURFACE - -
           posture promotion_predecessor    NOT_A_CONTROL_SURFACE - -
           W_RELEASE_PATH="${W_RELEASE_PATH:-normal}"
           posture release_path             GATE_SOFTENED         "normal"        promotion-gate     "$W_RELEASE_PATH"
@@ -7169,6 +7443,8 @@ jobs:
           posture e2e_check_interval_minutes NOT_A_CONTROL_SURFACE - -
           posture e2e_timeout_minutes      NOT_A_CONTROL_SURFACE - -
           posture dast_command             NOT_A_CONTROL_SURFACE - -
+          posture deploy_timeout_minutes   NOT_A_CONTROL_SURFACE - -
+          posture reconciled_interrupted_run EXCEPTION_ATTRIBUTION - -
 
           # THE GUARDS BEFORE THE POINT OF NO RETURN ARE CONTROLS TOO. Each is required and
           # executed when it ran -- whether it permitted or REFUSED (a refusal is the control
@@ -7449,6 +7725,8 @@ jobs:
           seam-ownership: ${{ steps.seam.outputs.seam_ownership }}
           app-url: ${{ steps.serving.outputs.app_url }}
           readiness-source: ${{ steps.zone.outputs.readiness_source }}
+          environment-protection: ${{ steps.protection.outputs.environment_protection }}
+          small-team-self-approval: ${{ steps.protection.outputs.small_team_self_approval }}
 
       - name: Say the outcome in plain words (docs/errors/ERRORS.md)
         # The plain sentence first: an annotation per refusal at the top of the run page, and "What
@@ -7460,12 +7738,16 @@ jobs:
           states: >-
             deployment_outcome:${{ steps.report.outputs.deployment_outcome }}
             environment_protection:${{ steps.protection.outputs.environment_protection }}
+            small_team_self_approval:${{ steps.protection.outputs.small_team_self_approval }}
+            azure_cloud:${{ steps.org_settings.outputs.azure_cloud_state }}
             release_block:${{ steps.zone.outputs.release_block }}
             zone_readiness_gate:${{ steps.zone.outputs.zone_readiness_gate }}
             readiness_source:${{ steps.zone.outputs.readiness_source }}
             version_gap_ruling:${{ steps.verdict.outputs.version_gap_ruling }}
             attestation_verification:${{ steps.attestation.outputs.outcome }}
             rollback_dependency_check:${{ steps.rollback_check.outputs.rollback_check }}
+            deploy_interruption:${{ steps.interruption.outputs.deploy_interruption }}
+            live_target_authorisation:${{ steps.lta.outputs.live_target_authorisation }}
             promotion_gate:${{ steps.promotion_preflight.outputs.promotion_gate }}
             promotion_gate:${{ steps.promotion_gate.outputs.promotion_gate }}
             release_approval:${{ steps.approval.outputs.release_approval }}
@@ -7474,6 +7756,14 @@ jobs:
             ${{ steps.seam.outputs.seam_ownership }}
             release_record:${{ steps.review_post.outputs.release_record }}
             tier_reality:${{ steps.review_post.outputs.tier_reality }}
+
+      - name: Deploy state for the next run (KREQ-717)
+        if: always()
+        uses: $/.github/actions/deploy-interruption
+        with:
+          op: record
+          target: ${{ inputs.site_name }}
+          cancelled: ${{ job.status == 'cancelled' }}
 
       - name: Keep the run record (deploy evidence)
         # The snapshot, change manifest, capability, verification, reversal and outcome files are

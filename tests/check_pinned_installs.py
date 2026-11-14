@@ -98,8 +98,8 @@ def self_test():
            'wget https://github.com/a/b/releases/download/v1/t.zip\n')
     good = ('curl -sSfLO https://github.com/a/b/releases/download/v1.2.3/t.tar.gz\n'
             'echo "abc  t.tar.gz" | sha256sum -c -\n'
-            'pip install --quiet checkov==3.2.1\n'
-            'go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0\n')
+            'pip install --quiet checkov==3.3.30\n'
+            'go install github.com/securego/gosec/v2/cmd/gosec@v2.24.6\n')
     b, g = [], []
     check_text('bad', bad, b)
     check_text('good', good, g)

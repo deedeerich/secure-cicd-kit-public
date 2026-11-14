@@ -23,7 +23,7 @@ runs:
   steps:
     - name: PyYAML (pinned)
       shell: bash
-      run: python3 -m pip install --quiet PyYAML==6.0.2
+      run: python3 -m pip install --quiet PyYAML==6.0.3
 
     - name: kit init
       id: init

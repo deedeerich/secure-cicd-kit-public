@@ -4,6 +4,10 @@
 # WHY THE PATH CHANGE: under PowerShell, `bash` resolves to the WSL stub, and the proofs that shell
 # out to bash then report UNKNOWN (continuation.md). Git for Windows' bash goes first on PATH for
 # this process only, and BATTERY_BASH names it for tools/battery.py.
+#
+# KIT_LOCAL_TOOLS: set $env:KIT_LOCAL_TOOLS to a directory of scanners you placed, checksum-verified,
+# as <dir>\<tool>-<version>\ (CONTRIBUTING.md). It passes through in the environment; tools/battery.py
+# puts it on PATH and checks each pinned version. Neither this twin nor the battery downloads anything.
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $gitBin = 'C:\Program Files\Git\bin'

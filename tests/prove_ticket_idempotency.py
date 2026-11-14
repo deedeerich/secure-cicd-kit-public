@@ -190,7 +190,7 @@ MUTANTS = [
 
     # T2. The stamp, once set, does not move with membership.
     ('the stamp moves with membership',
-     '    rebind(clusters, identity_bindings(ledger, sweep_map))',
+     '    rebind(clusters, identity_bindings(ledger, sweep_map), lineage=lineage)',
      '    pass',
      'a scanner joining or leaving would mint a new key, find nothing under it, and open a '
      'second ticket for an obligation that already had one'),

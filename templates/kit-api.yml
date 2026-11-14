@@ -85,6 +85,7 @@ jobs:
       JIRA_HOST: ${{ secrets.JIRA_HOST }}   # optional: the Jira host as a secret (masked in logs)
       AZDO_PAT: ${{ secrets.AZDO_PAT }}
       GH_TICKET_TOKEN: ${{ secrets.GH_TICKET_TOKEN }}
+      FRESHSERVICE_API_KEY: ${{ secrets.FRESHSERVICE_API_KEY }}   # only when the backend is freshservice (KDEC-043)
       KIT_API_TEAM_READ_TOKEN: ${{ secrets.KIT_API_TEAM_READ_TOKEN }}
 
   # scan.request: the kit's security workflow on the ref this run was dispatched at. Its verdict and
@@ -122,6 +123,7 @@ jobs:
       environment: ${{ needs.api.outputs.deploy_environment }}
       promote_from_run_id: ${{ needs.api.outputs.promote_from_run_id }}
       promote_from_environment: ${{ needs.api.outputs.promote_from_environment }}
+      promote_from_target_resource_id: ${{ needs.api.outputs.promote_from_target_resource_id }}   # optional here; the gate requires it at uat and prod
       release_path: ${{ needs.api.outputs.release_path }}
     secrets: inherit
 

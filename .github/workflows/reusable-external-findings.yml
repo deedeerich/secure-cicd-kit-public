@@ -4,8 +4,8 @@
 # SonarQube stuff ... and pull those vulns and findings down." Two jobs, never in the same run:
 #
 #   pull    (scheduled or dispatched; contents read) runs scripts/external_findings_pull.py: every page of
-#           the source, each open finding mapped into a `finding` template item (KDEC-037), deduplicated
-#           against the kit's own findings, refused BY NAME when it cannot complete (SOURCE_AUTH_REFUSED,
+#           the source, each open finding mapped into a `finding` template item (KDEC-037), a match on a
+#           kit finding kept as an ENHANCEMENT (KDEC-049, never dropped), refused BY NAME when it cannot complete (SOURCE_AUTH_REFUSED,
 #           SOURCE_TRUNCATED ... -- never "no findings"). With review_id set it also cuts tickets.submit
 #           batches and prints each batch's evidence_sha256, the hash the review record must concur with.
 #           Artifact: external-findings-<source>.
@@ -52,6 +52,10 @@ on:
         description: "The environment label findings carry (the finding template's `environment`)."
         type: string
         default: "code"
+      ledger_path:
+        description: "KDEC-049 R1: the ticket ledger (the register) in the default-branch checkout; absent = the baseline run alone."
+        type: string
+        default: ".security/ticket-ledger.json"
       review_id:
         description: "The review that will concur with the batches (pull: cut batches for it; submit: required)."
         type: string
@@ -92,6 +96,9 @@ on:
       items:
         description: "How many findings are ready for the intake."
         value: ${{ jobs.pull.outputs.items }}
+      register_state:
+        description: "Whether the ticket ledger was read: REGISTER_READ, REGISTER_NOT_ESTABLISHED (none named or none at the path) or REGISTER_UNREADABLE. Anything but REGISTER_READ: no unmatched item is classified as new."
+        value: ${{ jobs.pull.outputs.register_state }}
 
 permissions: {}
 
@@ -103,13 +110,16 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+      actions: read        # KDEC-049 R1: select the baseline run (runs, compare, artifacts) of this repository
     outputs:
       state: ${{ steps.pull.outputs.state }}
       items: ${{ steps.pull.outputs.items }}
+      register_state: ${{ steps.pull.outputs.register_state }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.event.repository.default_branch }}   # the register is read from the default branch
       - name: Pull
         id: pull
         shell: bash
@@ -125,6 +135,10 @@ jobs:
           IN_REPO_MAP: ${{ inputs.repo_map }}
           IN_ENVIRONMENT: ${{ inputs.environment_label }}
           IN_REVIEW_ID: ${{ inputs.review_id }}
+          IN_LEDGER: ${{ inputs.ledger_path }}
+          # a scheduled run's event may carry no repository; its ref IS the default branch
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}
+          BASELINE_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
           for s in SONAR_TOKEN AIKIDO_CLIENT_ID AIKIDO_CLIENT_SECRET; do
@@ -143,6 +157,15 @@ jobs:
               args=(aikido --base "$AIKIDO_API_BASE") ;;
             *) echo "::error title=Unknown source::source must be sonar or aikido"; exit 1 ;;
           esac
+          # KDEC-049 R1: THE BASELINE (latest qualifying default-branch security run) AND THE REGISTER (the
+          # ticket ledger on the default branch). Missing or partial is named on every item, never "no match".
+          cap=SOURCE; [ "$SOURCE" = aikido ] && cap=SOURCE_DEPENDENCY
+          GH_TOKEN="$BASELINE_TOKEN" python3 scripts/external_findings_baseline.py --repository "$GITHUB_REPOSITORY" \
+            --default-branch "$DEFAULT_BRANCH" --capability "$cap" --out "$out/baseline.json" || true
+          args+=(--baseline "$out/baseline.json" --repository "$GITHUB_REPOSITORY")
+          # A missing or unnamed ledger is REGISTER_NOT_ESTABLISHED, never an empty register: the receipt and
+          # every item say so, and no unmatched item is classified as new (external_findings_baseline.read_register).
+          [ -n "$IN_LEDGER" ] && args+=(--register "$IN_LEDGER")
           rc=0
           python3 scripts/external_findings_pull.py "${args[@]}" --repo-map "$out/repo-map.json" \
             --environment "$IN_ENVIRONMENT" --out "$out/pulled.json" > "$out/pull.txt" 2>&1 || rc=$?
@@ -151,7 +174,12 @@ jobs:
           items="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("items") or []))' "$out/pulled.json" 2>/dev/null || echo 0)"
           echo "state=$state" >> "$GITHUB_OUTPUT"
           echo "items=$items" >> "$GITHUB_OUTPUT"
-          { echo "### External findings: $SOURCE -- $state"; echo ""; echo '```'; cat "$out/pull.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          # THE REGISTER STATE, AS AN OUTPUT AND AN ANNOTATION (never only a log line): anything but
+          # REGISTER_READ means no unmatched item is established as new; every item goes to triage.
+          register="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("register") or "REGISTER_NOT_ESTABLISHED")' "$out/pulled.json" 2>/dev/null || echo REGISTER_NOT_ESTABLISHED)"
+          echo "register_state=$register" >> "$GITHUB_OUTPUT"
+          [ "$register" = REGISTER_READ ] || echo "::warning title=$register::the ticket ledger was not read; no unmatched item is classified as new, every item carries baseline.register and goes to triage"
+          { echo "### External findings: $SOURCE -- $state (register: $register)"; echo ""; echo '```'; cat "$out/pull.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           if [ "$rc" != 0 ]; then
             echo "::error title=$state::the $SOURCE pull did not complete; this is not \"no findings\" (see the summary)"
             exit 1

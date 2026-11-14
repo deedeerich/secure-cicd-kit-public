@@ -31,7 +31,7 @@ flowchart LR
   subgraph AZ["Azure, one subscription per deployment"]
     KB["Build identity<br/>AcrPush on the registry"]
     KD["Deploy identity per environment<br/>roles in exactly one subscription"]
-    KR["Reader identity per environment<br/>deployed scan, posture"]
+    KR["Deployed-scan identity per environment<br/>the one each environment vends;<br/>the deploy identity works"]
     KM["Feed-mirror refresh identity"]
   end
   JIRA["Tracker service account<br/>token in the ticketing environment"]
@@ -52,7 +52,7 @@ flowchart LR
 
 Cited: `templates/build-deploy.yml` (`github_environment: build`, `dev`, `test`, `inputs.environment`
 for uat/prod; `id-token: write` per job), `templates/deployed-scan.yml` ("each environment's reader
-identity"), `templates/feed-mirror-refresh.yml` and `.github/workflows/reusable-feed-mirror-refresh.yml`
+identity"; its header: "a federated identity that can READ the target ... the deploy identity works"), `templates/feed-mirror-refresh.yml` and `.github/workflows/reusable-feed-mirror-refresh.yml`
 (`github_environment: feed-mirror`), `.github/workflows/reusable-build-docker.yml` (the attest job is
 the only one holding `attestations: write`), `.github/actions/azure-login-oidc/action.yml`,
 `.github/workflows/verify-azure-oidc.yml` (prints the presented subject, `PLAIN` or `ID_QUALIFIED`,
@@ -87,7 +87,9 @@ flowchart LR
 ```
 
 These three belong to the harness and the landing zone, not to this repository; they are drawn so a
-reviewer can see that no kit identity can write or seal evidence.
+reviewer can see that no kit identity can write or seal evidence. The tenant reader is the one
+read-only service principal per tenant (the identity rulings, 07_IDENTITY_AND_ACCESS.md section 1);
+the kit's deployed scan does not use it.
 
 ## 3 · Separation of duties carried by identity
 

@@ -643,7 +643,7 @@ jobs:
               [ "${n:-0}" -gt 0 ] && DETECT=ok
               ;;
             checkov)
-              pip install --quiet checkov==3.3.29
+              pip install --quiet checkov==3.3.30
               checkov --version; checkov -d fixture/infra -o json --quiet --compact > out.json || true; EXEC=ok; ls -l out.json || true
               # A PARSE FAILURE IS NOT ZERO FINDINGS.
               #

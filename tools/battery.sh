@@ -3,6 +3,9 @@
 # check and a summary. All logic is in tools/battery.py, which reads .github/workflows/self-test.yml,
 # so this list cannot drift from the hosted one. Arguments pass through (--fast, --list, --only,
 # --strict, --json). See CONTRIBUTING.md.
+# KIT_LOCAL_TOOLS=<dir> (scanners you placed, checksum-verified, as <dir>/<tool>-<version>/) passes
+# through in the environment; tools/battery.py puts it on PATH and checks each pinned version.
+# Neither this twin nor the battery downloads anything.
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(dirname "$here")"

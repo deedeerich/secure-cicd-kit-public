@@ -39,7 +39,7 @@ on:
   workflow_call:
     inputs:
       backend:
-        description: "jira, azdo or github (TICKETING_BACKENDS.md; KDEC-004, KDEC-024). Jira is the system of record."
+        description: "jira, azdo, github or freshservice (TICKETING_BACKENDS.md; KDEC-004, KDEC-024, KDEC-043). Jira is the system of record."
         type: string
         required: true
       environment:
@@ -113,6 +113,9 @@ on:
         required: false
       GH_TICKET_TOKEN:
         description: "GitHub Issues: a token with issues read & write on the ONE repository vars.TICKET_REPO names. From the protected environment."
+        required: false
+      FRESHSERVICE_API_KEY:
+        description: "Freshservice (KDEC-043): the API key (Basic key:X). From the protected environment."
         required: false
     outputs:
       armed:
@@ -338,6 +341,15 @@ jobs:
           AZDO_STATE_REOPEN: ${{ vars.AZDO_STATE_REOPEN }}
           AZDO_STATE_DONE: ${{ vars.AZDO_STATE_DONE }}
           AZDO_PAT: ${{ secrets.AZDO_PAT }}
+          # KDEC-043: Freshservice (scripts/tracker_freshservice.py); the key from the protected environment.
+          FRESHSERVICE_HOST: ${{ vars.FRESHSERVICE_HOST }}
+          FRESHSERVICE_API_KEY: ${{ secrets.FRESHSERVICE_API_KEY }}
+          FRESHSERVICE_STAMP_FIELD: ${{ vars.FRESHSERVICE_STAMP_FIELD }}
+          FRESHSERVICE_REQUESTER_ID: ${{ vars.FRESHSERVICE_REQUESTER_ID }}
+          FRESHSERVICE_CALIBRATION_TICKET: ${{ vars.FRESHSERVICE_CALIBRATION_TICKET }}
+          FRESHSERVICE_WORKSPACE_ID: ${{ vars.FRESHSERVICE_WORKSPACE_ID }}
+          FRESHSERVICE_MARK_MODE: ${{ vars.FRESHSERVICE_MARK_MODE }}
+          FRESHSERVICE_TAG_RETRIES: ${{ vars.FRESHSERVICE_TAG_RETRIES }}
           TICKET_REPO: ${{ vars.TICKET_REPO }}
           TICKET_CALIBRATION_REF: ${{ vars.TICKET_CALIBRATION_REF }}
           GH_TOKEN: ${{ secrets.GH_TICKET_TOKEN }}
@@ -345,15 +357,18 @@ jobs:
           TICKET_CREATE_CEILING: ${{ vars.TICKET_CREATE_CEILING }}
           TICKET_RETRY_CEILING: ${{ vars.TICKET_RETRY_CEILING }}
           TICKET_CALL_BUDGET: ${{ vars.TICKET_CALL_BUDGET }}
+          # KREQ-674: the environment level of the ticketing numbers (register environment_numbers.<this>).
+          TICKET_SETTINGS_ENVIRONMENT: ${{ inputs.environment }}
           # The clock runs on the default branch only: always real.
           TICKETING_MODE: real
         run: |
           set -uo pipefail
           # Only the selected backend's values survive (C-2 refuses two credentials at once).
           case "$TICKET_BACKEND" in
-            jira) unset AZDO_PAT AZDO_ORG_URL AZDO_PROJECT GH_TOKEN TICKET_REPO ;;
-            azdo) unset JIRA_TOKEN JIRA_EMAIL JIRA_HOST JIRA_PROJECT GH_TOKEN TICKET_REPO ;;
-            github) unset JIRA_TOKEN JIRA_EMAIL JIRA_HOST JIRA_PROJECT AZDO_PAT AZDO_ORG_URL AZDO_PROJECT ;;
+            jira) unset AZDO_PAT AZDO_ORG_URL AZDO_PROJECT GH_TOKEN TICKET_REPO FRESHSERVICE_API_KEY FRESHSERVICE_HOST ;;
+            azdo) unset JIRA_TOKEN JIRA_EMAIL JIRA_HOST JIRA_PROJECT GH_TOKEN TICKET_REPO FRESHSERVICE_API_KEY FRESHSERVICE_HOST ;;
+            github) unset JIRA_TOKEN JIRA_EMAIL JIRA_HOST JIRA_PROJECT AZDO_PAT AZDO_ORG_URL AZDO_PROJECT FRESHSERVICE_API_KEY FRESHSERVICE_HOST ;;
+            freshservice) unset JIRA_TOKEN JIRA_EMAIL JIRA_HOST JIRA_PROJECT AZDO_PAT AZDO_ORG_URL AZDO_PROJECT GH_TOKEN TICKET_REPO ;;
           esac
           today="${TODAY_OVERRIDE:-$(date -u +%F)}"
           record="${RUNNER_TEMP}/ticket-run-record.json"
@@ -486,6 +501,15 @@ jobs:
           AZDO_STATE_REOPEN: ${{ vars.AZDO_STATE_REOPEN }}
           AZDO_STATE_DONE: ${{ vars.AZDO_STATE_DONE }}
           AZDO_PAT: ${{ secrets.AZDO_PAT }}
+          # KDEC-043: Freshservice (scripts/tracker_freshservice.py); the key from the protected environment.
+          FRESHSERVICE_HOST: ${{ vars.FRESHSERVICE_HOST }}
+          FRESHSERVICE_API_KEY: ${{ secrets.FRESHSERVICE_API_KEY }}
+          FRESHSERVICE_STAMP_FIELD: ${{ vars.FRESHSERVICE_STAMP_FIELD }}
+          FRESHSERVICE_REQUESTER_ID: ${{ vars.FRESHSERVICE_REQUESTER_ID }}
+          FRESHSERVICE_CALIBRATION_TICKET: ${{ vars.FRESHSERVICE_CALIBRATION_TICKET }}
+          FRESHSERVICE_WORKSPACE_ID: ${{ vars.FRESHSERVICE_WORKSPACE_ID }}
+          FRESHSERVICE_MARK_MODE: ${{ vars.FRESHSERVICE_MARK_MODE }}
+          FRESHSERVICE_TAG_RETRIES: ${{ vars.FRESHSERVICE_TAG_RETRIES }}
           # GitHub Issues: one repository, one token (KDEC-024 wires every backend the script has).
           TICKET_REPO: ${{ vars.TICKET_REPO }}
           TICKET_CALIBRATION_REF: ${{ vars.TICKET_CALIBRATION_REF }}
@@ -496,6 +520,8 @@ jobs:
           TICKET_CALL_BUDGET: ${{ vars.TICKET_CALL_BUDGET }}
           TICKET_INSTANCE_THRESHOLD: ${{ vars.TICKET_INSTANCE_THRESHOLD }}
           TICKET_DEGRADED_RUN_THRESHOLD: ${{ vars.TICKET_DEGRADED_RUN_THRESHOLD }}
+          # KREQ-674: the environment level of the ticketing numbers -- the environment this job runs in.
+          TICKET_SETTINGS_ENVIRONMENT: ${{ needs.guard.outputs.ticketing_mode == 'test' && inputs.test_environment || inputs.environment }}
           # KDEC-028: derived by the guard from the ref (default branch real, any other test).
           TICKETING_MODE: ${{ needs.guard.outputs.ticketing_mode }}
         run: |
@@ -503,9 +529,10 @@ jobs:
           # Only the selected backend's credential may be present (C-2 refuses two at once), so
           # the other backends' values are cleared here rather than trusted to be empty.
           case "$TICKET_BACKEND" in
-            jira) unset AZDO_PAT AZDO_ORG_URL AZDO_PROJECT GH_TOKEN TICKET_REPO ;;
-            azdo) unset JIRA_TOKEN JIRA_EMAIL JIRA_HOST JIRA_PROJECT GH_TOKEN TICKET_REPO ;;
-            github) unset JIRA_TOKEN JIRA_EMAIL JIRA_HOST JIRA_PROJECT AZDO_PAT AZDO_ORG_URL AZDO_PROJECT ;;
+            jira) unset AZDO_PAT AZDO_ORG_URL AZDO_PROJECT GH_TOKEN TICKET_REPO FRESHSERVICE_API_KEY FRESHSERVICE_HOST ;;
+            azdo) unset JIRA_TOKEN JIRA_EMAIL JIRA_HOST JIRA_PROJECT GH_TOKEN TICKET_REPO FRESHSERVICE_API_KEY FRESHSERVICE_HOST ;;
+            github) unset JIRA_TOKEN JIRA_EMAIL JIRA_HOST JIRA_PROJECT AZDO_PAT AZDO_ORG_URL AZDO_PROJECT FRESHSERVICE_API_KEY FRESHSERVICE_HOST ;;
+            freshservice) unset JIRA_TOKEN JIRA_EMAIL JIRA_HOST JIRA_PROJECT AZDO_PAT AZDO_ORG_URL AZDO_PROJECT GH_TOKEN TICKET_REPO ;;
           esac
           today="${TODAY_OVERRIDE:-$(date -u +%F)}"
           record="${RUNNER_TEMP}/ticket-run-record.json"
@@ -533,6 +560,8 @@ jobs:
               cov="$(dirname "$FINDINGS_FILE")/findings-coverage.json"
               if [ -f "$cov" ]; then args+=(--coverage "$cov"); fi
               if [ -f .security/policy-registration.json ]; then args+=(--registration .security/policy-registration.json); fi
+              # R03: the lineage ledger, from this protected-branch checkout. Absent is stated (LEDGER_ABSENT).
+              args+=(--lineage .security/finding-lineage.jsonl)
               if [ -f "$KIT_DIR/policy/policy-registration.json" ]; then args+=(--central-registration "$KIT_DIR/policy/policy-registration.json"); fi
               if [ -n "${GITHUB_RUN_ID:-}" ]; then args+=(--run-url "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID}"); fi
               if [ -n "${GITHUB_SHA:-}" ]; then args+=(--commit "$GITHUB_SHA"); fi

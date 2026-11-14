@@ -106,7 +106,8 @@ def _env(name, default=''):
     return os.environ.get(name.upper(), default)
 
 
-def _open(url):
+def _open(url, headers_out=None):
+    """-> the body; the response headers into `headers_out` when given (a paged listing's Link)."""
     req = urllib.request.Request(url, headers={'Accept': 'application/vnd.github+json',
                                                'X-GitHub-Api-Version': '2022-11-28'})
     token = _env('gh_token')
@@ -114,6 +115,8 @@ def _open(url):
         # Unredirected: an artifact download redirects to storage, which must not get the token.
         req.add_unredirected_header('Authorization', 'Bearer %s' % token)
     with urllib.request.urlopen(req, timeout=60) as resp:
+        if headers_out is not None:
+            headers_out.update(resp.headers.items())
         return resp.read()
 
 

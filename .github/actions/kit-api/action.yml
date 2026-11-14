@@ -40,6 +40,7 @@ outputs:
   deploy_environment: {description: "deploy.request: the environment, validated", value: "${{ steps.p.outputs.deploy_environment }}"}
   promote_from_run_id: {description: "deploy.request: the predecessor run", value: "${{ steps.p.outputs.promote_from_run_id }}"}
   promote_from_environment: {description: "deploy.request: the predecessor environment", value: "${{ steps.p.outputs.promote_from_environment }}"}
+  promote_from_target_resource_id: {description: "deploy.request: the predecessor target's resource id (optional; the release gate requires it at uat and prod)", value: "${{ steps.p.outputs.promote_from_target_resource_id }}"}
   release_path: {description: "deploy.request: normal | hotfix", value: "${{ steps.p.outputs.release_path }}"}
   api_state: {description: "finish: the call's kit_api_state", value: "${{ steps.p.outputs.api_state }}"}
 runs:

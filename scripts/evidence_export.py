@@ -57,6 +57,7 @@ USAGE
     from evidence_export import export, unpack
     python3 evidence_export.py --self-test
 """
+import datetime
 import hashlib
 import io
 import json
@@ -82,6 +83,16 @@ repository_filter = True
 missing_as_empty = False
 copy_whole_records = False
 author_by_email = False
+paging_ignored = False      # mutant M5 only: read page one and call it the whole population
+PAGE_CAP = 30               # pages per listing (100 a page); beyond it the read is incomplete, never silently cut
+
+# Which sections each listing feeds: a short read of the listing makes each of them NOT ESTABLISHED.
+LISTING_FEEDS = {'runs': ('security_record', 'findings', 'review_signals', 'promotion_records', 'sbom', 'kev',
+                          'ticket_links'),
+                 'artifacts': ('security_record', 'findings', 'review_signals', 'promotion_records', 'sbom', 'kev',
+                               'ticket_links'),
+                 'deployments': ('release_records',),
+                 'outbox': ('ticket_outbox',)}
 
 COMMIT_RE = re.compile(r'^[0-9a-f]{40}$')
 REPO_RE = re.compile(r'^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$')
@@ -186,16 +197,138 @@ RELEASE_RECORD = {k: None for k in (
     'release_block', 'verdict_provenance', 'weakening_check', 'tier_source', 'tier_reality', 'tier_reality_signals',
     'readiness_source', 'hosting_kind', 'lease', 'seam', 'kit_source_commit', 'kit_watermark',
     'promotion_record_sha256', 'evidence_artifact', 'retention_days', 'release_record', 'release_record_ref')}
-RELEASE_RECORD['promotion'] = ('record_id', 'state', 'release_path', 'expires_at', 'target_resource_id', 'digest')
+# xprod 2026-11-09: the promotion gate's verdict and the refusal CODES a decision overrode travel with every
+# promotion record and summary, so no reader takes a refused or break-glass promotion (PROMOTION_REFUSED_
+# HISTORY_INCOMPLETE, _TARGET_UNKNOWN, ...) for an established one. Codes only: never the free-text `why` or `by`.
+# KREQ-322 guard G3 (R2 F13): `gate` and `overridden` stay in the durable summary's filter; held by
+# tests/prove_refused_promotion_not_established.py (mutant release_summary_codes_dropped).
+RELEASE_RECORD['promotion'] = ('record_id', 'state', 'release_path', 'expires_at', 'target_resource_id', 'digest',
+                               'gate', 'overridden')
+# KREQ-322 guard G1 (R2 F13): the record keeps predecessor.gate and the overridden codes, so a refused promotion is
+# never exported as a bare collected record (mutant record_gate_dropped).
 PROMOTION_RECORD = {'schema': None, 'record_id': None, 'state': None, 'release_path': None,
                     'artifact': ('digest',), 'environment': ('name', 'tier', 'adapter', 'target_resource_id'),
-                    'validity': ('expires_at',), 'run': ('id', 'attempt', 'url')}
+                    'validity': ('expires_at',), 'run': ('id', 'attempt', 'url'),
+                    'predecessor': {'required': None, 'gate': None,
+                                    'promoted_from': ('run_id', 'environment', 'record_id'),
+                                    'overridden': ('list', ('code',))}}
 FINDING = ('identity', 'fp', 'scanner', 'tool', 'scanner_version', 'job', 'rule_id', 'severity', 'canonical_path',
            'line', 'finding_subject', 'cwe', 'state', 'reason', 'row_established', 'rule_family', 'symbol_path',
-           'ticket_anchor', 'ticket_key_state', 'secret_family', 'secret_key', 'is_secret_finding', 'what_aliases')
+           'ticket_anchor', 'ticket_key_state', 'secret_family', 'secret_key', 'is_secret_finding', 'what_aliases',
+           'disposition_basis')   # R03: direct vs carried-by-lineage, kept apart in the history
+# R-45 M5 (KDEC-048): the disposition evaluator's own decision per finding (scan_report.evaluated_decision),
+# copied through a bounded allowlist and checked for shape and self-consistency; never re-decided here.
+DECISION_KEYS = ('schema', 'basis', 'recorded_decision', 'effective_decision', 'finding_cleared', 'scope', 'expires',
+                 'separation_of_duties', 'source_register', 'evaluated_on', 'reason')
+DECISION_SUB = {'recorded_decision': ('disposition_type', 'state', 'recorded_on'),
+                'scope': ('scanner', 'rule', 'scope_path'), 'source_register': ('register', 'key')}
+DECISION_NOT_ESTABLISHED = 'DECISION_NOT_ESTABLISHED'
+
+
+def decision_text_problems(obj):
+    """R3 closeout C2 (KDEC-048 M1): the object's text fields are each a string or null, as
+    api/v1/evidence-export.schema.json says; any other type is named here (the object is then exported
+    not established), never passed through and never coerced."""
+    return ['%s is %s, not a string or null' % (k, type(obj.get(k)).__name__)
+            for k in ('basis', 'expires', 'separation_of_duties')
+            if not (isinstance(obj.get(k), str) or obj.get(k) is None)]
+
+
+DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+
+def real_date(text):
+    """-> the calendar date `text` names (YYYY-MM-DD, a real day), or None. Never a default."""
+    if not isinstance(text, str) or not DATE_RE.match(text):
+        return None
+    try:
+        return datetime.date(int(text[:4]), int(text[5:7]), int(text[8:10]))
+    except ValueError:
+        return None
+
+
+def decision_date_problems(obj, eff, evaluated):
+    """KE-07 (KDEC-051): the object's own dates are checked, never changed. A non-null `expires` that is not a
+    real date cannot be exported under the contract; an APPROVED_EFFECTIVE decision needs a dated expiry on or
+    after its own evaluation date (a missing or open-ended expiry is never unexpired)."""
+    import scan_report as sr
+    exp_text = obj.get('expires')
+    expires = real_date(exp_text)
+    bad = []
+    if exp_text is not None and expires is None:
+        bad.append('expires %r is not a date' % (exp_text,))
+    if eff == sr.DECISION_APPROVED_EFFECTIVE:
+        if exp_text is None:
+            bad.append('APPROVED_EFFECTIVE with no expiry date: a missing date is never unexpired')
+        elif expires is not None and evaluated is not None and expires < evaluated:
+            bad.append('APPROVED_EFFECTIVE expired %s, before its own evaluation on %s'
+                       % (expires.isoformat(), evaluated.isoformat()))
+    return bad
+
+
 SIGNALS = ('environment', 'run_id', 'run_attempt', 'verdict_provenance', 'weakening_check', 'readiness_source',
            'tier_reality', 'kit_watermark', 'release_approval', 'routing_result')
 CVE_RE = re.compile(r'CVE-\d{4}-\d{4,}', re.I)
+
+
+def decision_of(obj, basis):
+    """-> the bounded decision object for the export, or None when the report carries none (an older report:
+    the reader keeps 'not exported'). A malformed or self-contradictory object is exported as
+    effective_decision DECISION_NOT_ESTABLISHED with the reason, never repaired and never defaulted."""
+    import scan_report as sr
+    if obj is None:
+        return None
+    bad = []
+    if not isinstance(obj, dict):
+        bad.append('not an object')
+        obj = {}
+    elif sorted(obj) != sorted(DECISION_KEYS):
+        bad.append('fields %s, not %s' % (','.join(sorted(map(str, obj))), ','.join(sorted(DECISION_KEYS))))
+    if obj.get('schema') != sr.DECISION_SCHEMA:
+        bad.append('schema %r' % (obj.get('schema'),))
+    eff = obj.get('effective_decision')
+    if eff not in sr.DECISION_EFFECTIVE_VALUES:
+        bad.append('effective_decision %r' % (eff,))
+    if obj.get('basis') != basis:
+        bad.append('basis %r, the finding says %r' % (obj.get('basis'), basis))
+    if basis == sr.LINEAGE_CARRIED and eff != sr.DECISION_PENDING_REAFFIRMATION:
+        bad.append('a carried decision reads %r, not %s' % (eff, sr.DECISION_PENDING_REAFFIRMATION))
+    if basis in sr.LINEAGE_PENDING and eff == sr.DECISION_APPROVED_EFFECTIVE:
+        bad.append('a lineage basis reads %s' % eff)
+    if obj.get('finding_cleared') is not False:
+        bad.append('finding_cleared %r: a disposition never clears a finding' % (obj.get('finding_cleared'),))
+    evaluated = real_date(obj.get('evaluated_on'))
+    if evaluated is None:
+        bad.append('evaluated_on %r' % (obj.get('evaluated_on'),))
+    rec = obj.get('recorded_decision') if isinstance(obj.get('recorded_decision'), dict) else {}
+    if eff == sr.DECISION_APPROVED_EFFECTIVE and rec.get('state') != sr.approved_state:
+        bad.append('APPROVED_EFFECTIVE over a recorded state %r' % (rec.get('state'),))
+    bad.extend(decision_date_problems(obj, eff, evaluated))
+    # KE-07: the evaluator only ever writes NOT_ESTABLISHED (a register entry names a role, no requester)
+    if obj.get('separation_of_duties') != sr.DECISION_SOD_NOT_ESTABLISHED:
+        bad.append('separation_of_duties %r: the kit cannot establish it' % (obj.get('separation_of_duties'),))
+    for k, sub in DECISION_SUB.items():
+        v = obj.get(k)
+        if v is not None and (not isinstance(v, dict) or sorted(v) != sorted(sub)):
+            bad.append('%s is not {%s}' % (k, ','.join(sub)))
+    bad.extend(decision_text_problems(obj))
+    if bad:
+        return {'schema': sr.DECISION_SCHEMA, 'basis': _clean(_s(basis)), 'effective_decision': DECISION_NOT_ESTABLISHED,
+                'finding_cleared': False, 'evaluated_on': None,
+                # the WHOLE reason is bounded (R3 closeout C2: the slice used to bind to the argument tuple, so
+                # the reason was unbounded and a long refusal left the schema's bound)
+                'reason': _clean(('%s: %s' % (DECISION_NOT_ESTABLISHED, '; '.join(bad)))[:sr.DECISION_REASON_MAX])}
+    out = {}
+    for k in DECISION_KEYS:
+        v = obj[k]
+        if k in DECISION_SUB and isinstance(v, dict):
+            v = dict((x, v[x] if isinstance(v[x], str) or v[x] is None else None) for x in DECISION_SUB[k])
+        elif k == 'reason':
+            v = str(v)[:sr.DECISION_REASON_MAX]
+        elif not (isinstance(v, (str, bool)) or v is None):
+            v = None
+        out[k] = _clean(v)
+    return out
 
 
 def refusal(code, detail, field=''):
@@ -246,23 +379,66 @@ ARTIFACT_KINDS = (('kit-security-record-', 'kit-security-record.json', 'security
                   ('kit-promotion-record-', 'promotion-record.json', 'promotions'))
 
 
+def _next_link(headers):
+    for k, v in (headers or {}).items():
+        if str(k).lower() == 'link':
+            for part in str(v).split(','):
+                bits = part.split(';')
+                if len(bits) > 1 and any(b.strip().replace(' ', '') in ('rel="next"', "rel=next") for b in bits[1:]):
+                    return bits[0].strip().strip('<>')
+    return None
+
+
+def _get_all(client, path, key):
+    """-> (items or None, err, short_why or None). Follows Link rel="next" to the end (PAGE_CAP pages). A later
+    page that fails, the cap, or fewer items than total_count is a SHORT read: the items so far come back with
+    the reason, and the caller marks what it feeds NOT ESTABLISHED. `key` None: the page itself is the list."""
+    items, url, pages, total = [], path, 0, None
+    while url:
+        st, doc, hdrs, err = client.get(url)
+        batch = doc if key is None else (doc.get(key) if isinstance(doc, dict) else None)
+        if err or not isinstance(batch, list):
+            if pages == 0:
+                return None, err or st, None
+            return items, None, 'page %d could not be read (%s); %d read' % (pages + 1, err or st, len(items))
+        items.extend(batch)
+        pages += 1
+        if key is not None and total is None and isinstance(doc.get('total_count'), int):
+            total = doc['total_count']
+        if paging_ignored:
+            return items, None, None
+        url = _next_link(hdrs)
+        if url and pages >= PAGE_CAP:
+            return items, None, 'stopped after %d pages: %d read of %s' % (pages, len(items), total if total is not None
+                                                                         else 'an unknown number')
+    if total is not None and len(items) < total:
+        return items, None, '%d read of %d (total_count)' % (len(items), total)
+    return items, None, None
+
+
 def collect(client, repo, commit):
     """-> the raw reads for one commit. Every read that failed is named in raw['reads'] (section -> why)."""
     raw = {'security_records': [], 'findings': [], 'review_signals': [], 'promotions': [], 'deployments': [],
-           'outboxes': [], 'drained': [], 'sbom_digest': None, 'commit': None, 'reads': {}, 'expired': []}
-    st, doc, _h, err = client.get('/repos/%s/actions/runs?head_sha=%s&per_page=100' % (repo, commit))
+           'outboxes': [], 'drained': [], 'sbom_digest': None, 'commit': None, 'reads': {}, 'expired': [],
+           'short': {}}
+    wruns, err, short = _get_all(client, '/repos/%s/actions/runs?head_sha=%s&per_page=100' % (repo, commit),
+                                 'workflow_runs')
     runs = []
-    if err or not isinstance(doc, dict):
-        raw['reads']['runs'] = 'the runs of %s could not be read (%s)' % (commit[:12], err or st)
+    if wruns is None:
+        raw['reads']['runs'] = 'the runs of %s could not be read (%s)' % (commit[:12], err)
     else:
-        runs = sorted([r for r in doc.get('workflow_runs') or [] if r.get('head_sha') == commit],
-                      key=lambda r: _int(r.get('id')))
+        if short:
+            raw['short']['runs'] = 'the runs of %s: %s' % (commit[:12], short)
+        runs = sorted([r for r in wruns if r.get('head_sha') == commit], key=lambda r: _int(r.get('id')))
     for run in runs:
-        st, adoc, _h, err = client.get('/repos/%s/actions/runs/%s/artifacts?per_page=100' % (repo, run['id']))
-        if err or not isinstance(adoc, dict):
-            raw['reads']['artifacts'] = 'the artifacts of run %s could not be read (%s)' % (run['id'], err or st)
+        rarts, err, short = _get_all(client, '/repos/%s/actions/runs/%s/artifacts?per_page=100' % (repo, run['id']),
+                                     'artifacts')
+        if rarts is None:
+            raw['reads']['artifacts'] = 'the artifacts of run %s could not be read (%s)' % (run['id'], err)
             continue
-        for a in sorted(adoc.get('artifacts') or [], key=lambda x: (str(x.get('name')), _int(x.get('id')))):
+        if short:
+            raw['short']['artifacts'] = 'the artifacts of run %s: %s' % (run['id'], short)
+        for a in sorted(rarts, key=lambda x: (str(x.get('name')), _int(x.get('id')))):
             name = str(a.get('name') or '')
             kind = [k for k in ARTIFACT_KINDS if name.startswith(k[0])]
             if not kind and name != 'sbom':
@@ -289,22 +465,27 @@ def collect(client, repo, commit):
             src = {'kind': 'artifact', 'name': name, 'run_id': _int(run['id']),
                    'sha256': hashlib.sha256(body).hexdigest()}
             raw[key].append((src, parsed))
-    st, deps, _h, err = client.get('/repos/%s/deployments?sha=%s&task=kit-release-record&per_page=100' % (repo, commit))
-    if err or not isinstance(deps, list):
+    deps, err, short = _get_all(client, '/repos/%s/deployments?sha=%s&task=kit-release-record&per_page=100'
+                                % (repo, commit), None)
+    if deps is None:
         raw['reads']['deployments'] = ('the deployments of %s could not be read (%s): the api job needs '
-                                       'deployments: read (templates/kit-api.yml)' % (commit[:12], err or st))
+                                       'deployments: read (templates/kit-api.yml)' % (commit[:12], err))
     else:
+        if short:
+            raw['short']['deployments'] = 'the deployments of %s: %s' % (commit[:12], short)
         for d in sorted(deps, key=lambda x: _int(x.get('id'))):
             if d.get('task') != 'kit-release-record' or d.get('sha') != commit:
                 continue
             st, sts, _h, err = client.get('/repos/%s/deployments/%s/statuses?per_page=1' % (repo, d['id']))
             state = (sts[0].get('state') if isinstance(sts, list) and sts else '') or 'not read'
             raw['deployments'].append(({'kind': 'deployment', 'id': _int(d['id'])}, d, state))
-    st, adoc, _h, err = client.get('/repos/%s/actions/artifacts?per_page=100' % repo)
-    if err or not isinstance(adoc, dict):
-        raw['reads']['outbox'] = 'the repository\'s artifacts could not be read (%s)' % (err or st)
+    allarts, err, short = _get_all(client, '/repos/%s/actions/artifacts?per_page=100' % repo, 'artifacts')
+    if allarts is None:
+        raw['reads']['outbox'] = 'the repository\'s artifacts could not be read (%s)' % err
     else:
-        arts = [a for a in adoc.get('artifacts') or [] if not a.get('expired')]
+        if short:
+            raw['short']['outbox'] = 'the repository\'s artifacts: %s' % short
+        arts = [a for a in allarts if not a.get('expired')]
         for a in sorted(arts, key=lambda x: str(x.get('name'))):
             name = str(a.get('name') or '')
             if name.startswith('kit-ticket-outbox-done-'):
@@ -451,6 +632,9 @@ def assemble(repo, commit, subject, raw, ledger=None, ledger_note=''):
             if not isinstance(f, dict):
                 continue
             g = _pick(f, FINDING)
+            dec = decision_of(f.get('disposition_decision'), f.get('disposition_basis') or '')                 if 'disposition_decision' in f else None
+            if dec is not None:
+                g['disposition_decision'] = dec
             g['cves'] = sorted(set(c.upper() for t in [f.get('rule_id') or ''] + list(f.get('what_aliases') or [])
                                    for c in CVE_RE.findall(str(t))))
             idents = [x for x in (f.get('identity'), ('secret:' + f['secret_key']) if f.get('secret_key') else None) if x]
@@ -529,6 +713,11 @@ def assemble(repo, commit, subject, raw, ledger=None, ledger_note=''):
 
     for name in SECTIONS:
         secs.setdefault(name, _ne('not read'))
+    # A short read (a page missing, the page cap, or fewer than total_count) never leaves a section ESTABLISHED.
+    for listing, why in sorted((raw.get('short') or {}).items()):
+        for name in LISTING_FEEDS.get(listing, ()):
+            if name in secs and secs[name].get('state') == ESTABLISHED:
+                secs[name] = _ne('incomplete read, the population is not whole: %s' % why)
     doc = {'schema': SCHEMA, 'repository': repo, 'commit': commit, 'subject': subject, 'sections': secs,
            'not_established': [n for n in SECTIONS if secs[n]['state'] == NOT_ESTABLISHED],
            'excluded_other_repository': {'count': len(excluded), 'kinds': sorted(set(excluded))}}

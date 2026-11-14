@@ -87,6 +87,10 @@ TOOLS = {'gh': GH, 'trivy': TRIVY, 'fakedast': DAST}
 KEV_CLEAR = {'promotion_kev': {'kev_state': 'AVAILABLE', 'kev_verdict': 'CLEAR', 'kev_blocking': ''}}
 
 
+# The predecessor target every uat/prod promotion must name (promote_from_target_resource_id is required there).
+SRC_TARGET = '/subs/x/rg/rg-a/containerApps/web'
+
+
 def now():
     return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
 
@@ -132,7 +136,9 @@ def world_api(records, sbom=True, revocations=None, approvals=True):
     for n, (rec, run_id, branch, created) in enumerate(records):
         z = 'zips/rec%d.zip' % n
         binary[z] = zipped('promotion-record.json', json.dumps(rec))
-        arts.append({'id': 100 + n, 'name': PR.record_key(rec['environment']['name']), 'expired': False,
+        # R08: a record is published under its environment AND target (the legacy name with no target).
+        arts.append({'id': 100 + n, 'name': PR.record_key(rec['environment']['name'],
+                                                          PR.target_key(rec['environment'])), 'expired': False,
                      'created_at': created, 'archive_download_url': '@API_ROOT@/' + z,
                      'workflow_run': {'id': int(run_id), 'head_branch': branch}})
     if sbom:
@@ -141,6 +147,10 @@ def world_api(records, sbom=True, revocations=None, approvals=True):
                      'created_at': '2026-10-20T00:00:00Z', 'archive_download_url': '@API_ROOT@/zips/sbom.zip',
                      'workflow_run': {'id': int(BUILD_RUN), 'head_branch': 'main'}})
     files['repos/o/r/actions/artifacts'] = json.dumps({'total_count': len(arts), 'artifacts': arts})
+    # R08: the gate reads its source from the source run's OWN listing.
+    for rid in sorted(set(str(a['workflow_run']['id']) for a in arts)):
+        mine = [a for a in arts if str(a['workflow_run']['id']) == rid]
+        files['repos/o/r/actions/runs/%s/artifacts' % rid] = json.dumps({'total_count': len(mine), 'artifacts': mine})
     if revocations is not None:
         files['repos/o/r/contents/.security/promotion-revocations.json'] = json.dumps(
             {'revocations': revocations})
@@ -159,7 +169,11 @@ def deploy(envname, tier, run_id, inputs=None, api=None, state=None, extra=None,
     files, binary = api or world_api([])
     res, final, calls = W.run_world(wf or W.D.CONTAINERAPP, inputs or ca(envname, tier), state or W.containerapp_state(),
                                     api_files=files, api_binary=binary, tools=TOOLS,
-                                    env_extra=run_env(run_id, extra), uses_outputs=kev)
+                                    env_extra=run_env(run_id, extra),
+                                    # KREQ-558: the live-target authorisation composite (not run by the
+                                    # harness) answers authorised here; its refusals are proven in
+                                    # tests/prove_live_target_authorisation.py.
+                                    uses_outputs=dict(kev, lta={'live_target_authorisation': 'LIVE_TARGET_AUTHORISED'}))
     return res, final, calls
 
 
@@ -181,7 +195,8 @@ def pure(fails):
     def rec(digest=d1, envname='test', tier='test', state=PR.VERIFIED, at='2026-10-25T12:00:00Z',
             ref='refs/heads/main', branch='main', approver='approver-a'):
         return {'schema': PR.SCHEMA, 'state': state, 'artifact': {'digest': digest},
-                'environment': {'name': envname, 'tier': tier},
+                'environment': {'name': envname, 'tier': tier, 'adapter': 'containerapp',
+                                'target_resource_id': '/subs/x/rg/rg-a/containerApps/web'},
                 'provenance': {'source_ref': ref, 'build_workflow': SIGNER},
                 'conditions': {'missing': [] if state == PR.VERIFIED else ['end-to-end test period passed']},
                 'validity': {'verified_at': at}, 'run': {'id': '7'},
@@ -313,7 +328,7 @@ def job(fails):
             fails.append('J1 %s: the live read-back is not in the record' % envname)
         if (r.get('provenance') or {}).get('source_sha') != 'f' * 40:
             fails.append('J1 %s: the build provenance is not in the record' % envname)
-        if 'dynamic scan shows no new blocking finding' not in (r.get('conditions') or {}).get('established', []):
+        if 'dynamic scan passed, or recorded as not required' not in (r.get('conditions') or {}).get('established', []):
             fails.append('J1 %s: DAST not configured must not block verification' % envname)
         if res['steps'].get('promotion_collect', {}).get('outcome') != 'skipped':
             fails.append('J1 %s: a build-mode deploy ran the promotion gate' % envname)
@@ -330,7 +345,7 @@ def job(fails):
         recs_api = [(source_rec, run, branch, created)] + list(history)
         files, binary = world_api(recs_api, sbom=sbom, revocations=revocations)
         inp = inputs or ca('prod', 'prod', promote_from_run_id=run, promote_from_environment=src_env,
-                           e2e_test_command='')
+                           e2e_test_command='', promote_from_target_resource_id=SRC_TARGET)
         res, final, calls = deploy('prod', 'prod', '301', inputs=inp, api=(files, binary), extra=extra, kev=kev)
         gate = res['steps'].get('promotion_gate', {}).get('outputs', {}).get('promotion_gate')
         pre = res['steps'].get('promotion_preflight', {}).get('outputs', {}).get('promotion_preflight')
@@ -367,10 +382,10 @@ def job(fails):
 
     promote('dev success never satisfies test', dev_rec, src_env='dev', run='201',
             inputs=ca('prod', 'prod', promote_from_run_id='201', promote_from_environment='dev',
-                      e2e_test_command=''), want='PROMOTION_REFUSED_WRONG_PREDECESSOR', phrase='dev')
+                      e2e_test_command='', promote_from_target_resource_id=SRC_TARGET), want='PROMOTION_REFUSED_WRONG_PREDECESSOR', phrase='dev')
     promote('substituted digest', test_rec,
             inputs=ca('prod', 'prod', promote_from_run_id='202', promote_from_environment='test',
-                      e2e_test_command='', image_digest=OTHER, version_metadata=meta(OTHER)),
+                      e2e_test_command='', promote_from_target_resource_id=SRC_TARGET, image_digest=OTHER, version_metadata=meta(OTHER)),
             want='PROMOTION_REFUSED_DIGEST_MISMATCH', phrase=OTHER)
     unverified = dict(test_rec, state=PR.NOT_VERIFIED,
                       conditions={'established': [], 'missing': ['end-to-end test period passed']})
@@ -411,7 +426,7 @@ def job(fails):
             inputs=ca('prod', 'prod', e2e_test_command=''), want='PROMOTION_REFUSED_NO_PREDECESSOR')
     promote('active DAST against prod', test_rec,
             inputs=ca('prod', 'prod', promote_from_run_id='202', promote_from_environment='test',
-                      e2e_test_command='', dast_command='fakedast'),
+                      e2e_test_command='', promote_from_target_resource_id=SRC_TARGET, dast_command='fakedast'),
             want='DAST_REFUSED_PRODUCTION_TARGET', phrase='DAST_REFUSED_PRODUCTION_TARGET')
 
     # J3 -- what "tested" means, each half failing on its own.
@@ -424,9 +439,9 @@ def job(fails):
             ('DAST blocking result', ca('test', 'test', dast_command='fakedast'), None,
              {'FAKE_DAST_RESULTS': json.dumps([{'ruleId': '40018', 'level': 'error',
                                                 'message': {'text': 'SQL Injection'}}])},
-             'dynamic scan shows no new blocking finding'),
+             'dynamic scan passed, or recorded as not required'),
             ('DAST left no report', ca('test', 'test', dast_command='fakedast'), None,
-             {'FAKE_DAST_NO_REPORT': '1'}, 'dynamic scan shows no new blocking finding'),
+             {'FAKE_DAST_NO_REPORT': '1'}, 'dynamic scan passed, or recorded as not required'),
             ('identity not proven', ca('test', 'test', artifact_identity='IDENTITY_UNVERIFIED',
                                        version_metadata=''), None, None, 'exact artefact identity established')):
         res, _f, _c = deploy('test', 'test', '202', inputs=inp, state=state, extra=extra)

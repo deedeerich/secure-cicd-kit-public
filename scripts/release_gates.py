@@ -45,7 +45,8 @@ USAGE (one subcommand per workflow step; inputs arrive through env:, as data -- 
     release_gates.py approval --digest D [--source-commit SHA]
                                                 environment_tier, deploy_environment, deploy_approval,
                                                 github_run_id, github_sha, github_triggering_actor,
-                                                github_actor, github_repository, github_api_url, gh_token
+                                                github_actor, github_repository, github_api_url, gh_token,
+                                                small_team_self_approval (the protection step's output)
     release_gates.py --self-test
 
 EXIT 0 permitted   1 refused (by name)   2 usage
@@ -90,7 +91,13 @@ APPROVAL_ABSENT = 'RELEASE_APPROVAL_ABSENT'
 SELF_APPROVAL = 'SELF_DEPLOYMENT_APPROVAL'
 NOT_BOUND = 'RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST'
 NOT_ESTABLISHED = 'RELEASE_APPROVAL_NOT_ESTABLISHED'
-APPROVAL_PERMITS = (APPROVAL_VERIFIED, APPROVAL_NOT_REQUIRED)
+# Owner 2026-11-07: a team of two or fewer with no external approver group, declared in the ORG overlay
+# (scripts/org_settings.py, a five-field weakening, time-boxed): the developer may approve their own
+# deployment. The approval must still exist and still quote the digest; only "not the requester or the
+# author" is waived, and the outcome says so in plain words. The deploy's protection step decides whether
+# the mode is in force (small_team_self_approval=SMALL_TEAM_SELF_APPROVAL); nothing a caller passes can.
+SMALL_TEAM_APPROVAL = 'RELEASE_APPROVAL_SMALL_TEAM_SELF_APPROVAL'
+APPROVAL_PERMITS = (APPROVAL_VERIFIED, APPROVAL_NOT_REQUIRED, SMALL_TEAM_APPROVAL)
 MIN_DIGEST_PREFIX = 12          # hex characters an approval comment must quote, at least
 DIGEST_RE = re.compile(r'^(?:sha256:)?([0-9a-f]{64})$')
 
@@ -292,8 +299,9 @@ def authors_of(sha):
     return out
 
 
-def decide_approval(tier, environment, digest, approvals, requesters, authors, confirm):
-    """Pure. -> (outcome, why, approvers). `approvals`/`authors` None = could not be read."""
+def decide_approval(tier, environment, digest, approvals, requesters, authors, confirm, small_team=False):
+    """Pure. -> (outcome, why, approvers). `approvals`/`authors` None = could not be read.
+    small_team: the org's small-team self-approval is in force for this deploy (the protection step said so)."""
     if confirm is None:
         return NOT_ESTABLISHED, 'the policy\'s deploy_approval could not be read', []
     production = tier in PRODUCTION_TIERS
@@ -316,6 +324,14 @@ def decide_approval(tier, environment, digest, approvals, requesters, authors, c
         return NOT_ESTABLISHED, 'the released commit\'s author could not be read', who
     selfies = [(w, 'the requester') for w in who if w in req] + \
               [(w, 'the release\'s author') for w in who if w in authors and w not in req]
+    if selfies and small_team:
+        if confirm == 'required' and not any(digest_bound(a.get('comment'), digest) for a in mine):
+            return NOT_BOUND, ('no approval comment names the digest being released; under small-team self-approval '
+                               'the developer still confirms the exact artefact by quoting it (at least sha256:%s)'
+                               % ((digest or '').split(':', 1)[-1][:MIN_DIGEST_PREFIX] or '<digest>')), who
+        return SMALL_TEAM_APPROVAL, ('SMALL_TEAM_SELF_APPROVAL: approved by %s, who is the requester or the release\'s '
+                                     'author; allowed only by the org\'s declared small-team weakening, and recorded as such'
+                                     % ', '.join(shown(w) for w, _r in selfies)), who
     if selfies:
         return SELF_APPROVAL, \
             'approved by %s: the approver must be neither the requester nor the release\'s author' % ', '.join(
@@ -361,7 +377,8 @@ def cmd_approval(a):
                 authors = None
                 notes.append(str(exc))
         requesters = [env('github_triggering_actor'), env('github_actor')]
-        outcome, why, who = decide_approval(tier, environment, a.digest, approvals, requesters, authors, confirm)
+        small = env('small_team_self_approval').strip() == 'SMALL_TEAM_SELF_APPROVAL'
+        outcome, why, who = decide_approval(tier, environment, a.digest, approvals, requesters, authors, confirm, small)
     if notes:
         why = '%s (%s)' % (why, '; '.join(notes))
     refused = outcome not in APPROVAL_PERMITS
@@ -392,6 +409,11 @@ def self_test():
         (decide_approval('prod', 'prod', d, [appr('dev2', d)], ['dev1'], {'dev2'}, 'required')[0], SELF_APPROVAL),
         (decide_approval('prod', 'prod', d, [appr('rev', 'lgtm')], ['dev1'], {'dev2'}, 'required')[0], NOT_BOUND),
         (decide_approval('prod', 'prod', d, [], ['dev1'], {'dev2'}, 'required')[0], APPROVAL_ABSENT),
+        (decide_approval('prod', 'prod', d, [appr('dev1', d)], ['dev1'], {'dev1'}, 'required', True)[0],
+         SMALL_TEAM_APPROVAL),
+        (decide_approval('prod', 'prod', d, [appr('dev1', 'ok')], ['dev1'], {'dev1'}, 'required', True)[0], NOT_BOUND),
+        (decide_approval('prod', 'prod', d, [], ['dev1'], {'dev1'}, 'required', True)[0], APPROVAL_ABSENT),
+        (decide_approval('prod', 'prod', d, [appr('dev1', d)], ['dev1'], {'dev1'}, 'required', False)[0], SELF_APPROVAL),
     ]
     for i, (got, want) in enumerate(cases):
         got = got[0] if isinstance(got, tuple) else got

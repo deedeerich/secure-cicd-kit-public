@@ -25,6 +25,14 @@ name: Live deploy acceptance
 # The reusable's job declares the GitHub Environment, so the secrets it logs in with are the
 # ENVIRONMENT's; the mapping below exists because the reusable declares them required, and on a
 # repository whose Azure secrets live only in environments it maps empty values.
+#
+# BOUNDED (KREQ-717, KDEC-061 M2). A `uses:` job takes no timeout-minutes; each reusable bounds its own
+# mutating job, and `timeout_minutes` below is handed to it (the reusable clamps an out-of-range value
+# and refuses it before login). What a kill leaves (ROLLBACK_CONTRACT.md, the acceptance table): a deploy
+# cell is the deploy table (PARTIAL_APPLY / STATUS_UNTRUSTED recorded, the next dispatch at that target
+# refused until a person names the run); a build cell leaves at most its run-unique tag, never attested
+# and never promoted. This workflow creates no Azure resource, so a kill leaves no test resource to tear
+# down; the sandbox targets are the caller's.
 
 on:
   workflow_dispatch:
@@ -108,6 +116,11 @@ on:
         type: string
         required: false
         default: "run"
+      timeout_minutes:
+        description: "KREQ-717: the bound handed to the reusable's mutating job (30..360; 90 outside it)"
+        type: string
+        required: false
+        default: "90"
 
 permissions:
   contents: read
@@ -133,6 +146,7 @@ jobs:
       environment_tier: ${{ inputs.environment_tier }}
       resource_group: ${{ inputs.resource_group }}
       containerapp_name: ${{ inputs.target_name }}
+      deploy_timeout_minutes: ${{ fromJSON(inputs.timeout_minutes) }}
       acr_login_server: ${{ inputs.registry }}
       image_repository: ${{ inputs.image_repository }}
       image_digest: ${{ inputs.image_digest }}
@@ -165,6 +179,7 @@ jobs:
       environment_tier: ${{ inputs.environment_tier }}
       resource_group: ${{ inputs.resource_group }}
       webapp_name: ${{ inputs.target_name }}
+      deploy_timeout_minutes: ${{ fromJSON(inputs.timeout_minutes) }}
       acr_login_server: ${{ inputs.registry }}
       image_repository: ${{ inputs.image_repository }}
       image_digest: ${{ inputs.image_digest }}
@@ -197,6 +212,7 @@ jobs:
       image_tag: ${{ format('run-{0}-{1}', github.run_id, github.run_attempt) }}
       push: true
       cloud: commercial
+      build_timeout_minutes: ${{ fromJSON(inputs.timeout_minutes) }}
     secrets:
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
@@ -206,6 +222,7 @@ jobs:
     name: The digest the registry confirmed
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 5   # reads outputs only; mutates nothing
     steps:
       - name: Print what a deploy dispatch must name
         env:

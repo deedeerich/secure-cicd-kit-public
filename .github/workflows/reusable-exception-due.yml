@@ -142,7 +142,7 @@ jobs:
           python-version: "3.12"
 
       - name: PyYAML (to read the caller's workflows)
-        run: python -m pip install --quiet pyyaml==6.0.2
+        run: python -m pip install --quiet pyyaml==6.0.3
 
       - name: List every exception due or expired, with its history
         id: list
@@ -394,7 +394,7 @@ jobs:
           python-version: "3.12"
 
       - name: PyYAML (to read the caller's workflows)
-        run: python -m pip install --quiet pyyaml==6.0.2
+        run: python -m pip install --quiet pyyaml==6.0.3
 
       - name: Resurface on Jira (comment, reopen, or create once)
         id: resurface

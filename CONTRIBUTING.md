@@ -47,6 +47,38 @@ inline `yamllint` step, whose local twin `tests/check_yamllint.py` reads that st
   and the scanner versions `.github/actions/selftest-tools/action.yml` pins (Semgrep, Trivy,
   osv-scanner, bandit, gosec).
 
+### Local scanner tools: `KIT_LOCAL_TOOLS`
+
+A laptop proves less than the hosted runner when a scanner is missing: its checks answer UNKNOWN.
+To prove as much locally, place the pinned releases yourself and point the battery at them:
+
+```bash
+KIT_LOCAL_TOOLS=/d/tools tools/battery.sh --fast
+```
+
+```powershell
+$env:KIT_LOCAL_TOOLS = 'D:\tools'; tools\battery.ps1 --fast
+```
+
+- **Layout.** `<dir>/<tool>-<version>/` holding the executable (`gitleaks-8.21.2/gitleaks.exe`), or a
+  `bin/` under it (`go-1.22.12/bin/go.exe`). For this run only, the battery puts `<dir>`, each child
+  and each child's `bin/` ahead of `PATH` (children named `_…` or `.…`, e.g. a `_downloads` folder,
+  are skipped). Your shell profile is not touched.
+- **The battery never downloads anything.** You fetch each tool from its vendor's release, into a
+  new empty directory, and verify it against the vendor's published checksum file before use. The
+  versions are the ones `.github/actions/selftest-tools/action.yml` downloads (osv-scanner, gosec,
+  syft, gitleaks, Trivy) and the one `self-test.yml` downloads itself (actionlint); cppcheck and flawfinder are the runner's distribution packages, unpinned.
+  gosec's proof also needs Go (`inputs.go_version` 1.22).
+- **Preflight.** Before any check runs, every tool those files pin is resolved on that `PATH`
+  and asked its version: `OK` (the pin), `ABSENT` (its checks stay UNKNOWN, as before) or
+  `VERSION_MISMATCH` (another release, or no version printed). **A VERSION_MISMATCH fails the
+  battery (rc 1) even when every check passed**: a pass on another release is not the hosted proof.
+- Unset or empty, nothing changes. A value that is not a directory is UNKNOWN (rc 2), nothing run.
+- Checks that need Linux itself (`tests/prove_pipeline_lint.py` P3–P6) still answer UNKNOWN on
+  Windows; run that proof inside a WSL distribution with Linux tools in their own `KIT_LOCAL_TOOLS`.
+
+`tests/prove_battery_mirrors_selftest.py` T1–T6 hold the battery to this.
+
 ### The rest of the pre-push checklist
 
 1. `tools/battery.sh` (with the sweep) on the committed tree is green.

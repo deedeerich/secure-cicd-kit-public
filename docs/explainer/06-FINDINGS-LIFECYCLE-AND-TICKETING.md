@@ -83,7 +83,7 @@ rationale and an **expiry**. The report applies it only if it is approved, unexp
 - `REMEDIATED` is self-invalidating: if the scanner still reproduces the finding, the disposition is wrong.
 - Expired → `REOPENED_BY_LAPSE`; silence never renews.
 - **Key migration (KDEC-008, OD-6)**: dispositions key on the durable identity; the legacy fingerprint
-  is also honoured until **2026-11-13** (BUILT; `prove_disposition_schema_and_key.py`).
+  is also honoured until **2026-12-31** (KDEC-052; BUILT; `prove_disposition_schema_and_key.py`).
 
 ## 4. Ticketing (BUILT; Jira proven live, Azure DevOps and GitHub against stand-ins only)
 
@@ -225,3 +225,14 @@ calls spent and every 429; Azure DevOps meters in TSTUs (200 per five minutes) a
 `X-RateLimit-Remaining` before it is delayed. A lookup that cannot complete creates nothing.
 
 Full design: `docs/architecture/TICKETING_CONTRACT.md` and `docs/architecture/TICKETING_BACKENDS.md`.
+
+**Ticket governance (KDEC-043 PROPOSED, 2026-11-06; proven against stand-ins only)**: the full correlation key
+is the only identity -- it lives in the stamp field or the kit's block, and a label (on GitHub a 50-character
+hashed short form) is a search aid every hit is verified against; a `via` label is a claim compared with the
+identity the kit authenticated as and the tracker's record of the write; a finding the routing gives no area is
+created in `area-unresolved` triage with an owner role and a deadline and is a decision owed once overdue; a
+multicloud finding is one parent with an owned child per Azure and AWS asset, and the parent closes only when every
+child is verified. **Freshservice** is the fourth tracker: search-first, tags at creation, markers as private notes,
+and -- because its update replaces the whole tag list -- read-merge-write-verify under a per-ticket lock with a
+person's simultaneous edit reconciled from the activity history, or `TAG_PRESERVATION_NOT_ESTABLISHED` and a person
+asked. `docs/ticketing/TICKET-GOVERNANCE.md`; `docs/architecture/TICKETING_BACKENDS.md` section 4A.

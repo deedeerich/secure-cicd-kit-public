@@ -101,6 +101,11 @@ on:
         type: boolean
         required: false
         default: false
+      build_timeout_minutes:
+        description: "KREQ-717: the build-and-push job's time bound, 30..360 min (clamped to 90 outside it); else refused before login."
+        type: number
+        required: false
+        default: 90
     # REQUIRED FOR A PUSH, NOT FOR A BUILD. All three were `required: true`, so a caller could
     # not invoke the documented build-only path without supplying credentials for a registry the
     # run would never contact. The guard below enforces the real rule: push needs them, build does
@@ -222,6 +227,9 @@ jobs:
     environment: ${{ inputs.github_environment }}
     # Reads the feed mirrors when named (KDEC-032): the private runner reaches them.
     runs-on: ${{ vars.KIT_FEED_MIRROR_RUNNER || 'ubuntu-latest' }}
+    # KREQ-717 (KDEC-061 M2): bounded, the kill designed (ROLLBACK_CONTRACT.md, the registry-push table):
+    # whatever a kill leaves in the registry is never attested and never promoted.
+    timeout-minutes: ${{ (inputs.build_timeout_minutes >= 30 && inputs.build_timeout_minutes <= 360) && inputs.build_timeout_minutes || 90 }}
     outputs:
       image_digest: ${{ steps.push.outputs.digest }}
       image_config_digest: ${{ steps.built.outputs.config_digest }}
@@ -244,6 +252,14 @@ jobs:
       REPO: ${{ inputs.acr_login_server != '' && format('{0}/{1}', inputs.acr_login_server, inputs.image_repository) || format('local/{0}', inputs.image_repository) }}
       IMAGE: ${{ inputs.acr_login_server != '' && format('{0}/{1}', inputs.acr_login_server, inputs.image_repository) || format('local/{0}', inputs.image_repository) }}:${{ inputs.image_tag != '' && inputs.image_tag || github.sha }}
     steps:
+      - name: Time bound (KREQ-717, refuse before login)
+        uses: $/.github/actions/deploy-interruption
+        with:
+          op: bound
+          bound-name: build_timeout_minutes
+          target: ${{ env.IMAGE }}
+          timeout-minutes: ${{ inputs.build_timeout_minutes }}
+
       - name: Guard — push requires an environment
         if: inputs.push && inputs.github_environment == ''
         run: |
@@ -288,6 +304,17 @@ jobs:
       # implementation did not. Both logins ran unconditionally, so the documented
       # feature-branch path attempted federated login and a registry login it had no
       # credentials for. Static inspection was enough to see it; nothing had looked.
+      - name: Org governed settings and this environment's Azure cloud (refuse before login)
+        id: org_settings
+        # Owner 2026-11-07: KIT_CLOUD is Azure-only and per environment; with the org overlay declaring two
+        # Azure clouds, the build environment's cloud comes from its map (scripts/org_settings.py).
+        if: inputs.push
+        uses: $/.github/actions/org-settings
+        with:
+          environment: ${{ inputs.github_environment }}
+          cloud: ${{ inputs.cloud }}
+          bound-cloud: ${{ vars.KIT_CLOUD }}
+
       - name: Azure login (OIDC)
         if: inputs.push
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
@@ -295,8 +322,8 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          environment: ${{ inputs.cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
-          audience: ${{ inputs.cloud == 'gov' && (vars.KIT_AZURE_OIDC_AUDIENCE || 'api://AzureADTokenExchangeUSGov') || 'api://AzureADTokenExchange' }}
+          environment: ${{ steps.org_settings.outputs.azure_cloud == 'gov' && 'AzureUSGovernment' || 'AzureCloud' }}
+          audience: ${{ steps.org_settings.outputs.azure_cloud == 'gov' && (vars.KIT_AZURE_OIDC_AUDIENCE || 'api://AzureADTokenExchangeUSGov') || 'api://AzureADTokenExchange' }}
 
       - name: ACR login
         if: inputs.push
@@ -693,6 +720,22 @@ jobs:
           path: sbom.spdx.json
           if-no-files-found: error
 
+      - name: Registry push state (KREQ-717, also on a cancelled or timed-out job)
+        # Planned but never applied -> PARTIAL_APPLY; applied, identity unproven -> STATUS_UNTRUSTED;
+        # either, or a proven push whose job was cancelled -> INTERRUPTED_PUSH_UNPROMOTABLE. Written into
+        # the build evidence kept below; the attest job's `if:` and the promotion gate keep it unpromoted.
+        if: always() && inputs.push
+        uses: $/.github/actions/deploy-interruption
+        env:
+          DEPLOY_ENVIRONMENT: ${{ inputs.github_environment }}
+          RESOURCE_GROUP: ${{ inputs.acr_login_server }}
+        with:
+          op: record
+          kind: registry-push
+          target: ${{ env.IMAGE }}
+          identity: ${{ steps.provenance.outputs.class }}
+          cancelled: ${{ job.status == 'cancelled' }}
+
       - name: Keep the run record (build evidence)
         # The snapshot, rollback capability and change manifest of the push are the record a
         # later reversal reads (ROLLBACK_CONTRACT.md: "the run record is the thing a cancelled
@@ -807,6 +850,8 @@ jobs:
           # Whether the PLAN offers attestations on a private repository. Not a strength choice:
           # false on Pro is the platform, and a public repository attests regardless.
           posture attestations_available  NOT_A_CONTROL_SURFACE - -
+          # KREQ-717: the job's time bound, refused outside 30..360, clamped to 90.
+          posture build_timeout_minutes   NOT_A_CONTROL_SURFACE - -
 
           # The SBOM is always required; whether it is evidence OF anything depends on identity.
           req="$req,image-sbom"; exe="$exe,image-sbom"

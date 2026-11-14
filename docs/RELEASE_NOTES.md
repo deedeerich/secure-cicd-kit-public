@@ -5,6 +5,73 @@ trunk: the candidate merges the trunk and keeps every consumer overlay off `main
 and the public export generated from it, carry no consumer-specific material. Each entry names the
 trunk commit that brought the change.
 
+## Release 5b (candidate, 2026-11-13)
+
+Built on `release/candidate-5b-2026-11-13`: the release branch (`e26f683`, Release 5 above) merged with
+`--no-ff` with the development trunk's integration round 5 through **`c69d637`** (merge `7969bd2`). One
+content conflict (the continuity record: both records kept) and one modify/delete under `overlays/`
+(kept removed); the three overlay walkthroughs the trunk added were removed again. Not merged to `main`:
+the private release PR #17 stays on HOLD until the owner approves.
+
+### What is in it
+
+- **KDEC-049: an external finding is never dropped.** A SonarQube or Aikido finding that matches one the
+  kit already holds ENHANCES that ticket with the additional evidence (source, key, hash, alias); the
+  evidence record survives a re-bind; a missing or unreadable register stays explicit on every consumer
+  (REGISTER_NOT_ESTABLISHED, REGISTER_UNREADABLE), never read as empty.
+- **KDEC-050: the scanner floor and registry shrink only by a recorded decision** (KE-03..KE-06); a
+  replacement scanner cites a proof that exists in the tree; a gap decision lives at most 90 days.
+- **KDEC-051: an exported approval keeps its own dates**; the disposition-review contract; the
+  kit-harness pair proof (KREQ-302). Review staleness at 30 days is a flag, never an expiry.
+- **KDEC-052 (owner, 2026-11-13): the legacy-fingerprint window closes 2026-12-31** (was 2026-11-13).
+  Legacy-keyed records stay labelled and never gain review authority.
+- **KDEC-058: the hosted kit-harness pair test** (`kit-harness-pair.yml`), read-only, a GitHub App token
+  on the harness repository only, at a pinned harness commit; dispatch-only while
+  `.github/harness-pair.json` pins nothing.
+- **KDEC-059: governance profiles** (`governance-gate.yml`, `governance-profile.json`): personal (the owner
+  authorizes, no second human) and employer (assigned reviewers); a routine change with every trusted
+  check green may merge automatically; a failed, missing or inconclusive check, or a change to security
+  controls, operational boundaries or the gate's own logic, holds. The gate runs from the base side and
+  reads the PR as data.
+- **KDEC-060: ticketing defaults** with their source levels; overflow escalated; prod escalation refused
+  without a named route.
+- **KDEC-061: deploy safety.** Every mutating job is time-bounded (deploy 30..360 minutes, default 90; the
+  rollback sequence; the registry push; the live acceptance run) with a designed kill: a run killed
+  mid-change blocks the next deploy of that target until a person reconciles it; an image from a killed
+  push is never promoted. Live-target authorisation is read from the default branch.
+- **KDEC-053..057** (records lane): KREQ-322 refused-promotion guards proven by mutants; KREQ-632 the
+  negative control runs only for a reader; all 89 inherited actionlint findings classified and the
+  baseline held exactly.
+
+### Caller migration
+
+- `reusable-external-findings.yml` callers: grant `actions: read` (the baseline run is selected from the
+  repository's own runs). Its `--repo` flag is now `--repository`; the host comes from `GITHUB_API_URL`.
+- The new deploy, build and rollback inputs (`deploy_timeout_minutes`, `build_timeout_minutes`,
+  `rollback_timeout_minutes`, `reconciled_interrupted_run`) are optional with defaults. A job whose test
+  period exceeds the default bound must raise it, or the deploy is refused before it starts
+  (DEPLOY_REFUSED_TIME_BOUND).
+
+### Where Release 5b is proven
+
+Local: the full battery on `c69d637`, 353 checks, 349 PASS, 0 FAIL, 4 UNKNOWN (pipeline lint P3-P6 is
+Linux-only; three Docker checks). Hosted: the neutral export of this branch on the public mirror
+(`release-5-candidate`, draft PR #14); the run is listed in the release PR. No run on a GHE.com host.
+
+### Live proofs owed (not claimed by this release)
+
+- The hosted kit-harness pair: the owner creates the read-only GitHub App and pins the harness commit.
+- The governance gate on a real repository: `owner_login` set, the ruleset applied
+  (`docs/operations/GOVERNANCE_PROFILES.md`).
+- Deploy time bounds and the interrupted-deploy block against a live target, after the live-target
+  authorisation record exists.
+- Ticket enhancement against the personal Jira and Azure DevOps test projects.
+
+### Owner decisions owed
+
+KDEC-057 (harden-runner sends telemetry to a third party); KDEC-060 M4/M5 (instance overflow, missing
+ledger routing); the GitHub App for the pair test.
+
 ## Release 5
 
 Built on `release/main-candidate-5` from Release 4.1 and its Dependabot merges (`62cae61`) and the

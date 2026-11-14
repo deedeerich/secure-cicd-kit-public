@@ -55,11 +55,16 @@ def expect(cond, label):
         FAILS.append(label)
 
 
+SWA_ID = '/subscriptions/0/resourceGroups/rg-a/providers/Microsoft.Web/staticSites/site'
+
+
 def record(digest):
     return {'schema': 'kit-promotion-record/1', 'record_id': '301-1-prod', 'state': 'verified-for-promotion',
             'release_path': 'normal',
             'artifact': {'digest': digest, 'sbom_sha256': PP.SBOM_SHA},
-            'environment': {'name': 'prod', 'tier': 'prod', 'adapter': 'containerapp'},
+            'environment': {'name': 'prod', 'tier': 'prod', 'adapter': 'containerapp',
+                            # R08: the scan reads only its own target's records (adapter + resource id).
+                            'target_resource_id': '/subs/x/rg/rg-a/containerApps/web'},
             'provenance': {'source_ref': 'refs/heads/main'},
             'live_state': {'deployment_outcome': 'DEPLOY_HEALTHY'}, 'run': {'id': '301'},
             'validity': {'verified_at': '2026-10-26T00:00:00Z'}, 'approval': {'approvers': []}}
@@ -116,7 +121,7 @@ def swa_case():
     d = tempfile.mkdtemp(prefix='lz-drift-swa-')
     try:
         rec = record(W.NEW)
-        rec['environment']['adapter'] = 'staticwebapp'
+        rec['environment'].update(adapter='staticwebapp', target_resource_id=SWA_ID)
         files, binary = PP.world_api([(rec, '301', 'main', '2026-10-26T00:00:00Z')])
         api = os.path.join(d, 'api')
         url = 'file:///' + api.replace('\\', '/').lstrip('/')
@@ -125,7 +130,7 @@ def swa_case():
             os.makedirs(os.path.dirname(p), exist_ok=True)
             io.open(p, 'wb').write(body if isinstance(body, bytes) else body.replace('@API_ROOT@', url).encode('utf-8'))
         st = {'staticwebapp': {'name': 'site', 'host': 'site.azurestaticapps.example', 'tags': {}, 'sku': 'Standard',
-                               'id': '/subscriptions/0/resourceGroups/rg-a/providers/Microsoft.Web/staticSites/site',
+                               'id': SWA_ID,
                                'repositoryUrl': None, 'apiKey': 'x',
                                'environments': {'default': {'status': 'Ready',
                                                             'marker': {'schema': 'kit-static-site/1',

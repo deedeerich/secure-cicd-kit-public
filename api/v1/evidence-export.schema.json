@@ -366,6 +366,155 @@
            "cluster_key",
            "ref"
           ]
+         },
+         "disposition_decision": {
+          "description": "The kit's EVALUATED disposition decision for this finding (KDEC-048; object schema kit-disposition-decision/1): written by the disposition evaluator at the scan run's date and copied by the exporter through an allowlist, never re-decided. ABSENT when the security report predates the object or no register decision applies to the finding (additive and optional within kit-evidence-export/1: a reader keeps 'not exported'). TWO FORMS. Evaluated: all eleven properties. Not established: exactly the six required properties, effective_decision DECISION_NOT_ESTABLISHED, evaluated_on null and the reason (the report's object was malformed or self-contradictory; it is never repaired). This schema fixes the SHAPE (properties, types, vocabulary). Two VALUE rules are each reader's to enforce by name, so that a tampered object is a per-finding refusal and not the loss of the whole export: `schema` is always kit-disposition-decision/1, and `finding_cleared` is always false (a disposition suppresses the gate; only a rescan that stops reporting the finding clears it). DATES (KE-07, KDEC-051): evaluated_on and expires are this evaluation's own and are never changed by a reader; an evaluated APPROVED_EFFECTIVE carries a dated expires on or after evaluated_on, and separation_of_duties is NOT_ESTABLISHED (the kit cannot establish it). Whether an approval still holds at a later review is a SEPARATE, separately dated evaluation: api/v1/disposition-review.contract.json (kit-disposition-review/1).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+           "schema",
+           "basis",
+           "effective_decision",
+           "finding_cleared",
+           "evaluated_on",
+           "reason"
+          ],
+          "properties": {
+           "schema": {
+            "type": "string",
+            "maxLength": 64
+           },
+           "basis": {
+            "type": "string",
+            "maxLength": 200
+           },
+           "recorded_decision": {
+            "type": [
+             "object",
+             "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+             "disposition_type",
+             "state",
+             "recorded_on"
+            ],
+            "properties": {
+             "disposition_type": {
+              "type": [
+               "string",
+               "null"
+              ]
+             },
+             "state": {
+              "type": [
+               "string",
+               "null"
+              ]
+             },
+             "recorded_on": {
+              "type": [
+               "string",
+               "null"
+              ]
+             }
+            }
+           },
+           "effective_decision": {
+            "type": "string",
+            "enum": [
+             "APPROVED_EFFECTIVE",
+             "NOT_EFFECTIVE",
+             "PENDING_REAFFIRMATION",
+             "PENDING_DECISION",
+             "DECISION_NOT_ESTABLISHED"
+            ]
+           },
+           "finding_cleared": {
+            "type": "boolean"
+           },
+           "scope": {
+            "type": [
+             "object",
+             "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+             "scanner",
+             "rule",
+             "scope_path"
+            ],
+            "properties": {
+             "scanner": {
+              "type": [
+               "string",
+               "null"
+              ]
+             },
+             "rule": {
+              "type": [
+               "string",
+               "null"
+              ]
+             },
+             "scope_path": {
+              "type": [
+               "string",
+               "null"
+              ]
+             }
+            }
+           },
+           "expires": {
+            "type": [
+             "string",
+             "null"
+            ],
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+           },
+           "separation_of_duties": {
+            "type": "string",
+            "enum": [
+             "NOT_ESTABLISHED"
+            ]
+           },
+           "source_register": {
+            "type": [
+             "object",
+             "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+             "register",
+             "key"
+            ],
+            "properties": {
+             "register": {
+              "type": [
+               "string",
+               "null"
+              ]
+             },
+             "key": {
+              "type": [
+               "string",
+               "null"
+              ]
+             }
+            }
+           },
+           "evaluated_on": {
+            "type": [
+             "string",
+             "null"
+            ],
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+           },
+           "reason": {
+            "type": "string",
+            "maxLength": 300
+           }
+          }
          }
         }
        }

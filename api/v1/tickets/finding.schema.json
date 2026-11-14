@@ -235,10 +235,388 @@
       "type": "string",
       "pattern": "^[0-9a-f]{32}$"
     },
+    "enhances": {
+      "description": "KDEC-049 (owner, 2026-11-11: never drop, enhance the existing ticket with additional evidence): the existing finding this one adds evidence to. correlation_key is that finding's cluster key (its ticket's stamp); tickets.submit appends this item's evidence to that ticket as a comment and additive labels, creates no ticket and overwrites nothing (TEMPLATE_ENHANCED_EXISTING). Bound by the review's evidence set like every other field.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "basis"
+      ],
+      "properties": {
+        "basis": {
+          "type": "string",
+          "enum": [
+            "kit-finding-cve-path",
+            "kit-finding-path-line-cwe"
+          ]
+        },
+        "correlation_key": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "identity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "scanner": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "rule_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "severity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20
+        },
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "component": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "register": {
+          "description": "KDEC-049 R1: where the match was made -- the selected baseline run, or the ticket ledger (a finding still bound but absent from the latest scan).",
+          "type": "string",
+          "enum": [
+            "baseline-run",
+            "ticket-ledger"
+          ]
+        },
+        "ticket_state": {
+          "type": "string",
+          "enum": [
+            "open",
+            "closed"
+          ]
+        },
+        "dispositions": {
+          "description": "KDEC-049 R2: the active dispositions on the matched finding. tickets.submit marks each for RE-EVALUATION (scope, validity, expiry); none is extended or cleared.",
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "state"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "approved"
+                ]
+              },
+              "expires": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 10
+              }
+            }
+          }
+        }
+      }
+    },
+    "component": {
+      "description": "KDEC-049 R2: the affected component (package, @version when known). The same CVE on another component is a separate affected instance.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "baseline": {
+      "description": "KDEC-049 R1: the baseline this item was matched against. Any state but BASELINE_SELECTED routes the item to triage; no match is assumed.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "BASELINE_SELECTED",
+            "BASELINE_UNAVAILABLE",
+            "BASELINE_PARTIAL",
+            "BASELINE_STALE",
+            "BASELINE_INCOMPATIBLE"
+          ]
+        },
+        "register": {
+          "description": "Whether the ticket ledger (the register) was read for the match. Anything but REGISTER_READ routes the item to triage: an unmatched item is never definitively new without the register.",
+          "type": "string",
+          "enum": [
+            "REGISTER_READ",
+            "REGISTER_NOT_ESTABLISHED",
+            "REGISTER_UNREADABLE"
+          ]
+        },
+        "run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "commit_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "match_review": {
+      "description": "KDEC-049 R2: a match that is not one finding -- a separate instance (linked as related), ambiguous, or out of scope. Never merged; routed to triage.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "MATCH_SEPARATE_INSTANCE",
+            "MATCH_AMBIGUOUS",
+            "MATCH_SCOPE_MISMATCH"
+          ]
+        },
+        "candidates": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$"
+          }
+        }
+      }
+    },
+    "corroborating_evidence": {
+      "description": "KDEC-049: further records of this same identity from the same pull, each kept whole (never collapsed to its aliases).",
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source_tool",
+          "source_key",
+          "evidence",
+          "severity"
+        ],
+        "properties": {
+          "source_tool": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "source_key": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{1,127}$"
+          },
+          "evidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "ref",
+              "sha256"
+            ],
+            "properties": {
+              "ref": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 500
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "receipt": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 300
+              }
+            }
+          },
+          "aliases": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{1,127}$"
+            }
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low",
+              "info"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 300
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
     "requested_by": {
       "description": "Who asked for this ticket (recorded; never an approver for it).",
       "type": "string",
       "pattern": "^[A-Za-z0-9 @._+\\[\\]-]{1,100}$"
+    },
+    "obligations": {
+      "description": "KDEC-043 (PROPOSED): a MULTICLOUD finding -- one identity (the identifier in this environment) with one child obligation per cloud asset, each with its own owner role and its own closure. At least two, in Azure AND AWS. The parent ticket closes only when every child is closed by the kit's rescan or a second person's verification.",
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "cloud",
+          "owner_role",
+          "asset"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,39}$"
+          },
+          "cloud": {
+            "type": "string",
+            "enum": [
+              "azure",
+              "aws"
+            ]
+          },
+          "owner_role": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,59}$"
+          },
+          "asset": {
+            "description": "The asset identity scheme. repo-path: repository + path (+ line). azure-resource: cloud + tenant_id + subscription_id + resource_id (the resource id names the subscription). aws-resource: account_id + region + arn (the ARN names the account). github-repo: host + org + repo. engagement: engagement_id + kind + target.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scheme"
+            ],
+            "properties": {
+              "scheme": {
+                "type": "string",
+                "enum": [
+                  "repo-path",
+                  "azure-resource",
+                  "aws-resource",
+                  "github-repo",
+                  "engagement"
+                ]
+              },
+              "repository": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 400
+              },
+              "line": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "cloud": {
+                "type": "string",
+                "enum": [
+                  "azure-commercial",
+                  "azure-government"
+                ]
+              },
+              "tenant_id": {
+                "type": "string",
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+              },
+              "subscription_id": {
+                "type": "string",
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+              },
+              "resource_id": {
+                "type": "string",
+                "pattern": "^/subscriptions/[^\\s]{1,800}$"
+              },
+              "account_id": {
+                "type": "string",
+                "pattern": "^[0-9]{12}$"
+              },
+              "region": {
+                "type": "string",
+                "pattern": "^[a-z]{2}(-gov)?-[a-z]+-[0-9]$|^global$"
+              },
+              "arn": {
+                "type": "string",
+                "pattern": "^arn:aws(-us-gov)?:[a-z0-9-]+:[a-z0-9-]*:[0-9]{0,12}:[^\\s]{1,1000}$"
+              },
+              "host": {
+                "type": "string",
+                "pattern": "^[a-z0-9.-]{3,200}$"
+              },
+              "org": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]{1,100}$"
+              },
+              "repo": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]{1,100}$"
+              },
+              "engagement_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,79}$"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "pentest",
+                  "audit",
+                  "review"
+                ]
+              },
+              "target": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 400
+              }
+            }
+          }
+        }
+      }
     }
   },
   "x-enabled": true

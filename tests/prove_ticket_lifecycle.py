@@ -186,7 +186,8 @@ class GitHub(object):
         return ptb.backend(self.rt, dict(ptb.GH_ENV, **env))
 
     def tickets(self):
-        return [i for n, i in self.t.issues.items() if n != 7]
+        # Tier-0 tickets only: an itemised instance (KREQ-676, default threshold 25) is a plain issue with no labels.
+        return [i for n, i in self.t.issues.items() if n != 7 and i.get('labels')]
 
     def closed(self, ref):
         return self.t.issues[int(ref)]['state'] == 'closed'
@@ -598,8 +599,11 @@ def case_d5(rt, fails):
                  'AZDO_STATE_DONE', 'TICKET_CALL_BUDGET'):
         if need not in text:
             fails.append('D5: reusable-ticket-reconcile.yml does not wire %s' % need)
-    if not re.search(r'description: "jira, azdo or github', text):
-        fails.append('D5: the backend input does not offer github')
+    if not re.search(r'description: "jira, azdo, github or freshservice', text):
+        fails.append('D5: the backend input does not offer github and freshservice (KDEC-043)')
+    for need in ('FRESHSERVICE_HOST', 'FRESHSERVICE_API_KEY', 'FRESHSERVICE_STAMP_FIELD'):
+        if need not in text:
+            fails.append('D5: reusable-ticket-reconcile.yml does not wire %s (KDEC-043)' % need)
 
 
 # ── D4: one key; cross-scanner duplicates merged ────────────────────────────────────────

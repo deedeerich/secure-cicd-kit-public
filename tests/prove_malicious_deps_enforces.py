@@ -14,7 +14,7 @@ WHY THIS EXISTS (ledger L15, L84)
     osv-scanner against a throwaway workspace. The scan step's outputs feed the count step, whose
     outputs feed the enforce step, exactly as the runner chains them.
 
-MEASURED, NOT ASSUMED (osv-scanner v2.6.0, 2026-10-14)
+MEASURED, NOT ASSUMED (osv-scanner v2.6.0, 2026-10-14; re-run green on v2.7.0, the one pin, 2026-11-07)
     * A malicious crate (rustdecimal 1.23.1) is reported THREE times -- MAL-2022-1, its RUSTSEC id
       and its GHSA id -- and the MAL- id appears as an ALIAS on the other two. Counting `id` alone
       counts it once by luck; counting every record counts it three times. The count must look at

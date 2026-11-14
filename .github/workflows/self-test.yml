@@ -72,15 +72,23 @@ jobs:
       - name: The protected capability floor holds, and shrinks only through a tombstone
         env:
           EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
           python3 -m pip install --quiet PyYAML
-          python3 scripts/capability_floor.py --check-tree
-          # Against the base: a floor entry that disappeared needs a valid tombstone (ruling 8).
-          if [ "$EVENT" = "pull_request" ] && git show HEAD^1:capability-floor.json > "$RUNNER_TEMP/base-floor.json" 2>/dev/null; then
-            python3 scripts/capability_floor.py --base-floor "$RUNNER_TEMP/base-floor.json"
-          else
-            echo "no base floor to compare (not a pull request, or the base predates the floor)"
+          # Against the base on EVERY event (KE-04, KDEC-050): a pull request's base is the merge
+          # commit's first parent; a push's is the commit main held before it; an unread base is exit 2.
+          base=HEAD^1
+          if [ "$EVENT" = "push" ] && [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            git fetch --no-tags --depth=1 origin "$BEFORE"
+            base="$BEFORE"
+          fi
+          python3 scripts/capability_floor.py --check-tree --base-ref "$base"
+          # KE-05 / the self-test bypass: protected paths have the protected owner; a change to them
+          # carries a decision record (scripts/protected_paths.py). An adopted copy refuses placeholders.
+          python3 scripts/protected_paths.py --check-codeowners
+          if [ "$EVENT" = "pull_request" ]; then
+            python3 scripts/protected_paths.py --check-change --base-ref HEAD^1
           fi
 
   yaml-lint:
@@ -162,7 +170,9 @@ jobs:
           # repository's `main` branch, which installed whatever that branch said that day; the
           # first hosted milestone run (2026-10-15) could not acquire it at all. Now: one release,
           # its published checksum, no script from a moving branch.
-          v=1.7.7; t=actionlint_${v}_linux_amd64.tar.gz
+          # The ONE actionlint the kit pins (.github/tool-pins.json), the release deps-scan runs over
+          # consumers' workflows (tests/check_tool_pins_single_version.py holds them equal).
+          v=1.7.12; t=actionlint_${v}_linux_amd64.tar.gz
           acquired=""
           for attempt in 1 2 3; do
             if curl -sfLO "https://github.com/rhysd/actionlint/releases/download/v${v}/${t}" \
@@ -185,9 +195,11 @@ jobs:
             exit 1
           fi
           echo "actionlint $(./actionlint --version | head -1) acquired and verified runnable"
-          # The kit's own wrapper: every finding fails, except the two exact messages it documents
-          # (the `$/` composite form, proven on GitHub; the stale 10-input dispatch rule).
+          # The kit's own wrapper: every finding must be a classified row of
+          # docs/assurance/ACTIONLINT_BASELINE.md (exact message and count); a row that no longer
+          # occurs is stale and fails (KDEC-058). The second line proves that comparison can fail.
           ACTIONLINT="$PWD/actionlint" python3 tests/check_actionlint.py
+          python3 tests/prove_actionlint_baseline.py
           # What kit init generates passes the same pinned actionlint (tests/prove_kit_init.py P2).
           ACTIONLINT="$PWD/actionlint" python3 tests/prove_kit_init.py --actionlint
 
@@ -617,7 +629,7 @@ jobs:
       - name: A known-malicious package must block in every mode, and no evidence must not read as clean
         run: |
           set -euo pipefail
-          # osv-scanner v2.6.0, the release the workflow pins, verified against the digest written in
+          # osv-scanner v2.7.0, the release the workflow pins, verified against the digest written in
           # the selftest-tools composite above (copied from the release's SHA256SUMS; never `latest`, L84).
           # Runs the job's install (statically), scan, count and enforce steps as shipped (L15).
           python3 tests/prove_malicious_deps_enforces.py
@@ -719,7 +731,7 @@ jobs:
       - name: A denied licence must reach the gate, counted once, matched by licence token
         run: |
           set -euo pipefail
-          # Ledger L16. syft 1.52.0, pinned and verified against its release checksums by the
+          # Ledger L16. syft 1.54.1, pinned and verified against its release checksums by the
           # selftest-tools composite above.
           python3 scripts/sbom_licenses.py --self-test
           python3 tests/prove_sbom_licence_verdict.py
@@ -824,6 +836,10 @@ jobs:
           # in the NVD workflow, the scanner probes, both build paths and the flagship's sbom,
           # sast-dotnet and sast-java jobs (scope, and what is still outside it, stated in the file).
           python3 tests/check_pinned_installs.py
+          # One version and one digest per tool, everywhere: the one .github/tool-pins.json names
+          # (syft 1.52.0/1.54.1, actionlint 1.7.7/1.7.12 and osv-scanner 2.6.0/2.7.0 were each
+          # pinned twice until 2026-11-07, so a proof could measure one release and the job run another).
+          python3 tests/check_tool_pins_single_version.py
 
       - name: The NVD workflow's own steps must acquire, write, cache and report honestly
         run: |
@@ -976,6 +992,13 @@ jobs:
           python3 scripts/finding_lineage.py --self-test
           python3 tests/prove_lineage_durability.py
           python3 tests/prove_lineage_integrity.py
+          # R03: the resolver is USED -- the report, the ticket binding and the exported history.
+          python3 tests/prove_lineage_consumers.py
+          # Review 2026-11-09 finding 10: the READ-ONLY legacy-key inventory.
+          python3 tests/prove_legacy_inventory.py
+          # Review round 2 (the owner's no-vendor-fix policy): NO_FIX_AVAILABLE never becomes cleared, fixed,
+          # false positive, resolved or closed; an expired exemption returns it to review.
+          python3 tests/prove_no_fix_stays_active.py
 
       - name: Correlation clusters on anchors only, names every scanner, and drops nothing
         run: |
@@ -1166,6 +1189,15 @@ jobs:
           # section or NOT ESTABLISHED by name; no secret, no free text, no email; KEV, SBOM and author recorded.
           python3 scripts/evidence_export.py --self-test
           python3 tests/prove_evidence_export.py
+          # KREQ-322 (R2 F13): a refused or overridden promotion keeps its gate code; never reads ESTABLISHED
+          python3 tests/prove_refused_promotion_not_established.py
+          # KREQ-632 (FW section 12 option (b)): the negative control runs only for a reader
+          python3 tests/prove_negative_control_caller.py
+          # KE-07 (KDEC-051): an exported approval's own dates are checked, never changed; the review contract
+          python3 tests/prove_approval_review_contract.py
+          # KDEC-058: the hosted kit-harness pair's gate (kit-harness-pair.yml) -- never on PR code, only at a
+          # pinned 40-hex harness commit, and an absent credential is HARNESS_LEG_NOT_RUN, never a pass.
+          python3 tests/prove_harness_pair_gate.py
           # KDEC-037: ticket templates and external findings; nothing written without a finalized,
           # human-concurred review; every ticket (manual ones too) searched before a create; closure
           # never self-verified; extensions counted and capped; the no-fix re-check; tracker intake.
@@ -1178,6 +1210,15 @@ jobs:
           # taxonomy, extensions and the no-fix clock; proposed types disabled; AzDO and GitHub intake.
           python3 scripts/separation_of_duties.py --self-test
           python3 tests/prove_ticket_intake_v2.py
+          # KDEC-043 (PROPOSED): the full correlation key is the only identity (a label is a verified search
+          # aid); via is a claim compared with the authenticated identity and the write event; area-unresolved
+          # has an owner role and a deadline; a multicloud parent closes only when every child is verified.
+          python3 scripts/ticket_governance.py --self-test
+          python3 tests/prove_ticket_governance.py
+          # KDEC-043: the Freshservice adapter against a stand-in on 127.0.0.1 (never a live tracker): tags at
+          # creation, markers as notes, read-merge-write-verify under a per-ticket lock, a simultaneous human
+          # tag edit reconciled from the activity history, NOT_ESTABLISHED when it cannot be proven.
+          python3 tests/prove_freshservice_tracker.py
 
       - name: The live R-1/R-2 runner is safe before anyone runs it live
         run: |
@@ -1365,6 +1406,15 @@ jobs:
           # SonarQube and Aikido findings pulled into the intake, complete or refused by name.
           python3 tests/prove_external_findings_pull.py
           python3 tests/prove_external_findings_workflow.py
+          # KDEC-049 (owner 2026-11-11): a match never drops the vuln -- it ENHANCES the existing ticket with the
+          # new evidence; journeys J1-J13 against the baseline run and the ticket ledger, mutants M-B1..M-B6.
+          python3 tests/prove_external_findings_journeys.py
+          # A missing or unreadable ticket ledger is named on every item and consumer; nothing is "new" without it.
+          python3 tests/prove_register_unavailable.py
+          # KDEC-052 item 7: the owner's ticket numbers, their source levels, overflow escalated, fix availability
+          # from scanner data, and the prod escalation route refused when it is a placeholder (KREQ-590/674/676/706).
+          python3 scripts/ticket_settings.py --self-test
+          python3 tests/prove_ticket_defaults.py
           # ONE normaliser for every source's CWE and vulnerability-id spelling; unknown forms refused.
           python3 scripts/finding_ids.py --self-test
           python3 tests/prove_finding_ids.py
@@ -1398,6 +1448,16 @@ jobs:
           # The pilot friction logs summarise across teams and drop nothing.
           python3 scripts/friction_summary.py --self-test
           python3 tests/prove_friction_summary.py
+
+      - name: Org survey and org setup check -- read-only, GET only, github.com and GHE.com (KDEC-045, 2026-11-07)
+        run: |
+          set -euo pipefail
+          # What already runs in the org, compared with the kit; turn-offs and their reasons; never "none" when unread.
+          python3 scripts/kit_survey.py --self-test
+          python3 tests/prove_kit_survey.py
+          # The one-time org setup: PASS / ACTION_NEEDED / NOT_ESTABLISHED with what, how and why; it changes nothing.
+          python3 scripts/kit_org_init.py --self-test
+          python3 tests/prove_kit_org_init.py
 
       - name: A workflow over the size limit does not fail, it never starts
         run: |
@@ -1545,6 +1605,23 @@ jobs:
           # section 6 (auto-merge) was designed, asked for and never planned (lane L-FWA).
           python3 tests/check_future_work_traceability.py
 
+      - name: Every diagram parses, and every file is in the code walkthrough
+        run: |
+          set -euo pipefail
+          # The architecture suite (docs/architecture/INDEX.md) is drawn in Mermaid so GitHub renders it
+          # in place. A diagram that does not parse renders as an error box, and nothing else would
+          # notice: the Markdown is valid and every link resolves. This is a pure-Python structural
+          # check (no node): brackets, quotes, subgraph/end, sequence blocks, classes, and the suite's
+          # cited paths and size. The self-test seeds one broken diagram per rule and a clean one first.
+          python3 tests/check_mermaid_diagrams.py --self-test
+          python3 tests/check_mermaid_diagrams.py
+          # The owner: "I need to intimately understand every drop of code." Every tracked file has one
+          # row in docs/architecture/code-walkthrough/ (an overlay's and the export profiles' rows live
+          # in their own directories, so the neutral core names no one); a row for a file that is gone,
+          # or with no sentence, fails. Self-test first: one tree per rule and a tree that holds.
+          python3 tests/check_code_walkthrough_coverage.py --self-test
+          python3 tests/check_code_walkthrough_coverage.py
+
       - name: A documented credential-free path must not authenticate
         run: |
           # reusable-build-docker.yml advertised "Leave empty for build-only runs (no registry,
@@ -1613,6 +1690,22 @@ jobs:
           # or cannot be read.
           python3 scripts/environment_protection.py --self-test
           python3 tests/prove_deploy_environment_protection.py
+          # KDEC-042 (owner 2026-11-06): never a uat or prod deploy without a human approval from outside the app
+          # team, even from a push to main: every deploy job runs in its environment, and the read-back classes it
+          # and refuses an absent, reviewer-less, self-reviewable, pool-less or app-team-only uat/prod.
+          python3 tests/check_deploy_environment_declared.py --self-test
+          python3 tests/check_deploy_environment_declared.py
+          python3 tests/prove_uat_prod_gating.py
+          # Owner 2026-11-07: governed settings come from the org overlay in the kit copy (a repository may only
+          # tighten them), small-team self-approval only as a declared five-field weakening, the Azure cloud per
+          # environment; KIT_CLOUD is Azure-only; every kit variable and secret has its level in SETTINGS_PRECEDENCE.md.
+          python3 scripts/org_settings.py --self-test
+          python3 tests/prove_org_settings.py
+          python3 tests/prove_dast_applicability.py
+          python3 tests/check_kit_cloud_scope.py --self-test
+          python3 tests/check_kit_cloud_scope.py
+          python3 tests/check_settings_precedence.py --self-test
+          python3 tests/check_settings_precedence.py
           # OF-5 K-1/K-2/K-3 (KDEC-034 proposed): the landing zone's platform stop and the zone's readiness
           # reach releases, and the run's own approval is neither the requester's nor the author's and
           # quotes the digest -- each refused before login.
@@ -1634,6 +1727,23 @@ jobs:
           # L99. The App Service group keyed on the slot, so two runs staging into two slots of
           # one app -- both ending in a swap into production -- did not queue behind each other.
           python3 tests/prove_deploy_concurrency.py
+
+      - name: Deploy jobs are time-bounded and a kill is reconciled by the next run (KREQ-717)
+        run: |
+          set -euo pipefail
+          # KDEC-061. The governed bound (30..360, clamped to 90), the kill mid-change through the shipped
+          # Container Apps job (a mocked sleeper), the record and the next run's refusal, and six mutants.
+          # KDEC-061 M2: the rollback sequence (the real engine killed mid-sequence), the registry push (the
+          # shipped push steps, docker shimmed; unpromotable through the promotion gate), live acceptance,
+          # and eight more mutants. About two minutes.
+          python3 tests/prove_deploy_interruption.py
+
+      - name: DAST and the deployed scan need a live-target authorisation (KREQ-558)
+        run: |
+          set -euo pipefail
+          # KDEC-061. Absent, malformed, expired or out of scope is PREREQUISITE_UNAVAILABLE and the scan
+          # does not run; five mutants.
+          python3 tests/prove_live_target_authorisation.py
 
       - name: A feed mirror is used only when current and intact (KDEC-032 proposed)
         run: |
@@ -1733,6 +1843,9 @@ jobs:
           # hosted promotion on the owner's personal tenant is owed.
           python3 scripts/promotion.py self-test
           python3 tests/prove_promotion.py
+          # External review 2026-11-07 R08: promotion, supersession, rollback selection and the daily
+          # scan are scoped to ONE target (adapter + target_resource_id); every listing pages or says not.
+          python3 tests/prove_promotion_target_scope.py
           # OF-5 K-10: the daily deployed scan reports in the landing zone's drift vocabulary too (dimension,
           # class, not_attempted), so one view serves both.
           python3 tests/prove_deployed_scan_lz_vocabulary.py
@@ -1980,6 +2093,14 @@ jobs:
           # statically, against the base, at runtime and by the gate.
           python3 scripts/capability_floor.py --self-test
           python3 tests/prove_capability_floor.py
+          # KDEC-050: no shrink without a recorded decision (append-only tombstones, the registry bound
+          # to the floor, the tombstone policy seam, the ticket denominator, the protected owner).
+          python3 scripts/protected_paths.py --self-test
+          python3 tests/prove_scanner_floor_shrink.py
+          # KDEC-059: the governance profiles (personal / employer). The base-side gate holds every
+          # adversarial change in both profiles, merges a routine green one, and every guard is reached.
+          python3 scripts/governance_gate.py --self-test
+          python3 tests/prove_governance_profiles.py
           # The required check (step 8 defect): never green by skipping, never pending by filter.
           python3 scripts/selftest_required.py --self-test
           python3 tests/prove_selftest_required.py
