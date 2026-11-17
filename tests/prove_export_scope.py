@@ -54,6 +54,14 @@ WHAT IT PROVES
         .git, .context, .claude, export profiles, the deny list or an overlay the copy's profile
         did not include. A clean export zips (the positive control), `--out ... --zip` packs the
         copy it has just written, and an existing zip is never overwritten.
+    E12 A FIXTURE NAMED LIKE A WORKSHOP FOLDER IS STILL A FIXTURE (2026-11-17). The AI-agent
+        inventory's positive fixture holds tests/fixtures/ai_artifacts/positive/.claude/skills/...,
+        because a `.claude` folder is exactly what that proof must find. The full export dropped
+        every `.claude` at any depth while the incremental dropped it only at the top two levels:
+        the public mirror (incremental) held the fixture and passed hosted; the consumer copy
+        (full) lacked it, and prove_ai_artifact_inventory failed in the work package. Under
+        tests/fixtures/ a `.claude` folder is content in every path -- full, incremental, the zip
+        packer and its re-check; anywhere else it is excluded in every path, at any depth.
     E11 A KIT HOST'S PROFILE RECEIVES THE PRE-FLIGHT (owner ruling, 2026-11-03). A profile that
         names the withheld consumer-path workflow with INCLUDE_PATH gets it in the full export, in
         its zip (packed and re-packed by --zip-tree), recorded in the watermark (files and
@@ -472,10 +480,70 @@ def prove_zip_refuses_leftovers(fails):
         shutil.rmtree(work, ignore_errors=True)
 
 
+def prove_fixture_workshop_names(fails):
+    """E12: `.claude` under tests/fixtures/ ships in every path; elsewhere, at any depth, never."""
+    work = tempfile.mkdtemp(prefix='export-fixture-')
+    fixture = 'tests/fixtures/ai/positive/.claude/skills/s/SKILL.md'
+    nested = 'docs/deep/.claude/settings.json'
+    try:
+        src = make_source(work, DENY_TEXT)
+        _write(os.path.join(src, fixture.replace('/', os.sep)), 'a skill\n')
+        _write(os.path.join(src, nested.replace('/', os.sep)), '{}\n')
+        _git(['add', '-A'], src)
+        _git(['commit', '-qm', 'fixture'], src)
+        out = os.path.join(work, 'copy')
+        zp = os.path.join(work, 'copy.zip')
+        p = run_export(src, '--out', out, '--profile', RECIPIENT, '--zip', zp)
+        if p.returncode != 0 or not os.path.isfile(zp):
+            fails.append('E12 the full export with --zip failed (exit %d): %s'
+                         % (p.returncode, (p.stdout + p.stderr)[-400:]))
+            return
+        if not os.path.isfile(os.path.join(out, fixture.replace('/', os.sep))):
+            fails.append('E12 the full export dropped the fixture %s' % fixture)
+        if os.path.exists(os.path.join(out, nested.replace('/', os.sep))):
+            fails.append('E12 the full export shipped the nested %s' % nested)
+        names = _zip_names(zp)
+        if 'copy/' + fixture not in names:
+            fails.append('E12 the zip does not hold the fixture %s' % fixture)
+        if any('/.claude/' in n and not n.startswith('copy/tests/fixtures/') for n in names):
+            fails.append('E12 the zip holds a .claude folder outside tests/fixtures/')
+        again = os.path.join(work, 'again.zip')
+        r = run_export(src, '--zip-tree', out, '--zip', again)
+        if r.returncode != 0:
+            fails.append('E12 --zip-tree refused a tree whose only .claude is a fixture: %s'
+                         % (r.stdout + r.stderr)[-300:])
+        stray = os.path.join(out, nested.replace('/', os.sep))
+        os.makedirs(os.path.dirname(stray), exist_ok=True)
+        _write(stray, '{}\n')
+        bad = os.path.join(work, 'bad.zip')
+        q = run_export(src, '--zip-tree', out, '--zip', bad)
+        if q.returncode == 0 or os.path.exists(bad):
+            fails.append('E12 --zip-tree packed a tree holding the nested %s' % nested)
+        shutil.rmtree(os.path.join(out, 'docs', 'deep', '.claude'))
+        # The incremental agrees with the full export, both ways: both files change in the
+        # source, so both are in its diff; the fixture arrives, the nested one never does.
+        _write(os.path.join(src, fixture.replace('/', os.sep)), 'a skill, changed\n')
+        _write(os.path.join(src, nested.replace('/', os.sep)), '{"changed": true}\n')
+        _git(['commit', '-qam', 'change'], src)
+        p = run_export(src, '--into', out, '--profile', RECIPIENT, '--apply')
+        if p.returncode != 0:
+            fails.append('E12 the incremental failed: %s' % (p.stdout + p.stderr)[-400:])
+            return
+        fp = os.path.join(out, fixture.replace('/', os.sep))
+        if not os.path.isfile(fp) or 'changed' not in open(fp, encoding='utf-8').read():
+            fails.append('E12 the incremental did not deliver the changed fixture %s' % fixture)
+        if os.path.exists(os.path.join(out, nested.replace('/', os.sep))):
+            fails.append('E12 the incremental shipped the nested %s' % nested)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 MUST_SHIP = ('.github/workflows/reusable-security.yml',
              '.github/workflows/reusable-ticket-reconcile.yml',
              'scripts/export_for_adoption.py',
-             'tests/prove_export_scope.py')
+             'tests/prove_export_scope.py',
+             # E12: the AI-agent inventory's positive fixture, a `.claude` folder by design.
+             'tests/fixtures/ai_artifacts/positive/.claude/skills/release/SKILL.md')
 
 
 def main():
@@ -564,6 +632,7 @@ def main():
             prove_excluded_path(fails)
             prove_untracked_not_kit(fails)
             prove_zip_refuses_leftovers(fails)
+            prove_fixture_workshop_names(fails)
             prove_host_profile_ships_preflight(fails)
             prove_real_host_copy(fails, env)
         except RuntimeError as e:

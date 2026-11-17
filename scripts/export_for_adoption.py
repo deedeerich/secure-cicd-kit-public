@@ -81,7 +81,7 @@ def exportable(rel: str) -> bool:
     parts = rel.split("/")
     if parts[0] in EXCLUDE_TREES and not overlay_allowed(rel):
         return False
-    if parts[0] in EXCLUDE_TOP or (len(parts) > 1 and parts[1] in EXCLUDE_TOP):
+    if excluded_by_folder(rel):
         return False
     if any(p in {".git", "__pycache__", ".pytest_cache"} for p in parts):
         return False
@@ -302,6 +302,29 @@ def path_excluded(rel: str) -> bool:
 # A recipient's copy has its own history and needs none of it. tests/prove_export_scope.py.
 EXCLUDE_TOP = {"export-profiles", ".claude", ".context"}
 
+# A FIXTURE NAMED LIKE THE WORKSHOP IS STILL A FIXTURE (2026-11-17). The AI-agent inventory must
+# find a `.claude` folder, so its positive fixture holds one under tests/fixtures/. There, and only
+# there, a `.claude` folder is content; anywhere else it is excluded at any depth. One rule, used
+# by the full export, the incremental, the deny scan, the zip packer and the zip's re-check -- the
+# full export dropped the fixture while the incremental dropped `.claude` only at the top two
+# levels, so the two disagreed in both directions. tests/prove_export_scope.py E12.
+FIXTURE_ROOT = "tests/fixtures/"
+FIXTURE_CONTENT_DIRS = {".claude"}
+
+
+def excluded_dir(rel_dir: str) -> bool:
+    """Is the folder at `rel_dir` (relative, forward slashes) one an export never ships?"""
+    name = rel_dir.rstrip("/").rsplit("/", 1)[-1]
+    if name not in EXCLUDE_TOP:
+        return False
+    return not (name in FIXTURE_CONTENT_DIRS and rel_dir.startswith(FIXTURE_ROOT))
+
+
+def excluded_by_folder(rel: str) -> bool:
+    """Does any folder on the path of file `rel` exclude it?"""
+    parts = rel.split("/")[:-1]
+    return any(excluded_dir("/".join(parts[:i + 1])) for i in range(len(parts)))
+
 # OVERLAYS ARE NEVER EXPORTED, AND THIS IS ARCHITECTURE RATHER THAN HYGIENE.
 #
 # An overlay is one organisation's adaptation of the neutral kit. It carries their tooling, their
@@ -376,9 +399,9 @@ def scan(root: str, deny: list[tuple[str, str]]) -> list[tuple[str, int, str, st
         # their own name passes and a DIFFERENT consumer's name still blocks.
         keep = []
         for d in dirnames:
-            if d in {".git", "__pycache__", ".pytest_cache"} or d in EXCLUDE_TOP:
-                continue
             rel_d = os.path.relpath(os.path.join(dirpath, d), root).replace("\\", "/")
+            if d in {".git", "__pycache__", ".pytest_cache"} or excluded_dir(rel_d):
+                continue
             if d in EXCLUDE_TREES and os.path.dirname(rel_d) == "":
                 # overlays/ itself: descend only if some overlay under it is included
                 if not _INCLUDED_OVERLAYS:
@@ -776,6 +799,14 @@ def incremental(src: str, a, deny: list, hit_count: int) -> int:
 # re-export or run the checks on a copy rather than learn to trust a filter.
 # tests/prove_export_scope.py E10.
 ZIP_REFUSE_DIRS = {".git", "__pycache__", ".pytest_cache", ".claude", ".context", "export-profiles"}
+
+
+def zip_refused_dir(rel_dir: str) -> bool:
+    """A folder the zip never holds: ZIP_REFUSE_DIRS, except a fixture's `.claude` (E12)."""
+    name = rel_dir.rstrip("/").rsplit("/", 1)[-1]
+    if name not in ZIP_REFUSE_DIRS:
+        return False
+    return not (name in FIXTURE_CONTENT_DIRS and rel_dir.startswith(FIXTURE_ROOT))
 ZIP_REFUSE_SUFFIXES = (".pyc", ".pyo")
 
 
@@ -786,11 +817,11 @@ def zip_refusals(tree: str, allowed_overlays: set, allowed_paths: set = frozense
         rel_dir = os.path.relpath(dirpath, tree).replace("\\", "/")
         rel_dir = "" if rel_dir == "." else rel_dir + "/"
         for d in sorted(dirnames):
-            if d in ZIP_REFUSE_DIRS:
+            if zip_refused_dir(rel_dir + d):
                 bad.append(rel_dir + d + "/")
             elif rel_dir == "overlays/" and d not in allowed_overlays:
                 bad.append(rel_dir + d + "/  (an overlay this copy's profile does not include)")
-        dirnames[:] = [d for d in dirnames if d not in ZIP_REFUSE_DIRS
+        dirnames[:] = [d for d in dirnames if not zip_refused_dir(rel_dir + d)
                        and not (rel_dir == "overlays/" and d not in allowed_overlays)]
         for fn in sorted(filenames):
             rel = rel_dir + fn
@@ -843,7 +874,8 @@ def zip_tree(tree: str, zip_path: str, allowed_overlays: set,
             broken = zf.testzip()
         # Re-check what was actually written, not what was meant to be.
         leaked = [n for n in names if n.endswith(ZIP_REFUSE_SUFFIXES)
-                  or any(p in ZIP_REFUSE_DIRS for p in n.split("/")[:-1])]
+                  or any(zip_refused_dir("/".join(n.split("/")[1:i + 1]))
+                         for i in range(1, len(n.split("/")) - 1))]
         if broken or leaked or len(names) != len(files):
             print(f"REFUSED: the written zip did not verify (bad entry {broken!r}, "
                   f"{len(leaked)} forbidden entr(ies), {len(names)} of {len(files)} files).")
@@ -1069,7 +1101,8 @@ def main() -> int:
             drop |= {".git"}
         drop |= {n for n in names if n in {"__pycache__", ".pytest_cache"}}
         rel_here = os.path.relpath(dirpath, src).replace("\\", "/")
-        drop |= {n for n in names if n in EXCLUDE_TOP}
+        drop |= {n for n in names
+                 if excluded_dir(n if rel_here == "." else rel_here + "/" + n)}
         drop |= {n for n in names
                  if path_excluded(n if rel_here == "." else rel_here + "/" + n)}
         if rel_here == ".":
