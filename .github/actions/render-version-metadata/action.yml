@@ -17,6 +17,13 @@ inputs:
       not a field to omit.
     required: false
     default: ""
+  platform-manifest-digest:
+    description: >-
+      The image manifest the identity assertion read the config from: image-digest itself for a
+      single manifest, the built platform's entry when image-digest is an OCI index or manifest list
+      (KDEC-065). From the build workflow's image_platform_manifest_digest. Empty is stamped as empty.
+    required: false
+    default: ""
   artifact-identity:
     description: >-
       REGISTRY_IDENTITY_PROVEN | LOCAL_BUILD_ONLY | IDENTITY_UNVERIFIED | NOT_ESTABLISHED.
@@ -51,6 +58,7 @@ runs:
         IMAGE_DIGEST: ${{ inputs.image-digest }}
         SBOM_SHA256: ${{ inputs.sbom-sha256 }}
         CONFIG_DIGEST: ${{ inputs.config-digest }}
+        PLATFORM_MANIFEST_DIGEST: ${{ inputs.platform-manifest-digest }}
         ARTIFACT_IDENTITY: ${{ inputs.artifact-identity }}
         BUILD_INPUTS: ${{ inputs.build-inputs }}
         # Context values too. A ref name is chosen by whoever can push a branch, and `$( )` is
@@ -83,7 +91,7 @@ runs:
         #
         # Empty is allowed and is not the same as malformed: not-supplied is a fact, and the
         # identity class already says which fields should be there.
-        for pair in "image-digest:$IMAGE_DIGEST:sha256" "config-digest:$CONFIG_DIGEST:sha256" "sbom-sha256:$SBOM_SHA256:hex"; do
+        for pair in "image-digest:$IMAGE_DIGEST:sha256" "config-digest:$CONFIG_DIGEST:sha256" "platform-manifest-digest:$PLATFORM_MANIFEST_DIGEST:sha256" "sbom-sha256:$SBOM_SHA256:hex"; do
           field="${pair%%:*}"; rest="${pair#*:}"; value="${rest%:*}"; kind="${rest##*:}"
           [ -n "$value" ] || continue
           case "$kind" in
@@ -132,6 +140,7 @@ runs:
           --arg schema   "deploy-provenance/3" \
           --arg digest   "$IMAGE_DIGEST" \
           --arg config   "$CONFIG_DIGEST" \
+          --arg pmd      "$PLATFORM_MANIFEST_DIGEST" \
           --arg identity "$ARTIFACT_IDENTITY" \
           --arg sbom     "$SBOM_SHA256" \
           --arg sha      "$GIT_SHA" \
@@ -141,6 +150,7 @@ runs:
           --argjson inputs "$BUILD_INPUTS" \
           '{schema:$schema,
             image_digest:$digest,
+            platform_manifest_digest:$pmd,
             scanned_config_digest:$config,
             artifact_identity:$identity,
             sbom_sha256:$sbom,

@@ -534,6 +534,27 @@ namespaces:
           its checks UNKNOWN; a mismatched one lets them run and pass on the wrong release, which is
           the silent pass this value exists to stop. Moves to OK only by placing the pinned release.
 
+  # Registered 2026-11-17 (KDEC-065): why an OCI index or manifest list could not be resolved to the
+  # image manifest the identity assertion reads the config from. A refusal reason inside the
+  # IDENTITY_UNVERIFIED answer, not a fifth artifact_identity value.
+  platform_manifest_resolution:
+    description: >-
+      Why the assertion step of reusable-build-docker.yml and the docker-build-push composite could
+      not select the built platform's image manifest from a pushed index (containerd image store).
+    consumers: [.github/workflows/reusable-build-docker.yml, .github/actions/docker-build-push,
+                tests/prove_oci_index_identity.py]
+    rule: >-
+      EXACTLY ONE OR REFUSE. The first matching entry is never taken; attestation manifests are
+      never candidates. Either value fails the assertion, so the class is IDENTITY_UNVERIFIED and the
+      posture EVIDENCE_UNTRUSTED. Neither is a MISMATCH: no config was compared.
+    values:
+      NO_PLATFORM_MANIFEST:
+        definition: The index holds no non-attestation image manifest for the built platform.
+        rule: Not a mismatch and not a pass. Moves only by a push whose index carries that platform.
+      AMBIGUOUS_PLATFORM_MANIFEST:
+        definition: The index holds two or more distinct non-attestation image manifests for the built platform.
+        rule: Never resolved by order. Moves only by a push whose index names one manifest per platform.
+
   artifact_identity:
     description: >-
       Whether the artefact a control inspected is provably the artefact that was published. Emitted

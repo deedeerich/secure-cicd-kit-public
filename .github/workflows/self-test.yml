@@ -793,6 +793,9 @@ jobs:
           set -euo pipefail
           # L85. Its push, registry-assertion and classify steps, run as shipped with docker shimmed.
           python3 tests/prove_composite_build_once.py
+          # KDEC-065: an OCI index (containerd image store) resolves to the built platform's
+          # manifest, attestations ignored, none/several refused; recorded registry answers.
+          python3 tests/prove_oci_index_identity.py
           # L85 second half: a Trivy refusal in the build routes BLOCKED, not EVIDENCE_UNTRUSTED.
           python3 tests/prove_build_routing.py
 

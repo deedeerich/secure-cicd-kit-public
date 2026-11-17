@@ -351,6 +351,7 @@ jobs:
           image-digest: ${{ needs.build.outputs.image_digest }}
           sbom-sha256: ${{ needs.build.outputs.sbom_sha256 }}
           config-digest: ${{ needs.build.outputs.image_config_digest }}
+          platform-manifest-digest: ${{ needs.build.outputs.image_platform_manifest_digest }}
           artifact-identity: ${{ needs.build.outputs.artifact_identity }}
           build-inputs: ${{ needs.build.outputs.build_inputs }}
 

@@ -135,6 +135,12 @@ on:
           evidence describes the thing it deployed compares this against the registry's config
           digest for image_digest — which is exactly what this workflow does before it returns.
         value: ${{ jobs.build.outputs.image_config_digest }}
+      image_platform_manifest_digest:
+        description: >-
+          The image manifest the identity assertion read the config from: image_digest itself for a
+          single manifest, the built platform's entry when image_digest is an index (KDEC-065).
+          Empty unless artifact_identity is REGISTRY_IDENTITY_PROVEN.
+        value: ${{ jobs.build.outputs.image_platform_manifest_digest }}
       artifact_identity:
         description: >-
           REGISTRY_IDENTITY_PROVEN | LOCAL_BUILD_ONLY | IDENTITY_UNVERIFIED | NOT_ESTABLISHED.
@@ -233,6 +239,7 @@ jobs:
     outputs:
       image_digest: ${{ steps.push.outputs.digest }}
       image_config_digest: ${{ steps.built.outputs.config_digest }}
+      image_platform_manifest_digest: ${{ steps.assert_identity.outputs.platform_manifest_digest }}
       artifact_identity: ${{ steps.provenance.outputs.class }}
       sbom_sha256: ${{ steps.sbom.outputs.sha256 }}
       build_inputs: ${{ steps.build_inputs.outputs.record }}
@@ -363,23 +370,47 @@ jobs:
 
       - name: Establish the built image identity
         id: built
+        env:
+          ACTION_ID: ${{ steps.build.outputs.imageid }}
+          BUILD_METADATA: ${{ steps.build.outputs.metadata }}
         run: |
           set -euo pipefail
-          CONFIG_DIGEST="$(docker image inspect --format '{{.Id}}' "$IMAGE")"
-          if [ -z "$CONFIG_DIGEST" ]; then
+          DAEMON_ID="$(docker image inspect --format '{{.Id}}' "$IMAGE")"
+          if [ -z "$DAEMON_ID" ]; then
             echo "::error title=Built image identity not established::docker image inspect returned no Id for $IMAGE. Everything downstream would be describing an artifact this job cannot name. Failing here rather than scanning an image of unknown identity."
             exit 1
           fi
           # The action reports its own view. Two independent reads agreeing is worth the four
           # lines; two disagreeing means the tag moved between build and inspect, which is the
           # precise condition this whole section exists to catch.
-          ACTION_ID="${{ steps.build.outputs.imageid }}"
-          if [ -n "$ACTION_ID" ] && [ "$ACTION_ID" != "$CONFIG_DIGEST" ]; then
-            echo "::error title=Image identity disagreement::build-push-action reported $ACTION_ID; the daemon reports $CONFIG_DIGEST for the same tag. The tag moved. Refusing to scan."
+          if [ -n "$ACTION_ID" ] && [ "$ACTION_ID" != "$DAEMON_ID" ]; then
+            echo "::error title=Image identity disagreement::build-push-action reported $ACTION_ID; the daemon reports $DAEMON_ID for the same tag. The tag moved. Refusing to scan."
+            exit 1
+          fi
+          # THE CONFIG DIGEST IS THE BUILD'S, NOT THE DAEMON'S Id (KDEC-065). The classic store's Id
+          # IS the config digest; the containerd store's (ubuntu-26.04) is the image's target -- an
+          # index. buildkit's containerimage.config.digest is the config on either store; the
+          # daemon's Id must be that config or the build's containerimage.digest, or the tag moved.
+          META_CONFIG="$(printf '%s' "${BUILD_METADATA:-}" | jq -r '."containerimage.config.digest" // empty' 2>/dev/null || true)"
+          META_TARGET="$(printf '%s' "${BUILD_METADATA:-}" | jq -r '."containerimage.digest" // empty' 2>/dev/null || true)"
+          if ! printf '%s' "$META_CONFIG" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error title=Built image config digest not established::build-push-action's metadata carries no containerimage.config.digest. The daemon's Id is the config only on the classic image store, so it is not read as one. Refusing to scan an image whose config cannot be named."
+            exit 1
+          fi
+          if [ "$DAEMON_ID" != "$META_CONFIG" ] && [ "$DAEMON_ID" != "$META_TARGET" ]; then
+            echo "::error title=Image identity disagreement::the daemon's Id $DAEMON_ID is neither the build's config ($META_CONFIG) nor its image digest (${META_TARGET:-none}). The tag moved. Refusing to scan."
+            exit 1
+          fi
+          CONFIG_DIGEST="$META_CONFIG"
+          # The built platform, which the identity assertion selects from a pushed index.
+          PLATFORM="$(docker image inspect --format '{{.Os}}/{{.Architecture}}{{with .Variant}}/{{.}}{{end}}' "$IMAGE")"
+          if ! printf '%s' "$PLATFORM" | grep -Eq '^[a-z0-9]+/[a-z0-9_]+(/[a-z0-9]+)?$'; then
+            echo "::error title=Built image platform not established::docker image inspect reported '$PLATFORM' for $IMAGE. Refusing: the pushed index could not be resolved to this image."
             exit 1
           fi
           echo "config_digest=${CONFIG_DIGEST//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
-          echo "Scanning and pushing config digest: $CONFIG_DIGEST"
+          echo "platform=$PLATFORM" >> "$GITHUB_OUTPUT"
+          echo "Scanning and pushing config digest: $CONFIG_DIGEST ($PLATFORM)"
 
       # TRIVY_IMAGE_SRC pins the gate to the DOCKER DAEMON. Without it Trivy's source order is
       # docker, containerd, podman, remote — and after `az acr login` a same-tagged image in the
@@ -655,21 +686,45 @@ jobs:
       - name: Assert artifact identity — the registry is holding the image that was scanned
         id: assert_identity
         if: inputs.push
+        env:
+          SCANNED: ${{ steps.built.outputs.config_digest }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          PLATFORM: ${{ steps.built.outputs.platform }}
         run: |
           set -euo pipefail
-          SCANNED='${{ steps.built.outputs.config_digest }}'
-          DIGEST='${{ steps.push.outputs.digest }}'
+          # AN INDEX IS RESOLVED, NEVER GUESSED (KDEC-065). On the containerd image store `docker
+          # push` publishes an OCI index (the image manifest plus attestation manifests) and the
+          # RepoDigest names the INDEX. The image manifest for the built platform is selected from
+          # it; an attestation manifest never is; none, or more than one, refuses by name.
+          PLATFORM="${PLATFORM:-linux/amd64}"
           RAW="$(docker buildx imagetools inspect --raw "$REPO@$DIGEST")"
+          PLATFORM_MANIFEST="$DIGEST"
+          if printf '%s' "$RAW" | jq -e 'type == "object" and has("manifests")' >/dev/null; then
+            IFS=/ read -r P_OS P_ARCH P_VAR <<< "$PLATFORM"
+            CANDS="$(printf '%s' "$RAW" | jq -r --arg o "$P_OS" --arg a "$P_ARCH" --arg v "${P_VAR:-}" '[.manifests[]
+              | select((.annotations // {})["vnd.docker.reference.type"] != "attestation-manifest")
+              | select(.platform.os == $o and .platform.architecture == $a)
+              | select($v == "" or (.platform.variant // "") == $v) | .digest] | unique | .[]')"
+            N="$(printf '%s' "$CANDS" | grep -c . || true)"
+            if [ "$N" != 1 ] || ! printf '%s' "$CANDS" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+              REASON=NO_PLATFORM_MANIFEST; [ "$N" -gt 1 ] && REASON=AMBIGUOUS_PLATFORM_MANIFEST
+              echo "::error title=Artifact identity UNESTABLISHED ($REASON)::$REPO@$DIGEST is an index with $N non-attestation image manifest(s) for $PLATFORM. Exactly one is required; the first is never taken. Refusing to publish this digest as assured."
+              exit 1
+            fi
+            PLATFORM_MANIFEST="$CANDS"
+            RAW="$(docker buildx imagetools inspect --raw "$REPO@$PLATFORM_MANIFEST")"
+          fi
           REGISTRY_CONFIG="$(printf '%s' "$RAW" | jq -r '.config.digest // empty')"
           if [ -z "$REGISTRY_CONFIG" ]; then
             echo "::error title=Artifact identity UNESTABLISHED::$REPO@$DIGEST resolved to a document with no .config.digest — an index or attestation manifest rather than a plain image manifest. The link between the scanned image and the pushed digest could not be established. UNESTABLISHED is not established: refusing to publish this digest as assured."
             exit 1
           fi
           if [ "$REGISTRY_CONFIG" != "$SCANNED" ]; then
-            echo "::error title=ARTIFACT IDENTITY MISMATCH::Scanned $SCANNED; the registry says $REPO@$DIGEST has config $REGISTRY_CONFIG. The gate and the SBOM describe a different artifact from the one now in the registry. This is the defect the single-build rewrite exists to make impossible, so its recurrence means an assumption in that rewrite is wrong — do not suppress this check."
+            echo "::error title=ARTIFACT IDENTITY MISMATCH::Scanned $SCANNED; the registry says $REPO@$DIGEST ($PLATFORM manifest $PLATFORM_MANIFEST) has config $REGISTRY_CONFIG. The gate and the SBOM describe a different artifact from the one now in the registry. This is the defect the single-build rewrite exists to make impossible, so its recurrence means an assumption in that rewrite is wrong — do not suppress this check."
             exit 1
           fi
-          echo "Artifact identity PROVEN: $DIGEST -> config $SCANNED (scanned, SBOM'd, pushed)"
+          echo "platform_manifest_digest=$PLATFORM_MANIFEST" >> "$GITHUB_OUTPUT"
+          echo "Artifact identity PROVEN: $DIGEST -> $PLATFORM manifest $PLATFORM_MANIFEST -> config $SCANNED (scanned, SBOM'd, pushed)"
 
       # An SBOM is evidence OF something, and the name has to say of what. Publishing an
       # unverified SBOM under the name a verified one would carry is how a triage artefact gets
@@ -708,6 +763,7 @@ jobs:
             echo "|---|---|"
             echo "| scanned config digest | \`${{ steps.built.outputs.config_digest }}\` |"
             echo "| pushed manifest digest | \`${{ steps.push.outputs.digest }}\` |"
+            echo "| platform manifest digest | \`${{ steps.assert_identity.outputs.platform_manifest_digest }}\` |"
             echo "| SBOM evidence class | **$CLASS** |"
             echo "| SBOM artifact | \`$NAME\` |"
           } >> "$GITHUB_STEP_SUMMARY"

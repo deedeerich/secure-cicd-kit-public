@@ -37,6 +37,8 @@ CASES (docs/PROOF_RULE.md)
                       is its hash; push_capability EMPTY/NO_PRIOR_STATE; the push's digest is served
                       by the registry at /v2/<repo>/manifests/<digest> with a matching
                       Docker-Content-Digest; assert_identity PASSES; class REGISTRY_IDENTITY_PROVEN;
+                      the platform manifest it names is served and carries the scanned config (on
+                      the containerd store the pushed digest is an OCI index, KDEC-065);
                       posture PROCEED; the stamp's image_digest IS that digest, with the scanned
                       config and the build inputs
     attack            assert_identity handed the config digest of a DIFFERENT image (scanned bytes
@@ -74,8 +76,12 @@ TPL = 'templates/build-deploy.yml'
 RENDER = '.github/actions/render-version-metadata/action.yml'
 COMPONENT, CVERSION = 'kit-fixture-component', '1.2.3'
 PROVEN = 'REGISTRY_IDENTITY_PROVEN'
+# KDEC-065: the containerd image store (ubuntu-26.04 runners) pushes an OCI INDEX, so the index
+# and manifest-list types are accepted as well; a request limited to image manifests is a 404.
 MANIFEST_TYPES = ('application/vnd.docker.distribution.manifest.v2+json, '
-                  'application/vnd.oci.image.manifest.v1+json')
+                  'application/vnd.oci.image.manifest.v1+json, '
+                  'application/vnd.oci.image.index.v1+json, '
+                  'application/vnd.docker.distribution.manifest.list.v2+json')
 # build-push-action inputs this file knows how to hand to `docker buildx build`.
 BUILD_FLAGS = {'context': None, 'file': '--file', 'tags': '--tag', 'load': '--load'}
 
@@ -93,18 +99,23 @@ def free_port():
     return port
 
 
-def registry_get(url):
-    """-> (status, Docker-Content-Digest or '') for a manifest URL; 404 is a measured absence."""
+def registry_fetch(url):
+    """-> (status, Docker-Content-Digest or '', body bytes) for a manifest URL."""
     req = urllib.request.Request(url, headers={'Accept': MANIFEST_TYPES})
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
-            return r.status, r.headers.get('Docker-Content-Digest', '')
+            return r.status, r.headers.get('Docker-Content-Digest', ''), r.read()
     except urllib.error.HTTPError as e:
-        return e.code, ''
+        return e.code, '', b''
     except (urllib.error.URLError, http.client.HTTPException, ConnectionError, socket.timeout):
         # Unreachable: refused, reset, or dropped mid-request (RemoteDisconnected is an
         # HTTPException AND a ConnectionError). Never a status, never a crash.
-        return 0, ''
+        return 0, '', b''
+
+
+def registry_get(url):
+    """-> (status, Docker-Content-Digest or '') for a manifest URL; 404 is a measured absence."""
+    return registry_fetch(url)[:2]
 
 
 class Registry:
@@ -297,9 +308,13 @@ def main():
         def do_build(ctx):
             argv, context = translate_build(build, ctx)
             iid = os.path.join(tmp, 'iid-%d' % len(os.listdir(tmp)))
-            p = sh(argv + ['--iidfile', iid, context], cwd=ws, timeout=600)
+            # build-push-action's `metadata` output IS buildx's --metadata-file (KDEC-065: the
+            # built step reads containerimage.config.digest from it).
+            md = iid + '.metadata.json'
+            p = sh(argv + ['--iidfile', iid, '--metadata-file', md, context], cwd=ws, timeout=600)
             if p.returncode != 0:
                 return None, (p.stderr or p.stdout)[-500:]
+            ctx['steps.build.outputs.metadata'] = io.open(md, encoding='utf-8').read().strip()
             return io.open(iid, encoding='utf-8').read().strip(), None
 
         def chain(name, scanned_override=None):
@@ -335,6 +350,8 @@ def main():
                 r = run(step['assert_identity'], actx)
                 out['assert'] = r
                 ctx['steps.assert_identity.outcome'] = 'success' if r['rc'] == 0 else 'failure'
+                ctx['steps.assert_identity.outputs.platform_manifest_digest'] = \
+                    r['outputs'].get('platform_manifest_digest', '')
             else:
                 ctx['steps.assert_identity.outcome'] = 'skipped'
             r = run(step['provenance'], ctx)
@@ -367,14 +384,23 @@ def main():
         config = a['ctx']['steps.built.outputs.config_digest']
         digest = a['ctx'].get('steps.push.outputs.digest', '')
         sbom_path = os.path.join(ws, 'sbom.spdx.json')
-        print('  %-18s config=%s... pushed=%s... class=%s route=%s'
-              % ('allowed', config[7:19], digest[7:19], a['prov']['outputs'].get('class'),
+        pmd = a['ctx'].get('steps.assert_identity.outputs.platform_manifest_digest', '')
+        try:
+            meta = json.loads(a['ctx'].get('steps.build.outputs.metadata') or '{}')
+        except ValueError:
+            meta = {}
+        print('  %-18s config=%s... pushed=%s... platform-manifest=%s... class=%s route=%s'
+              % ('allowed', config[7:19], digest[7:19], pmd[7:19], a['prov']['outputs'].get('class'),
                  a['posture']['outputs'].get('routing_result')))
+        # KDEC-065: the scanned config is the build's config digest; the iid (= the daemon's Id) is
+        # that config on the classic store and the image's index/manifest on the containerd store.
         if a['built']['rc'] != 0 or not re.match(r'^sha256:[0-9a-f]{64}$', config) \
-                or config != a['imageid']:
+                or config != meta.get('containerimage.config.digest') \
+                or a['imageid'] not in (config, meta.get('containerimage.digest')) \
+                or not a['built']['outputs'].get('platform'):
             bad.append('allowed: `built` did not establish the config digest the build reported '
-                       '(exit %d, %r vs iid %r)\n%s' % (a['built']['rc'], config, a['imageid'],
-                                                        a['built']['log'][-400:]))
+                       '(exit %d, %r vs iid %r, metadata %r)\n%s'
+                       % (a['built']['rc'], config, a['imageid'], meta, a['built']['log'][-400:]))
         # image-build: an SBOM containing the known fixture component, and its hash reported
         comps = []
         if a['sbom']['rc'] == 0 and os.path.isfile(sbom_path):
@@ -407,6 +433,18 @@ def main():
             if status != 200 or served != digest:
                 bad.append('allowed: the registry does not serve the pushed digest by digest '
                            '(HTTP %s, Docker-Content-Digest %r)' % (status, served))
+            # the platform manifest the assertion named is served and carries the scanned config
+            status, served, body = registry_fetch('http://%s/v2/kit/probe/manifests/%s'
+                                                  % (reg.host, pmd or 'sha256:none'))
+            try:
+                served_cfg = (json.loads(body.decode('utf-8')).get('config') or {}).get('digest')
+            except ValueError:
+                served_cfg = None
+            print('  %-18s platform manifest -> %s, config %s...'
+                  % ('', status, str(served_cfg)[7:19]))
+            if status != 200 or served != pmd or served_cfg != config:
+                bad.append('allowed: the platform manifest %r is not served with the scanned config '
+                           '(HTTP %s, digest %r, config %r)' % (pmd, status, served, served_cfg))
         if a.get('assert', {}).get('rc') != 0:
             bad.append('allowed: assert_identity failed against a registry holding the scanned '
                        'bytes\n%s' % a.get('assert', {}).get('log', '')[-500:])
@@ -423,6 +461,7 @@ def main():
               % ('stamp', str(st.get('image_digest', ''))[7:19], st.get('artifact_identity'),
                  str(st.get('scanned_config_digest', ''))[7:19]))
         if st.get('image_digest') != digest or st.get('scanned_config_digest') != config \
+                or st.get('platform_manifest_digest') != pmd \
                 or st.get('artifact_identity') != PROVEN \
                 or st.get('sbom_sha256') != a['ctx']['steps.sbom.outputs.sha256'] \
                 or not isinstance(st.get('build_inputs'), dict):
@@ -437,8 +476,14 @@ def main():
             'FROM scratch\nCOPY Dockerfile /other\n')
         other_tag = '%s:other-%d' % (repo, os.getpid())
         images.append(other_tag)
-        p = sh(['docker', 'buildx', 'build', '--load', '-t', other_tag, '.'], cwd=other_ws, timeout=600)
-        other = sh(['docker', 'image', 'inspect', '--format', '{{.Id}}', other_tag]).stdout.strip()
+        other_md = os.path.join(tmp, 'other.metadata.json')
+        p = sh(['docker', 'buildx', 'build', '--load', '-t', other_tag, '--metadata-file', other_md,
+                '.'], cwd=other_ws, timeout=600)
+        try:   # the OTHER image's config digest, store-independent (KDEC-065)
+            other = json.load(io.open(other_md, encoding='utf-8')).get(
+                'containerimage.config.digest', '')
+        except (OSError, ValueError):
+            other = ''
         if p.returncode != 0 or not other.startswith('sha256:'):
             bad.append('attack: could not build the second image\n%s' % (p.stderr or '')[-300:])
         else:
