@@ -33,15 +33,16 @@ WHAT IS RUN
     pulled and the SBOM has exactly one thing to find.
 
 CASES (docs/PROOF_RULE.md)
-    allowed           config digest emitted; SBOM names kit-fixture-component 1.2.3 and sbom_sha256
+    allowed           scanned image Id emitted; SBOM names kit-fixture-component 1.2.3 and sbom_sha256
                       is its hash; push_capability EMPTY/NO_PRIOR_STATE; the push's digest is served
                       by the registry at /v2/<repo>/manifests/<digest> with a matching
                       Docker-Content-Digest; assert_identity PASSES; class REGISTRY_IDENTITY_PROVEN;
-                      the platform manifest it names is served and carries the scanned config (on
-                      the containerd store the pushed digest is an OCI index, KDEC-065);
+                      the platform manifest it names is served with the config the assertion
+                      reports, and the identity rule that held is named (containerd store: the
+                      scanned Id IS the pushed index; classic: it is the config; KDEC-065);
                       posture PROCEED; the stamp's image_digest IS that digest, with the scanned
                       config and the build inputs
-    attack            assert_identity handed the config digest of a DIFFERENT image (scanned bytes
+    attack            assert_identity handed the image Id of a DIFFERENT image (scanned bytes
                       are not the pushed bytes) -> MISMATCH, class IDENTITY_UNVERIFIED, posture
                       EVIDENCE_UNTRUSTED, and the stamp carries IDENTITY_UNVERIFIED, never PROVEN
     missing-evidence  the registry stopped -> push_capability reads UNKNOWN / UNAVAILABLE and
@@ -309,12 +310,14 @@ def main():
             argv, context = translate_build(build, ctx)
             iid = os.path.join(tmp, 'iid-%d' % len(os.listdir(tmp)))
             # build-push-action's `metadata` output IS buildx's --metadata-file (KDEC-065: the
-            # built step reads containerimage.config.digest from it).
+            # built step passes a config digest it carries on as a cross-check only; on
+            # ubuntu-26.04 it intermittently carries none, hosted run 44156650539).
             md = iid + '.metadata.json'
             p = sh(argv + ['--iidfile', iid, '--metadata-file', md, context], cwd=ws, timeout=600)
             if p.returncode != 0:
                 return None, (p.stderr or p.stdout)[-500:]
-            ctx['steps.build.outputs.metadata'] = io.open(md, encoding='utf-8').read().strip()
+            ctx['steps.build.outputs.metadata'] = (io.open(md, encoding='utf-8').read().strip()
+                                                   if os.path.isfile(md) else '')
             return io.open(iid, encoding='utf-8').read().strip(), None
 
         def chain(name, scanned_override=None):
@@ -329,7 +332,8 @@ def main():
             out = {'imageid': imageid}
             r = run(step['built'], ctx)
             out['built'] = r
-            ctx['steps.built.outputs.config_digest'] = r['outputs'].get('config_digest', '')
+            for k in ('scanned_image_id', 'build_config_digest', 'platform'):
+                ctx['steps.built.outputs.' + k] = r['outputs'].get(k, '')
             r = run(sbom_step, ctx)
             out['sbom'] = r
             ctx['steps.sbom.outputs.sha256'] = r['outputs'].get('sha256', '')
@@ -346,12 +350,13 @@ def main():
                 ctx['steps.push.outputs.digest_id'] = r['outputs'].get('digest_id', '')
                 actx = dict(ctx)
                 if scanned_override:
-                    actx['steps.built.outputs.config_digest'] = scanned_override
+                    actx['steps.built.outputs.scanned_image_id'] = scanned_override
+                    actx['steps.built.outputs.build_config_digest'] = ''
                 r = run(step['assert_identity'], actx)
                 out['assert'] = r
                 ctx['steps.assert_identity.outcome'] = 'success' if r['rc'] == 0 else 'failure'
-                ctx['steps.assert_identity.outputs.platform_manifest_digest'] = \
-                    r['outputs'].get('platform_manifest_digest', '')
+                for k in ('platform_manifest_digest', 'config_digest', 'identity_rule'):
+                    ctx['steps.assert_identity.outputs.' + k] = r['outputs'].get(k, '')
             else:
                 ctx['steps.assert_identity.outcome'] = 'skipped'
             r = run(step['provenance'], ctx)
@@ -381,26 +386,27 @@ def main():
         a = chain('allowed')
         if a is None:
             return 1
-        config = a['ctx']['steps.built.outputs.config_digest']
+        scanned = a['ctx']['steps.built.outputs.scanned_image_id']
+        config = a['ctx'].get('steps.assert_identity.outputs.config_digest', '')
+        rule = a['ctx'].get('steps.assert_identity.outputs.identity_rule', '')
         digest = a['ctx'].get('steps.push.outputs.digest', '')
         sbom_path = os.path.join(ws, 'sbom.spdx.json')
         pmd = a['ctx'].get('steps.assert_identity.outputs.platform_manifest_digest', '')
-        try:
-            meta = json.loads(a['ctx'].get('steps.build.outputs.metadata') or '{}')
-        except ValueError:
-            meta = {}
-        print('  %-18s config=%s... pushed=%s... platform-manifest=%s... class=%s route=%s'
-              % ('allowed', config[7:19], digest[7:19], pmd[7:19], a['prov']['outputs'].get('class'),
-                 a['posture']['outputs'].get('routing_result')))
-        # KDEC-065: the scanned config is the build's config digest; the iid (= the daemon's Id) is
-        # that config on the classic store and the image's index/manifest on the containerd store.
-        if a['built']['rc'] != 0 or not re.match(r'^sha256:[0-9a-f]{64}$', config) \
-                or config != meta.get('containerimage.config.digest') \
-                or a['imageid'] not in (config, meta.get('containerimage.digest')) \
-                or not a['built']['outputs'].get('platform'):
-            bad.append('allowed: `built` did not establish the config digest the build reported '
-                       '(exit %d, %r vs iid %r, metadata %r)\n%s'
-                       % (a['built']['rc'], config, a['imageid'], meta, a['built']['log'][-400:]))
+        print('  %-18s scanned=%s... pushed=%s... platform-manifest=%s... config=%s... rule=%s class=%s route=%s'
+              % ('allowed', scanned[7:19], digest[7:19], pmd[7:19], config[7:19], rule,
+                 a['prov']['outputs'].get('class'), a['posture']['outputs'].get('routing_result')))
+        # KDEC-065: the scanned image is named by the daemon's Id, which the action's iid agrees
+        # with; no build metadata is required.
+        if a['built']['rc'] != 0 or not re.match(r'^sha256:[0-9a-f]{64}$', scanned) \
+                or scanned != a['imageid'] or not a['built']['outputs'].get('platform'):
+            bad.append('allowed: `built` did not establish the scanned image Id the build reported '
+                       '(exit %d, %r vs iid %r)\n%s'
+                       % (a['built']['rc'], scanned, a['imageid'], a['built']['log'][-400:]))
+        if rule not in ('CONTENT_ADDRESS_INDEX', 'CONTENT_ADDRESS_MANIFEST', 'CONFIG_DIGEST') \
+                or (rule == 'CONFIG_DIGEST') != (scanned == config) \
+                or (rule in ('CONTENT_ADDRESS_INDEX', 'CONTENT_ADDRESS_MANIFEST')) != (scanned == digest):
+            bad.append('allowed: identity rule %r does not name the equality that holds (scanned %r, '
+                       'pushed %r, config %r)' % (rule, scanned, digest, config))
         # image-build: an SBOM containing the known fixture component, and its hash reported
         comps = []
         if a['sbom']['rc'] == 0 and os.path.isfile(sbom_path):
@@ -442,8 +448,8 @@ def main():
                 served_cfg = None
             print('  %-18s platform manifest -> %s, config %s...'
                   % ('', status, str(served_cfg)[7:19]))
-            if status != 200 or served != pmd or served_cfg != config:
-                bad.append('allowed: the platform manifest %r is not served with the scanned config '
+            if status != 200 or served != pmd or served_cfg != config or not config:
+                bad.append('allowed: the platform manifest %r is not served with the reported config '
                            '(HTTP %s, digest %r, config %r)' % (pmd, status, served, served_cfg))
         if a.get('assert', {}).get('rc') != 0:
             bad.append('allowed: assert_identity failed against a registry holding the scanned '
@@ -462,6 +468,7 @@ def main():
                  str(st.get('scanned_config_digest', ''))[7:19]))
         if st.get('image_digest') != digest or st.get('scanned_config_digest') != config \
                 or st.get('platform_manifest_digest') != pmd \
+                or st.get('scanned_image_id') != scanned or st.get('identity_rule') != rule \
                 or st.get('artifact_identity') != PROVEN \
                 or st.get('sbom_sha256') != a['ctx']['steps.sbom.outputs.sha256'] \
                 or not isinstance(st.get('build_inputs'), dict):
@@ -476,23 +483,9 @@ def main():
             'FROM scratch\nCOPY Dockerfile /other\n')
         other_tag = '%s:other-%d' % (repo, os.getpid())
         images.append(other_tag)
-        other_md = os.path.join(tmp, 'other.metadata.json')
-        p = sh(['docker', 'buildx', 'build', '--load', '-t', other_tag, '--metadata-file', other_md,
-                '.'], cwd=other_ws, timeout=600)
-        # ANY digest that is not the pushed image's config is the attack. The other image's config
-        # digest from its build metadata when buildx reports one; else the daemon's Id for it (the
-        # config on the classic store, its index on the containerd store) -- either one differs.
-        # Hosted run 44137950518 (ubuntu-26.04): the second build succeeded and this read found no
-        # config digest, so the attack never ran; the metadata keys are printed to say why.
-        try:
-            other_meta = json.load(io.open(other_md, encoding='utf-8'))
-        except (OSError, ValueError):
-            other_meta = {}
-        other = str(other_meta.get('containerimage.config.digest') or '')
-        if not other.startswith('sha256:'):
-            other = sh(['docker', 'image', 'inspect', '--format', '{{.Id}}', other_tag]).stdout.strip()
-            print('  %-18s second image: no config digest in its metadata (keys %s); using its Id'
-                  % ('attack', sorted(other_meta)))
+        p = sh(['docker', 'buildx', 'build', '--load', '-t', other_tag, '.'], cwd=other_ws, timeout=600)
+        # The other image's daemon Id, named the way `built` names the scanned one (KDEC-065).
+        other = sh(['docker', 'image', 'inspect', '--format', '{{.Id}}', other_tag]).stdout.strip()
         if p.returncode != 0 or not other.startswith('sha256:'):
             bad.append('attack: could not build the second image (exit %d, %r)\n%s'
                        % (p.returncode, other, (p.stderr or '')[-300:]))

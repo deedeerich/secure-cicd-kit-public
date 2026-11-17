@@ -534,6 +534,29 @@ namespaces:
           its checks UNKNOWN; a mismatched one lets them run and pass on the wrong release, which is
           the silent pass this value exists to stop. Moves to OK only by placing the pinned release.
 
+  # Registered 2026-11-17 (KDEC-065, revised after hosted run 44156650539): which equality proved
+  # REGISTRY_IDENTITY_PROVEN. Recorded beside it; never chosen by guessing the image store.
+  identity_rule:
+    description: >-
+      The equality between the scanned image's daemon Id and the registry's answer that proved the
+      artifact identity in reusable-build-docker.yml and the docker-build-push composite.
+    consumers: [.github/workflows/reusable-build-docker.yml, .github/actions/docker-build-push,
+                .github/actions/render-version-metadata, tests/prove_oci_index_identity.py,
+                tests/prove_build_push_round_trip.py]
+    rule: >-
+      THE ONE THAT HOLDS. Both equalities are tried; the one that holds is recorded. Neither holding
+      is ARTIFACT IDENTITY MISMATCH, never a weaker proof. Empty unless the identity is proven.
+    values:
+      CONTENT_ADDRESS_INDEX:
+        definition: The scanned image's Id IS the pushed digest, an OCI index or manifest list the registry served by that digest (containerd image store).
+        rule: Content-addressed, so the bytes are the scanned bytes; the platform manifest and its config are read from the registry.
+      CONTENT_ADDRESS_MANIFEST:
+        definition: The scanned image's Id IS the pushed digest, a single image manifest the registry served by that digest.
+        rule: Content-addressed, as CONTENT_ADDRESS_INDEX, without an index to resolve.
+      CONFIG_DIGEST:
+        definition: The scanned image's Id equals the config digest of the pushed platform manifest as the registry states it (classic image store).
+        rule: The registry's config digest, never the build's metadata, is the comparison; metadata only cross-checks.
+
   # Registered 2026-11-17 (KDEC-065): why an OCI index or manifest list could not be resolved to the
   # image manifest the identity assertion reads the config from. A refusal reason inside the
   # IDENTITY_UNVERIFIED answer, not a fifth artifact_identity value.

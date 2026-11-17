@@ -55,8 +55,16 @@ outputs:
       artifact-identity is REGISTRY_IDENTITY_PROVEN.
     value: ${{ steps.push.outputs.digest }}
   config-digest:
-    description: "Config digest of the image the gate and the SBOM inspected (the SCANNED artifact)."
-    value: ${{ steps.built.outputs.config_digest }}
+    description: >-
+      Config digest of the scanned image as the registry states it once identity is proven
+      (KDEC-065); without a push, the scanned image's daemon Id (see scanned-image-id).
+    value: ${{ steps.assert_identity.outputs.config_digest || steps.built.outputs.scanned_image_id }}
+  scanned-image-id:
+    description: "The daemon's Id for the image the gate and the SBOM inspected (KDEC-065)."
+    value: ${{ steps.built.outputs.scanned_image_id }}
+  identity-rule:
+    description: "CONTENT_ADDRESS_INDEX | CONTENT_ADDRESS_MANIFEST | CONFIG_DIGEST: the equality that proved identity."
+    value: ${{ steps.assert_identity.outputs.identity_rule }}
   platform-manifest-digest:
     description: >-
       The image manifest the identity assertion read the config from: image-digest itself, or the
@@ -96,42 +104,38 @@ runs:
         BUILD_METADATA: ${{ steps.build.outputs.metadata }}
       run: |
         set -euo pipefail
-        DAEMON_ID="$(docker image inspect --format '{{.Id}}' "$IMAGE")"
-        if [ -z "$DAEMON_ID" ]; then
+        SCANNED_ID="$(docker image inspect --format '{{.Id}}' "$IMAGE")"
+        if [ -z "$SCANNED_ID" ]; then
           echo "::error title=Built image identity not established::docker image inspect returned no Id for $IMAGE. Everything downstream would be describing an artifact this job cannot name. Failing here rather than scanning an image of unknown identity."
           exit 1
         fi
         # The action reports its own view. Two independent reads agreeing is worth the four
         # lines; two disagreeing means the tag moved between build and inspect, which is the
         # precise condition this whole section exists to catch.
-        if [ -n "$ACTION_ID" ] && [ "$ACTION_ID" != "$DAEMON_ID" ]; then
-          echo "::error title=Image identity disagreement::build-push-action reported $ACTION_ID; the daemon reports $DAEMON_ID for the same tag. The tag moved. Refusing to scan."
+        if [ -n "$ACTION_ID" ] && [ "$ACTION_ID" != "$SCANNED_ID" ]; then
+          echo "::error title=Image identity disagreement::build-push-action reported $ACTION_ID; the daemon reports $SCANNED_ID for the same tag. The tag moved. Refusing to scan."
           exit 1
         fi
-        # THE CONFIG DIGEST IS THE BUILD'S, NOT THE DAEMON'S Id (KDEC-065). The classic store's Id
-        # IS the config digest; the containerd store's (ubuntu-26.04) is the image's target -- an
-        # index. buildkit's containerimage.config.digest is the config on either store; the
-        # daemon's Id must be that config or the build's containerimage.digest, or the tag moved.
-        META_CONFIG="$(printf '%s' "$BUILD_METADATA" | jq -r '."containerimage.config.digest" // empty' 2>/dev/null || true)"
-        META_TARGET="$(printf '%s' "$BUILD_METADATA" | jq -r '."containerimage.digest" // empty' 2>/dev/null || true)"
-        if ! printf '%s' "$META_CONFIG" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
-          echo "::error title=Built image config digest not established::build-push-action's metadata carries no containerimage.config.digest. The daemon's Id is the config only on the classic image store, so it is not read as one. Refusing to scan an image whose config cannot be named."
+        # THE SCANNED IMAGE IS NAMED BY ITS DAEMON Id (KDEC-065). That Id is the config digest on the
+        # classic image store and the image's index or manifest digest on the containerd store; the
+        # identity assertion proves it against the REGISTRY either way, by content address. Build
+        # metadata is not required (on ubuntu-26.04 it intermittently carries no containerimage.* keys,
+        # hosted run 44156650539); a config digest it does carry is passed on as a cross-check only.
+        BUILD_CONFIG="$(printf '%s' "$BUILD_METADATA" | jq -r '."containerimage.config.digest" // empty' 2>/dev/null || true)"
+        if [ -n "$BUILD_CONFIG" ] && ! printf '%s' "$BUILD_CONFIG" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+          echo "::error title=Malformed build config digest::build-push-action's metadata names config digest '$BUILD_CONFIG', which is not sha256:<64 hex>. Refusing to scan."
           exit 1
         fi
-        if [ "$DAEMON_ID" != "$META_CONFIG" ] && [ "$DAEMON_ID" != "$META_TARGET" ]; then
-          echo "::error title=Image identity disagreement::the daemon's Id $DAEMON_ID is neither the build's config ($META_CONFIG) nor its image digest (${META_TARGET:-none}). The tag moved. Refusing to scan."
-          exit 1
-        fi
-        CONFIG_DIGEST="$META_CONFIG"
         # The built platform, which the identity assertion selects from a pushed index.
         PLATFORM="$(docker image inspect --format '{{.Os}}/{{.Architecture}}{{with .Variant}}/{{.}}{{end}}' "$IMAGE")"
         if ! printf '%s' "$PLATFORM" | grep -Eq '^[a-z0-9]+/[a-z0-9_]+(/[a-z0-9]+)?$'; then
           echo "::error title=Built image platform not established::docker image inspect reported '$PLATFORM' for $IMAGE. Refusing: the pushed index could not be resolved to this image."
           exit 1
         fi
-        echo "config_digest=${CONFIG_DIGEST//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
+        echo "scanned_image_id=${SCANNED_ID//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
+        echo "build_config_digest=${BUILD_CONFIG//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
         echo "platform=${PLATFORM//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
-        echo "Scanning and pushing config digest: $CONFIG_DIGEST ($PLATFORM)"
+        echo "Scanning and pushing image $SCANNED_ID ($PLATFORM)"
     # TRIVY IS INSTALLED, NOT SET UP BY AN ACTION (KDEC-027): aquasecurity/trivy-action's
     # setup-trivy checks out `aquasecurity/trivy` against github.server_url, which on a GHE.com
     # tenant does not have it. Release binary from github.com, pinned by version and sha256.
@@ -219,7 +223,8 @@ runs:
       shell: bash
       env:
         REPO: ${{ inputs.acr-login-server }}/${{ inputs.image-repository }}
-        SCANNED: ${{ steps.built.outputs.config_digest }}
+        SCANNED_ID: ${{ steps.built.outputs.scanned_image_id }}
+        BUILD_CONFIG: ${{ steps.built.outputs.build_config_digest }}
         DIGEST: ${{ steps.push.outputs.digest }}
         PLATFORM: ${{ steps.built.outputs.platform }}
       run: |
@@ -228,10 +233,18 @@ runs:
         # push` publishes an OCI index (the image manifest plus attestation manifests) and the
         # RepoDigest names the INDEX. The image manifest for the built platform is selected from
         # it; an attestation manifest never is; none, or more than one, refuses by name.
+        for pair in "scanned image Id:$SCANNED_ID" "pushed digest:$DIGEST"; do
+          if ! printf '%s' "${pair#*:}" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error title=Artifact identity UNESTABLISHED::the ${pair%%:*} is '${pair#*:}', not sha256:<64 hex>. Nothing to compare; refusing to publish this digest as assured."
+            exit 1
+          fi
+        done
         PLATFORM="${PLATFORM:-linux/amd64}"
         RAW="$(docker buildx imagetools inspect --raw "$REPO@$DIGEST")"
         PLATFORM_MANIFEST="$DIGEST"
+        IS_INDEX=false
         if printf '%s' "$RAW" | jq -e 'type == "object" and has("manifests")' >/dev/null; then
+          IS_INDEX=true
           IFS=/ read -r P_OS P_ARCH P_VAR <<< "$PLATFORM"
           CANDS="$(printf '%s' "$RAW" | jq -r --arg o "$P_OS" --arg a "$P_ARCH" --arg v "${P_VAR:-}" '[.manifests[]
             | select((.annotations // {})["vnd.docker.reference.type"] != "attestation-manifest")
@@ -247,20 +260,33 @@ runs:
           RAW="$(docker buildx imagetools inspect --raw "$REPO@$PLATFORM_MANIFEST")"
         fi
         REGISTRY_CONFIG="$(printf '%s' "$RAW" | jq -r '.config.digest // empty')"
-        if [ -z "$REGISTRY_CONFIG" ]; then
-          echo "::error title=Artifact identity UNESTABLISHED::$REPO@$DIGEST resolved to a document with no .config.digest — an index or attestation manifest rather than a plain image manifest. The link between the scanned image and the pushed digest could not be established. UNESTABLISHED is not established: refusing to publish this digest as assured."
+        if ! printf '%s' "$REGISTRY_CONFIG" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+          echo "::error title=Artifact identity UNESTABLISHED::$REPO@$PLATFORM_MANIFEST resolved to a document with no .config.digest -- an index or attestation manifest rather than a plain image manifest. The link between the scanned image and the pushed digest could not be established. UNESTABLISHED is not established: refusing to publish this digest as assured."
           exit 1
         fi
-        if [ "$REGISTRY_CONFIG" != "$SCANNED" ]; then
-          echo "::error title=ARTIFACT IDENTITY MISMATCH::Scanned $SCANNED; the registry says $REPO@$DIGEST ($PLATFORM manifest $PLATFORM_MANIFEST) has config $REGISTRY_CONFIG. The gate and the SBOM describe a different artifact from the one now in the registry. This is the defect the single-build rewrite exists to make impossible, so its recurrence means an assumption in that rewrite is wrong — do not suppress this check."
+        # THE RULE THAT HOLDS, NEVER A GUESSED STORE (KDEC-065). The registry served $DIGEST by digest,
+        # so a scanned Id equal to it is the same bytes (containerd store: the Id IS the index or
+        # manifest). A scanned Id equal to the registry's config digest for the platform manifest is the
+        # classic store's proof. Neither holding is a MISMATCH.
+        RULE=""
+        if [ "$SCANNED_ID" = "$DIGEST" ]; then
+          RULE=CONTENT_ADDRESS_MANIFEST
+          if [ "$IS_INDEX" = true ]; then RULE=CONTENT_ADDRESS_INDEX; fi
+        elif [ "$SCANNED_ID" = "$REGISTRY_CONFIG" ]; then
+          RULE=CONFIG_DIGEST
+        fi
+        if [ -z "$RULE" ]; then
+          echo "::error title=ARTIFACT IDENTITY MISMATCH::Scanned image $SCANNED_ID is neither the pushed digest $REPO@$DIGEST nor the config $REGISTRY_CONFIG of its $PLATFORM manifest $PLATFORM_MANIFEST. The gate and the SBOM describe a different artifact from the one now in the registry. This is the defect the single-build rewrite exists to make impossible, so its recurrence means an assumption in that rewrite is wrong -- do not suppress this check."
           exit 1
         fi
-        if ! printf '%s' "$PLATFORM_MANIFEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
-          echo "::error title=Artifact identity UNESTABLISHED::the platform manifest digest is not sha256:<64 hex>. Refusing to publish it."
+        if [ -n "$BUILD_CONFIG" ] && [ "$BUILD_CONFIG" != "$REGISTRY_CONFIG" ]; then
+          echo "::error title=ARTIFACT IDENTITY MISMATCH::the build's metadata names config $BUILD_CONFIG; the registry says $REPO@$PLATFORM_MANIFEST has config $REGISTRY_CONFIG. Refusing: the two accounts of one image disagree."
           exit 1
         fi
         echo "platform_manifest_digest=${PLATFORM_MANIFEST//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
-        echo "Artifact identity PROVEN: $DIGEST -> $PLATFORM manifest $PLATFORM_MANIFEST -> config $SCANNED (scanned, SBOM'd, pushed)"
+        echo "config_digest=${REGISTRY_CONFIG//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
+        echo "identity_rule=${RULE//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
+        echo "Artifact identity PROVEN ($RULE): scanned $SCANNED_ID; pushed $DIGEST -> $PLATFORM manifest $PLATFORM_MANIFEST -> config $REGISTRY_CONFIG"
     - name: Classify what the SBOM is evidence of
       id: classify
       if: always()

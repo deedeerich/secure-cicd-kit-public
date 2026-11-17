@@ -26,6 +26,7 @@
   "scan_partial_reason": "developer",
   "scan_examination": "developer",
   "artifact_identity": "developer",
+  "identity_rule": "developer",
   "platform_manifest_resolution": "developer",
   "leak_gate_state": "developer",
   "leak_gate_setup_refusal": "developer",
@@ -571,6 +572,11 @@
    "RECURRENCE_ALREADY_RECORDED",
    "RECURRENCE_LINKED_TICKET",
    "RESCAN_QUALIFYING"
+  ],
+  "identity_rule": [
+   "CONFIG_DIGEST",
+   "CONTENT_ADDRESS_INDEX",
+   "CONTENT_ADDRESS_MANIFEST"
   ]
  },
  "entries": {

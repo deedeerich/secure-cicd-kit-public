@@ -352,6 +352,8 @@ jobs:
           sbom-sha256: ${{ needs.build.outputs.sbom_sha256 }}
           config-digest: ${{ needs.build.outputs.image_config_digest }}
           platform-manifest-digest: ${{ needs.build.outputs.image_platform_manifest_digest }}
+          scanned-image-id: ${{ needs.build.outputs.image_scanned_image_id }}
+          identity-rule: ${{ needs.build.outputs.image_identity_rule }}
           artifact-identity: ${{ needs.build.outputs.artifact_identity }}
           build-inputs: ${{ needs.build.outputs.build_inputs }}
 

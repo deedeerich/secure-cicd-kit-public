@@ -87,7 +87,7 @@ def main():
         shims = os.path.join(tmp, 'shim')
         H.shim(shims, 'docker', DOCKER)
         base = {'inputs.acr-login-server': 'reg.example', 'inputs.image-repository': 'app',
-                'inputs.image-tag': 't', 'steps.built.outputs.config_digest': SCANNED}
+                'inputs.image-tag': 't', 'steps.built.outputs.scanned_image_id': SCANNED}
 
         def chain(name, registry, push_flag='true', sbom=True):
             ws = os.path.join(tmp, name)

@@ -123,21 +123,31 @@ case "$1 $2" in
 esac
 '''
 
-# (name, pushed, scanned, platform, want rc 0?, want platform manifest, want text in the log)
+# (name, pushed digest, scanned image Id, build-metadata config, platform, want rc 0?,
+#  want platform manifest, want identity_rule, want text in the log)
+# KDEC-065 rev 2 (hosted run 44156650539): the scanned image is the daemon's Id. On the containerd
+# store it is the pushed index or manifest itself (content address); on the classic store it is the
+# platform manifest's config digest. The registry answers; build metadata only cross-checks.
 ASSERT_CASES = (
-    ('allowed-single-manifest', M1, SCANNED, 'linux/amd64', True, M1, None),
-    ('allowed-oci-index-attest', I1, SCANNED, 'linux/amd64', True, M1, None),
-    ('allowed-docker-list', L1, SCANNED, 'linux/amd64', True, M2, None),
-    ('allowed-att-labelled-amd64', I2, SCANNED, 'linux/amd64', True, M1, None),
-    ('allowed-declared-arm64', I4, ARMCFG, 'linux/arm64', True, M3, None),
-    ('allowed-platform-unset', I1, SCANNED, '', True, M1, None),
-    ('attack-index-config', I5, SCANNED, 'linux/amd64', False, '', 'ARTIFACT IDENTITY MISMATCH'),
-    ('attack-single-config', M5, SCANNED, 'linux/amd64', False, '', 'ARTIFACT IDENTITY MISMATCH'),
-    ('missing-two-amd64', I3, SCANNED, 'linux/amd64', False, '', 'AMBIGUOUS_PLATFORM_MANIFEST'),
-    ('missing-no-amd64', I4, SCANNED, 'linux/amd64', False, '', 'NO_PLATFORM_MANIFEST'),
-    ('missing-nested-index', I6, SCANNED, 'linux/amd64', False, '', 'UNESTABLISHED'),
+    ('allowed-classic-single', M1, SCANNED, '', 'linux/amd64', True, M1, 'CONFIG_DIGEST', None),
+    ('allowed-classic-meta', M1, SCANNED, SCANNED, 'linux/amd64', True, M1, 'CONFIG_DIGEST', None),
+    ('allowed-containerd-index', I1, I1, '', 'linux/amd64', True, M1, 'CONTENT_ADDRESS_INDEX', None),
+    ('allowed-containerd-index-meta', I1, I1, SCANNED, 'linux/amd64', True, M1, 'CONTENT_ADDRESS_INDEX', None),
+    ('allowed-containerd-manifest', M1, M1, '', 'linux/amd64', True, M1, 'CONTENT_ADDRESS_MANIFEST', None),
+    ('allowed-docker-list', L1, SCANNED, '', 'linux/amd64', True, M2, 'CONFIG_DIGEST', None),
+    ('allowed-att-labelled-amd64', I2, SCANNED, '', 'linux/amd64', True, M1, 'CONFIG_DIGEST', None),
+    ('allowed-declared-arm64', I4, ARMCFG, '', 'linux/arm64', True, M3, 'CONFIG_DIGEST', None),
+    ('allowed-platform-unset', I1, I1, '', '', True, M1, 'CONTENT_ADDRESS_INDEX', None),
+    ('attack-containerd', I1, I5, '', 'linux/amd64', False, '', '', 'ARTIFACT IDENTITY MISMATCH'),
+    ('attack-classic', M1, OTHER, '', 'linux/amd64', False, '', '', 'ARTIFACT IDENTITY MISMATCH'),
+    ('attack-index-config', I5, SCANNED, '', 'linux/amd64', False, '', '', 'ARTIFACT IDENTITY MISMATCH'),
+    ('attack-metadata-contradicts', I1, I1, OTHER, 'linux/amd64', False, '', '', 'ARTIFACT IDENTITY MISMATCH'),
+    ('missing-two-amd64', I3, I3, '', 'linux/amd64', False, '', '', 'AMBIGUOUS_PLATFORM_MANIFEST'),
+    ('missing-no-amd64', I4, I4, '', 'linux/amd64', False, '', '', 'NO_PLATFORM_MANIFEST'),
+    ('missing-nested-index', I6, I6, '', 'linux/amd64', False, '', '', 'UNESTABLISHED'),
+    ('missing-no-scanned-id', M1, '', '', 'linux/amd64', False, '', '', 'UNESTABLISHED'),
 )
-CONTAINERD_TARGET = I1
+PROVENANCE_ONLY = json.dumps({'buildx.build.provenance': {}, 'buildx.build.ref': 'default/default/x'})
 
 
 def meta(cfg, target):
@@ -149,15 +159,17 @@ def meta(cfg, target):
     return json.dumps(m)
 
 
-# (name, daemon Id, action imageid, metadata, platform, want rc 0?, want config, want log text)
+# (name, daemon Id, action imageid, metadata, platform, want rc 0?, want scanned_image_id,
+#  want build_config_digest, want log text)
 BUILT_CASES = (
-    ('recovery-classic-store', SCANNED, SCANNED, meta(SCANNED, M1), 'linux/amd64', True, SCANNED, None),
-    ('recovery-containerd-store', CONTAINERD_TARGET, CONTAINERD_TARGET, meta(SCANNED, CONTAINERD_TARGET),
-     'linux/amd64', True, SCANNED, None),
-    ('missing-no-config-in-metadata', SCANNED, SCANNED, meta('', M1), 'linux/amd64', False, '', 'config digest'),
-    ('missing-tag-moved', OTHER, OTHER, meta(SCANNED, M1), 'linux/amd64', False, '', 'disagreement'),
-    ('missing-action-disagrees', SCANNED, OTHER, meta(SCANNED, M1), 'linux/amd64', False, '', 'disagreement'),
-    ('missing-no-platform', SCANNED, SCANNED, meta(SCANNED, M1), '/', False, '', 'platform'),
+    ('recovery-classic-store', SCANNED, SCANNED, meta(SCANNED, M1), 'linux/amd64', True, SCANNED, SCANNED, None),
+    ('recovery-containerd-no-metadata', I1, I1, PROVENANCE_ONLY, 'linux/amd64', True, I1, '', None),
+    ('recovery-containerd-metadata', I1, I1, meta(SCANNED, I1), 'linux/amd64', True, I1, SCANNED, None),
+    ('recovery-metadata-empty', I1, I1, '', 'linux/amd64', True, I1, '', None),
+    ('missing-malformed-metadata-config', I1, I1, meta('sha256:zz', I1), 'linux/amd64', False, '', '',
+     'config digest'),
+    ('missing-action-disagrees', SCANNED, OTHER, meta(SCANNED, M1), 'linux/amd64', False, '', '', 'disagreement'),
+    ('missing-no-platform', SCANNED, SCANNED, meta(SCANNED, M1), '/', False, '', '', 'platform'),
 )
 
 # A mutant names the step, the shipped text it breaks, the replacement, and the case that must
@@ -170,7 +182,11 @@ MUTANTS = (
      'allowed-docker-list'),
     ('assert_identity', 'PLATFORM="${PLATFORM:-linux/amd64}"', 'PLATFORM="linux/amd64"',
      'allowed-declared-arm64'),
-    ('built', '="$META_CONFIG"', '="$DAEMON_ID"', 'recovery-containerd-store'),
+    ('assert_identity', '[ "$SCANNED_ID" = "$REGISTRY_CONFIG" ]', 'true', 'attack-containerd'),
+    ('assert_identity', '[ "$SCANNED_ID" = "$DIGEST" ]', 'false', 'allowed-containerd-index'),
+    ('assert_identity', '[ "$BUILD_CONFIG" != "$REGISTRY_CONFIG" ]', 'false', 'attack-metadata-contradicts'),
+    ('assert_identity', 'RULE=CONTENT_ADDRESS_INDEX', 'RULE=CONTENT_ADDRESS_MANIFEST', 'allowed-containerd-index'),
+    ('built', '[ -n "$BUILD_CONFIG" ] && ! printf', '! printf', 'recovery-containerd-no-metadata'),
 )
 
 
@@ -215,17 +231,22 @@ def main():
             return c
 
         def assert_case(st, composite, case):
-            name, pushed, scanned, plat, ok, want_pm, text = case
+            name, pushed, scanned, bcfg, plat, ok, want_pm, want_rule, text = case
             ctx = ctx_for(composite, {'steps.push.outputs.digest': pushed,
-                                      'steps.built.outputs.config_digest': scanned,
+                                      'steps.built.outputs.scanned_image_id': scanned,
+                                      'steps.built.outputs.build_config_digest': bcfg,
                                       'steps.built.outputs.platform': plat})
             r = run(st, ctx, {}, composite)
-            pm = r['outputs'].get('platform_manifest_digest', '')
+            o = r['outputs']
             wrong = []
             if (r['rc'] == 0) != ok:
                 wrong.append('exit %d' % r['rc'])
-            if ok and pm != want_pm:
-                wrong.append('platform manifest %r, want %r' % (pm, want_pm))
+            if ok and (o.get('platform_manifest_digest') != want_pm
+                       or o.get('identity_rule') != want_rule
+                       or not str(o.get('config_digest', '')).startswith('sha256:')):
+                wrong.append('platform manifest %r rule %r config %r, want %r %r'
+                             % (o.get('platform_manifest_digest'), o.get('identity_rule'),
+                                o.get('config_digest'), want_pm, want_rule))
             if not ok and text and text not in r['log']:
                 wrong.append('refused without %r' % text)
             if not ok and text != 'ARTIFACT IDENTITY MISMATCH' and 'MISMATCH' in r['log']:
@@ -233,17 +254,18 @@ def main():
             return wrong, r
 
         def built_case(st, composite, case):
-            name, did, aid, md, plat, ok, want_cfg, text = case
+            name, did, aid, md, plat, ok, want_id, want_bc, text = case
             ctx = ctx_for(composite, {'steps.build.outputs.imageid': aid,
                                       'steps.build.outputs.metadata': md})
             r = run(st, ctx, {'SHIM_ID': did, 'SHIM_PLATFORM': plat}, composite)
+            o = r['outputs']
             wrong = []
             if (r['rc'] == 0) != ok:
                 wrong.append('exit %d' % r['rc'])
-            if ok and (r['outputs'].get('config_digest') != want_cfg
-                       or r['outputs'].get('platform') != plat):
-                wrong.append('config %r platform %r' % (r['outputs'].get('config_digest'),
-                                                        r['outputs'].get('platform')))
+            if ok and (o.get('scanned_image_id') != want_id or o.get('build_config_digest', '') != want_bc
+                       or o.get('platform') != plat):
+                wrong.append('scanned id %r build config %r platform %r'
+                             % (o.get('scanned_image_id'), o.get('build_config_digest'), o.get('platform')))
             if not ok and text and text not in r['log']:
                 wrong.append('refused without %r' % text)
             return wrong, r
@@ -263,8 +285,8 @@ def main():
                     bad.append('%s %s: %s\n%s' % (label, case[0], '; '.join(wrong), r['log'][-500:]))
             for case in BUILT_CASES:
                 wrong, r = built_case(st['built'], composite, case)
-                print('  %-9s %-30s exit=%d config=%s' % (label, case[0], r['rc'],
-                                                          r['outputs'].get('config_digest', '')[7:15]))
+                print('  %-9s %-30s exit=%d scanned=%s' % (label, case[0], r['rc'],
+                                                          r['outputs'].get('scanned_image_id', '')[7:15]))
                 if wrong:
                     bad.append('%s %s: %s\n%s' % (label, case[0], '; '.join(wrong), r['log'][-500:]))
             for key, needle, repl, case_name in MUTANTS:
