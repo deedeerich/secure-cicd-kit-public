@@ -58,6 +58,7 @@ In a run, the same sentence is the title of the annotation at the top of the run
 - [org_init_result](#org_init_result) (2)
 - [org_settings](#org_settings) (2)
 - [platform_applicability](#platform_applicability) (3)
+- [platform_manifest_resolution](#platform_manifest_resolution) (2)
 - [policy_notice](#policy_notice) (2)
 - [policy_resolution](#policy_resolution) (16)
 - [prerequisite_readiness](#prerequisite_readiness) (4)
@@ -2560,6 +2561,24 @@ The kit could not tell whether a check applies here (the token could not see the
 - **Why it matters:** The check runs anyway, and the result says so.
 - **Fix:** Nothing for you; an admin can confirm the setting.
 - **More:** [docs/adoption/USAGE.md](../adoption/USAGE.md)
+
+## platform_manifest_resolution
+
+### AMBIGUOUS_PLATFORM_MANIFEST (platform_manifest_resolution)
+
+The pushed image is a multi-entry index holding more than one image for the platform that was built, so the kit cannot tell which one it scanned. **[AMBIGUOUS_PLATFORM_MANIFEST]**
+
+- **Why it matters:** Picking one would be a guess; an image nobody can tie to its scan is not deployed.
+- **Fix:** Push one image per platform under the tag (build once, single platform), then re-run the build.
+- **More:** [docs/architecture/PROVENANCE_AND_ATTESTATION.md](../architecture/PROVENANCE_AND_ATTESTATION.md)
+
+### NO_PLATFORM_MANIFEST (platform_manifest_resolution)
+
+The pushed image is a multi-entry index with no image for the platform that was built (only attestations or other platforms). **[NO_PLATFORM_MANIFEST]**
+
+- **Why it matters:** There is no image to compare with the one that was scanned, so deploys are refused.
+- **Fix:** Check that nothing else pushes the same tag and that the build platform is the runner's, then re-run the build.
+- **More:** [docs/architecture/PROVENANCE_AND_ATTESTATION.md](../architecture/PROVENANCE_AND_ATTESTATION.md)
 
 ## policy_notice
 

@@ -112,8 +112,8 @@ runs:
         # IS the config digest; the containerd store's (ubuntu-26.04) is the image's target -- an
         # index. buildkit's containerimage.config.digest is the config on either store; the
         # daemon's Id must be that config or the build's containerimage.digest, or the tag moved.
-        META_CONFIG="$(printf '%s' "${BUILD_METADATA:-}" | jq -r '."containerimage.config.digest" // empty' 2>/dev/null || true)"
-        META_TARGET="$(printf '%s' "${BUILD_METADATA:-}" | jq -r '."containerimage.digest" // empty' 2>/dev/null || true)"
+        META_CONFIG="$(printf '%s' "$BUILD_METADATA" | jq -r '."containerimage.config.digest" // empty' 2>/dev/null || true)"
+        META_TARGET="$(printf '%s' "$BUILD_METADATA" | jq -r '."containerimage.digest" // empty' 2>/dev/null || true)"
         if ! printf '%s' "$META_CONFIG" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
           echo "::error title=Built image config digest not established::build-push-action's metadata carries no containerimage.config.digest. The daemon's Id is the config only on the classic image store, so it is not read as one. Refusing to scan an image whose config cannot be named."
           exit 1
@@ -130,7 +130,7 @@ runs:
           exit 1
         fi
         echo "config_digest=${CONFIG_DIGEST//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
-        echo "platform=$PLATFORM" >> "$GITHUB_OUTPUT"
+        echo "platform=${PLATFORM//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
         echo "Scanning and pushing config digest: $CONFIG_DIGEST ($PLATFORM)"
     # TRIVY IS INSTALLED, NOT SET UP BY AN ACTION (KDEC-027): aquasecurity/trivy-action's
     # setup-trivy checks out `aquasecurity/trivy` against github.server_url, which on a GHE.com
@@ -255,7 +255,11 @@ runs:
           echo "::error title=ARTIFACT IDENTITY MISMATCH::Scanned $SCANNED; the registry says $REPO@$DIGEST ($PLATFORM manifest $PLATFORM_MANIFEST) has config $REGISTRY_CONFIG. The gate and the SBOM describe a different artifact from the one now in the registry. This is the defect the single-build rewrite exists to make impossible, so its recurrence means an assumption in that rewrite is wrong — do not suppress this check."
           exit 1
         fi
-        echo "platform_manifest_digest=$PLATFORM_MANIFEST" >> "$GITHUB_OUTPUT"
+        if ! printf '%s' "$PLATFORM_MANIFEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+          echo "::error title=Artifact identity UNESTABLISHED::the platform manifest digest is not sha256:<64 hex>. Refusing to publish it."
+          exit 1
+        fi
+        echo "platform_manifest_digest=${PLATFORM_MANIFEST//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
         echo "Artifact identity PROVEN: $DIGEST -> $PLATFORM manifest $PLATFORM_MANIFEST -> config $SCANNED (scanned, SBOM'd, pushed)"
     - name: Classify what the SBOM is evidence of
       id: classify

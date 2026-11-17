@@ -26,6 +26,7 @@
   "scan_partial_reason": "developer",
   "scan_examination": "developer",
   "artifact_identity": "developer",
+  "platform_manifest_resolution": "developer",
   "leak_gate_state": "developer",
   "leak_gate_setup_refusal": "developer",
   "platform_applicability": "developer",
@@ -1196,6 +1197,18 @@
    "why": "A changed, added or renamed file is a different release; nothing was deployed.",
    "fix": "Re-run the workflow from the merge so the package, attestation and deploy come from the same build.",
    "link": "docs/adoption/USAGE.md"
+  },
+  "platform_manifest_resolution.AMBIGUOUS_PLATFORM_MANIFEST": {
+   "what": "The pushed image is a multi-entry index holding more than one image for the platform that was built, so the kit cannot tell which one it scanned.",
+   "why": "Picking one would be a guess; an image nobody can tie to its scan is not deployed.",
+   "fix": "Push one image per platform under the tag (build once, single platform), then re-run the build.",
+   "link": "docs/architecture/PROVENANCE_AND_ATTESTATION.md"
+  },
+  "platform_manifest_resolution.NO_PLATFORM_MANIFEST": {
+   "what": "The pushed image is a multi-entry index with no image for the platform that was built (only attestations or other platforms).",
+   "why": "There is no image to compare with the one that was scanned, so deploys are refused.",
+   "fix": "Check that nothing else pushes the same tag and that the build platform is the runner's, then re-run the build.",
+   "link": "docs/architecture/PROVENANCE_AND_ATTESTATION.md"
   },
   "leak_gate_state.OFF": {
    "what": "One of the layers that stop a committed secret reaching main is switched off.",

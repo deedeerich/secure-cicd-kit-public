@@ -479,13 +479,23 @@ def main():
         other_md = os.path.join(tmp, 'other.metadata.json')
         p = sh(['docker', 'buildx', 'build', '--load', '-t', other_tag, '--metadata-file', other_md,
                 '.'], cwd=other_ws, timeout=600)
-        try:   # the OTHER image's config digest, store-independent (KDEC-065)
-            other = json.load(io.open(other_md, encoding='utf-8')).get(
-                'containerimage.config.digest', '')
+        # ANY digest that is not the pushed image's config is the attack. The other image's config
+        # digest from its build metadata when buildx reports one; else the daemon's Id for it (the
+        # config on the classic store, its index on the containerd store) -- either one differs.
+        # Hosted run 44137950518 (ubuntu-26.04): the second build succeeded and this read found no
+        # config digest, so the attack never ran; the metadata keys are printed to say why.
+        try:
+            other_meta = json.load(io.open(other_md, encoding='utf-8'))
         except (OSError, ValueError):
-            other = ''
+            other_meta = {}
+        other = str(other_meta.get('containerimage.config.digest') or '')
+        if not other.startswith('sha256:'):
+            other = sh(['docker', 'image', 'inspect', '--format', '{{.Id}}', other_tag]).stdout.strip()
+            print('  %-18s second image: no config digest in its metadata (keys %s); using its Id'
+                  % ('attack', sorted(other_meta)))
         if p.returncode != 0 or not other.startswith('sha256:'):
-            bad.append('attack: could not build the second image\n%s' % (p.stderr or '')[-300:])
+            bad.append('attack: could not build the second image (exit %d, %r)\n%s'
+                       % (p.returncode, other, (p.stderr or '')[-300:]))
         else:
             inputs['inputs.push'] = 'true'
             atk = chain('attack', scanned_override=other)
@@ -562,7 +572,11 @@ def main():
                        'rollback point of the second push: %s' % m)
         if second['prov']['outputs'].get('class') != PROVEN or \
                 second['stamp'].get('image_digest') != second['ctx'].get('steps.push.outputs.digest'):
-            bad.append('recovery: the chain did not prove again after the registry returned')
+            bad.append('recovery: the chain did not prove again after the registry returned '
+                       '(class %r, stamp %r, push %r)\nbuilt: %s\nassert: %s'
+                       % (second['prov']['outputs'].get('class'), second['stamp'].get('image_digest'),
+                          second['ctx'].get('steps.push.outputs.digest'),
+                          second['built']['log'][-400:], second.get('assert', {}).get('log', '')[-400:]))
     finally:
         try:
             reg.stop()

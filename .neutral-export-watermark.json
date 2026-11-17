@@ -1,5 +1,5 @@
 {
-  "exported_at_utc": "2026-11-17T17:31:21Z",
+  "exported_at_utc": "2026-11-17T19:15:27Z",
   "files": {
     ".custody.json": "56adfbefa20942fd8d03f2927ebe2c8b3d967152252c5b43303566e97928b168",
     ".env.example": "2803cf35729edfa1785d56e21070c95d7c656da07b422fa8be98b8b1320d34d9",
@@ -11,7 +11,7 @@
     ".github/actions/deps-scan/action.yml": "dfe834a43c399b7c6a13de5799b8ab5c5dc9b54dc797585914e89240dc884078",
     ".github/actions/determine-changes/action.yml": "e6bcbdc827a3ef27bf3fe60b60b0d1ecbcff61cea497f33afb5e458fda83f051",
     ".github/actions/discover/action.yml": "120e1d3811cf9a8e553c6f934ec56510669d5d3dd9d080acd0354141efe4667c",
-    ".github/actions/docker-build-push/action.yml": "c54f1d48d5130b71e7a4162076db22f8d8575b277d3779cd8b140c8b8709f6c3",
+    ".github/actions/docker-build-push/action.yml": "c09d55fde6edac5dbda699bf0b9af2af07e3052eb9f9795fa5e309d08655cc6b",
     ".github/actions/feed-mirror-refresh/action.yml": "69a57c7268fa9f162a0d9d259fcb65850d80319c89754acd076fb57c153750fa",
     ".github/actions/feed-mirror/action.yml": "b5ee1b05a7f465419a7b75a0fd309cade99d0c63752408c98485a58a2907b78b",
     ".github/actions/iac-scan/action.yml": "9649959ac1d93de8da9e4ee09d5bfaed8aa72910106217356315098586f69021",
@@ -54,7 +54,7 @@
     ".github/workflows/live-deploy-acceptance.yml": "57e6c0d241f2bda0b60dd58917698fd7d27e0ec960f448849891409570dc10b6",
     ".github/workflows/nvd-cve.yml": "8b021ca206f80bccc9f9b02a2488dc6bfce714c0e383342a2f46838b8b357f1e",
     ".github/workflows/probe-scanner-corpora.yml": "6b971534c0af57be1fb2fb6d97235f2f7bd969bdfaefe216014d8abf45642080",
-    ".github/workflows/reusable-build-docker.yml": "02b83b22dc4e980a5edb41efcda3a8c6c2c8cdc12237f9b763b8ec7fd3e29dd1",
+    ".github/workflows/reusable-build-docker.yml": "b376c89038cce2deb2fdeeb95071044adacd9016d68db7c0ad0d66fad70f8f61",
     ".github/workflows/reusable-dependabot-config-check.yml": "771d56c49ad5c59ee594e5866ba4cea98795914eaa21d476f3b4f85b80fa5bc4",
     ".github/workflows/reusable-dependabot-keep-current.yml": "1b2763a20e830c5ecaa5c6734a35f027215828e3e8985d5cf4ea047f9ad28b75",
     ".github/workflows/reusable-dependabot-triage.yml": "45a587fa01e9925b56f4bb4a09854582ac2fc32e1e004351857d0db24dfa8eee",
@@ -283,8 +283,8 @@
     "docs/assurance/RELEASE_1_EVIDENCE_MANIFEST_PART3.md": "609fe37fa97d1eb83737f42716c2998232c67fe91c94e37de74e986fcf75c8c1",
     "docs/assurance/TEST_COVERAGE_AUDIT.md": "e594fbf4297b74e17f29a1f057c25c772456d3329c3042ffddd585c5ea48f241",
     "docs/assurance/VALIDATION_DEBT.md": "21d571c7746cc5ecbfcaf3ff6ee7ebba7b5e5c0477051aafb936207b8c11776b",
-    "docs/errors/ERRORS.md": "9b13a2cf6af3f767b9bbc02f59584696582ccc9abce17bdbf52e7aee729bbaca",
-    "docs/errors/errors.json": "922d1b762cb578bf6f820bead784261a49b952e53e99397d38e0a68129459eeb",
+    "docs/errors/ERRORS.md": "a8f6be4033f8f5e22906b6102058a0242bd5c0415c4e6b217d85de4a5d6fed22",
+    "docs/errors/errors.json": "8c3ce207621425ce8a52e93ebf5b171973305cf5d3f02272c8b6ff5d6bb53eb6",
     "docs/explainer/00-READ-ME-FIRST.md": "b869fde54b62bf814f102d91d376e3f379dd775a021df4de30a7f7e70910fe41",
     "docs/explainer/01-PURPOSE-AND-PRINCIPLES.md": "2edcedea852a2af0ba68ca97dca78587fbbb947cb863c267ddf64cf59b0edc75",
     "docs/explainer/02-RUN-FLOW.md": "600148cf32b67ed07497eb9247443ddc0274eb627c6921973b67ba18eaa5c411",
@@ -649,7 +649,7 @@
     "tests/prove_bootstrap_failure.py": "0a6e59fdf3f0fe0a3a745f23a10b884198ba90d53c6c0b17a3c6a58a2115271e",
     "tests/prove_boundary_evidence_visible.py": "d2a09da45ac6764da9870d28fa85b1ef5e5da6ce7200e4aa2c7f148e0b619ea8",
     "tests/prove_build_inputs_recorded.py": "ddb0c4a7649741d6cf3dce2b832289d3aeb5170f7a1371466873278cc77ea22e",
-    "tests/prove_build_push_round_trip.py": "f8f09d2c9956552443e3cf5fabccdf8e6d83b6776be5b2cf8f348b67b836238a",
+    "tests/prove_build_push_round_trip.py": "7081e28ad105f11a7bc59a79e7711c357a50820238aaa8f8643ad23785423584",
     "tests/prove_build_routing.py": "97526e873b35ea9a77c818e44455dc6435d54439b3d1f529361144b9c2457659",
     "tests/prove_bundle_import_closure.py": "3c6c70666cc6b5e39721021694f2fa9f3ec14313ddec3dd2b06be37022a468ad",
     "tests/prove_capability_floor.py": "6fb1dbcc3dd7440a679a8e70f0b012e8fad6f4d42261231a33f38eef473a6083",
@@ -876,7 +876,7 @@
   "note": "Written by scripts/export_for_adoption.py. It records what this copy RECEIVED, so the next export can tell a source change from a change made here. Deleting it does not break anything; it only forces the next export to be told its baseline with --baseline.",
   "profile": "neutral",
   "source": "the kit's source repository (commit recorded; branch names are not)",
-  "source_commit": "a50f26bc0dcaaabb03b065b0d6b2f4f4bb5410cc",
+  "source_commit": "4d1aedfea3f85436ad7fd1904738f7b239dbf2d4",
   "source_dirty": false,
   "unresolved_conflicts": {}
 }
