@@ -1,5 +1,5 @@
 {
-  "exported_at_utc": "2026-11-17T21:02:58Z",
+  "exported_at_utc": "2026-11-17T21:39:18Z",
   "files": {
     ".custody.json": "56adfbefa20942fd8d03f2927ebe2c8b3d967152252c5b43303566e97928b168",
     ".env.example": "2803cf35729edfa1785d56e21070c95d7c656da07b422fa8be98b8b1320d34d9",
@@ -487,7 +487,7 @@
     "tests/_platform_signals_grade.py": "b5a483d1444ed9c374afbb67cf79c9958565f014b327ef144a5dc93ecb7af222",
     "tests/_scan_step_harness.py": "26fd65c9198f9de028ebc557680b09884eab991ce1b406cbbf266bb40a94e93d",
     "tests/_semgrep_pin.py": "0a9644dbbdfe3561b0b897dd2c1e4a655b33a3203342dd758f2939a7ff73ea59",
-    "tests/_step_harness.py": "019d9e7dec1d466061012f5779659f1a570744047a891a96f08649dcf908942c",
+    "tests/_step_harness.py": "68287db7ae9575bcb806e81706b4d0ad3649805f1f390afa1b44dc1a85355d72",
     "tests/_survey_api_standin.py": "d13e77368434205110703bb3573f2dd67450e8e6c6bab4523feaf0e9ac554408",
     "tests/_trivy_step.py": "af4061a7ce150ae234fb0c0f83531063a6a8a013bedcb505a69ac961f46b1d1d",
     "tests/_workflow_runner.py": "d26e0d67c36f0769293c2987f984113815e932da75fa4948d1143fd9b7f3414d",
@@ -876,7 +876,7 @@
   "note": "Written by scripts/export_for_adoption.py. It records what this copy RECEIVED, so the next export can tell a source change from a change made here. Deleting it does not break anything; it only forces the next export to be told its baseline with --baseline.",
   "profile": "neutral",
   "source": "the kit's source repository (commit recorded; branch names are not)",
-  "source_commit": "4a7d6532c9ff356c91c647694f9e349adfa6fad4",
+  "source_commit": "c224c721a0523d0bd51f978f604cd22cf5d12db9",
   "source_dirty": false,
   "unresolved_conflicts": {}
 }

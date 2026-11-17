@@ -29,6 +29,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
 EXPR = re.compile(r'\$\{\{\s*(.*?)\s*\}\}')
+REF = re.compile(r'^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)+$')
 
 
 def _expand(doc):
@@ -63,10 +64,24 @@ def step(path, job, key):
 def substitute(text, ctx):
     seen = set()
 
-    def sub(m):
-        seen.add(m.group(1))
-        v = ctx.get(m.group(1), '')
+    def one(v):
         return 'true' if v is True else 'false' if v is False else str(v)
+
+    def sub(m):
+        expr = m.group(1)
+        seen.add(expr)
+        # `a || b` of plain context references, as the runner evaluates it: the first non-empty
+        # value (KDEC-065: image_config_digest falls back to the scanned Id on a build-only run).
+        # Anything richer (==, &&, literals) is still looked up whole, as before.
+        parts = [x.strip() for x in expr.split('||')]
+        if len(parts) > 1 and all(REF.match(x) for x in parts):
+            for x in parts:
+                seen.add(x)
+                v = ctx.get(x, '')
+                if v not in ('', None, False):
+                    return one(v)
+            return ''
+        return one(ctx.get(expr, ''))
     return EXPR.sub(sub, str(text)), seen
 
 
