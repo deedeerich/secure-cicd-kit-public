@@ -10,10 +10,11 @@ Columns:   "called by" = files that run, import, inline or `uses:` it; "proved b
 
 [Back to the walkthrough index](README.md)
 
-38 files.
+39 files.
 
 | file | what it does | called by | inputs and outputs | proved by |
 |---|---|---|---|---|
+| `scripts/ai_artifact_inventory.py` | KDEC-063: a static, vendor-neutral inventory of AI-agent steering artifacts (MCP configs, agent settings hooks and permissions, instruction, skill, prompt and agent files, agent workflows) with review flags versus the PR base; never executes or fetches what it finds; `convert` is the neutral-record seam for a later runtime adapter. | `.github/actions/deps-scan/action.yml`, `tests/prove_ai_artifact_inventory.py` | args: `scan --root --base-ref --repository --commit --json-output --sarif-output --summary --uri-prefix --severity-cap`; `convert --observations --name --out-dir` | `tests/prove_ai_artifact_inventory.py` |
 | `scripts/api_token_cause.sh` | Names one cause for a GitHub API answer the job token got (rejected, forbidden, rate-limited), with the owner role who fixes it. | - | - | `tests/_github_refs.py`, `tests/prove_job_token_named.py` |
 | `scripts/baseline_ledger.py` | The baseline ledger's format and the only way to read it: which findings existed before the baseline, per repository and environment. | `.github/actions/scan-report/action.yml`, `.github/workflows/reusable-security.yml`, `.github/workflows/self-test.yml` +10 more | args: `--self-test`, `--repo`, `--default-ref`, `--head-ref`, `--path`, `--out` | `tests/prove_report_job_reads_ledger.py` |
 | `scripts/capability_floor.py` | Checks the protected capability floor statically, against the PR's base, and at run time over the evidence. | `.github/actions/capability-floor/action.yml`, `.github/workflows/reusable-security.yml`, `.github/workflows/self-test.yml` +6 more | args: `--floor`, `--states`, `--github-output`, `--check-tree`, `--base-floor`, `--base-registry`, `--base-ref`, `--root`, `--today` +1 | `tests/prove_capability_floor.py`, `tests/prove_scanner_floor_shrink.py` |

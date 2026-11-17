@@ -558,7 +558,7 @@ def t5b(mods, tmp):
     fixed = w.w.stub.add_run(workflow='build-deploy.yml', head_sha='f' * 40)
     w.w.stub.add_artifact(fixed, 'security-report-1', {
         'findings.json': json.dumps([o for o in obs if o['identity'] != 'a1' * 16]),
-        'findings-coverage.json': json.dumps(ps.COVERAGE)})
+        'findings-coverage.json': json.dumps(dict(ps.COVERAGE, path_inventory={'state': 'PATH_INVENTORY_ESTABLISHED', 'paths': ['pom.xml', 'app/views.py', 'config.py']}))})
     ev = {'ref': 'pull/91', 'sha256': 'b' * 64}
     for label, run, want in (('a run that still reports it', still, tt.CLOSURE_NOT_VERIFIED),
                              ('a run that verified it absent', fixed, None)):

@@ -145,6 +145,27 @@ def resolve(central, repo, environment='', env=None):
     return {'numbers': numbers, 'record': record, 'refused': refused, 'environment': environment or ''}
 
 
+def resolve_taxonomy(central, repo):
+    """KDEC-062: the TAG TAXONOMY and the completion-status map, from configuration only (`ticket_taxonomy` in
+    the central register, then the repository register). The kit invents no business tag name and no tracker
+    status word. Per key, the repository adds to (or, for the same key, overrides) the org's entries:
+        source_labels        {<source tool or type>: <label>}   the organisation's own source labels
+        metadata             {<name>: <value>}                   e.g. the environment / application as it names them,
+                                                                 written as <stamp>-meta-<name>-<value> (protected)
+        completion_statuses  {<tracker>: {level1, level2}}        the tracker status each completion level maps to
+    -> {source_labels, metadata, completion_statuses, sources: [where each block came from]}."""
+    out = {'source_labels': {}, 'metadata': {}, 'completion_statuses': {}, 'sources': []}
+    for level, doc in (('org', central), ('repo', repo)):
+        t = (doc or {}).get('ticket_taxonomy') if isinstance(doc, dict) else None
+        if not isinstance(t, dict):
+            continue
+        for k in ('source_labels', 'metadata', 'completion_statuses'):
+            if isinstance(t.get(k), dict):
+                out[k].update(copy.deepcopy(t[k]))
+                out['sources'].append('%s:%s' % (level, k))
+    return out
+
+
 def summary_rows(settings):
     """-> markdown rows for the run summary: every value used and its level; every refusal by name."""
     rows = ['| ticket setting | value | level | source |', '|---|---|---|---|']

@@ -118,6 +118,11 @@ BY_SCANNER = {
     'shellcheck': 'SOURCE',
     'psscriptanalyzer': 'SOURCE',
     'hadolint': 'IAC_PLAN',
+    # AI-agent steering artifacts (KDEC-063): MCP configs, agent settings, instruction, skill and prompt
+    # files read as text in the repository -- the locus is the file and line, as for a linter. Static
+    # configuration evidence; a runtime product's observations arrive as an external row that DECLARES
+    # RUNTIME_OBSERVATION, never through this name.
+    'ai-artifact-inventory': 'SOURCE',
 
     # dynamic analysis reaches a RUNNING thing
     'zap': 'RUNTIME_OBSERVATION',
@@ -160,6 +165,7 @@ BY_SCANNER = {
     'codeql-csharp': 'SOURCE',
     'codeql-java-kotlin': 'SOURCE',
     'codeql-c-cpp': 'SOURCE',
+    'ai-artifacts': 'SOURCE',          # scripts/ai_artifact_inventory.py inside deps-scan (KDEC-063)
 }
 
 

@@ -43,6 +43,19 @@ the private release PR #17 stays on HOLD until the owner approves.
   negative control runs only for a reader; all 89 inherited actionlint findings classified and the
   baseline held exactly.
 
+- **KDEC-062 (owner, 2026-11-16): ticket completion has two levels.** Level 1 (done) may be set by the
+  person who triaged or fixed the item; level 2 (final) never by that person -- only a distinct authorised
+  person or a QUALIFYING rescan (same instance, the scanner ran and completed, the path still in scope, the
+  same scope and configuration). A finding back after level 2 opens a linked recurrence ticket. Instance
+  overflow is escalated with every instance kept; the threshold limits child-ticket creation only. With the
+  register unreadable nothing is closed as a duplicate or by rescan. Human labels survive; a level is read
+  from the ledger, never from a label.
+- **KDEC-063: AI-agent artifact inventory** (advisory, in deps-scan): MCP configurations, agent instructions,
+  skills, hooks and permissions, and changes to them on a pull request. Static configuration evidence only,
+  not proof of what is connected at runtime; a neutral observation record for a later runtime provider.
+- **KDEC-064:** two deferrals that expired 2026-11-15 were closed by fixing (the context-currency check is now
+  wired in self-test), not by moving their dates.
+
 ### Caller migration
 
 - `reusable-external-findings.yml` callers: grant `actions: read` (the baseline run is selected from the

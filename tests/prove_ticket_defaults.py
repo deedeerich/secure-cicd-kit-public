@@ -14,14 +14,15 @@ its target is a placeholder.
     S5  the reconciler's run record carries ticket_settings (every value, level, source, refusal) -- through the CLI
     S6  the creation ceiling: past it, obligations are carried and the overflow is NAMED and ESCALATED
         (TICKET_CEILING_OVERFLOW in needs_decision, exit 1); under it, nothing is
-    S7  the instance threshold: past it, the overflow is named (count kept), not escalated
+    S7  the instance threshold: past it, the overflow is named (count kept, the instances not itemised listed) and
+        ESCALATED (KDEC-062, owner 2026-11-16, superseding the KDEC-060 M4 judgement call "named, not escalated")
     S8  the fix-availability writer: FIX_AVAILABLE from a scanner's fixed-in version, dated; none reported is
         FIX_AVAILABILITY_NOT_ESTABLISHED, never NO_FIX_AVAILABLE; a person's value is never overwritten;
         scan_report reads the fixed-in version from SARIF properties and Trivy's message
     S9  the SLA deadline uses the default table (HIGH +30 days)
     S10 KREQ-706: at prod a missing or placeholder escalation channel/service level is REFUSED (no stand-in);
         configured is used; below prod the placeholder is used and named; the org overlay validates the shape
-    Mutants MT1-MT5, each caught at its own claim.
+    Mutants MT1-MT6, each caught at its own claim.
 
 USAGE: python3 tests/prove_ticket_defaults.py   (no network; exit 0 PASS, 1 FAIL)
 """
@@ -166,7 +167,8 @@ def claims(work):
       not [d for d in r.get('needs_decision') or [] if d.get('outcome') == RT.TICKET_CEILING_OVERFLOW],
       r.get('ceiling_overflow'))
 
-    # S7 instance threshold overflow: named, not escalated
+    # S7 instance threshold overflow: named and escalated (KDEC-062; tests/prove_ticket_levels.py O1 proves nothing is
+    # truncated at the owner's 25)
     be = RT.RecordingBackend()
     be.instance_threshold = 2
     be.create_instance = lambda parent, m, body, title: ('i-%s' % m['identity'], 'ok')
@@ -175,10 +177,12 @@ def claims(work):
     r = _quiet(RT.reconcile, *_quiet(RT.build_clusters, recs), backend=be, ledger=led, apply_changes=True,
                approval=RT.tm.Approval(actor='platform-security', reason='proof'), today='2026-11-13')
     ov = r.get('ceiling_overflow') or []
-    c('S7 three instances over a threshold of 2: the overflow is named (over by 1), the count kept, not escalated',
+    c('S7 three instances over a threshold of 2: the overflow is named (over by 1, the one not itemised listed), the '
+      'count kept, and ESCALATED',
       [(o['setting'], o['over_by']) for o in ov] == [('ticket_instance_threshold', 1)] and
-      not [d for d in r.get('needs_decision') or [] if d.get('outcome') == RT.TICKET_CEILING_OVERFLOW] and
-      any((e.get('instances_not_itemised') == 1) for e in led.values()), (ov, led))
+      len([d for d in r.get('needs_decision') or [] if d.get('outcome') == RT.TICKET_CEILING_OVERFLOW]) == 1 and
+      any((e.get('instances_not_itemised') == 1 and len(e.get('instances_overflow') or []) == 1)
+          for e in led.values()), (ov, led))
 
     # S8 fix availability
     cl = _quiet(RT.build_clusters, [_rec('F1', fixed='1.4.2'), _rec('F1', fixed='', scanner='grype')])[0][0]
@@ -260,6 +264,8 @@ MUTANTS = [
      lambda: swap_function(TS, 'resolve', "'value': value, 'level': level,", "'value': value, 'level': 'kit_default',")),
     ('MT3 the creation-ceiling overflow is not escalated', 'S6 ',
      lambda: swap_function(RT, 'ceiling_overflow', 'if escalate and', 'if False and')),
+    ('MT6 the instance-threshold overflow is not escalated', 'S7 ',
+     lambda: swap_function(RT, 'ceiling_overflow', 'if escalate and', "if setting != 'ticket_instance_threshold' and")),
     ('MT4 no fixed-in version is written as NO_FIX_AVAILABLE', 'S8 ',
      lambda: swap_function(RT, 'write_fix_availability', "entry['fix_availability'] = FIX_AVAILABILITY_NOT_ESTABLISHED",
                            "entry['fix_availability'] = 'NO_FIX_AVAILABLE'")),

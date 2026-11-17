@@ -638,6 +638,9 @@ NOT_VOCABULARY = {
     # protected_paths' list of change-guarded files.
     "DECISION_KEYS", "DECISION_SOD_NOT_ESTABLISHED", "DEFAULT_POLICY", "INVENTORY_ESTABLISHED",
     "INVENTORY_NOT_ESTABLISHED", "CHANGE_GUARDED",
+    # KDEC-063 (2026-11-16): the AI-artifact inventory's record-shape constant (a key list a proof reads, never a
+    # state) and three environment variable NAMES its fixture MCP config declares (recorded by name, never value).
+    "OBSERVATION_FIELDS", "DOCS_TOKEN", "LOG_LEVEL_REF", "SERVICE_KEY",
 }
 
 TOKEN = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")

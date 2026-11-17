@@ -2078,6 +2078,29 @@ findings_filename = 'findings.json'
 # only when this record shows the scanner that saw the finding ESTABLISHED its row over a scope
 # covering the file. Skipped by the state loader for the same reason as findings.json.
 coverage_filename = 'findings-coverage.json'
+PATH_INVENTORY_ESTABLISHED = 'PATH_INVENTORY_ESTABLISHED'
+PATH_INVENTORY_NOT_ESTABLISHED = 'PATH_INVENTORY_NOT_ESTABLISHED'
+
+
+def path_inventory(source_root):
+    """KDEC-062 (owner 2026-11-16): WHICH FILES EXIST at the scanned commit, so the ticket side never reads an
+    absence in a DELETED file as a fix (ticket_completion.qualify_rescan: RESCAN_PATH_REMOVED). The tracked files
+    of the checkout of the scanned commit (`git ls-files`). No checkout, or git cannot list it, is
+    PATH_INVENTORY_NOT_ESTABLISHED -- never an empty inventory, which would read as "every file deleted"."""
+    import subprocess
+    if not source_root or not os.path.isdir(source_root):
+        return {'state': PATH_INVENTORY_NOT_ESTABLISHED, 'note': 'no checkout of the scanned commit was given'}
+    try:
+        p = subprocess.run(['git', '-C', source_root, 'ls-files', '-z'], capture_output=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {'state': PATH_INVENTORY_NOT_ESTABLISHED, 'note': 'git ls-files could not run: %s' % exc}
+    if p.returncode != 0:
+        return {'state': PATH_INVENTORY_NOT_ESTABLISHED,
+                'note': 'git ls-files exited %d: %s' % (p.returncode, p.stderr.decode('utf-8', 'replace')[:200])}
+    paths = sorted(x for x in p.stdout.decode('utf-8', 'replace').split('\0') if x)
+    return {'state': PATH_INVENTORY_ESTABLISHED, 'source': 'git ls-files of the scanned checkout',
+            'count': len(paths), 'sha256': hashlib.sha256('\n'.join(paths).encode('utf-8')).hexdigest(),
+            'paths': paths}
 
 
 def sarif_tool_version(path):
@@ -2358,6 +2381,12 @@ def batch(state_dir, disp_path, max_detail, run_url, expect=(), summary=None, fi
                               'scope': cfg['scope'] or '', 'parse_state': parse_state,
                               'scanner_version': sarif_tool_version(sarif) if sarif else '',
                               'established': bool(established), 'findings': len(findings)})
+        # KDEC-062: what a scanner job DECLARES about its run, carried so a rescan can be shown comparable --
+        # the paths it excluded and a digest of its configuration. Never invented when a job declares none.
+        if isinstance(st.get('excluded'), list):
+            coverage_rows[-1]['excluded'] = [str(x) for x in st['excluded'] if str(x).strip()]
+        if st.get('config_sha256'):
+            coverage_rows[-1]['config_sha256'] = str(st['config_sha256'])
         job = st.get('job') or ''
         if established and job:
             by_job[job] = by_job.get(job, 0) + len(blk)
@@ -2447,8 +2476,8 @@ def batch(state_dir, disp_path, max_detail, run_url, expect=(), summary=None, fi
         fh.write('\n')
     with io.open(os.path.join(os.path.dirname(os.path.abspath(findings_out)), coverage_filename),
                  'w', encoding='utf-8') as fh:
-        json.dump({'schema': 'findings-coverage/1', 'rows': coverage_rows}, fh, indent=1,
-                  sort_keys=True)
+        json.dump({'schema': 'findings-coverage/1', 'rows': coverage_rows,
+                   'path_inventory': path_inventory(source_root)}, fh, indent=1, sort_keys=True)
         fh.write('\n')
     # THE UNKNOWNS LOG (owner ruling 2026-11-06): every id the kit could not read, with its count, beside
     # findings.json in the same artifact; the ticket reconciler routes each to a person, once.

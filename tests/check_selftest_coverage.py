@@ -168,13 +168,6 @@ UNWIRED = {
                   'kit-harness-pair run on the default branch shows the pair PASS, delete this entry and '
                   'add a census line for the hosted run. Steps: docs/operations/HARNESS_PAIR_HOSTED.md',
         'expires': '2026-12-31'},
-    'check_context_current.py': {
-        'reason': 'fails on the trunk today: the .context record was reconciled against 9b18e49 and '
-                  'HEAD is further ahead than its limit. Wiring it now turns self-test red on a '
-                  'documentation lag, not a code defect; .context belongs to lane L-G',
-        'owner': 'documentation lane (L-G)',
-        'closes': 'L-G restates the context against the trunk; then wire it in self-test',
-        'expires': '2026-11-15'},
 }
 # A line that RUNS it: not a comment (the lookahead anchors at the line start, so leading blanks
 # cannot be backtracked into satisfying it), naming python, then the path.

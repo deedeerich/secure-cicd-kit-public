@@ -211,8 +211,14 @@ MOVES = {
     # after the Trivy database cache -- `Trivy database from the organisation mirror (KDEC-032)`, running
     # scripts/feed_mirror_step.sh with the job's three vars.KIT_FEED_MIRROR_* values. No existing step's
     # name, id, if, uses, with, env, run or shell changed. The L-INT1 pin was 980ac662...8197.
+    # RE-PINNED 2026-11-16, lane ai-artifacts (KDEC-063), `--repin deps-scan`. Reason: the static, advisory
+    # AI-agent artifact inventory rides in deps-scan. ADDITIVE ONLY: one step `AI agent artifacts — static
+    # inventory (advisory)` (id ai_artifacts, `if: always()`, never sets findings_state) after the pipeline-lint
+    # publish check, two artifact uploads, one Security-tab upload (continue-on-error), and one more clause in
+    # the degraded-publication notice's `if:`. No other step's name, id, uses, with, env, run or shell changed.
+    # The L-MIRROR pin was 7f152367...46ee.
     'deps-scan': ('deps-scan', '11d1d56',
-                  '7f1523671c86f3382bff2e545a753ecefd0e6c8e453a02ae4a3158d68e1046ee'),
+                  'd1249f4d5fa35ddd7aade0f258c604f35bbaf424146d247445a2bfbc7042f85c'),
     # RE-PINNED 2026-10-23, integration lane L-INT1, `--repin sast-dotnet`. Reason: L-PIN (KDEC-027,
     # its pin was 5ffff3c6...cf1d) and L-SCAN-B (KDEC-026, below; its pin was 5194ff9c...94ec) each
     # re-pinned sast-dotnet from c7e1ea9; the merged composite carries both.

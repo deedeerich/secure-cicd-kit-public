@@ -134,15 +134,10 @@ known_stale = {
     # From the first full run, 2026-10-21. The reason says what the gate found, and whether the line
     # is wrong or only reads wrong (a quotation or a struck-through history the matcher cannot tell
     # from a claim -- reword it so it states the current fact).
-    'README.md': 'the NVD rows call reusable-nvd-cve.yml unexercised ("not yet run live" of the '
-                 'optional mirror); the fail_on_cvss line was fixed 2026-11-07',
     # Removed 2026-11-07 (lane archdocs): the release manifest, NVD accounting, single-pipeline target,
     # deployment contract reconciliation, provenance and threat model lines were re-read against the
     # code and fixed, so their entries went (an entry for a document that agrees FAILS).
-    '.context/products/secure-cicd-kit/continuation.md': 'quotes the claim this gate refuses ("advisory '
-                                                         'mode covers secrets") -- reword the quotation',
-    '.context/products/secure-cicd-kit/risks.md': 'R-04 "deploy workflows ... have never run"; both '
-                                                  'are observed live',
+    # Emptied 2026-11-16: the README, continuation and R-04 lines were reworded to the current fact.
 }
 
 # Words that assert a thing has NOT been exercised. Matched case-insensitively on the line.

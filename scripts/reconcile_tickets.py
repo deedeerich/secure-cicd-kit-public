@@ -197,6 +197,7 @@ import ticket_model as tm  # noqa: E402 - after the sys.path insert that makes i
 import ticket_governance as tg  # noqa: E402 - KDEC-043: key verification, provenance, area, children
 import finding_lineage as fl    # noqa: E402 - R03: the one lineage resolver, read, never re-implemented
 import ticket_settings          # noqa: E402 - KDEC-052 item 7: the ticketing numbers and their source levels
+import ticket_completion as tc  # noqa: E402 - KDEC-062: the two completion levels, the qualifying rescan, recurrence
 
 # ── THE LOOKUP OUTCOMES (assurance-taxonomy.yaml : ticket_lookup_outcome) ─────────────
 #
@@ -680,6 +681,12 @@ class TicketBackend(object):
         priority ONE step -- never lower it, and never touch a due date: the deadline is derived
         and the bridge may announce a breach, never move it (TC 5.1, 5.2)."""
         return False, '%s cannot label or escalate a ticket' % self.name, {}
+
+    def set_status(self, ref, status):
+        """KDEC-062: move a ticket to the tracker status a completion LEVEL is mapped to in configuration
+        (ticket_taxonomy.completion_statuses). -> (ok, detail). A tracker without a named status says so; the
+        caller then projects the level the way the kit always did and names it."""
+        return False, '%s cannot set a named status' % self.name
 
 
 # Replaced by the proofs so a Retry-After of minutes is observed without being slept.
@@ -1685,6 +1692,24 @@ class Jira(HttpBackend):
             return False, 'the done transition was refused (status %s)' % status
         return True, 'closed by transition %r' % match[0].get('name')
 
+    def set_status(self, ref, status):
+        """KDEC-062: the ONE offered transition whose target status is named `status` (configuration, never a
+        word in code). None or more than one is a refusal naming it: choosing between two would be a guess."""
+        doc, code, err = self._req('GET', '/rest/api/3/issue/%s/transitions' % ref)
+        if err or doc is None:
+            return False, 'status %r: the transitions could not be read (status %s)' % (status, code)
+        offered = [t for t in (doc.get('transitions') or []) if isinstance(t, dict)]
+        match = [t for t in offered if str((t.get('to') or {}).get('name') or '').strip().lower()
+                 == str(status).strip().lower()]
+        if len(match) != 1:
+            return False, ('status %r: %d offered transition(s) lead to it (offered: %s)'
+                           % (status, len(match), ', '.join(t.get('name') or '?' for t in offered) or 'none'))
+        _d, code, err = self._req('POST', '/rest/api/3/issue/%s/transitions' % ref,
+                                  {'transition': {'id': str(match[0].get('id'))}})
+        if err:
+            return False, 'the transition to %r was refused (status %s)' % (status, code)
+        return True, 'moved to %r by transition %r' % (status, match[0].get('name'))
+
     def mark(self, ref, labels=(), bump_priority=False):
         """Labels added (never removed), and the priority raised one rung of JIRA_PRIORITY_LADDER
         when asked. One read, one write."""
@@ -2099,6 +2124,14 @@ class AzureDevOps(HttpBackend):
                                                                             status)
         return True, 'closed to %r' % self.state_done
 
+    def set_status(self, ref, status):
+        """KDEC-062: a System.State write to the state a completion level is mapped to (configuration)."""
+        doc, code, err = self._req('PATCH', '/_apis/wit/workitems/%s' % ref, [
+            {'op': 'add', 'path': '/fields/System.State', 'value': str(status)}], patch=True)
+        if err or doc is None:
+            return False, 'the state write to %r was refused (status %s)' % (status, code)
+        return True, 'moved to %r' % status
+
     def mark(self, ref, labels=(), bump_priority=False):
         """Tags added (the whole tag string is written, so it is read first), and
         Microsoft.VSTS.Common.Priority lowered by one (1 is the highest) -- under `test /rev`, so
@@ -2248,6 +2281,15 @@ class RecordingBackend(TicketBackend):
                     r['state'] = 'closed'
                     self.closed.append(str(ref))
                     return True, 'closed'
+        return False, 'no such ticket'
+
+    def set_status(self, ref, status):
+        for recs in self.store.values():
+            for r in recs:
+                if r['ref'] == str(ref):
+                    r['state'], r['status_name'] = 'closed', str(status)
+                    self.statuses = list(getattr(self, 'statuses', []) or []) + [(str(ref), str(status))]
+                    return True, 'moved to %r' % status
         return False, 'no such ticket'
 
     def labels_of(self, ref):
@@ -3245,11 +3287,19 @@ def load_coverage(path):
     rows = doc.get('rows') if isinstance(doc, dict) else None
     if not isinstance(rows, list):
         return None, 'the coverage record %s has no rows: nothing may close' % path
-    out = {}
+    out = CoverageMap()
     for row in rows:
         if isinstance(row, dict) and row.get('scanner'):
             out[str(row['scanner'])] = row
+    # KDEC-062: which files exist at the scanned commit (scan_report.py writes it from the checkout), so an
+    # absence in a DELETED file is never read as a fix.
+    out.path_inventory = doc.get('path_inventory') if isinstance(doc.get('path_inventory'), dict) else None
     return out, 'coverage loaded for %d scanner row(s)' % len(out)
+
+
+class CoverageMap(dict):
+    """scanner -> coverage row, plus the rescan's `path_inventory` (KDEC-062), None when it was not recorded."""
+    path_inventory = None
 
 
 def row_established(row):
@@ -3260,15 +3310,25 @@ def row_established(row):
 
 
 TICKET_CEILING_OVERFLOW = 'TICKET_CEILING_OVERFLOW'
+# KDEC-062: the rescan disqualifiers that mean the absence is NOT a fix, so the clearance closes nothing.
+CLEARANCE_BLOCKING_RESCAN = (tc.RESCAN_PATH_REMOVED, tc.RESCAN_PATH_EXCLUDED, tc.RESCAN_PATH_OUT_OF_SCOPE,
+                             tc.RESCAN_SCOPE_CHANGED, tc.RESCAN_CONFIG_CHANGED)
 
 
-def ceiling_overflow(result, setting, limit, cluster_key, count=1, escalate=True):
+def ceiling_overflow(result, setting, limit, cluster_key, count=1, escalate=True, identities=None, total=None):
     """KDEC-052 item 7: a ceiling is never silently exceeded and nothing past it is dropped. The overflow is
     NAMED (TICKET_CEILING_OVERFLOW, in the run record and the summary) and ESCALATED as a decision owed to a
-    person (needs_decision: raise the governed number in the central register, or accept the carry)."""
+    person (needs_decision: raise the governed number in the central register, or accept the carry).
+
+    KDEC-062 (owner 2026-11-16): the INSTANCE threshold caps automatic child-ticket CREATION only. Every affected
+    instance and its evidence stays on the ledger; the instances not itemised are NAMED here (`identities`), and
+    the overflow is escalated for a reviewer like the creation ceiling's."""
     rows = result.setdefault('ceiling_overflow', [])
-    rows.append({'state': TICKET_CEILING_OVERFLOW, 'setting': setting, 'limit': limit,
-                 'cluster_key': cluster_key, 'over_by': count})
+    row = {'state': TICKET_CEILING_OVERFLOW, 'setting': setting, 'limit': limit,
+           'cluster_key': cluster_key, 'over_by': count}
+    if identities is not None:
+        row.update(identities=list(identities), total=total, itemised=(total or 0) - len(identities))
+    rows.append(row)
     if escalate and sum(1 for r in rows if r['setting'] == setting) == 1:
         result['needs_decision'].append({
             'cluster_key': cluster_key, 'outcome': TICKET_CEILING_OVERFLOW,
@@ -3524,9 +3584,12 @@ def escalate_overdue(result, backend, key, entry, ref, today, apply_changes, app
     result.setdefault('escalations', []).append(rec)
 
 
-def ledger_members(entry, cluster, commit=None):
+def ledger_members(entry, cluster, commit=None, coverage=None):
     """Merge this run's observations into the ledger's per-identity record of WHO saw each member
-    and WHERE -- the evidence a later clearance must cover. Append-only per scanner."""
+    and WHERE -- the evidence a later clearance must cover. Append-only per scanner.
+
+    KDEC-062: with this run's coverage, the scope (and any declared configuration digest) the scanner ran with
+    when it saw the member is recorded, so a later rescan can be shown COMPARABLE (ticket_completion)."""
     members = dict(entry.get('members') or {})
     for m in cluster.get('members') or []:
         ident = m.get('identity')
@@ -3553,6 +3616,11 @@ def ledger_members(entry, cluster, commit=None):
             # The LAST commit at which this scanner saw the member: the left end of the range a
             # clearance names as "last present at" (owner 2026-10-23).
             rec['last_seen_commit'] = commit
+        row = (coverage or {}).get(rec['scanner']) if isinstance(coverage, dict) else None
+        if isinstance(row, dict):
+            rec['scan_scope'] = str(row.get('scope') or '')
+            if row.get('config_sha256'):
+                rec['config_sha256'] = str(row['config_sha256'])
         seen = [x for x in seen if x.get('scanner') != rec['scanner']] + [rec]
         members[ident] = sorted(seen, key=lambda x: x.get('scanner') or '')
     entry['members'] = members
@@ -4826,7 +4894,7 @@ def _reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None
                         ledger[cluster['cluster_key']]['evidence_observations'] = list(prior_obs)
                     if isinstance(cluster.get('area'), dict):
                         ledger[cluster['cluster_key']]['area'] = dict(cluster['area'])
-                    ledger_members(ledger[cluster['cluster_key']], cluster, commit)
+                    ledger_members(ledger[cluster['cluster_key']], cluster, commit, coverage=coverage)
                     write_fix_availability(ledger[cluster['cluster_key']], cluster, today)
                     # TIER -1: one instance per observation, under the tier-0 item, up to the
                     # owner's per-class threshold; above it the class carries a COUNT, recorded
@@ -4847,9 +4915,14 @@ def _reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None
                         entry_i['instances'] = inst
                         entry_i['instances_not_itemised'] = len(cluster['members']) - len(inst)
                         if 0 < limit < len(cluster['members']):
-                            # Named, not escalated: the tier-0 ticket exists and carries the COUNT; nothing is lost.
+                            # KDEC-062 (owner 2026-11-16, closing the KDEC-060 M4 contradiction): ESCALATED. The
+                            # threshold caps child CREATION only; every instance and its evidence is on the ledger
+                            # (member_identities, members) and the ones not itemised are NAMED, never truncated.
+                            over = [m['identity'] for m in cluster['members'][limit:] if m.get('identity')]
+                            entry_i['instances_overflow'] = over
                             ceiling_overflow(result, 'ticket_instance_threshold', limit, cluster['cluster_key'],
-                                             len(cluster['members']) - limit, escalate=False)
+                                             len(cluster['members']) - limit, escalate=True, identities=over,
+                                             total=len(cluster['members']))
                 else:
                     # NOT A NOTE: an obligation that owes a ticket the run could not write. It is
                     # carried with its cause and it makes the claim untrusted (TC 4.1).
@@ -4946,7 +5019,7 @@ def _reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None
                 entry['severity'] = cluster.get('severity')
                 if sla_now is not None:
                     entry['sla'] = sla_now
-                ledger_members(entry, cluster, commit)
+                ledger_members(entry, cluster, commit, coverage=coverage)
                 write_fix_availability(entry, cluster, today)
                 entry['member_identities'] = sorted(known | current)
                 if cluster.get('carried_by_lineage'):
@@ -5222,7 +5295,13 @@ def _reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None
                     # clearance, so it is neither a falsified REMEDIATED nor an unbacked closure.
                     cls_r = REOPEN_RECURRED if isinstance(clearance, dict) else \
                         reopen_classification(cluster, today)
-                    ok_r, why = backend.reopen(hit['ref'])
+                    # KDEC-062: a FINAL (level 2) record is never reopened: a new linked recurrence ticket.
+                    rplan = tc.plan_recurrence(ledger.get(cluster['cluster_key']) or {}, run_url, commit)
+                    if rplan:
+                        ok_r, why = False, ('%s: the ticket is final (level 2); recurrence %d gets a new ticket '
+                                            'linked to it' % (tc.RECURRENCE_LINKED_TICKET, rplan['number']))
+                    else:
+                        ok_r, why = backend.reopen(hit['ref'])
                     if ok_r:
                         result['reopened'].append({'cluster_key': cluster['cluster_key'],
                                                    'ref': hit['ref'], 'detail': why,
@@ -5253,6 +5332,12 @@ def _reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None
                         succ['title'] = render_title(cluster)
                         ref_s, d_s = backend.create(succ, render_body(succ), succ['title'])
                         if ref_s:
+                            # KDEC-062: a person's labels on the predecessor travel to the successor.
+                            carry = tc.user_labels(hit.get('labels'), getattr(backend, 'stamp_label', '')
+                                                   or DEFAULT_STAMP_LABEL)
+                            if carry:
+                                backend.mark(ref_s, labels=carry)
+                            new_key = getattr(backend, 'last_key', None) or ref_s
                             entry = dict(ledger.get(cluster['cluster_key']) or {})
                             entry['predecessors'] = sorted(set(
                                 [str(p) for p in entry.get('predecessors') or []]
@@ -5265,7 +5350,13 @@ def _reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None
                             entry['reopens'] = list(entry.get('reopens') or []) + [{
                                 'ref': str(hit['ref']), 'classification': cls_r, 'on': today,
                                 'successor': ref_s}]
-                            if cls_r == REOPEN_RECURRED:
+                            if rplan:
+                                entry = tc.apply_recurrence(entry, rplan, ref_s, new_key, today)
+                                entry.pop('clearance', None)
+                                result.setdefault('recurrences_after_final', []).append({
+                                    'cluster_key': cluster['cluster_key'], 'ref': ref_s,
+                                    'predecessor': hit['ref'], 'number': rplan['number']})
+                            elif cls_r == REOPEN_RECURRED:
                                 # The successor carries the recurrence; the clearance it
                                 # contradicts moves into the history, as on the reopen path.
                                 entry['recurrences'] = list(entry.get('recurrences') or []) + [{
@@ -5408,6 +5499,17 @@ def clearance_pass(result, clusters, withheld, ledger, sweep_map, coverage, back
                 'reaffirmation_required': False, 'related': [],
                 'inventory': inventory_summary(inventory)})
             continue
+        # KDEC-062 (owner 2026-11-16): ABSENCE IS NOT REMEDIATION when the affected file was deleted, is newly
+        # excluded, left the scanner's scope, or the scanner's scope or configuration changed. Those close
+        # nothing. A rescan that cannot show the file still exists closes as before but is NOT finalised.
+        verdict = tc.qualify_rescan(entry, present, None if coverage is None else {
+            'rows': list(coverage.values()), 'path_inventory': getattr(coverage, 'path_inventory', None)},
+            withheld_recs, run_url, commit)
+        stop = [r for r in verdict['reasons'] if r['reason'] in CLEARANCE_BLOCKING_RESCAN]
+        if stop:
+            result['potentially_absent'].append({'cluster_key': key, 'ref': ref, 'members': ids,
+                                                 'why': ['%s: %s' % (r['reason'], r['detail']) for r in stop]})
+            continue
         ticket = tm.Ticket(ticket_id=ref, cluster_key=key, title='', severity='')
         tasks = []
         for ev in evidence:
@@ -5468,6 +5570,13 @@ def clearance_pass(result, clusters, withheld, ledger, sweep_map, coverage, back
             if entry.get('reconciliation'):
                 entry['reconciliation_history'] = list(entry.get('reconciliation_history') or []) + [
                     dict(entry.pop('reconciliation'), released_on=today, released_by_run=run_url or '')]
+            # KDEC-062: level 2 (final) by the kit's rescan only when it QUALIFIES; otherwise the reasons are kept.
+            refusal2, entry = tc.set_level2(entry, 'rescan', today, rescan=verdict)
+            entry['completion_rescan'] = {'verdict': verdict['verdict'], 'reasons': verdict['reasons'],
+                                          'limits': verdict['limits'], 'on': today, 'run': run_url or ''}
+            rec['completion'] = tc.level_of(entry)
+            if refusal2:
+                rec['completion_refusal'] = refusal2['state']
             ledger[key] = entry
             rec['closed'] = True
         result['cleared'].append(rec)

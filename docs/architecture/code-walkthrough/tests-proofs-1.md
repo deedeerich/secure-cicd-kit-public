@@ -10,11 +10,12 @@ Columns:   "called by" = files that run, import, inline or `uses:` it; "proved b
 
 [Back to the walkthrough index](README.md)
 
-63 files.
+64 files.
 
 | file | what it proves or checks | run by | exercises | inputs |
 |---|---|---|---|---|
 | `tests/prove_actionlint_baseline.py` | The actionlint baseline is enforced: an unclassified finding, one more occurrence, a stale row, a class-2 row and an unverified actionlint version each fail; four weakened checks (the old substring exclusion among them) are caught (KDEC-058). | `.github/workflows/self-test.yml` | `tests/check_actionlint.py`, `docs/assurance/ACTIONLINT_BASELINE.md` | - |
+| `tests/prove_ai_artifact_inventory.py` | KDEC-063: the AI-agent artifact inventory finds every class, flags what needs review, leaks no value, sees the PR base, stays advisory in the report and runs nothing it finds; mutants M1-M6. | `.github/workflows/self-test.yml` | `scripts/ai_artifact_inventory.py`, `scripts/scan_report.py`, `scripts/sarif_validity.py` | `tests/fixtures/ai_artifacts/` |
 | `tests/prove_adoption_guides.py` | The auto-merge and branch-protection guides say what the owner asked, and their rulesets would work. | `.github/workflows/self-test.yml` | - | - |
 | `tests/prove_anchored_correlation.py` | Correlation above the observations: only the ANCHORED tier acts (L48; ETFB section 9.1-9.4). | `.github/workflows/self-test.yml` | - | - |
 | `tests/prove_approval_review_contract.py` | KE-07 (KDEC-051): an exported approval carries its own dates, checked and never changed; the review-time contract; the legacy window in one constant. | `.github/workflows/self-test.yml`, `tests/prove_kit_harness_pair.py` | `api/v1/disposition-review.contract.json`, `api/v1/evidence-export.schema.json`, `scripts/evidence_export.py`, `scripts/scan_report.py` | `tests/fixtures/approval_review/cases.json` |

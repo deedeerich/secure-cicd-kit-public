@@ -49,6 +49,13 @@
       }},
     "environment_numbers": {"type": "object", "description": "KREQ-674 / KDEC-052 item 7: per-environment ticketing numbers, {<GitHub environment name>: {numbers}}, the ENVIRONMENT level of scripts/ticket_settings.py (kit_default < org < repo < environment < variable). A narrower level may only lower a governed number; a raise is refused TICKET_SETTING_ABOVE_GOVERNED and recorded.",
       "additionalProperties": {"type": "object"}},
+    "ticket_taxonomy": {"type": "object", "additionalProperties": false, "description": "KDEC-062 (owner 2026-11-16): the ticket TAG TAXONOMY and the COMPLETION-STATUS MAP, configuration only (scripts/ticket_settings.py resolve_taxonomy; the repository register adds to or overrides the central one per key). The kit's own <stamp>-* labels are protected and never configurable here; everything else on a ticket is a person's label and is never removed.",
+      "properties": {
+        "notes": {"type": "string"},
+        "source_labels": {"type": "object", "description": "{<source tool or type>: <label>}: the organisation's own source label, added beside the kit's <stamp>-src-*/<stamp>-tool-* labels. One token; never in the <stamp>-* namespace (TAXONOMY_LABEL_PROTECTED).", "additionalProperties": {"type": "string"}},
+        "metadata": {"type": "object", "description": "{<name>: <value>}: environment / application metadata as the organisation names it, written as <stamp>-meta-<name>-<value> (protected, kit-written).", "additionalProperties": {"type": "string"}},
+        "completion_statuses": {"type": "object", "description": "{<tracker backend name>: {level1, level2}}: the tracker status each kit completion level is moved to. Unmapped: level 1 is labels and a comment, level 2 the tracker's done state, named COMPLETION_STATUS_UNMAPPED.", "additionalProperties": {"type": "object", "additionalProperties": false, "properties": {"level1": {"type": "string", "minLength": 1}, "level2": {"type": "string", "minLength": 1}}}}
+      }},
     "policies": {"type": "array", "items": {"$ref": "#/$defs/entry"}}
   },
   "$defs": {

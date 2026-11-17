@@ -947,6 +947,10 @@ def _tickets_submit(rt, backend, ledger, routing, central, repo_reg, req, p, env
                ('list:%s' % _e(env, 'KIT_API_REVIEW_APPROVER_LIST')) if _e(env, 'KIT_API_REVIEW_APPROVER_LIST')
                else tt.DEFAULT_APPROVER_SOURCE),
            'branch_map': _e(env, 'KIT_API_BRANCH_ENVIRONMENTS'),
+           # KDEC-062: was the register (the ticket ledger) READ? A missing one is an empty dict, not a read one, and
+           # while continuity cannot be established no rescan clears and no duplicate is closed automatically.
+           'register_state': ('REGISTER_READ' if _e(env, 'KIT_API_LEDGER') and os.path.exists(_e(env, 'KIT_API_LEDGER'))
+                              else 'REGISTER_NOT_ESTABLISHED'),
            'approved_tools': _csv(_e(env, 'KIT_API_APPROVED_TOOLS')),
            'evidence_stores': _csv(_e(env, 'KIT_API_EVIDENCE_STORES')),
            # KDEC-043 rule 2: which identity each `via` integration name is registered as (name=identity,...).

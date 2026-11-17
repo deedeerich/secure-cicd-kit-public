@@ -1409,12 +1409,20 @@ jobs:
           # KDEC-049 (owner 2026-11-11): a match never drops the vuln -- it ENHANCES the existing ticket with the
           # new evidence; journeys J1-J13 against the baseline run and the ticket ledger, mutants M-B1..M-B6.
           python3 tests/prove_external_findings_journeys.py
+          # KDEC-063: the static AI-agent artifact inventory (MCP configs, agent settings, instructions, skills,
+          # prompts, agent workflows) flags what needs review, leaks no value, sees the PR base, runs nothing.
+          python3 tests/prove_ai_artifact_inventory.py
           # A missing or unreadable ticket ledger is named on every item and consumer; nothing is "new" without it.
           python3 tests/prove_register_unavailable.py
           # KDEC-052 item 7: the owner's ticket numbers, their source levels, overflow escalated, fix availability
           # from scanner data, and the prod escalation route refused when it is a placeholder (KREQ-590/674/676/706).
           python3 scripts/ticket_settings.py --self-test
           python3 tests/prove_ticket_defaults.py
+          # KDEC-062 (owner 2026-11-16): two completion levels (never the level-1 actor at level 2), the qualifying
+          # rescan, recurrence after final as a new linked ticket, the tag taxonomy, overflow escalated, and nothing
+          # closed, cleared or carried forward automatically while the register is not read.
+          python3 scripts/ticket_completion.py --self-test
+          python3 tests/prove_ticket_levels.py
           # ONE normaliser for every source's CWE and vulnerability-id spelling; unknown forms refused.
           python3 scripts/finding_ids.py --self-test
           python3 tests/prove_finding_ids.py
@@ -1593,6 +1601,10 @@ jobs:
           # and a passing line for each claim first, so a matcher that stopped matching is caught.
           python3 tests/check_doc_currency.py --self-test
           python3 tests/check_doc_currency.py
+          # The continuity record names a commit on this history, at most ten behind (wired
+          # 2026-11-16 when its UNWIRED deferral expired; this job checks out full history, and an
+          # exported copy without .context/ is a named SOURCE-ONLY CONTROL, not a pass).
+          python3 tests/check_context_current.py
           # No tracked .md / .yml carries an authoring tool's call markup: every security-review
           # sheet once ended in two stray tags and two carried a pasted shell command (9b3c66e).
           # The self-test seeds one mutant per fragment and a clean file first.

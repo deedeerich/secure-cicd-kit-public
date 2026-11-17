@@ -284,14 +284,14 @@ def v4(pt, mods, ti, sod, tmp):
     fixed = [o for o in obs if o['identity'] != 'a1' * 16]
     feat = v.x.w.stub.add_run(workflow='build-deploy.yml', branch='feature/fix-log4j', head_sha='e' * 40)
     v.x.w.stub.add_artifact(feat, 'security-report-1', {'findings.json': json.dumps(fixed),
-                                                        'findings-coverage.json': json.dumps(ps.COVERAGE)})
+                                                        'findings-coverage.json': json.dumps(dict(ps.COVERAGE, path_inventory={'state': 'PATH_INVENTORY_ESTABLISHED', 'paths': ['pom.xml', 'app/views.py', 'config.py']}))})
     res = v.raw(closure(tt, ref, 'verify', kind='scan', verification={'kind': 'scan', 'run_id': feat}))
     check(outcome(res) == tt.TEMPLATE_FIX_OBSERVED and v.status(ref) != 'done' and
           any('feature/fix-log4j' in c for c in v.comments(ref)),
           'V4 a clean feature-branch scan did not record the fix observed (or closed it): %r' % items(res))
     main = v.x.w.stub.add_run(workflow='build-deploy.yml', head_sha='f' * 40)
     v.x.w.stub.add_artifact(main, 'security-report-1', {'findings.json': json.dumps(fixed),
-                                                        'findings-coverage.json': json.dumps(ps.COVERAGE)})
+                                                        'findings-coverage.json': json.dumps(dict(ps.COVERAGE, path_inventory={'state': 'PATH_INVENTORY_ESTABLISHED', 'paths': ['pom.xml', 'app/views.py', 'config.py']}))})
     res = v.raw(closure(tt, ref, 'verify', kind='scan', verification={'kind': 'scan', 'run_id': main}))
     check(outcome(res) == tt.TEMPLATE_TICKET_CLOSED and v.status(ref) == 'done',
           'V4 a clean scan on the mapped branch did not close it: %r' % items(res))

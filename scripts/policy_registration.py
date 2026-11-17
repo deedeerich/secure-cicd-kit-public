@@ -211,7 +211,7 @@ JOB_DEFAULT_CLASS = 'new_critical_high'
 
 TOP_KEYS = ('schema_version', 'register_id', 'sign_off', 'proposed_by', 'notes', 'environment_names',
             'orgs', 'repositories', 'numbers', 'environment_numbers', 'policies', 'approver_lists',
-            'approver_lists_source')
+            'approver_lists_source', 'ticket_taxonomy')
 ORG_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
 ENTRY_KEYS = ('id', 'scope', 'rung', 'controls', 'team_pattern', 'merge_reaches_tier', 'deploy_approval',
               'decision', 'notes', 'secret_exceptions', 'known_exploited_exceptions', 'ticket_routing')
@@ -360,6 +360,16 @@ def check_document(doc, origin):
     for k in doc:
         if k not in TOP_KEYS:
             bad('unknown top-level field %r: the register reads through an allowlist' % k)
+    if 'ticket_taxonomy' in doc:
+        # KDEC-062: the tag taxonomy and completion-status map are configuration; a label in the kit's protected
+        # namespace, a label that is not one token, or a status map with other keys is refused by name.
+        import ticket_completion as _tc
+        tax = doc['ticket_taxonomy']
+        if not isinstance(tax, dict) or set(tax) - {'source_labels', 'metadata', 'completion_statuses', 'notes'}:
+            bad('ticket_taxonomy must be an object of source_labels, metadata, completion_statuses (and notes)')
+        else:
+            for state, why in _tc.taxonomy_problems(tax, 'secure-cicd-kit'):
+                bad('ticket_taxonomy: %s: %s' % (state, why))
     if not _s(doc.get('register_id')):
         bad('register_id is missing or empty')
     if 'proposed_by' in doc and not isinstance(doc['proposed_by'], str):

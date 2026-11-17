@@ -37,6 +37,8 @@ import separation_of_duties as sod
 import ticket_intake as ti
 import ticket_governance as tg
 import ticket_model as tm
+import ticket_completion as tc
+import ticket_settings as tset
 import ticket_templates as tt
 
 ANSWER_COMPLETED, ANSWER_FAILED, ANSWER_REFUSED = 'API_COMPLETED', 'API_FAILED', 'API_REFUSED'
@@ -361,6 +363,12 @@ def _plan_findings(ctx, p, plan, live, stamp, ck_prefix, sweep_map, adapter, dec
         # KDEC-043 rule 2: the via label is a CLAIM, set at creation; _after_create compares it with what was proven.
         for rec in recs:
             rec['template_labels'] = sorted(set(rec['template_labels']) | {tg.via_label(stamp, p['via'])})
+    # KDEC-062: the configured source and metadata labels (configuration only; an invalid taxonomy adds none).
+    tax = taxonomy_of(ctx)
+    for rec in recs:
+        add = tc.kit_labels(tax, stamp, [rec.get('source_type'), rec.get('tool')])
+        if add:
+            rec['template_labels'] = sorted(set(rec['template_labels']) | set(add))
     groups = {}
     for rec in recs:
         groups.setdefault(rec['correlation_key'], []).append(rec)
@@ -463,6 +471,26 @@ SEVERITY_MATERIAL_DISAGREEMENT = 'SEVERITY_MATERIAL_DISAGREEMENT'
 DISPOSITION_REEVALUATION_REQUIRED = 'DISPOSITION_REEVALUATION_REQUIRED'
 EVIDENCE_ALREADY_ON_TICKET = 'EVIDENCE_ALREADY_ON_TICKET'
 OBS_MARK = 'kit-observation sha256:'
+
+
+def continuity_hold(rec):
+    """KDEC-062 (owner 2026-11-16, KDEC-060 M5): -> the register state when continuity with the register could NOT
+    be established for this item (REGISTER_NOT_ESTABLISHED / REGISTER_UNREADABLE), else None. While it holds there
+    is no automatic duplicate closure, no remediation clearance and no risk-acceptance carry-forward: the item is
+    routed to triage (register-review) with every piece of evidence kept."""
+    reg = ((rec or {}).get('baseline') or {}).get('register')
+    return reg if reg and reg != REGISTER_READ else None
+
+
+def register_state(ctx):
+    """The register state of THIS call: what the caller established, else READ only for a non-empty ledger."""
+    return ctx.get('register_state') or (REGISTER_READ if ctx.get('ledger') else 'REGISTER_NOT_ESTABLISHED')
+
+
+def taxonomy_of(ctx):
+    if isinstance(ctx.get('taxonomy'), dict):
+        return ctx['taxonomy']
+    return tset.resolve_taxonomy(ctx.get('central'), ctx.get('repo_reg'))
 
 
 def _route_review(plan, grp, ck, stamp):
@@ -580,25 +608,35 @@ def _plan_exact(ctx, plan, grp, target, basis, stamp, conf, trust):
     tool = _lab(stamp, 'tool-%s' % tt._slug(rec0.get('tool')))
     closed = target.get('state') == 'closed'
     fixing = any(g.get('fix_status') == 'FIX_AVAILABLE' for g in grp) and rec0.get('template') == 'finding'
+    extra = {}
     if fixing and _has(labels, _lab(stamp, 'nofix')):
         outcome = tt.TEMPLATE_REOPENED_AS_REMEDIATION
         plan.actions.append(('remediate', {'target': target, 'grp': grp}))
     elif closed and rec0.get('template') == 'finding' and not _has(labels, ev):
         outcome = tt.TEMPLATE_REGRESSION
-        plan.actions.append(('regression', {'target': target, 'grp': grp}))
+        if tc.level_of((ctx.get('ledger') or {}).get(rec0['correlation_key'])) == tc.COMPLETION_L2_FINAL:
+            # KDEC-062: a FINAL (level 2) record is never reopened; the reconciler opens the linked recurrence ticket.
+            plan.to_reconcile.extend(grp)
+            extra['recurrence'] = tc.RECURRENCE_LINKED_TICKET
+        else:
+            plan.actions.append(('regression', {'target': target, 'grp': grp}))
     elif _has(labels, ev) or rec0.get('template') != 'finding':
         outcome = tt.TEMPLATE_LINKED_EXACT if target.get('manual') else tt.TEMPLATE_TICKET_BOUND
     else:
         tools = [x[len(_lab(stamp, 'tool-')):] for x in labels if x.startswith(_lab(stamp, 'tool-'))]
         before = confidence_for(tools, rec0.get('rule'))
         after = confidence_for(tools + [tt._slug(g.get('tool')) for g in grp], rec0.get('rule'))
-        outcome = tt.TEMPLATE_CLOSED_DUPLICATE
+        # KDEC-062: with continuity unestablished the duplicate is recorded and its evidence kept, never closed.
+        hold = continuity_hold(rec0)
+        outcome = tt.TEMPLATE_DUPLICATE_CLOSURE_REFUSED if hold else tt.TEMPLATE_CLOSED_DUPLICATE
+        if hold:
+            extra['continuity'] = hold
         plan.actions.append(('duplicate', {'target': target, 'grp': grp, 'before': before, 'after': after,
-                                           'new_tool': not _has(labels, tool)}))
+                                           'new_tool': not _has(labels, tool), 'hold_close': hold}))
     for g in grp:
         plan.items.append(dict(_base(g, conf, trust), item=g['item'], outcome=outcome,
                                ref=str(target.get('ref') or ''), key=target.get('key') or '', basis=basis,
-                               original_ref=str(target.get('ref') or '')))
+                               original_ref=str(target.get('ref') or ''), **extra))
 
 
 def _enhance_target(adapter, sweep_map, ck_prefix, enh):
@@ -656,7 +694,8 @@ def _plan_enhance(plan, grp, target, basis, stamp, conf, trust):
         # (_plan_exact: TEMPLATE_REGRESSION, reopened, said on the ticket), with the evidence attached.
         closed = target.get('state') == 'closed' or (new[0].get('enhances') or {}).get('ticket_state') == 'closed'
         plan.actions.append(('enhance', {'target': target, 'grp': new, 'severity': sev, 'material': material,
-                                         'dispositions': disp, 'reopen': closed}))
+                                         'dispositions': disp, 'reopen': closed,
+                                         'continuity': continuity_hold(new[0])}))
     for g in grp:
         row = dict(_base(g, conf, trust), item=g['item'],
                    outcome=(tt.TEMPLATE_REGRESSION if closed else tt.TEMPLATE_ENHANCED_EXISTING) if g in new
@@ -673,6 +712,8 @@ def _plan_enhance(plan, grp, target, basis, stamp, conf, trust):
             row['baseline_state'] = g['baseline']['state']
         if (g.get('baseline') or {}).get('register'):
             row['register_state'] = g['baseline']['register']
+        if continuity_hold(g):
+            row['continuity'] = continuity_hold(g)
         plan.items.append(row)
 
 
@@ -738,27 +779,49 @@ def _plan_closure(ctx, plan, i, it, labels, stampk, approver, data):
         ok_p, _open, why_p = tg.parent_may_close(ctx['backend'], labels, stamp)
         if not ok_p:
             return tt.refusal(tg.CHILD_OBLIGATION_OPEN, 'item %d: ticket %s: %s' % (i, it['ref'], why_p), i)
-    if action == 'resolve' or (action == 'verify' and kind == 'reviewer' and
-                               sod.violations({'fixer': it['fixed_by']}, approver)):
-        note = '' if action == 'resolve' else 'the fixer\'s own verification is PENDING, never final'
-        plan.actions.append(('resolve', {'it': it, 'note': note}))
+    # KDEC-062 (owner 2026-11-16): TWO COMPLETION LEVELS, kept in the ledger record (never read from a label).
+    # Level 1 (resolve) is the triager's or fixer's own disposition. Level 2 (verify) is NEVER the level-1 actor's:
+    # a distinct person (the review's concurrer) or a QUALIFYING kit rescan.
+    entry = ctx['ledger'].get(stampk) if stampk and isinstance((ctx.get('ledger') or {}).get(stampk), dict) else {}
+    if action == 'verify' and tc.level_of(entry) == tc.COMPLETION_L2_FINAL:
+        return tt.refusal(tt.CLOSURE_NOT_VERIFIED, 'item %d: ticket %s is already final (level 2, %s)'
+                          % (i, it['ref'], tc.COMPLETION_ALREADY_FINAL), i)
+    same = None
+    if action == 'verify' and kind == 'reviewer':
+        same, _e = tc.set_level2(entry, 'person', today, actor=approver, fallback_l1_actor=it['fixed_by'])
+        if same and same['state'] != tc.COMPLETION_L2_SAME_ACTOR:
+            return tt.refusal(tt.CLOSURE_NOT_VERIFIED, 'item %d: %s (%s)' % (i, same['detail'], same['state']), i)
+    if action == 'resolve' or (action == 'verify' and kind == 'reviewer' and (
+            same or sod.violations({'fixer': it['fixed_by']}, approver))):
+        note = '' if action == 'resolve' else ('%s: the level-1 actor\'s own verification is PENDING, never final'
+                                               % tc.COMPLETION_L2_SAME_ACTOR)
+        level1 = action == 'resolve' and tc.level_of(entry) == tc.COMPLETION_OPEN
+        plan.actions.append(('resolve', {'it': it, 'note': note, 'stampk': stampk, 'level1': level1}))
         data['notifications'].append({'to': ctx.get('approver_source') or tt.DEFAULT_APPROVER_SOURCE, 'ref': it['ref'],
                                       'message': 'ready to close, please verify: ticket %s, resolved by %s'
                                       % (it['ref'], it['fixed_by'])})
-        plan.items.append({'item': i, 'outcome': tt.TEMPLATE_PENDING_VERIFICATION, 'ref': it['ref'],
-                           'detail': note or 'resolved by the fixer; someone else verifies'})
+        row = {'item': i, 'outcome': tt.TEMPLATE_PENDING_VERIFICATION, 'ref': it['ref'],
+               'detail': note or 'resolved by the fixer; someone else verifies'}
+        if action == 'verify':
+            row['completion_refusal'] = tc.COMPLETION_L2_SAME_ACTOR
+        plan.items.append(row)
         return None
     if action == 'reject':
-        plan.actions.append(('reject', {'it': it}))
+        plan.actions.append(('reject', {'it': it, 'stampk': stampk}))
         plan.items.append({'item': i, 'outcome': tt.TEMPLATE_VERIFICATION_REJECTED, 'ref': it['ref']})
         return None
     if kind == 'reviewer':
-        plan.actions.append(('close', {'it': it, 'by': 'reviewer %s' % approver}))
+        plan.actions.append(('close', {'it': it, 'by': 'reviewer %s' % approver, 'stampk': stampk,
+                                       'level2': {'by': 'person', 'actor': approver}}))
         plan.items.append({'item': i, 'outcome': tt.TEMPLATE_TICKET_CLOSED, 'ref': it['ref'],
                            'verified_by': 'reviewer %s' % approver})
         return None
     # A RESCAN: the kit's own scan, on the branch mapped to the ticket's environment.
-    entry = ctx['ledger'].get(stampk) if stampk and isinstance(ctx['ledger'].get(stampk), dict) else {}
+    reg = register_state(ctx)
+    if reg != REGISTER_READ:
+        return tt.refusal(tt.CLOSURE_NOT_VERIFIED, 'item %d: %s -- %s: continuity with the register could not be '
+                          'established, so no rescan clears this ticket (a reviewer confirms)'
+                          % (i, tc.COMPLETION_CONTINUITY_NOT_ESTABLISHED, reg), i)
     if not entry.get('members'):
         return tt.refusal(tt.CLOSURE_NOT_VERIFIED, 'item %d: the kit\'s own scan never observed this ticket\'s finding '
                           '(no ledger record of which scanner saw it), so no rescan can verify it: a reviewer confirms'
@@ -774,12 +837,20 @@ def _plan_closure(ctx, plan, i, it, labels, stampk, approver, data):
     _ev, gaps = rt.clearance_gaps(entry, covmap, [x for x in recs if not x.get('identity')])
     if gaps:
         return tt.refusal(tt.CLOSURE_NOT_VERIFIED, 'item %d: %s' % (i, '; '.join(gaps)), i)
+    # KDEC-062: absence is a fix only on a QUALIFYING rescan (same instance, the scanner completed, the file still
+    # there and in scope, comparable scope and configuration). Anything else names why; no level 2.
+    verdict = tc.qualify_rescan(entry, present, cov, [x for x in recs if not x.get('identity')], run.get('id'),
+                                run.get('head_sha') or '')
+    if verdict['verdict'] != tc.RESCAN_QUALIFYING:
+        return tt.refusal(tt.CLOSURE_NOT_VERIFIED, 'item %d: %s -- %s' % (i, tc.RESCAN_NOT_VERIFIED, '; '.join(
+            '%s %s' % (r['reason'], r['detail']) for r in verdict['reasons'])), i)
     branch = run.get('head_branch') or ''
     envs = [x[len('%s-env-' % stamp):] for x in labels if str(x).startswith('%s-env-' % stamp)]
     mapped = tt.branch_environment(branch, ctx.get('branch_map') or '', ctx['default_branch'])
     closes = (mapped is not None and (mapped in envs or (not envs and branch == ctx['default_branch'])))
     if closes:
-        plan.actions.append(('close', {'it': it, 'by': 'the kit\'s rescan, run %s on %s' % (run.get('id'), branch)}))
+        plan.actions.append(('close', {'it': it, 'by': 'the kit\'s rescan, run %s on %s' % (run.get('id'), branch),
+                                       'stampk': stampk, 'level2': {'by': 'rescan', 'verdict': verdict}}))
         plan.items.append({'item': i, 'outcome': tt.TEMPLATE_TICKET_CLOSED, 'ref': it['ref'],
                            'verified_by': 'rescan %s on %s' % (run.get('id'), branch)})
     else:
@@ -787,6 +858,55 @@ def _plan_closure(ctx, plan, i, it, labels, stampk, approver, data):
                                           'needs': ', '.join(envs) or ctx['default_branch']}))
         plan.items.append({'item': i, 'outcome': tt.TEMPLATE_FIX_OBSERVED, 'ref': it['ref'], 'branch': branch})
     return None
+
+
+def _write_level(ctx, a, it, stamp, level, plan):
+    """Level 1 in the record, then its projection: the CONFIGURED tracker status, else the kit's labels (named)."""
+    backend, ledger, ck = ctx['backend'], ctx.get('ledger'), a.get('stampk')
+    status, sstate = tc.tracker_status(level, backend.name, taxonomy_of(ctx))
+    recorded = False
+    if isinstance(ledger, dict) and ck:
+        _r, ledger[ck] = tc.set_level1(ledger.get(ck) or {}, it['fixed_by'], 'fixer', 'resolved', ctx['today'],
+                                       evidence=dict(it.get('evidence') or {}))
+        recorded = True
+    if status:
+        ok_s, d_s = backend.set_status(it['ref'], status)
+        if not ok_s:
+            sstate = '%s (%s)' % (tc.COMPLETION_STATUS_UNMAPPED, d_s)
+    backend.mark(it['ref'], labels=[tc.level_label(level, stamp)])
+    for pi in plan.items:
+        if pi.get('ref') == it['ref'] and pi.get('outcome') == tt.TEMPLATE_PENDING_VERIFICATION:
+            pi.update(completion=level, completion_status=sstate, completion_recorded=recorded)
+
+
+def _record_level2(ctx, a, it, sstate, plan):
+    ledger, ck, l2 = ctx.get('ledger'), a.get('stampk'), a['level2']
+    recorded = False
+    if isinstance(ledger, dict) and ck:
+        e = ledger.get(ck) or {}
+        if l2['by'] == 'person':
+            r, e = tc.set_level2(e, 'person', ctx['today'], actor=l2['actor'], fallback_l1_actor=it['fixed_by'])
+        else:
+            r, e = tc.set_level2(e, 'rescan', ctx['today'], rescan=l2['verdict'], continuity=register_state(ctx))
+        ledger[ck] = e
+        recorded = not r
+    ctx['backend'].mark(it['ref'], labels=[tc.level_label(tc.COMPLETION_L2_FINAL, ctx['backend'].stamp_label
+                                                          if getattr(ctx['backend'], 'stamp_label', '') else '')])
+    for pi in plan.items:
+        if pi.get('ref') == it['ref'] and pi.get('outcome') == tt.TEMPLATE_TICKET_CLOSED:
+            pi.update(completion=tc.COMPLETION_L2_FINAL if recorded else tc.level_of((ledger or {}).get(ck)),
+                      completion_status=sstate, completion_recorded=recorded)
+
+
+def _reset_level(ctx, ck, today, why):
+    """A rejected verification reopens the ticket: the level returns to open, the old record kept in history."""
+    ledger = ctx.get('ledger')
+    if not (isinstance(ledger, dict) and ck and isinstance(ledger.get(ck), dict) and ledger[ck].get('completion')):
+        return
+    e = dict(ledger[ck])
+    e['completion_history'] = list(e.get('completion_history') or []) + [dict(e.pop('completion'), reset_on=today,
+                                                                              reset_why=why)]
+    ledger[ck] = e
 
 
 def _write(ctx, p, plan, stamp, ck_prefix, approver, approval, dry, data):
@@ -849,6 +969,11 @@ def _write(ctx, p, plan, stamp, ck_prefix, approver, approval, dry, data):
                 record_observations(ctx.get('ledger'), g0['correlation_key'], t, grp, review))
             ok_v, why_v = transfer_verified(backend, ctx.get('ledger'), g0['correlation_key'], t['ref'],
                                             [fingerprint(g) for g in grp])
+            if a.get('hold_close'):
+                # KDEC-062: no automatic duplicate closure while continuity with the register is not established.
+                ok_v, why_v = False, ('%s: continuity with the register could not be established, so no duplicate '
+                                      'is closed automatically (KDEC-062)' % a['hold_close'])
+                backend.mark(dref, labels=[_lab(stamp, 'register-review'), _lab(stamp, 'triage')])
             if ok_v:
                 backend.close(dref)
             else:
@@ -886,6 +1011,10 @@ def _write(ctx, p, plan, stamp, ck_prefix, approver, approval, dry, data):
                               'it: a person re-evaluates its scope, validity and expiry' % (
                                   DISPOSITION_REEVALUATION_REQUIRED, d.get('type'),
                                   (' (expires %s)' % d['expires']) if d.get('expires') else ''))
+                if a.get('continuity'):
+                    extra += ('\n- %s: continuity with the register could not be established; a disposition or risk '
+                              'acceptance is not carried forward to this evidence, and nothing is closed or cleared on it. '
+                              'A person re-evaluates (triage, KDEC-062)' % a['continuity'])
                 b = (todo[0].get('baseline') or {})
                 if b.get('state') and b['state'] != BASELINE_SELECTED:
                     extra += '\n- baseline: %s -- matched against the register; a person confirms (triage)' % b['state']
@@ -903,6 +1032,8 @@ def _write(ctx, p, plan, stamp, ck_prefix, approver, approval, dry, data):
                 labs += [_lab(stamp, 'disposition-reevaluate'), _lab(stamp, 'triage')]
             if any((g.get('baseline') or {}).get('state') not in (None, BASELINE_SELECTED) for g in grp):
                 labs += [_lab(stamp, 'baseline-review'), _lab(stamp, 'triage')]
+            if a.get('continuity'):
+                labs += [_lab(stamp, 'register-review'), _lab(stamp, 'triage')]
             if a.get('reopen'):
                 ok_r, why = backend.reopen(t['ref'])
                 backend.comment(t['ref'], 'REGRESSION (secure-cicd-kit, review %s): this finding was closed and is '
@@ -1000,6 +1131,8 @@ def _write(ctx, p, plan, stamp, ck_prefix, approver, approval, dry, data):
                                                  tt.date_label(stamp, 'pending-since', today)])
             if not ok_all(r1, r2[:2]):
                 failed.append((0, 'ticket %s was not moved to pending verification' % it['ref']))
+            elif a.get('level1'):
+                _write_level(ctx, a, it, stamp, tc.COMPLETION_L1_DONE, plan)
         elif kind == 'reject':
             it = a['it']
             if tm.authorise('ticket.verification_reject', approval):
@@ -1007,6 +1140,7 @@ def _write(ctx, p, plan, stamp, ck_prefix, approver, approval, dry, data):
                 continue
             labels, _ok, _d = backend.labels_of(it['ref'])
             backend.reopen(it['ref'])
+            _reset_level(ctx, a.get('stampk'), today, 'verification rejected by %s' % approver)
             backend.comment(it['ref'], 'VERIFICATION REJECTED (secure-cicd-kit, review %s) by %s: %s. The ticket is open '
                             'again; the fixer resolves it again when it is done.' % (review, approver, it['reason']))
             backend.mark(it['ref'], labels=[_lab(stamp, 'verification-rejected'), tt.date_label(stamp, 'rejected', today)])
@@ -1017,10 +1151,16 @@ def _write(ctx, p, plan, stamp, ck_prefix, approver, approval, dry, data):
             if tm.authorise(mut, approval):
                 failed.append((0, 'the closure of %s was not authorised' % it['ref']))
                 continue
-            ok_x, d_x = backend.close(it['ref'])
+            status, sstate = tc.tracker_status(tc.COMPLETION_L2_FINAL, backend.name, taxonomy_of(ctx))
+            if status:
+                ok_x, d_x = backend.set_status(it['ref'], status)
+            else:
+                ok_x, d_x = backend.close(it['ref'])
             if not ok_x:
                 failed.append((0, 'ticket %s could not be closed: %s' % (it['ref'], d_x)))
                 continue
+            if a.get('level2'):
+                _record_level2(ctx, a, it, sstate, plan)
             backend.comment(it['ref'], 'CLOSED - VERIFIED (secure-cicd-kit, %s): verified by %s; fixed by %s; evidence %s '
                             '(sha256 %s). The fixer did not verify it.' % (review, a['by'], it['fixed_by'],
                                                                            it['evidence']['ref'], it['evidence']['sha256']))

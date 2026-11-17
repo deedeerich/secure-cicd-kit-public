@@ -5309,6 +5309,9 @@ jobs:
           add "shellcheck"    "$(appl "$D_SHELL")" "$R_DEPS"   "shell scripts"          'shellcheck.sarif' deps-scan
           add "psscriptanalyzer" "$(appl "$D_POWERSHELL")" "$R_DEPS" "powershell"       'psscriptanalyzer.sarif' deps-scan
           add "hadolint"      "$(appl "$D_DOCKERFILE")" "$R_IAC" "dockerfiles"          'hadolint.sarif' iac-scan
+          # AI-agent artifacts (KDEC-063): a static, advisory inventory in deps-scan. Applicable everywhere --
+          # a repository with none is examined and holds none; configuration evidence, never runtime state.
+          add "ai-artifacts"  APPLICABLE          "$R_DEPS"    "agent configuration (static)" 'ai-artifacts.sarif' deps-scan
           for _ln in shellcheck psscriptanalyzer hadolint; do
             _gaps="$R_LINT_GAPS"; [ "$_ln" = hadolint ] && _gaps="$R_HADOLINT_GAPS"
             _mine=""
@@ -5474,7 +5477,7 @@ jobs:
           environment: ${{ inputs.environment }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           max-detail: '20'
-          expect: gitleaks,detect-secrets,code-quality,eslint,semgrep,bandit,java-sast,gosec,dotnet-vuln,semgrep-csharp,cppcheck,flawfinder,mobsfscan,mobile-config,trivy,trivy-iac,checkov,actionlint,zizmor,shellcheck,psscriptanalyzer,hadolint,malicious-deps,sbom,trivy-image,trivy-image-secret,codeql-python,codeql-javascript-typescript,codeql-go,codeql-csharp,codeql-java-kotlin,codeql-c-cpp
+          expect: gitleaks,detect-secrets,code-quality,eslint,semgrep,bandit,java-sast,gosec,dotnet-vuln,semgrep-csharp,cppcheck,flawfinder,mobsfscan,mobile-config,trivy,trivy-iac,checkov,actionlint,zizmor,shellcheck,psscriptanalyzer,hadolint,ai-artifacts,malicious-deps,sbom,trivy-image,trivy-image-secret,codeql-python,codeql-javascript-typescript,codeql-go,codeql-csharp,codeql-java-kotlin,codeql-c-cpp
           # KDEC-010: the capability selection. A scanner row whose job cannot read the code at
           # its version renders PARTIAL, never PASS; a substitution is labelled as one.
           capped-jobs: ${{ needs.plan.outputs.capped_jobs }}

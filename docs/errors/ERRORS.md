@@ -91,6 +91,7 @@ In a run, the same sentence is the title of the annotation at the top of the run
 - [small_team_self_approval](#small_team_self_approval) (9)
 - [target_lease](#target_lease) (12)
 - [ticket_clearance_hold](#ticket_clearance_hold) (8)
+- [ticket_completion](#ticket_completion) (25)
 - [ticket_governance_state](#ticket_governance_state) (9)
 - [ticket_intake_state](#ticket_intake_state) (3)
 - [ticket_lookup_outcome](#ticket_lookup_outcome) (4)
@@ -3878,6 +3879,154 @@ The run did not see a verified complete reconciliation population, so a clearanc
 - **Fix:** Read the named gaps in the reconciliation_held entry and rerun with the whole population.
 - **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
 
+## ticket_completion
+
+Not failures (nothing to do): `COMPLETION_L1_DONE`, `COMPLETION_L2_FINAL`, `COMPLETION_OPEN`, `COMPLETION_STATUS_MAPPED`, `PATH_INVENTORY_ESTABLISHED`, `RECURRENCE_ALREADY_RECORDED`, `RECURRENCE_LINKED_TICKET`, `RESCAN_QUALIFYING`.
+
+### COMPLETION_ALREADY_FINAL (ticket_completion)
+
+This ticket is already final (level 2). **[COMPLETION_ALREADY_FINAL]**
+
+- **Why it matters:** A final record is never rewritten; a later occurrence opens a new linked ticket instead.
+- **Fix:** Nothing to do; if the finding is back, the next scan creates the linked recurrence ticket.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### COMPLETION_CONTINUITY_NOT_ESTABLISHED (ticket_completion)
+
+The ticket register was not read, so the kit cannot connect this request to the recorded finding. **[COMPLETION_CONTINUITY_NOT_ESTABLISHED]**
+
+- **Why it matters:** Without that continuity nothing is cleared, closed as a duplicate or carried forward automatically.
+- **Fix:** Make the ticket ledger readable on the default branch (or name its path), then retry; a person may verify meanwhile.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### COMPLETION_L1_NOT_RECORDED (ticket_completion)
+
+No level-1 actor is known for this ticket, so a level-2 request cannot be checked for independence. **[COMPLETION_L1_NOT_RECORDED]**
+
+- **Why it matters:** The kit cannot show the verifier is not the person who triaged or fixed it.
+- **Fix:** Record the fix (closure action resolve) first, or name the fixer on the verification.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### COMPLETION_L2_NOT_AUTHORISED (ticket_completion)
+
+The person asking to finalise the ticket is not on the authorised list for level 2. **[COMPLETION_L2_NOT_AUTHORISED]**
+
+- **Why it matters:** Only an authorised person other than the level-1 actor may finalise a ticket by hand.
+- **Fix:** Have someone on the authorised approver list verify it.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### COMPLETION_L2_SAME_ACTOR (ticket_completion)
+
+The person who set level 1 (done) on this ticket asked to set level 2 (final) as well. **[COMPLETION_L2_SAME_ACTOR]**
+
+- **Why it matters:** Level 2 needs independent verification, so the ticket stays at level 1 and pending verification.
+- **Fix:** Ask a different authorised person to verify, or let a qualifying kit rescan finalise it.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### COMPLETION_RESCAN_NOT_QUALIFYING (ticket_completion)
+
+A rescan was offered as proof of the fix but it does not qualify. **[COMPLETION_RESCAN_NOT_QUALIFYING]**
+
+- **Why it matters:** An absence only counts when the same instance was rescanned completely over a file that still exists, in scope, with comparable settings.
+- **Fix:** Read the named RESCAN_ reasons, rerun the scan so they hold, or ask a distinct person to verify.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### COMPLETION_STATUS_UNMAPPED (ticket_completion)
+
+No tracker status is configured for this completion level, so the kit used its default projection. **[COMPLETION_STATUS_UNMAPPED]**
+
+- **Why it matters:** The tracker word for each level is configuration; without it level 1 is labels and a comment and level 2 the done state.
+- **Fix:** Set ticket_taxonomy.completion_statuses.<tracker> level1 and level2 in the policy register.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### PATH_INVENTORY_NOT_ESTABLISHED (ticket_completion)
+
+Same meaning and fix as [`ticket_completion.RESCAN_NOT_VERIFIED`](#rescan_not_verified-ticket_completion).
+
+### RESCAN_BASIS_NOT_RECORDED (ticket_completion)
+
+Same meaning and fix as [`ticket_completion.RESCAN_NOT_VERIFIED`](#rescan_not_verified-ticket_completion).
+
+### RESCAN_CONFIG_CHANGED (ticket_completion)
+
+Same meaning and fix as [`ticket_completion.RESCAN_NOT_VERIFIED`](#rescan_not_verified-ticket_completion).
+
+### RESCAN_INSTANCE_NOT_RECORDED (ticket_completion)
+
+Same meaning and fix as [`ticket_completion.RESCAN_NOT_VERIFIED`](#rescan_not_verified-ticket_completion).
+
+### RESCAN_INSTANCE_STILL_PRESENT (ticket_completion)
+
+Same meaning and fix as [`ticket_completion.RESCAN_NOT_VERIFIED`](#rescan_not_verified-ticket_completion).
+
+### RESCAN_NOT_VERIFIED (ticket_completion)
+
+The rescan does not prove the finding was fixed. **[RESCAN_NOT_VERIFIED]**
+
+- **Why it matters:** A missing scanner result, a deleted or excluded file, or a changed scan scope or configuration is not remediation.
+- **Fix:** Read the reason named beside it, rerun a complete comparable scan, or have a distinct person verify the fix.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### RESCAN_OUTPUT_MISSING (ticket_completion)
+
+Same meaning and fix as [`ticket_completion.RESCAN_NOT_VERIFIED`](#rescan_not_verified-ticket_completion).
+
+### RESCAN_PATH_EXCLUDED (ticket_completion)
+
+Same meaning and fix as [`ticket_completion.RESCAN_NOT_VERIFIED`](#rescan_not_verified-ticket_completion).
+
+### RESCAN_PATH_OUT_OF_SCOPE (ticket_completion)
+
+Same meaning and fix as [`ticket_completion.RESCAN_NOT_VERIFIED`](#rescan_not_verified-ticket_completion).
+
+### RESCAN_PATH_REMOVED (ticket_completion)
+
+Same meaning and fix as [`ticket_completion.RESCAN_NOT_VERIFIED`](#rescan_not_verified-ticket_completion).
+
+### RESCAN_PATH_STATE_NOT_ESTABLISHED (ticket_completion)
+
+Same meaning and fix as [`ticket_completion.RESCAN_NOT_VERIFIED`](#rescan_not_verified-ticket_completion).
+
+### RESCAN_SCANNER_NOT_COMPLETED (ticket_completion)
+
+Same meaning and fix as [`ticket_completion.RESCAN_NOT_VERIFIED`](#rescan_not_verified-ticket_completion).
+
+### RESCAN_SCANNER_NOT_RUN (ticket_completion)
+
+Same meaning and fix as [`ticket_completion.RESCAN_NOT_VERIFIED`](#rescan_not_verified-ticket_completion).
+
+### RESCAN_SCOPE_CHANGED (ticket_completion)
+
+Same meaning and fix as [`ticket_completion.RESCAN_NOT_VERIFIED`](#rescan_not_verified-ticket_completion).
+
+### RESCAN_UNIDENTIFIED_AT_PATH (ticket_completion)
+
+Same meaning and fix as [`ticket_completion.RESCAN_NOT_VERIFIED`](#rescan_not_verified-ticket_completion).
+
+### SYSTEM_LABEL_UNATTESTED (ticket_completion)
+
+A kit status label was added to this ticket by hand and the kit's record does not back it. **[SYSTEM_LABEL_UNATTESTED]**
+
+- **Why it matters:** The kit reads a ticket's state from its own record, never from a label, so the label changed nothing.
+- **Fix:** Use the closure template to record the level; the label can stay or be removed by the person who added it.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### TAXONOMY_LABEL_INVALID (ticket_completion)
+
+A label or status in the ticket_taxonomy configuration is not usable. **[TAXONOMY_LABEL_INVALID]**
+
+- **Why it matters:** A label must be one token and a status map may name only level1 and level2.
+- **Fix:** Correct ticket_taxonomy in the policy register.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
+### TAXONOMY_LABEL_PROTECTED (ticket_completion)
+
+A configured source label uses the kit's own protected label prefix. **[TAXONOMY_LABEL_PROTECTED]**
+
+- **Why it matters:** Configuration may not impersonate a kit system label.
+- **Fix:** Choose a source label outside the <stamp>- prefix.
+- **More:** [docs/ticketing/TICKET-GOVERNANCE.md](../ticketing/TICKET-GOVERNANCE.md)
+
 ## ticket_governance_state
 
 Not failures (nothing to do): `AREA_RESOLVED`, `PROVENANCE_ESTABLISHED`, `TAG_PRESERVATION_ESTABLISHED`.
@@ -4068,8 +4217,8 @@ The ticket-number range in the workflow is set up wrongly (one bound missing, no
 
 This run reached its ticket creation ceiling or the per-ticket instance limit. **[TICKET_CEILING_OVERFLOW]**
 
-- **Why it matters:** Nothing is dropped: findings past the creation ceiling are carried to the next run, extra instances are counted.
-- **Fix:** Decide whether to raise the number in the central policy register or let the carried work drain over the next runs.
+- **Why it matters:** Nothing is dropped: findings past the creation ceiling are carried to the next run, and instances past the limit are kept and named on the ledger without their own child ticket.
+- **Fix:** A reviewer decides whether to raise the number in the central policy register or accept the carried work.
 - **More:** [docs/adoption/SETTINGS_PRECEDENCE.md](../adoption/SETTINGS_PRECEDENCE.md)
 
 ### TICKET_SETTING_ABOVE_GOVERNED (ticket_setting)

@@ -6799,7 +6799,81 @@ namespaces:
       TICKET_SETTING_INVALID:
         definition: A value that is not a whole number in range (a creation ceiling below 1, a word). Refused; the value from the level below stands.
       TICKET_CEILING_OVERFLOW:
-        definition: A run reached the creation ceiling (obligations past it are carried in consequence order) or the instance threshold (instances past it are counted on the ledger). Named in the run record and the summary; a creation overflow is also a decision owed to a person (needs_decision, exit 1). Nothing past a ceiling is dropped.
+        definition: A run reached the creation ceiling (obligations past it are carried in consequence order) or the instance threshold (it caps automatic child-ticket CREATION only; every instance and its evidence stays on the ledger and the ones not itemised are named in `instances_overflow` and the run record). Named in the run record and the summary; either overflow is a decision owed to a reviewer (needs_decision, exit 1; the instance overflow since KDEC-062, owner 2026-11-16). Nothing past a ceiling is dropped.
+  ticket_completion:
+    description: >-
+      scripts/ticket_completion.py (KDEC-062, owner 2026-11-16): the two completion levels a ticket's ledger record
+      carries, the qualifying rescan that alone may finalise automatically, recurrence after final, and the tag
+      taxonomy (protected <stamp>-* system labels, configured source and metadata labels, a person's labels).
+    consumers: [scripts/ticket_completion.py, scripts/reconcile_tickets.py, scripts/ticket_submit.py, scripts/scan_report.py, tests/prove_ticket_levels.py]
+    rule: A level is read from the ledger record only, never from a label; level 2 is never the level-1 actor's; absence is a fix only on a qualifying rescan.
+    values:
+      COMPLETION_OPEN:
+        definition: "No completion level is recorded on the ledger entry: the finding is open as far as the kit's record goes, whatever a label says."
+      COMPLETION_L1_DONE:
+        definition: "Level 1 \"done/closed\": the person who triaged or fixed it recorded THEIR disposition (actor, role, date, evidence; independent false). Not an independent verification."
+      COMPLETION_L2_FINAL:
+        definition: "Level 2 \"archived/final\": set only by a distinct authorised person (never the level-1 actor) or a RESCAN_QUALIFYING kit rescan, recorded with its basis. A recurrence after it is a new linked ticket."
+      COMPLETION_L2_SAME_ACTOR:
+        definition: "Refused: the level-1 actor (the recorded one, or the item's own fixer) asked for level 2. The record stays level 1; the ticket is not finalised; tickets.submit keeps the item PENDING VERIFICATION and names this on the row."
+      COMPLETION_L2_NOT_AUTHORISED:
+        definition: "Refused: the person finalising is not on the authorised list given for level 2."
+      COMPLETION_L1_NOT_RECORDED:
+        definition: "Refused: no level-1 actor is known (neither recorded nor named by the item), so the finaliser cannot be shown distinct."
+      COMPLETION_ALREADY_FINAL:
+        definition: "Refused: the record is already level 2; a disposition or verification does not reopen or rewrite it."
+      COMPLETION_RESCAN_NOT_QUALIFYING:
+        definition: "Refused: a level-2-by-rescan whose rescan verdict is RESCAN_NOT_VERIFIED; every reason is kept."
+      COMPLETION_CONTINUITY_NOT_ESTABLISHED:
+        definition: "Refused: the register (ticket ledger) was not read (REGISTER_NOT_ESTABLISHED / REGISTER_UNREADABLE), so no automatic clearance is made."
+      COMPLETION_STATUS_MAPPED:
+        definition: "The tracker status for a level comes from ticket_taxonomy.completion_statuses.<tracker>; the kit moves the ticket to it."
+      COMPLETION_STATUS_UNMAPPED:
+        definition: "No tracker status is configured for the level (or the tracker cannot set one): level 1 is projected as labels and a comment, level 2 as the tracker's done state, and the row says so."
+      RESCAN_QUALIFYING:
+        definition: "Every affected instance is absent from a rescan whose scanner completed, over a file that still exists, is not excluded and is in scope, with the scope (and any declared configuration digest) the scanner had when it saw it."
+      RESCAN_NOT_VERIFIED:
+        definition: "The rescan does not qualify; each reason is named; no automatic level 2."
+      RESCAN_INSTANCE_STILL_PRESENT:
+        definition: "The rescan still reports the instance identity."
+      RESCAN_INSTANCE_NOT_RECORDED:
+        definition: "The ledger does not record which scanner saw the instance, or where."
+      RESCAN_OUTPUT_MISSING:
+        definition: "The rescan has no readable coverage record (missing scanner output)."
+      RESCAN_SCANNER_NOT_RUN:
+        definition: "The scanner that saw the instance has no row in the rescan."
+      RESCAN_SCANNER_NOT_COMPLETED:
+        definition: "The scanner's row is not ESTABLISHED (failed, PARTIAL, undetermined)."
+      RESCAN_PATH_STATE_NOT_ESTABLISHED:
+        definition: "The rescan does not say which files exist (no path_inventory), so a deleted file cannot be excluded. The reconciler still closes as before; the record is not finalised."
+      RESCAN_PATH_REMOVED:
+        definition: "The affected file no longer exists: a deleted file is not a fix. The reconciler closes nothing."
+      RESCAN_PATH_EXCLUDED:
+        definition: "The affected path is excluded from the scanner in the rescan. The reconciler closes nothing."
+      RESCAN_PATH_OUT_OF_SCOPE:
+        definition: "The scanner's scope in the rescan does not cover the affected file. The reconciler closes nothing."
+      RESCAN_SCOPE_CHANGED:
+        definition: "The scanner ran with a different scope than when it saw the instance (not comparable). The reconciler closes nothing."
+      RESCAN_BASIS_NOT_RECORDED:
+        definition: "The scope the scanner had when it saw the instance was not recorded (a ledger written before KDEC-062), so comparability is unknown; no level 2 by rescan."
+      RESCAN_CONFIG_CHANGED:
+        definition: "A configuration digest was declared at either scan and differs (or one side declared none). The reconciler closes nothing."
+      RESCAN_UNIDENTIFIED_AT_PATH:
+        definition: "The scanner reported a finding with no durable identity at the affected file; it may be this one."
+      PATH_INVENTORY_ESTABLISHED:
+        definition: "scan_report.py listed the tracked files of the scanned checkout (git ls-files) into findings-coverage.json `path_inventory`."
+      PATH_INVENTORY_NOT_ESTABLISHED:
+        definition: "No checkout was given or git could not list it: never an empty list (which would read as every file deleted)."
+      RECURRENCE_LINKED_TICKET:
+        definition: "The finding was observed again after level 2: a NEW ticket naming its predecessor is created (never a reopen); the predecessor's completion moves to completion_history and the chain is kept in recurrences."
+      RECURRENCE_ALREADY_RECORDED:
+        definition: "The same run's recurrence after level 2 is already recorded; nothing more is created."
+      SYSTEM_LABEL_UNATTESTED:
+        definition: "A protected <stamp>-* level label is on the ticket and the ledger does not attest it (a person added it). Reported and ignored: no state is read from a label; it is not removed."
+      TAXONOMY_LABEL_INVALID:
+        definition: "A configured taxonomy label or value is not one label token, or a status map has keys other than level1/level2."
+      TAXONOMY_LABEL_PROTECTED:
+        definition: "A configured source label is in the kit's protected <stamp>-* namespace; refused so configuration cannot impersonate a system label."
   escalation_route:
     description: >-
       scripts/deploy_contract.py `escalation_route` (KREQ-706; owner KDEC-052 item 7): the channel and service level

@@ -10,7 +10,7 @@ Columns:   "called by" = files that run, import, inline or `uses:` it; "proved b
 
 [Back to the walkthrough index](README.md)
 
-67 files.
+82 files.
 
 | file | what it does | called by | inputs and outputs | proved by |
 |---|---|---|---|---|
@@ -84,3 +84,18 @@ Columns:   "called by" = files that run, import, inline or `uses:` it; "proved b
 | `tests/fixtures/weakening_recorded.sample` | A workflow whose every weakening input appears in the control-posture record; `tests/check_weakening_record.py` must pass it (the control). | - | - | `tests/check_weakening_record.py` |
 | `tests/fixtures/weakening_unrecorded.sample` | A workflow with a weakening input missing from the posture record; `tests/check_weakening_record.py` must refuse it. | - | - | `tests/check_weakening_record.py` |
 | `tests/fixtures/approval_review/cases.json` | The ONE fixture both legs of the kit / harness pair read: a base approved decision and cases for in-date, expired at review, expired before evaluation, "never", null, a claimed separation of duties, revoked, out of scope, unauthorised, self-approved, legacy and stale. | - | - | `tests/prove_approval_review_contract.py`, `tests/prove_kit_harness_pair.py` |
+| `tests/fixtures/ai_artifacts/README.md` | What the AI-artifact fixtures hold, and the three things the proof writes at run time instead (the settings and `.vscode` files placed, hidden characters and a credential-shaped token built, the agent workflow written). | - | - | `tests/prove_ai_artifact_inventory.py` |
+| `tests/fixtures/ai_artifacts/positive/.mcp.json` | MCP servers that must be flagged: unpinned npx and uvx packages, a remote http server with a query string and a `${VAR}` header, a literal env value. | - | - | `tests/prove_ai_artifact_inventory.py` |
+| `tests/fixtures/ai_artifacts/positive/tools/team-mcp.json` | A `*mcp*.json` outside the usual paths carrying `mcpServers`: a docker server on `:latest` (unpinned). | - | - | `tests/prove_ai_artifact_inventory.py` |
+| `tests/fixtures/ai_artifacts/positive/claude-settings.json.fixture` | Placed at `.claude/settings.json`: `Bash(*)`, `bypassPermissions`, `enableAllProjectMcpServers` and a hook that runs a command. | - | - | `tests/prove_ai_artifact_inventory.py` |
+| `tests/fixtures/ai_artifacts/positive/CLAUDE.md` | An instruction file with an HTML comment, an override phrase and an exfiltration phrase (the heuristics). | - | - | `tests/prove_ai_artifact_inventory.py` |
+| `tests/fixtures/ai_artifacts/positive/.claude/skills/release/SKILL.md` | A skill telling the agent not to tell the user (override heuristic). | - | - | `tests/prove_ai_artifact_inventory.py` |
+| `tests/fixtures/ai_artifacts/positive/.cursor/rules/style.mdc` | A Cursor rule file: classified as instructions, nothing flagged. | - | - | `tests/prove_ai_artifact_inventory.py` |
+| `tests/fixtures/ai_artifacts/positive/.github/copilot-instructions.md` | Copilot repository instructions: classified, nothing flagged. | - | - | `tests/prove_ai_artifact_inventory.py` |
+| `tests/fixtures/ai_artifacts/positive/.github/prompts/triage.prompt.md` | A prompt file: classified, nothing flagged. | - | - | `tests/prove_ai_artifact_inventory.py` |
+| `tests/fixtures/ai_artifacts/negative/.mcp.json` | The same servers written safely: exact npm and PyPI versions, a docker image by digest, env by `${VAR}`; must raise nothing. | - | - | `tests/prove_ai_artifact_inventory.py` |
+| `tests/fixtures/ai_artifacts/negative/vscode-mcp.json.fixture` | Placed at `.vscode/mcp.json` (the `servers` key, an `inputs` reference, a pinned package); must raise nothing. | - | - | `tests/prove_ai_artifact_inventory.py` |
+| `tests/fixtures/ai_artifacts/negative/claude-settings.json.fixture` | Placed at `.claude/settings.json`: narrow allow and deny rules, no hooks; must raise nothing. | - | - | `tests/prove_ai_artifact_inventory.py` |
+| `tests/fixtures/ai_artifacts/negative/AGENTS.md` | A plain instruction file; also the PR-base file the diff case removes. | - | - | `tests/prove_ai_artifact_inventory.py` |
+| `tests/fixtures/ai_artifacts/negative/docs/mcp-notes.json` | A file whose name mentions mcp but carries no `mcpServers`: not an artifact. | - | - | `tests/prove_ai_artifact_inventory.py` |
+| `tests/fixtures/ai_artifacts/negative/README.md` | A README: not an artifact. | - | - | `tests/prove_ai_artifact_inventory.py` |

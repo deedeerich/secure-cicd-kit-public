@@ -77,6 +77,35 @@ linter that should have run established nothing. A row whose linter named an unr
 they reported on pinned or locked dependencies was in OSV-Scanner's report, which already runs; an
 unpinned requirement neither reads is a declared `PythonDependenciesUnpinned` gap) and tflint (none of
 three seeded misconfigurations, where Trivy config found two among eight, beside Checkov). Hosted runs are owed.
+
+## AI-agent artifacts (KDEC-063, PROPOSED)
+
+What steers a coding agent is not code, and no scanner above reads it. `deps-scan` runs
+`scripts/ai_artifact_inventory.py` once, at no new job minute, over the caller's `paths`:
+
+| class | files |
+|---|---|
+| MCP config | `.mcp.json`, `.vscode/mcp.json`, `.cursor/mcp.json`, `claude_desktop_config.json`, any `*mcp*.json` with `mcpServers` |
+| agent settings | `.claude/settings.json`, `.claude/settings.local.json` (hooks, permissions), `.gemini/settings.json` |
+| instructions | `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.github/copilot-instructions.md`, `.github/instructions/**/*.instructions.md`, `.cursor/rules/**`, `.cursorrules`, `.windsurfrules` |
+| skills, agents, prompts | `SKILL.md`, `.claude/agents/*.md`, `.claude/commands/*.md`, `.github/prompts/*.prompt.md` |
+| agent workflows | a workflow using a known agent action (Claude Code, Codex, Gemini CLI, Copilot) or running an agent CLI |
+
+Each MCP server is recorded by name, transport, command and arguments or remote host, env and header
+**names only**, and whether its package is pinned. On a pull request the base commit is fetched and a new
+or changed artifact, MCP server or remote host is flagged for review; so are unpinned MCP packages,
+literal env values, hooks that run commands, broad permissions (`Bash(*)`, `bypassPermissions`,
+`enableAllProjectMcpServers`, `--dangerously-skip-permissions`), hidden Unicode and HTML comments, and
+credential-shaped strings. Two heuristics (instruction-override and exfiltration phrasing) are labelled
+**low confidence**.
+
+**Static configuration evidence, not runtime state.** A file says what the repository asks an agent to
+load; it is not proof of which servers or tools are connected or enabled. Nothing found is executed and no
+remote server is contacted. The row `ai-artifacts` is **advisory**: the step never hands findings to the
+gate and the SARIF caps severity at medium, so the verdict cannot move; findings still reach the report
+and the intake. A later runtime product feeds the same intake through `ai_artifact_inventory.py convert`
+and the neutral `kit.ai-agent-observation/v1` record (KDEC-028 external evidence). Proven locally by
+`tests/prove_ai_artifact_inventory.py`; the hosted run is owed.
 ## Android, iOS, Kotlin, build-aware C/C++ and a real .NET solution (lane L-SCAN-B, KDEC-026)
 
 Measured 2026-10-23 on planted trees (`tests/_platform_fixtures.py`, graded by `PLATFORM_SIGNALS.json`):
@@ -92,12 +121,12 @@ Measured 2026-10-23 on planted trees (`tests/_platform_fixtures.py`, graded by `
 Version ranges (`scanner-registry.yaml`): CodeQL Kotlin 1.8.0–2.4.20 (READ); Semgrep Kotlin/Swift and
 mobsfscan Swift UNVERIFIED, so a target there is `VERSION_SUPPORT_UNDETERMINED`, never assumed.
 
-## The report's 32 rows
+## The report's 33 rows
 
 The report renders one verdict per **scanner**, not per job, so two tools in one job cannot hide behind
 each other: gitleaks, detect-secrets, code-quality, eslint, semgrep, bandit, java-sast, gosec,
 dotnet-vuln, semgrep-csharp, cppcheck, flawfinder, mobsfscan, mobile-config, trivy, trivy-iac, checkov, actionlint,
-zizmor, shellcheck, psscriptanalyzer, hadolint, malicious-deps, sbom,
+zizmor, shellcheck, psscriptanalyzer, hadolint, ai-artifacts (advisory), malicious-deps, sbom,
 trivy-image, trivy-image-secret, and CodeQL's six languages (the `expect` list of the report step). A tool that writes no SARIF (detect-secrets, ruff/mypy, ESLint,
 the NuGet audit, the SBOM licence list) has a row that is honestly **NOT ESTABLISHED** for want of
 machine-readable evidence — never CLEAN.

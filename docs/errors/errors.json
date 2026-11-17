@@ -182,7 +182,8 @@
   "external_findings_baseline": "developer",
   "governance_gate_rule": "developer",
   "ticket_setting": "developer",
-  "escalation_route": "developer"
+  "escalation_route": "developer",
+  "ticket_completion": "developer"
  },
  "not_a_failure": {
   "routing_result": [
@@ -559,6 +560,16 @@
   ],
   "escalation_route": [
    "ESCALATION_ROUTE_CONFIGURED"
+  ],
+  "ticket_completion": [
+   "COMPLETION_L1_DONE",
+   "COMPLETION_L2_FINAL",
+   "COMPLETION_OPEN",
+   "COMPLETION_STATUS_MAPPED",
+   "PATH_INVENTORY_ESTABLISHED",
+   "RECURRENCE_ALREADY_RECORDED",
+   "RECURRENCE_LINKED_TICKET",
+   "RESCAN_QUALIFYING"
   ]
  },
  "entries": {
@@ -588,8 +599,8 @@
   },
   "ticket_setting.TICKET_CEILING_OVERFLOW": {
    "what": "This run reached its ticket creation ceiling or the per-ticket instance limit.",
-   "why": "Nothing is dropped: findings past the creation ceiling are carried to the next run, extra instances are counted.",
-   "fix": "Decide whether to raise the number in the central policy register or let the carried work drain over the next runs.",
+   "why": "Nothing is dropped: findings past the creation ceiling are carried to the next run, and instances past the limit are kept and named on the ledger without their own child ticket.",
+   "fix": "A reviewer decides whether to raise the number in the central policy register or accept the carried work.",
    "link": "docs/adoption/SETTINGS_PRECEDENCE.md"
   },
   "escalation_route.ESCALATION_ROUTE_PLACEHOLDER": {
@@ -3546,6 +3557,114 @@
    "why": "An outstanding objection holds the merge.",
    "fix": "Address the review and ask the reviewer to approve the new head.",
    "link": "docs/operations/GOVERNANCE_PROFILES.md"
+  },
+  "ticket_completion.COMPLETION_L2_SAME_ACTOR": {
+   "what": "The person who set level 1 (done) on this ticket asked to set level 2 (final) as well.",
+   "why": "Level 2 needs independent verification, so the ticket stays at level 1 and pending verification.",
+   "fix": "Ask a different authorised person to verify, or let a qualifying kit rescan finalise it.",
+   "link": "docs/ticketing/TICKET-GOVERNANCE.md"
+  },
+  "ticket_completion.COMPLETION_L2_NOT_AUTHORISED": {
+   "what": "The person asking to finalise the ticket is not on the authorised list for level 2.",
+   "why": "Only an authorised person other than the level-1 actor may finalise a ticket by hand.",
+   "fix": "Have someone on the authorised approver list verify it.",
+   "link": "docs/ticketing/TICKET-GOVERNANCE.md"
+  },
+  "ticket_completion.COMPLETION_L1_NOT_RECORDED": {
+   "what": "No level-1 actor is known for this ticket, so a level-2 request cannot be checked for independence.",
+   "why": "The kit cannot show the verifier is not the person who triaged or fixed it.",
+   "fix": "Record the fix (closure action resolve) first, or name the fixer on the verification.",
+   "link": "docs/ticketing/TICKET-GOVERNANCE.md"
+  },
+  "ticket_completion.COMPLETION_ALREADY_FINAL": {
+   "what": "This ticket is already final (level 2).",
+   "why": "A final record is never rewritten; a later occurrence opens a new linked ticket instead.",
+   "fix": "Nothing to do; if the finding is back, the next scan creates the linked recurrence ticket.",
+   "link": "docs/ticketing/TICKET-GOVERNANCE.md"
+  },
+  "ticket_completion.COMPLETION_RESCAN_NOT_QUALIFYING": {
+   "what": "A rescan was offered as proof of the fix but it does not qualify.",
+   "why": "An absence only counts when the same instance was rescanned completely over a file that still exists, in scope, with comparable settings.",
+   "fix": "Read the named RESCAN_ reasons, rerun the scan so they hold, or ask a distinct person to verify.",
+   "link": "docs/ticketing/TICKET-GOVERNANCE.md"
+  },
+  "ticket_completion.COMPLETION_CONTINUITY_NOT_ESTABLISHED": {
+   "what": "The ticket register was not read, so the kit cannot connect this request to the recorded finding.",
+   "why": "Without that continuity nothing is cleared, closed as a duplicate or carried forward automatically.",
+   "fix": "Make the ticket ledger readable on the default branch (or name its path), then retry; a person may verify meanwhile.",
+   "link": "docs/ticketing/TICKET-GOVERNANCE.md"
+  },
+  "ticket_completion.COMPLETION_STATUS_UNMAPPED": {
+   "what": "No tracker status is configured for this completion level, so the kit used its default projection.",
+   "why": "The tracker word for each level is configuration; without it level 1 is labels and a comment and level 2 the done state.",
+   "fix": "Set ticket_taxonomy.completion_statuses.<tracker> level1 and level2 in the policy register.",
+   "link": "docs/ticketing/TICKET-GOVERNANCE.md"
+  },
+  "ticket_completion.RESCAN_NOT_VERIFIED": {
+   "what": "The rescan does not prove the finding was fixed.",
+   "why": "A missing scanner result, a deleted or excluded file, or a changed scan scope or configuration is not remediation.",
+   "fix": "Read the reason named beside it, rerun a complete comparable scan, or have a distinct person verify the fix.",
+   "link": "docs/ticketing/TICKET-GOVERNANCE.md"
+  },
+  "ticket_completion.RESCAN_INSTANCE_STILL_PRESENT": {
+   "same_as": "ticket_completion.RESCAN_NOT_VERIFIED"
+  },
+  "ticket_completion.RESCAN_INSTANCE_NOT_RECORDED": {
+   "same_as": "ticket_completion.RESCAN_NOT_VERIFIED"
+  },
+  "ticket_completion.RESCAN_OUTPUT_MISSING": {
+   "same_as": "ticket_completion.RESCAN_NOT_VERIFIED"
+  },
+  "ticket_completion.RESCAN_SCANNER_NOT_RUN": {
+   "same_as": "ticket_completion.RESCAN_NOT_VERIFIED"
+  },
+  "ticket_completion.RESCAN_SCANNER_NOT_COMPLETED": {
+   "same_as": "ticket_completion.RESCAN_NOT_VERIFIED"
+  },
+  "ticket_completion.RESCAN_PATH_STATE_NOT_ESTABLISHED": {
+   "same_as": "ticket_completion.RESCAN_NOT_VERIFIED"
+  },
+  "ticket_completion.RESCAN_PATH_REMOVED": {
+   "same_as": "ticket_completion.RESCAN_NOT_VERIFIED"
+  },
+  "ticket_completion.RESCAN_PATH_EXCLUDED": {
+   "same_as": "ticket_completion.RESCAN_NOT_VERIFIED"
+  },
+  "ticket_completion.RESCAN_PATH_OUT_OF_SCOPE": {
+   "same_as": "ticket_completion.RESCAN_NOT_VERIFIED"
+  },
+  "ticket_completion.RESCAN_SCOPE_CHANGED": {
+   "same_as": "ticket_completion.RESCAN_NOT_VERIFIED"
+  },
+  "ticket_completion.RESCAN_BASIS_NOT_RECORDED": {
+   "same_as": "ticket_completion.RESCAN_NOT_VERIFIED"
+  },
+  "ticket_completion.RESCAN_CONFIG_CHANGED": {
+   "same_as": "ticket_completion.RESCAN_NOT_VERIFIED"
+  },
+  "ticket_completion.RESCAN_UNIDENTIFIED_AT_PATH": {
+   "same_as": "ticket_completion.RESCAN_NOT_VERIFIED"
+  },
+  "ticket_completion.PATH_INVENTORY_NOT_ESTABLISHED": {
+   "same_as": "ticket_completion.RESCAN_NOT_VERIFIED"
+  },
+  "ticket_completion.SYSTEM_LABEL_UNATTESTED": {
+   "what": "A kit status label was added to this ticket by hand and the kit's record does not back it.",
+   "why": "The kit reads a ticket's state from its own record, never from a label, so the label changed nothing.",
+   "fix": "Use the closure template to record the level; the label can stay or be removed by the person who added it.",
+   "link": "docs/ticketing/TICKET-GOVERNANCE.md"
+  },
+  "ticket_completion.TAXONOMY_LABEL_INVALID": {
+   "what": "A label or status in the ticket_taxonomy configuration is not usable.",
+   "why": "A label must be one token and a status map may name only level1 and level2.",
+   "fix": "Correct ticket_taxonomy in the policy register.",
+   "link": "docs/ticketing/TICKET-GOVERNANCE.md"
+  },
+  "ticket_completion.TAXONOMY_LABEL_PROTECTED": {
+   "what": "A configured source label uses the kit's own protected label prefix.",
+   "why": "Configuration may not impersonate a kit system label.",
+   "fix": "Choose a source label outside the <stamp>- prefix.",
+   "link": "docs/ticketing/TICKET-GOVERNANCE.md"
   }
  }
 }
