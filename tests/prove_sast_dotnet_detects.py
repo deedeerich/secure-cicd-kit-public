@@ -15,7 +15,8 @@ WHY THIS EXISTS (W4C-001 regression)
     this host runs. Registry rules (p/csharp, p/security-audit) need network.
 
 SCENARIOS
-    seeded_enforce  SQL built by concatenation, soft_fail off -> >= 1 finding, enforce FAILS
+    seeded_enforce  SQL built by concatenation, soft_fail off -> >= 1 finding, enforce hands it to the
+                    gate (findings_state=FINDINGS; the step succeeds -- lane L-S, O-24)
     seeded_in_tests the same file under tests/                -> still found (own .semgrepignore)
     clean           a pure function                           -> 0 findings, enforce passes
     no_csharp       no .cs files                              -> the step skips, exit 0
@@ -75,13 +76,15 @@ def main():
                 return 2
         h.write(os.path.join(sb.shim, 'python3'), PY3 % sys.executable.replace('\\', '/'))
         os.chmod(os.path.join(sb.shim, 'python3'), 0o755)
+        # name, files, finds?, handed to the gate (findings_state=FINDINGS)? -- the enforce step
+        # succeeds either way: the gate is the single enforcement point (lane L-S, O-24).
         scenarios = [
-            ('seeded_enforce', {'src/Users.cs': SEEDED}, True, False),
-            ('seeded_in_tests', {'tests/Users.cs': SEEDED}, True, False),
-            ('clean', {'src/Calc.cs': CLEAN}, False, True),
-            ('no_csharp', {'README.md': 'no C# here\n'}, None, True),
+            ('seeded_enforce', {'src/Users.cs': SEEDED}, True, True),
+            ('seeded_in_tests', {'tests/Users.cs': SEEDED}, True, True),
+            ('clean', {'src/Calc.cs': CLEAN}, False, False),
+            ('no_csharp', {'README.md': 'no C# here\n'}, None, False),
         ]
-        for name, files, finds, enforce_ok in scenarios:
+        for name, files, finds, must_hand in scenarios:
             ws = sb.workspace(name, files)
             vals = {'inputs.paths': '.', 'inputs.soft_fail_sast': 'false',
                     'inputs.advisory_mode': 'false', 'inputs.dotnet_version': '8.0.x'}
@@ -107,7 +110,8 @@ def main():
                                 for r in run_.get('results', [])})
             evals = dict(vals, **{'steps.dotnet_semgrep.outputs.%s' % k: out.get(k, '')
                                   for k in ('count', 'collection')})
-            erc, elog, _o, unk = sb.run(bash, steps[ENFORCE], evals, ws)
+            erc, elog, eout, unk = sb.run(bash, steps[ENFORCE], evals, ws)
+            handed = eout.get('findings_state', '')
             n = int(out['count'])
             print('  %-16s findings=%d enforce exit=%d %s' % (name, n, erc, ','.join(rules)[:120]))
             if finds and n < 1:
@@ -116,10 +120,14 @@ def main():
                 bad.append('%s: findings %s are not the seeded SQL class' % (name, rules))
             if finds is False and n != 0:
                 bad.append('%s: the clean file produced %d finding(s): %s' % (name, n, rules))
-            if enforce_ok and erc != 0:
-                bad.append('%s: enforce failed (exit %d)\n%s' % (name, erc, elog[-300:]))
-            if not enforce_ok and erc == 0:
-                bad.append('%s: enforce passed a seeded finding with soft_fail_sast off' % name)
+            if erc != 0:
+                bad.append('%s: enforce failed (exit %d) -- findings go to the gate, never a failed '
+                           'job\n%s' % (name, erc, elog[-300:]))
+            if must_hand and handed != 'FINDINGS':
+                bad.append('%s: findings_state=%r -- a seeded finding with soft_fail_sast off must be '
+                           'handed to the gate' % (name, handed))
+            if not must_hand and handed:
+                bad.append('%s: findings_state=%r where nothing was found' % (name, handed))
     finally:
         sb.close()
     if bad:
@@ -127,7 +135,8 @@ def main():
             print('FAIL: %s' % b)
         return 1
     print('PASS: the shipped sast-dotnet Semgrep step finds a seeded C# SQL injection (also under '
-          'tests/), counts it, and enforce blocks it with soft_fail_sast off; clean C# yields zero.')
+          'tests/), counts it, and enforce hands it to the gate with soft_fail_sast off; clean C# '
+          'yields zero.')
     return 0
 
 

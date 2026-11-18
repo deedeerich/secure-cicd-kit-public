@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/result.schema.json",
+  "title": "secure-cicd-kit API v1 result",
+  "description": "What every call answers: written by the API run as the artifact kit-api-result-<correlation_id>, the run summary, and the text of the check run named kit-api/<correlation_id> (the copy a caller reads through the API host alone). The client's own answers (API_ACCEPTED on submit, status words while a run is not finished) use the same shape. KDEC-035.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "correlation_id", "operation", "api_state", "notes"],
+  "properties": {
+    "api_version": {"type": "string", "pattern": "^v1$"},
+    "correlation_id": {"type": "string", "pattern": "^kapi-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}$|^$"},
+    "operation": {"type": "string", "maxLength": 40},
+    "api_state": {
+      "description": "Where the call is (assurance-taxonomy.yaml :: kit_api_state). Only API_COMPLETED is a finished call that did what it was asked; its data carries the kit's own words for what that was.",
+      "type": "string",
+      "enum": ["API_ACCEPTED", "API_NOT_FOUND", "API_QUEUED", "API_IN_PROGRESS", "API_AWAITING_APPROVAL",
+               "API_COMPLETED", "API_REFUSED", "API_FAILED", "API_CANCELLED", "API_RESULT_UNREADABLE"]
+    },
+    "refusal": {
+      "description": "Set exactly when api_state is API_REFUSED (assurance-taxonomy.yaml :: kit_api_refusal; api/v1/refusals.json).",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["code", "detail"],
+      "properties": {
+        "code": {"type": "string", "pattern": "^API_[A-Z_]{3,60}$"},
+        "detail": {"type": "string", "maxLength": 2000},
+        "field": {"type": "string", "maxLength": 200}
+      }
+    },
+    "routing_result": {
+      "description": "The kit's verdict word for the operation's own claim, where it makes one (PROCEED .. BLOCKED). Never a gate input.",
+      "type": "string",
+      "enum": ["", "PROCEED", "PROCEED_WITH_ADVISORY", "DECISION_REQUIRED", "EVIDENCE_UNTRUSTED", "BLOCKED"]
+    },
+    "repository": {"type": "string", "maxLength": 201},
+    "transport": {"type": "string", "enum": ["", "workflow_dispatch", "repository_dispatch", "client"]},
+    "run": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": ["integer", "string"]},
+        "attempt": {"type": ["integer", "string"]},
+        "url": {"type": "string", "maxLength": 500},
+        "status": {"type": "string", "maxLength": 40},
+        "conclusion": {"type": ["string", "null"], "maxLength": 40}
+      }
+    },
+    "actor": {
+      "description": "Who asked. actor and triggering_actor are GitHub's; on_behalf_of is what the caller declared and is never verified.",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {"type": "string", "maxLength": 100},
+        "triggering_actor": {"type": "string", "maxLength": 100},
+        "on_behalf_of": {"type": "string", "maxLength": 200},
+        "on_behalf_of_verified": {"type": "boolean", "const": false}
+      }
+    },
+    "idempotency_key_sha256": {"type": "string", "pattern": "^$|^[0-9a-f]{64}$"},
+    "request_sha256": {"type": "string", "pattern": "^$|^[0-9a-f]{64}$"},
+    "received_at": {"type": "string", "maxLength": 40},
+    "finished_at": {"type": "string", "maxLength": 40},
+    "data": {"description": "The operation's answer (docs/api/README.md, per operation).", "type": "object"},
+    "notes": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 1000}},
+    "truncated": {"description": "The answer was cut to fit the check run; the full one is the artifact, or the next page from next_offset.", "type": "boolean"},
+    "next_offset": {"type": ["integer", "null"], "minimum": 0}
+  }
+}

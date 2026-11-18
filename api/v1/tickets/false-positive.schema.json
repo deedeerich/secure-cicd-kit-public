@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/tickets/false-positive.schema.json",
+  "title": "ticket template: compliance request, false positive (template_version 2)",
+  "description": "FALSE_POSITIVE (owner, 2026-11-04): \"this is not a thing, the scanner is wrong\". Evidence is required and a reviewer confirms (the finalized review). NO expiry; instead it is RE-CHECKED when the rule, the tool version or the code changes (a later submission of the finding naming another tool version or code ref re-opens the question on the request ticket). Opens a FALSE_POSITIVE_REQUEST; the disposition itself is merged to the protected branch. KDEC-037.",
+  "x-template": "false-positive",
+  "x-template-version": 2,
+  "x-enabled": true,
+  "x-ticket-class": "FALSE_POSITIVE_REQUEST",
+  "x-requested-disposition": "false_positive",
+  "x-disposition-type": "FALSE_POSITIVE",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "finding",
+    "justification",
+    "requested_by",
+    "evidence",
+    "rule_id",
+    "tool_version"
+  ],
+  "properties": {
+    "finding": {
+      "description": "The finding (finding.schema.json).",
+      "type": "object"
+    },
+    "requested_by": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9 @._+\\[\\]-]{1,100}$"
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "sha256"
+      ],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 500
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "receipt": {
+          "description": "A custody receipt for the evidence (a store's object id or signature).",
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 300
+        }
+      }
+    },
+    "justification": {
+      "type": "string",
+      "minLength": 20,
+      "maxLength": 2000
+    },
+    "rule_id": {
+      "description": "The rule the false positive is about.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "tool_version": {
+      "description": "The tool version that produced it.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40
+    },
+    "code_ref": {
+      "description": "The commit or content hash of the code it was judged on.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{7,64}$"
+    }
+  }
+}

@@ -19,8 +19,11 @@ THE CASES
     allowed    a different app (or resource group, or environment) -> groups must DIFFER, so
                unrelated targets still deploy in parallel. A key that serialised everything would
                pass the attack case and fail this one.
-    structure  cancel-in-progress is false on both deploy reusables, and the deploy job carries no
-               timeout-minutes (ROLLBACK_CONTRACT.md: a timeout is a cancellation nobody chose).
+    structure  cancel-in-progress is false on both deploy reusables, and the deploy job's
+               timeout-minutes is the GOVERNED bound (KREQ-717, KDEC-061): the caller's input inside
+               30..360, 90 outside it -- never absent, never unbounded. Before KDEC-061 this case asserted
+               the opposite (no timeout: "a cancellation nobody chose"); the owner's direction bounds the
+               job and designs the kill instead (tests/prove_deploy_interruption.py proves the design).
 
 EXIT  0 proven   1 a case decided wrongly   2 could not be checked (UNKNOWN, never PASS)
 """
@@ -50,9 +53,13 @@ def check(path, app_key, has_slot):
     if conc.get('cancel-in-progress') is not False:
         fails.append('%s: cancel-in-progress is %r, not false. A deploy cancelled mid-mutation '
                      'strands a change with no manifest.' % (name, conc.get('cancel-in-progress')))
-    if 'timeout-minutes' in D.job(doc):
-        fails.append('%s: the deploy job carries timeout-minutes -- a cancellation nobody chose.'
-                     % name)
+    import prove_deploy_interruption as PI
+    t = D.job(doc).get('timeout-minutes')
+    for given, want in ((90, 90), (240, 240), (0, 90), (100000, 90)):
+        got = PI.resolve_timeout(t, given) if t is not None else None
+        if got != want:
+            fails.append('%s: the deploy job\'s timeout-minutes resolves to %r for %s, not the governed %s '
+                         '(KREQ-717: bounded, never absent or unbounded).' % (name, got, given, want))
     b = base(app_key)
     g = group(doc, b)
     if has_slot:
@@ -86,7 +93,7 @@ def main():
             print('FAIL: ' + f)
         return 1
     print('PASS: deploys to one app serialise whatever slot they stage into; unrelated targets '
-          'stay parallel; nothing cancels in flight and no mutating job is time-bounded.')
+          'stay parallel; nothing cancels in flight; each deploy job carries the governed time bound (KREQ-717).')
     return 0
 
 

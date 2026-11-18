@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/params/status.get.schema.json",
+  "title": "params of status.get",
+  "description": "The result of an earlier call, by its correlation id. Answered by the client from the run and its check run; nothing is dispatched.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "correlation_id": {
+      "type": "string",
+      "pattern": "^kapi-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}$"
+    }
+  },
+  "required": [
+    "correlation_id"
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "actor": {
+    "actor": "tines-kit-app[bot]",
+    "on_behalf_of": "analyst@example.invalid",
+    "on_behalf_of_verified": false,
+    "triggering_actor": "tines-kit-app[bot]"
+  },
+  "api_state": "API_COMPLETED",
+  "api_version": "v1",
+  "correlation_id": "kapi-20261103T101500Z-000000000001",
+  "data": {
+    "backend": "jira",
+    "created": [
+      {
+        "cluster_key": "dddddddddddddddddddddddddddddddd",
+        "key": "SEC-1042",
+        "ref": "10531",
+        "trigger": "NEW"
+      }
+    ],
+    "dry_run": false,
+    "needs_decision": [],
+    "outcomes": {
+      "BINDING_ABSENT": 1
+    },
+    "selected": 1,
+    "source_run": {
+      "commit": "cccccccccccccccccccccccccccccccccccccccc",
+      "id": 40812345678
+    },
+    "ticketing_state": "TICKETING_AVAILABLE",
+    "updated": [],
+    "withheld_no_identity": []
+  },
+  "finished_at": "2026-11-03T10:15:41Z",
+  "idempotency_key_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "notes": [
+    "one ticket per finding: the pipeline's reconciliation will find this ticket by its stamp"
+  ],
+  "operation": "tickets.write",
+  "received_at": "2026-11-03T10:15:02Z",
+  "refusal": null,
+  "repository": "example-org/payments-api",
+  "request_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "routing_result": "PROCEED",
+  "run": {
+    "attempt": 1,
+    "id": 40890000001,
+    "url": "https://example.ghe.com/example-org/payments-api/actions/runs/40890000001"
+  },
+  "transport": "workflow_dispatch"
+}

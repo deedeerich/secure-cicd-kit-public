@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/tickets/proposed/audit-finding.schema.json",
+  "title": "PROPOSED ticket template: audit-finding (DRAFT, disabled)",
+  "description": "PROPOSED (KDEC-037, 2026-11-04): a finding from an internal or external audit, with its audit id and control. A DRAFT stub, DISABLED by default: a submission is refused TEMPLATE_NOT_ENABLED until the owner enables the type (docs/ticketing/TICKET-TYPES.md).",
+  "x-template": "audit-finding",
+  "x-template-version": 0,
+  "x-enabled": false,
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "finding": {
+      "description": "The finding (finding.schema.json).",
+      "type": "object"
+    },
+    "requested_by": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9 @._+\\[\\]-]{1,100}$"
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "sha256"
+      ],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 500
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "receipt": {
+          "description": "A custody receipt for the evidence (a store's object id or signature).",
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 300
+        }
+      }
+    }
+  }
+}

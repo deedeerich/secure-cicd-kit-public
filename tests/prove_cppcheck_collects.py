@@ -20,7 +20,8 @@ MEASURED, NOT ASSUMED (cppcheck 2.21.0, 2026-10-14)
     ones counted.
 
 SCENARIOS
-    seeded          buffer overrun + null deref, soft_fail off -> errors >= 1, enforce FAILS
+    seeded          buffer overrun + null deref, soft_fail off -> errors >= 1, enforce hands them to
+                    the gate (findings_state=FINDINGS; the step succeeds -- lane L-S, O-24)
     clean           one pure function                          -> 0, enforce passes
     no_sources      no C/C++ under the scope                   -> NOT_APPLICABLE, passes
     no_xml          cppcheck exits 0 and writes no XML         -> COLLECTION_FAILED, no SARIF
@@ -94,12 +95,14 @@ def main():
             os.chmod(os.path.join(d, 'cppcheck'), 0o755)
             faults[mode] = d
         scenarios = [
-            # name, files, fault, expected collection, expect errors (None=any), enforce ok
-            ('seeded', {'src/a.c': SEEDED}, None, 'COMPLETE', True, False),
-            ('clean', {'src/a.c': CLEAN}, None, 'COMPLETE', False, True),
-            ('no_sources', {'README.md': 'no C here\n'}, None, 'NOT_APPLICABLE', False, True),
-            ('no_xml', {'src/a.c': SEEDED}, 'no_xml', 'COLLECTION_FAILED', None, False),
-            ('bad_xml', {'src/a.c': SEEDED}, 'bad_xml', 'COLLECTION_FAILED', None, False),
+            # name, files, fault, expected collection, expect errors (None=any), enforce:
+            #   HANDED (exit 0, findings_state=FINDINGS: the gate enforces -- lane L-S, O-24)
+            #   | PASS (exit 0, nothing handed) | FAIL (could not collect)
+            ('seeded', {'src/a.c': SEEDED}, None, 'COMPLETE', True, 'HANDED'),
+            ('clean', {'src/a.c': CLEAN}, None, 'COMPLETE', False, 'PASS'),
+            ('no_sources', {'README.md': 'no C here\n'}, None, 'NOT_APPLICABLE', False, 'PASS'),
+            ('no_xml', {'src/a.c': SEEDED}, 'no_xml', 'COLLECTION_FAILED', None, 'FAIL'),
+            ('bad_xml', {'src/a.c': SEEDED}, 'bad_xml', 'COLLECTION_FAILED', None, 'FAIL'),
         ]
         for name, files, fault, want_coll, errors, enforce_ok in scenarios:
             ws = sb.workspace(name, files)
@@ -117,11 +120,11 @@ def main():
                     results = [r for run_ in doc.get('runs', []) for r in run_.get('results', [])]
                 except ValueError:
                     results = 'unparseable'
-            erc = None
+            erc, eout = None, {}
             if ENFORCE in steps:
                 evals = dict(vals, **{'steps.cppcheck.outputs.%s' % k: out.get(k, '')
                                       for k in ('count', 'collection')})
-                erc, elog, _o, unk = sb.run(bash, steps[ENFORCE], evals, ws)
+                erc, elog, eout, unk = sb.run(bash, steps[ENFORCE], evals, ws)
                 if unk:
                     bad.append('%s: enforce step reads unmodelled %s' % (name, unk))
             coll = out.get('collection', '')
@@ -143,9 +146,16 @@ def main():
                 bad.append('%s: the seeded overrun produced no counted error' % name)
             if errors is False and out.get('count', '0') not in ('0',):
                 bad.append('%s: count=%r, expected 0' % (name, out.get('count')))
-            if erc is not None and enforce_ok and erc != 0:
-                bad.append('%s: enforce failed (exit %d)' % (name, erc))
-            if erc is not None and not enforce_ok and erc == 0:
+            handed = eout.get('findings_state', '')
+            if erc is not None and enforce_ok in ('PASS', 'HANDED') and erc != 0:
+                bad.append('%s: enforce failed (exit %d) -- findings go to the gate, never a '
+                           'failed job' % (name, erc))
+            if erc is not None and enforce_ok == 'HANDED' and handed != 'FINDINGS':
+                bad.append('%s: findings_state=%r -- a counted error with soft_fail_sast off must '
+                           'be handed to the gate' % (name, handed))
+            if erc is not None and enforce_ok == 'PASS' and handed:
+                bad.append('%s: findings_state=%r where nothing is enforced' % (name, handed))
+            if erc is not None and enforce_ok == 'FAIL' and erc == 0:
                 bad.append('%s: enforce PASSED where it must fail' % name)
     finally:
         sb.close()
@@ -154,7 +164,7 @@ def main():
             print('FAIL: %s' % b)
         return 1
     print('PASS: the shipped cppcheck step converts real findings, counts error severity and '
-          'enforces it, reads no sources as NOT_APPLICABLE, and on an absent or unparseable XML '
+          'hands it to the gate, reads no sources as NOT_APPLICABLE, and on an absent or unparseable XML '
           'writes NO SARIF and reports COLLECTION_FAILED.')
     return 0
 

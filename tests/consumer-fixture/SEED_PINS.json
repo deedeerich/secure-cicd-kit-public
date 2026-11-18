@@ -1,0 +1,57 @@
+{
+ "manifests": {
+  "tests/consumer-fixture/buildonly/Dockerfile": "8812ef6566e424a2b030ffcaca2ee933b4f089ef15b86605f61400b0bb2b9567",
+  "tests/consumer-fixture/clean/requirements.txt": "d581cfc5714bc60a476d39c53d0dd48b4b6c9f94cd5111f5b3391430d38c6896",
+  "tests/consumer-fixture/full/dotnet/Fixture.csproj": "3bed5e439f6be31e0112ba6d7abd566002c6feaa6875093491f383c9b6225d2c",
+  "tests/consumer-fixture/full/go/go.mod": "9b21309770e4fb165953ce6cead0b84303997c927394b11148594d23da404fb6",
+  "tests/consumer-fixture/full/infra/Dockerfile": "0a4a7c1781366bf1aa765be4f3a2e77ea2919b0278c7c43de25aa9a7c0340287",
+  "tests/consumer-fixture/full/java/pom.xml": "ab44f31dfa063228e4b27f71fe38aa1b1889369b79a86b88fc7c2dd89e2e6e80",
+  "tests/consumer-fixture/full/node/package-lock.json": "d77ad0ae93853377b2a2e94bfcbc1630c962c2aa2a67c80853ee3056ef76c418",
+  "tests/consumer-fixture/full/node/package.json": "106bcc021858d817b7bbbb04cd0b647a6d6ccc6e64b026763ee5ed1eb5813a4b",
+  "tests/consumer-fixture/full/php/composer.json": "e900f955d68f7edc10a9c423a453f79169e173fccfdcf5569cbb4c47b06051fe",
+  "tests/consumer-fixture/full/php/composer.lock": "54b81817d76bc4a8c682fe362601bd3d8056087243cd0f25d2a5ea5608435742",
+  "tests/consumer-fixture/full/python/requirements.txt": "1d2e110df56eb8622d325420178af07f234208972da98e196ce1788abf5b53f2",
+  "tests/consumer-fixture/full/services/api/package-lock.json": "737393a119d443fe0d054b54d4e84d4cc960b8b51a6484fdd45d009ee2dcb3f4",
+  "tests/consumer-fixture/full/services/api/package.json": "728ed8942a10d8ccee1181e9e48187c2a351a1752e39e0907a0890d5a0ab7821",
+  "tests/consumer-fixture/full/services/worker/go.mod": "5c3dd63c0280c92a5d80bf2e981fde0f8d761f3c778819a3b1e2516ebe45677a",
+  "tests/consumer-fixture/seeded/requirements.txt": "5f315d4eba800599ab4d9b69d9a9a55aceaa8ae8e06f87e3c59e5a8a2bffb3f2"
+ },
+ "seeds": [
+  {
+   "path": "tests/consumer-fixture/full/php/composer.json",
+   "pattern": "\"phpmailer/phpmailer\"\\s*:\\s*\"5\\.2\\.18\"",
+   "pin": "phpmailer/phpmailer 5.2.18",
+   "signal": "deps:php-cve"
+  },
+  {
+   "path": "tests/consumer-fixture/full/php/composer.lock",
+   "pattern": "\"name\"\\s*:\\s*\"phpmailer/phpmailer\"[^}]*?\"version\"\\s*:\\s*\"v5\\.2\\.18\"",
+   "pin": "phpmailer/phpmailer v5.2.18",
+   "signal": "deps:php-cve"
+  },
+  {
+   "path": "tests/consumer-fixture/seeded/requirements.txt",
+   "pattern": "(?m)^PyYAML==5\\.1\\s*$",
+   "pin": "PyYAML 5.1",
+   "signal": "seeded deps (README)"
+  },
+  {
+   "path": "tests/consumer-fixture/seeded/requirements.txt",
+   "pattern": "(?m)^urllib3==1\\.24\\.1\\s*$",
+   "pin": "urllib3 1.24.1",
+   "signal": "seeded deps (README)"
+  },
+  {
+   "path": "tests/consumer-fixture/seeded/requirements.txt",
+   "pattern": "(?m)^requests==2\\.19\\.1\\s*$",
+   "pin": "requests 2.19.1",
+   "signal": "seeded deps (README)"
+  },
+  {
+   "path": "tests/consumer-fixture/full/python/requirements.txt",
+   "pattern": "(?m)^pyyaml==5\\.1\\s*$",
+   "pin": "pyyaml 5.1",
+   "signal": "deps:python-cve"
+  }
+ ]
+}

@@ -103,21 +103,21 @@ jobs:
       status: ${{ steps.propose.outputs.status }}
       why: ${{ steps.propose.outputs.why }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The ledger is read at the default branch's tip BY REF, and the proposal branch is
           # cut from it; a depth-1 checkout has neither.
           fetch-depth: 0
 
       - name: Fetch the findings file the report published
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: security-report-${{ github.run_attempt }}
           path: _report
 
       - name: Fetch the ticket ledger proposal the ticket job published
         if: inputs.ticket-ledger-artifact != ''
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ inputs.ticket-ledger-artifact }}
           path: _tickets
@@ -155,6 +155,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # KDEC-027: gh's token goes to this run's host only (gh api / -R default to github.com).
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
           # THE ONLY REF THIS JOB MAY WRITE IS ITS OWN PROPOSAL BRANCH. Refused before anything
           # is touched, so a payload naming any other branch -- by defect or by tampering with
           # the artifact -- pushes nothing. tests/prove_propose_ledger_job_scope.py runs this

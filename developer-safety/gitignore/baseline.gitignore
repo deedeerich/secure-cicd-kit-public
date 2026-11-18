@@ -17,9 +17,12 @@ id_rsa
 id_rsa.*
 id_ed25519
 id_ed25519.*
+id_ecdsa
+id_ecdsa.*
 *.ppk
 credentials
 credentials.json
+*credentials*.json
 service-account*.json
 *_rsa
 *.ovpn
@@ -29,6 +32,15 @@ recovery-codes*
 recovery_codes*
 *token*.txt
 *.token
+# HTTP archives (browser/devtools captures) carry cookies and bearer tokens in clear text.
+*.har
+# Package-manager and git credential files hold registry/host tokens. A repository that must commit
+# a token-free .npmrc negates it locally (!.npmrc) after review.
+.npmrc
+.netrc
+_netrc
+.pypirc
+.git-credentials
 
 # ---- Cloud / auth caches -----------------------------------------------------
 .azure/
@@ -36,6 +48,10 @@ recovery_codes*
 .kube/config
 .gcloud/
 azureProfile.json
+.config/gcloud/
+.docker/config.json
+.oci/
+.terraform.d/credentials.tfrc.json
 accessTokens.json
 .msal_cache*
 *.publishsettings
@@ -113,7 +129,7 @@ nvd-scan-results/
 *.sql.gz
 
 # ---- IDE / editor ------------------------------------------------------------
-.vscode/
+.vscode/*
 !.vscode/extensions.json
 !.vscode/settings.shared.json
 .idea/

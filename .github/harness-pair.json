@@ -1,0 +1,5 @@
+{
+  "schema": "kit-harness-pair-pin/1",
+  "commit": null,
+  "why": "The evidence harness commit the hosted kit-harness pair checks out (KDEC-052 item 9, KDEC-058). A full 40-hex commit only, never a branch, tag or short SHA; changed by a reviewed pull request. null until the kit and harness branches of KDEC-051 are merged (KDEC-051 M2) and the owner has created the read-only App (docs/operations/HARNESS_PAIR_HOSTED.md)."
+}

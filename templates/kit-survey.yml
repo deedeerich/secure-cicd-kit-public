@@ -1,0 +1,40 @@
+# Starter: the org survey and the one-time org setup check, DISPATCH ONLY. Put it in the organisation's kit
+# repository (or a central security repository) at .github/workflows/kit-survey.yml, replace YOUR_ORG, and pin
+# the kit by COMMIT SHA (kit_ref is the same commit). Guide: docs/adoption/ORG_SURVEY_AND_ORG_INIT.md.
+#
+# WHAT IT DOES. When a person runs it (Actions -> Kit survey -> Run workflow) it reads, read-only, every
+# repository of the organisation and the organisation's settings, and keeps four reports in the `kit-survey`
+# artifact: what already runs (KIT_SURVEY.md / .csv), what the org does better or the kit lacks, with how to
+# adopt it through overlays/<org>/ by hand (KIT_SURVEY_COMPARISON.md), how much of the estate the kit
+# supports and where a repository turned it off and why (KIT_ADOPTION_INVENTORY.md), and the org setup
+# checklist (ORG_INIT_CHECKLIST.md). It changes nothing.
+#
+# SECRET: KIT_SURVEY_TOKEN, a read-only token across the organisation (the guide lists the permissions).
+name: Kit survey
+
+on:
+  workflow_dispatch:
+    inputs:
+      history:
+        description: "Workflow-history commits read per repository"
+        type: number
+        default: 200
+
+permissions: {}
+
+jobs:
+  survey:
+    permissions:
+      contents: read
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-kit-survey.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    with:
+      kit_repository: YOUR_ORG/secure-cicd-kit
+      kit_ref: "0000000000000000000000000000000000000000"   # the same commit as the pin above
+      owner: YOUR_ORG
+      kit_repo_name: secure-cicd-kit
+      overlay: ""              # overlays/<name>/; empty means the organisation's name
+      platform_team: ""        # the platform approver team slug
+      appsec_team: ""          # the AppSec approver team slug
+      history: ${{ inputs.history }}
+    secrets:
+      KIT_SURVEY_TOKEN: ${{ secrets.KIT_SURVEY_TOKEN }}

@@ -11,13 +11,24 @@ templates to this rule.
 | Workflow | Purpose | Cloud deps | Caller grants |
 |---|---|---|---|
 | `reusable-security.yml` | Discovery → secret · code-quality · SAST · CodeQL · dependency · IaC · malware · SBOM · image scans → report → gate → `routing_result` | none | `contents: read`, `security-events: write`, `actions: read` |
-| `reusable-nvd-cve.yml` | Trivy + OWASP Dependency-Check against the public NIST NVD; re-scan of an SBOM or image | none (optional `NVD_API_KEY`) | `contents: read`, `security-events: write` |
+| `reusable-nvd-cve.yml` | Trivy + OWASP Dependency-Check; NVD data from the Dependency-Check project's public datafeed by default (a third-party host the runner must reach; no organisation-hosted mirror unless the optional Release 4 organisation mirror is configured -- KDEC-032, proven locally only); re-scan of an SBOM or image | none (`NVD_API_KEY` only if `nvd_datafeed_url` is emptied) | `contents: read`, `security-events: write` |
 | `workflow-policy-check.yml` | Governance gate over the calling repo's own workflows | none | `contents: read` |
 | `reusable-build-docker.yml` | Build once → Trivy gate **before** push → Syft SPDX SBOM → push those bytes → digest read back → attest | OIDC | `contents: read`, `id-token: write`, `attestations: write` |
-| `reusable-deploy-containerapp.yml` | Container Apps deploy by digest, verdict-gated, revision probed before traffic, reversible | OIDC | `contents: read`, `id-token: write` |
-| `reusable-deploy-appservice.yml` | App Service deploy by digest, verdict-gated, slot-staged (or direct below uat), reversible | OIDC | `contents: read`, `id-token: write` |
+| `reusable-deploy-containerapp.yml` | Container Apps deploy by digest, verdict-gated, revision probed before traffic, reversible | OIDC | `contents: read`, `id-token: write`, `attestations: read`, `actions: read`, `deployments: write`, `pull-requests: read` |
+| `reusable-deploy-appservice.yml` | App Service deploy by digest, verdict-gated, slot-staged (or direct below uat), reversible; with `site_kind: functionapp`, an Azure Functions app hosted as a Linux custom container (KDEC-036) | OIDC | `contents: read`, `id-token: write`, `attestations: read`, `actions: read`, `deployments: write`, `pull-requests: read` |
+| `reusable-deploy-staticwebapp.yml` | Static Web Apps deploy by content digest (OF-5 K-8, KDEC-034 proposed): verdict-gated, staged in a preview environment, verified on the marker the site serves, reversible to the prior artefact. Stub-proven; a live run is owed | OIDC | `contents: read`, `id-token: write`, `attestations: read`, `actions: read`, `deployments: write`, `pull-requests: read` |
 | `reusable-propose-ledger.yml` | Proposes baseline-ledger changes as a pull request (protected default branch only) | none | `contents: write`, `pull-requests: write` |
 | `reusable-ticket-reconcile.yml` | Findings → Jira or Azure DevOps tickets, post-merge or scheduled | tracker | `contents: read` |
+| `reusable-dependabot-triage.yml` | Dependabot PRs: `--auto --squash` only when nothing can change behaviour (FUTURE_WORK §6); otherwise label, comment why and ask a human; excluded fixture paths closed. Call from `pull_request_target` ([DEPENDABOT_TRIAGE.md](DEPENDABOT_TRIAGE.md)) | none (optional `METADATA_TOKEN`) | `contents: write`, `pull-requests: write`, `issues: write` |
+| `reusable-ticket-reference.yml` | A pull request must carry a well-formed reference to its tracker work item (`tracker_host`, `project_key`, optional digit bounds); empty host or key fails as not configured | none | `contents: read`, `pull-requests: read` |
+| `reusable-kit-api.yml` | The kit API's run side (KDEC-035): intake, refusals by name, tickets through the reconciler, `evidence.export` (KDEC-039), the answer as a check run ([`docs/api/README.md`](../api/README.md)) | tracker (tickets job only) | `contents: read`, `actions: read`, `checks: write`, `pull-requests: read`, `deployments: read` |
+| `reusable-exception-due.yml` | Lists every exception due or expired; on a schedule, reopens or comments its ticket (Jira) | tracker (resurface job only) | `contents: read` |
+| `reusable-deployed-scan.yml` | The daily scan of what each environment is actually serving, with the landing zone's drift vocabulary | OIDC (each environment's reader) | `contents: read`, `actions: read`, `id-token: write` |
+| `reusable-rollback-sequence.yml` | A recorded rollback of a release, one target lease for the whole sequence | OIDC | `contents: read`, `actions: read`, `id-token: write` |
+| `reusable-feed-mirror-refresh.yml` | Refreshes the organisation feed mirrors (KDEC-032, optional; [`FEED_MIRRORS.md`](FEED_MIRRORS.md)) | OIDC (`feed-mirror` environment) | `contents: read`, `id-token: write` |
+| `reusable-dependabot-config-check.yml` | Fails a pull request that adds a manifest `.github/dependabot.yml` does not read, with the fix and a corrected file (KDEC-040; [DEPENDABOT_IN_YOUR_REPO.md](DEPENDABOT_IN_YOUR_REPO.md)); starter `templates/dependabot-config-check.yml` | none | `contents: read`, `pull-requests: read` |
+| `reusable-dependabot-keep-current.yml` | Asks a behind Dependabot pull request to rebase, once per base commit (KDEC-040; [DEPENDABOT_TRIAGE.md](DEPENDABOT_TRIAGE.md) 3b); called by the triage starter's `keep-current` job | none (optional `COMMAND_TOKEN`, only if R-23 happens) | `contents: read`, `pull-requests: write` |
+| `reusable-external-findings.yml` | Pulls SonarQube and Aikido findings read-only into the intake; submits them as tickets only after a finalized review and an approval in `external-findings-review` (KDEC-037, KDEC-040; [EXTERNAL_FINDINGS_SONAR_AIKIDO.md](EXTERNAL_FINDINGS_SONAR_AIKIDO.md)); starter `templates/external-findings.yml` | the vendors' tokens (secrets) | `contents: read`, `actions: write` |
 | `verify-azure-oidc.yml` | Zero-resource check of the OIDC subject, the session context and the authorization boundary | OIDC | `contents: read`, `id-token: write` |
 
 **Composite actions** (`.github/actions/*` — for repos that build inside their own workflows):
@@ -25,6 +36,16 @@ templates to this rule.
 `render-version-metadata`, `determine-changes`, `verify-attestation`. The flagship's own
 `discover`, `resolve`, `scan-report` and `propose-ledger` composites are called by the kit, not by
 consumers.
+
+**Composites the kit's own workflows call** (never wired by a consumer; listed so a reviewer knows them):
+`kit-init` (the `templates/kit-init.yml` button runs it: `scripts/kit_init.py`, KDEC-041), `plain-errors` (every
+refusal in plain words first, `docs/errors/ERRORS.md`), `org-settings` (the org overlay's governed settings and
+each environment's Azure cloud, read before any deploy, build or rollback signs in: owner 2026-11-07,
+[SETTINGS_PRECEDENCE.md](SETTINGS_PRECEDENCE.md)), `reviewer-signals`, `resolve-policy`, `run-record`,
+`known-exploited`, `target-lease`, `capability-floor`, `feed-mirror`, `feed-mirror-refresh`, `secret-scan`,
+`deps-scan`, `iac-scan`, `sast-*`, `deployed-scan`, `static-site-package`, `selftest-tools` and `kit-api`.
+**One-command wiring:** `kit init` writes the right callers with exactly these permissions
+([GETTING_STARTED_1_HOUR.md](GETTING_STARTED_1_HOUR.md)).
 
 The flagship reaches its own composites with `uses: $/.github/actions/<name>`, which resolves to
 the **kit's** repository at the commit the caller pinned (requires a current github.com runner).
@@ -38,9 +59,10 @@ the run rather than to a repository, so a cross-repo consumer's runner receives 
 kit's own runner receives. Per-call-site inlining is what took that file to 608.8 KB, past GitHub's
 size ceiling, after which it did not fail — it never started.
 
-**Templates** (`templates/`): `security.yml`, `policy.yml`, `build-deploy.yml`, `nvd-cve.yml` and
-`policy-registration.example.json` — copy into a calling repo's `.github/workflows/`, replace
-the placeholder organisation, and pin the kit by commit SHA.
+**Templates** (`templates/`): `security.yml`, `policy.yml`, `build-deploy.yml`, `nvd-cve.yml`,
+`dependabot-triage.yml`, `build-deploy-static.yml` (a static site), `kit-init.yml` — copy into
+`.github/workflows/`, replace the org, pin the kit by SHA. Or let `kit init` do all of it
+([GETTING_STARTED_1_HOUR.md](GETTING_STARTED_1_HOUR.md)). Policy: [`POLICY_REGISTER.md`](POLICY_REGISTER.md).
 
 **Profiles** (`profiles/`): declarative statements of what a class of repo gets. They are intent
 records validated by `profiles/profile.schema.json` — the reusable workflows are the implementation.
@@ -49,15 +71,30 @@ Nothing reads a profile at runtime yet, and their vocabulary predates `iac_mode`
 
 ## Adoption sequence
 
-1. Host the kit in a repository your organisation owns and let it be consumed (SETUP.md §1.5).
-2. Pick a kit **commit SHA** to consume. Branches and tags move; a verdict is only as trustworthy as
+1. **Install the leak gates in the repository first** ([`LEAK_GATES.md`](LEAK_GATES.md)):
+   - merge `developer-safety/gitignore/baseline.gitignore` into its `.gitignore` (`merge-baseline.sh`; never replace it);
+   - install the gitleaks pre-commit hook;
+   - apply the push ruleset (`apply-push-ruleset.sh`);
+   - enable push protection where it is licensed.
+
+   Tines GitSync and other server-side pushes run no local hook. Only the push ruleset, push
+   protection and CI stand in front of them.
+2. Host the kit in a repository your organisation owns and let it be consumed (SETUP.md §1.5).
+3. Pick a kit **commit SHA** to consume. Branches and tags move; a verdict is only as trustworthy as
    the code that produced it.
-3. In a **pilot repo**: copy `templates/security.yml`, point it at that SHA, and let it run. The first
+4. In a **pilot repo**: copy `templates/security.yml`, point it at that SHA, and let it run. The first
    run will find things — that is the system working ([`FINDING_CLASSIFICATION.md`](../operations/FINDING_CLASSIFICATION.md)).
-4. Add `templates/policy.yml` with `soft_fail: true` (an attributed weakening), fix what it reports,
+5. Add `templates/policy.yml` with `soft_fail: true` (an attributed weakening), fix what it reports,
    then flip it to blocking.
-5. Only then wire build + deploy (`templates/build-deploy.yml`), and add the checks to branch
+6. Only then wire build + deploy (`templates/build-deploy.yml`), and add the checks to branch
    protection. The required check is the caller job's `Security gate`, e.g. `security / Security gate`.
+   **`templates/build-deploy.yml` REPLACES `templates/security.yml`**: delete `security.yml` in the
+   same change (one security caller per repository, KDEC-033). Its `security` job runs on the same
+   push, pull_request and dispatch triggers under the same job id, so the required check keeps its
+   name; with both installed the full suite ran twice per event. The one deliberate difference: a
+   *promotion* dispatch scans nothing, because the promoted record carries its verdict.
+   `tests/prove_security_caller_triggers.py` proves the replacement from the templates; confirm it on
+   your pilot repo (the required check reports from the new workflow) before deleting the old file.
 
 ## Cloud identity
 
@@ -73,16 +110,17 @@ Nothing environment-specific is baked in. Every deploy input arrives from the ca
   differ: `commercial` for Container Apps and the build, `gov` for App Service — set it explicitly.
 
 Grant `permissions` on the *calling job* as in the table above — a reusable workflow cannot grant
-itself more than the caller has. The kit's policy gate rejects workflow-level `id-token: write`.
+itself more than the caller has. The kit's policy gate WARNS on workflow-level `id-token: write` in a workflow with more than one job
+(`workflow-policy-check.yml`, a WARN, not an ERROR); grant it per job.
 
 ## Deploy contract
 
 Build emits `image_digest`, `image_config_digest`, `artifact_identity` and `sbom_sha256`. Deploy takes
 `image_digest` and refuses anything that isn't a full `sha256:` value. Deploy is only safe to treat as
 deployment provenance when `artifact_identity` is `REGISTRY_IDENTITY_PROVEN`: the artifact that was
-scanned is provably the artifact that ships. **The deploy reusables do not read
-`artifact_identity` themselves** — `templates/build-deploy.yml` checks it in its `verdict` job, and a
-caller that calls a deploy reusable directly must make that check itself.
+scanned is provably the artifact that ships. `templates/build-deploy.yml` checks it in its `verdict`
+job; since KDEC-029 the deploy reusables also take `artifact_identity` as an input, and a deploy whose
+build did not prove it can never be `verified-for-promotion`.
 
 The deploy reusables read the security verdict: `routing_result` is a **required** input, and anything
 but `PROCEED` or `PROCEED_WITH_ADVISORY` is refused **before login**, naming the value. At `uat` and
@@ -93,10 +131,161 @@ serving object (`deploy_provenance_digest`, `deploy_provenance_metadata_sha256`,
 `deploy_provenance_run`) from the `render-version-metadata` stamp the template passes as
 `version_metadata`.
 
-Deploys are gated by a GitHub Environment and reached by `workflow_dispatch`, never by a bare push.
+Deploys are gated by a GitHub Environment. A merge to `main` deploys **dev and test** (the build of
+that merge, in parallel); everything else is a `workflow_dispatch`.
 Health checks run **before** traffic moves: Container Apps probes the new revision on its own name
 before any traffic shifts and reverses only what the run changed; App Service health-checks the slot
 and never swaps an unhealthy one (a direct deploy with `slot: ''` is refused at `uat`/`prod`).
+
+### What the deploy also refuses before login, from the landing zone's side (OF-5, KDEC-034 proposed)
+
+The landing zone and the kit were reviewed against each other (2026-10-28) and the stronger mechanism
+taken on each side. The deploy reusables now also hold, before Azure login:
+
+| Check | What refuses | Where it comes from |
+|---|---|---|
+| platform stop | `KIT_RELEASE_BLOCK` set to anything but `none` (`platform_halted`, `ttl_expired`, `budget_cap_reached`), at **every** tier: `RELEASE_BLOCKED_BY_PLATFORM` | the landing zone writes it into each environment on every halt, TTL or budget-cap change |
+| zone readiness | at `uat`/`prod`, `KIT_ZONE_READINESS` not `READY` or `READY_WITH_EXCEPTIONS` -- `NOT_READY`, `UNKNOWN` or **unset**: `RELEASE_REFUSED_ZONE_NOT_READY` | the landing zone's readiness gates. **Outside a landing zone, setting `KIT_ZONE_READINESS: READY` on your own uat and prod environments is a TEST FIXTURE ONLY** -- in production it lets the deploy side certify the platform's readiness to itself, so the value must be issued by the landing zone when the app is in a connected one, and otherwise by AppSec, manually, as a recorded attestation (owner ruling 2026-11-03, refining O-34a); the app or deploy team never sets it for itself, and the kit records the value, not who wrote it; unknown is never a pass |
+| release approval | at `uat`/`prod`: no approval of this run's environment (an admin bypass leaves none), an approval by the requester or by the released commit's author, or no independent approval comment that **quotes the digest** (full `sha256:...` or its first 12 hex characters): `RELEASE_APPROVAL_ABSENT`, `SELF_DEPLOYMENT_APPROVAL`, `RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST` | GitHub's own self-review prevention excludes only the run's trigger. **Reviewers: approve with the digest in the comment.** `deploy_approval.confirm_digest: required` in the policy register demands it below uat too. Under the org overlay's small-team self-approval the requester or author may approve (`RELEASE_APPROVAL_SMALL_TEAM_SELF_APPROVAL`), still quoting the digest |
+
+With the KDEC-030 seam opted in (`KIT_TARGET_LEASE_ACCOUNT` vended), before the first mutation the
+deploy also refuses a setting it does not own or one the landing zone also claims
+(`SEAM_SETTING_OWNERSHIP_CONFLICT`; the kit owns only `release_ownership_stamp` and the keys in
+`KIT_SETTING_KEYS`) and an App Service swap that would carry a non-sticky landing-zone setting into
+production (`SEAM_SWAP_MOVES_LZ_SETTING`); keeps its release record create-only in the target's lease
+container, `releases/` (`RELEASE_RECORD_KEPT`), where the landing zone reads it; and an `arm` rollback
+never reverses a landing-zone entry (`ROLLBACK_REFUSED_PLATFORM_OWNED`) or takes its evidence
+(`ROLLBACK_REFUSED_FOREIGN_EVIDENCE`). When the environment vends `KIT_EDGE_ENDPOINT`, a verified
+release purges the app's own Front Door endpoint, and no other (`EDGE_PURGED`; a failed purge is an
+advisory, never a failed release). The daily deployed scan labels each finding with the landing zone's
+drift dimension and class as well as its own rule. Variables and roles:
+`docs/architecture/LZ_KIT_HANDOFF_CONTRACT.md`, "The extended hand-off set".
+
+### Static sites (Azure Static Web Apps) -- OF-5 K-8, KDEC-034 PROPOSED
+
+A static site has no registry digest, so the kit names it by its **content**. After your own build,
+`.github/actions/static-site-package` (input `path`: the built site) writes `kit-release.json` into the
+site root -- the tree digest (sha256 over the sorted `<path>\0<sha256 of the file>` lines of every other
+file) and the build's provenance -- uploads the site as `kit-static-site-<hex>` and its SBOM as
+`sbom-<hex>`, and outputs `site_digest`. Sign the marker in your attest job (`actions/attest`,
+`subject-path` = the marker; the job that holds `attestations: write` is the only one that does), then
+call `reusable-deploy-staticwebapp.yml` with `site_name`, `resource_group`, `site_digest` (and
+`artifact_run_id` when the build ran in another run). It refuses before login on the same verdict,
+binding, zone, protection, approval and promotion rules as the container deploys, and also when the
+artefact's files do not hash to `site_digest` (`SITE_DIGEST_MISMATCH`) or `preview_environment: ''` at
+uat/prod. It stages in the preview environment (`staging` by default), verifies the marker that preview
+serves and its health, then releases to production and reads production's marker back (NOW SERVING is
+that live marker, never the input). A failed preview is removed and production is never touched; a failed
+production gets the prior release's artefact back, re-verified by digest and on the live marker -- which
+needs that artefact to still exist, so keep `retention-days` at least as long as a release may stand (an
+expired one is `rollback_capability UNAVAILABLE`, refused at uat/prod). The deployment token is read with
+the deploy identity, masked, and handed to the pinned SWA CLI (2.0.2) through its environment: never a
+repository secret. **Unlink the site from its repository**: the posture check fails a site whose
+`repositoryUrl` is set (its own generated workflow can deploy around the kit) and a Free plan. The deploy
+identity needs a role that can read the site's deployment token and its environments, delete a preview
+environment, and write tags (e.g. `Contributor` scoped to the one static site); the landing zone vends it.
+It takes the same seam step and edge purge as the container deploys (KDEC-030 D-4 parity): with the lease
+on (`KIT_TARGET_LEASE_ACCOUNT`), the site's production app settings are read before the preview deploy
+and a `KIT_SETTING_KEYS` key the landing zone backs with a Key Vault reference refuses
+(`SEAM_SETTING_OWNERSHIP_CONFLICT`; unreadable: `SEAM_OWNERSHIP_NOT_ESTABLISHED`) -- the adapter itself
+writes no app setting; and after production is verified and stamped it purges only the Front Door
+endpoint vended in `KIT_EDGE_ENDPOINT` (`EDGE_PURGED`; none vended: `EDGE_PURGE_NOT_APPLICABLE`; a failed
+purge is an advisory, never a failed release). STUBBED, not live: `tests/prove_deploy_staticwebapp.py`
+(J11, J12).
+
+## Build once, promote the same digest (KDEC-029)
+
+A merge to `main` passes the full gate, builds **once**, signs, and produces its SBOM and provenance.
+That exact digest is what moves through the environments; nothing is rebuilt per environment.
+
+```
+merge to main ─▶ security + policy ─▶ build (sign, SBOM) ─▶ verdict ─┬─▶ deploy-dev   (parallel)
+                                                                     └─▶ deploy-test  (parallel)
+dispatch promote_from_run_id=<run> promote_from_environment=test ─▶ promote ─▶ uat or prod
+```
+
+- **dev and test deploy in parallel** from the same build (`deploy-dev`, `deploy-test` in
+  `templates/build-deploy.yml`). Each writes its own **promotion record**, published as the artifact
+  `kit-promotion-record-<environment>` (`schemas/promotion-record.schema.json`).
+- **uat and prod are promoted**, never deployed from a build: a dispatch with `promote_from_run_id`
+  runs no gate and no build. A uat/prod deploy that names no source is refused
+  `PROMOTION_REFUSED_NO_PREDECESSOR` before login.
+- **The predecessor is product policy**: `vars.KIT_PROMOTION_PREDECESSOR` (`test` or `uat`, default
+  `test`) for prod; uat's predecessor is always `test`. A dev success never satisfies it.
+- **"Tested"** — the record reads `verified-for-promotion` only when health passed, the end-to-end
+  test period passed (`vars.KIT_E2E_TEST_COMMAND`, `e2e_test_period_minutes`, KDEC-021), DAST where
+  configured shows no blocking finding (`vars.KIT_DAST_COMMAND`), the security-settings posture read
+  back from the live target holds, the build proved `artifact_identity` and V1 verified the
+  signature, the release verdict was PROCEED-class, and the digest was built from the default branch.
+  No e2e command means the deploy can never be verified for promotion.
+- **DAST is a neutral hook**: `dast_command` runs against `PROMOTION_APP_URL` and writes SARIF to
+  `PROMOTION_DAST_SARIF`; an unsuppressed `error`-level result blocks. An overlay supplies ZAP
+  baseline through it (for example: run the pinned ZAP image with `zap-baseline.py -t
+  "$PROMOTION_APP_URL"` and convert its JSON report to SARIF). It is **refused at prod**
+  (`DAST_REFUSED_PRODUCTION_TARGET`): prod gets passive checks only (health, posture).
+
+**The promotion gate** runs in the deploy reusable, before login, and refuses with the reason named:
+
+| Code | Why |
+|---|---|
+| `PROMOTION_REFUSED_SOURCE_UNREADABLE` | run Y published no readable record for environment Y |
+| `PROMOTION_REFUSED_DIGEST_MISMATCH` | the digest to deploy is not the one the record verified |
+| `PROMOTION_REFUSED_WRONG_PREDECESSOR` | not the required predecessor (or a dev/sandbox record) |
+| `PROMOTION_REFUSED_NOT_VERIFIED` | the record is not `verified-for-promotion`; the missing conditions are named |
+| `PROMOTION_REFUSED_NOT_FROM_MAIN` | not built from the default branch |
+| `PROMOTION_REFUSED_SIGNATURE` | V1 in this deploy did not read `ATTESTATION_VERIFIED` |
+| `PROMOTION_REFUSED_REVOKED` | a revocation (digest, signer, approval, test evidence) or a new critical / known-exploited finding |
+| `PROMOTION_REFUSED_NEW_FINDING` | the SBOM re-scan finds a HIGH finding the build gate did not have |
+| `PROMOTION_REFUSED_RECHECK_INCOMPLETE` | the SBOM re-scan, KEV, history or revocation register could not be read |
+| `PROMOTION_REFUSED_STALE` | verified more than 14 days ago |
+| `PROMOTION_REFUSED_SUPERSEDED` | a newer build of the same target (adapter + resource id) was verified in the same predecessor since |
+| `PROMOTION_REFUSED_TARGET_UNKNOWN` | the source record names no target (a canonical adapter id + `target_resource_id`) |
+| `PROMOTION_REFUSED_HISTORY_INCOMPLETE` | the target's predecessor history was not read to its end (the bound is named) |
+| `PROMOTION_REFUSED_SOURCE_AMBIGUOUS` | the source run recorded this digest for two targets in the environment |
+| `PROMOTION_REFUSED_SOURCE_TARGET_MISMATCH` | `promote_from_target_resource_id` is set and the source run has no record for that target |
+| `PROMOTION_REFUSED_SOURCE_TARGET_REQUIRED` | a uat or prod promotion left `promote_from_target_resource_id` empty (migration: set it; break-glass does not lift this) |
+
+Records are scoped to ONE deployment target: two apps sharing a repository and an environment name
+each resolve only their own records (artifact `kit-promotion-record-<env>--<hash of target>`; records
+from before this change keep `kit-promotion-record-<env>` and are still read). The daily scan compares
+what a target serves only with that target's records, and names a target with no readable record of
+its own `KIT-PROMOTION-HISTORY-INCOMPLETE` (as it does any history listing not read to its end).
+
+`promote_from_target_resource_id` names the predecessor target you promote from; the gate
+then takes only that target's record from the source run (digest AND target must match). It is
+**REQUIRED when promoting into uat or prod**: an empty value refuses with
+`PROMOTION_REFUSED_SOURCE_TARGET_REQUIRED` and is never replaced by a digest-only selection (no override,
+break-glass included). **Migration note:** every existing uat/prod caller (the `templates/build-deploy*.yml`
+promote dispatch, your own callers) must now pass it, set to the `target_resource_id` of the predecessor
+(test or uat) target the digest was verified on; the kit API's `deploy.request` carries it as an optional field
+(`promote_from_target_resource_id`, an Azure resource id; a malformed value is `API_SCHEMA_VIOLATION`) and passes it to the deploy input, so a
+uat/prod deploy through the API names it or the gate refuses. It stays optional in dev and test: left empty
+there, the record is chosen by digest as before and two targets with that digest refuse as ambiguous. A break-glass deploy's testing is owed until the predecessor
+target it was promoted from (recorded in the gate's `source.target`) verifies the digest; a record with
+no recorded predecessor target stays `BREAK_GLASS_DISCHARGE_NOT_ESTABLISHED` until a normal promotion.
+
+14 days is a **maximum**. Revoke at once by committing an entry to
+`.security/promotion-revocations.json` on the default branch (CODEOWNERS-protected):
+`{"revocations": [{"kind": "digest|signer|approval|test-evidence", "match": "...", "reason": "...",
+"revoked_by": "...", "revoked_at": "YYYY-MM-DD"}]}`. At promotion time the gate re-scans the build's
+SBOM (sha256 checked against the record) with the pinned Trivy and re-checks KEV; it never rebuilds.
+Prod keeps its environment approvals and self-review prevention.
+
+**Hotfix** is the same path compressed: `release_path: hotfix` with a shorter `e2e_test_period_minutes`
+(recorded), then promote. A **named rollback or hotfix decision** (`release_path: rollback|hotfix`
+with the weakening record: reason, authority, exception reference, unexpired expiry) may promote an
+older build that is not superseded. **Break-glass** (`release_path: break-glass`) needs an attributed
+exception expiring within 7 days; the deploy proceeds past the testing refusals (never past a
+substitution, a non-default branch, an unverified signature or a revocation), records
+`BREAK_GLASS`, and the template immediately runs the deployed scan, which tickets the testing owed
+until a verified record of that digest exists in the predecessor.
+
+**Daily deployed scan** (`templates/deployed-scan.yml`, `reusable-deployed-scan.yml`): per
+environment it reconciles what actually serves (revisions and their traffic weights, or slots, and
+their image digests), reports **artifact drift** (not the last promoted digest) and **security
+drift** (the serving digest re-scanned from its build SBOM plus KEV) separately, checks the security
+settings, and flags break-glass testing still owed. One report job feeds the existing ticket
+reconcile path. It never rolls a healthy production system back.
 
 ## Branching model — what runs where
 
@@ -104,7 +293,8 @@ and never swaps an unhealthy one (a direct deploy with `slot: ''` is refused at 
 scanners      →  all branches  ·  no environment  ·  no Azure credential at all
 build only    →  all branches  ·  github_environment: ""  ·  push: false
 build + push  →  main only     ·  github_environment: <env>  ·  push: true
-deploy        →  main only     ·  environment + approval
+deploy        →  main only     ·  dev + test from the merge build; uat/prod by promotion
+promote       →  dispatch      ·  no build  ·  environment + approval  ·  promotion gate
 ```
 
 **Restrict branches with the Environment's deployment branch policy, never with the federated
@@ -152,6 +342,44 @@ baseline, classify it (see [`FINDING_CLASSIFICATION.md`](../operations/FINDING_C
 style is not a security control**, and hard-failing on it blocked adoption of a security workflow on
 day one. Turn it on when your team chooses to.
 
+## Before 2026-12-31: inventory your legacy-keyed decisions (read-only)
+
+Approved decisions in `.security/dispositions.json` (or `.github/security/dispositions.json`) used
+to be keyed on the **legacy fingerprint** (12 hex characters: scanner, rule, path and message). The
+kit now keys on the **durable identity** (64 hex characters). The migration window (KDEC-008 OD-6)
+honours legacy keys until **2026-12-31** (extended from 2026-11-13 by KDEC-052); from the next day every legacy-keyed decision **stops
+suppressing** and its findings block again.
+
+Before that date, run this on each repository that has a register, from a checkout of the kit:
+
+```
+python scripts/legacy_inventory.py --register <repo>/.security/dispositions.json --findings findings.json
+```
+
+- `--findings` is the `findings.json` of a recent run of that repository (the scan report writes it;
+  repeat the flag for several). It is how a legacy key is resolved to its durable identity: a legacy
+  key is a hash and cannot be reversed, so without a findings file every row says
+  `REKEY_REQUIRED_IDENTITY_UNRESOLVED`. The kit's scan report step (`scan_report.py --batch`) writes it
+  beside `findings-coverage.json`; take it from that run.
+- Add `--json` for a machine-readable copy; `--today YYYY-MM-DD` to see the state on another day.
+- It **writes nothing and re-keys nothing** (`tests/prove_legacy_inventory.py` checks the inputs are
+  byte-identical after a run). Exit 2 means the register could not be read, which is not "no legacy keys".
+
+Each legacy key is listed with its scanner, rule, path, claim, owner (`approver_role`), expiry,
+the durable identity it resolves to, and one state:
+
+| State | What to do |
+| --- | --- |
+| `REKEY_REQUIRED` | A person reaffirms the decision as a new entry keyed on the durable identity shown, before the window closes. |
+| `REKEY_REQUIRED_IDENTITY_UNRESOLVED` | Same, but find the finding first: it was not in the findings file, its identity was not computed, or the key matches several identities (decide each one). |
+| `ALREADY_REKEYED` | A record on the durable key exists **and suppresses today** (approved, in date, in schema); nothing is lost and the legacy entry may be retired. |
+| `REKEYED_REPLACEMENT_NOT_EFFECTIVE` | A record exists on the durable key but does **not** suppress today (expired, rejected or only proposed, or outside the schema). The row says why. Treat it like `REKEY_REQUIRED`: a person must reaffirm it on the durable key before the window closes. It is counted as needing reaffirmation. |
+| `NOT_SUPPRESSING` | The entry suppresses nothing anyway (expired, not approved, outside the schema); the reason is shown. |
+
+The last line counts each state. The output is an inventory of candidate migration obligations, not proof that any approval was safely
+migrated. Re-keying is a new approval: never copy a legacy record onto the new
+key without the owner of the decision agreeing that it still holds.
+
 ## What each scanner needs in order to see anything
 
 A scanner that runs against a project it cannot parse exits **zero**. It does not warn you that it
@@ -165,6 +393,9 @@ seeded fixture that a green job failed to detect.
 | .NET SCA | `.csproj` / `.sln` so `dotnet restore` can resolve | dependency audit finds nothing |
 | .NET / Java SAST | `.cs` / `.java` sources under `paths` | job reports "no sources", skips, and says so |
 | Python SAST | `.py` sources under `paths` | skipped with a notice |
+| **PHP dependency scan** (since Release 3, next) | **`composer.lock`** beside each `composer.json`. Trivy reads only the lock: a `composer.json` alone produced no result at all (measured, trivy 0.71.2) | each `composer.json` without its lock is a named, counted `COVERAGE_GAP` (`PHPDependenciesUnlocked`) — never a dependency scan that passed |
+| PHP SAST (Semgrep; since Release 3, next) | `.php` sources under `paths`. `p/php` is added to your `semgrep_config` automatically whenever discovery finds PHP, so narrowing the rulesets cannot drop it | a PHP scan that examined no PHP file, or loaded no PHP rule, is `COLLECTION_FAILED`. **The shipped Semgrep container (1.178.0, pinned by digest) reads PHP 5.6–8.4** (measured in that image). **PHP 8.5: scan what parses, flag the rest** (owner, 2026-10-22): Semgrep (1.178.0, 1.182.0) cannot parse the `(void)` cast or `final` promoted properties. Every other file is still scanned and its findings kept (they block as usual); the files it could not fully parse are **named** in the summaries, and the scan is `PARTIAL` (`PARSE_PARTIAL_PHP_SYNTAX`), never `PASS`: `PROCEED_WITH_ADVISORY`, cause `COVERAGE_PARTIAL`, not refused at uat/prod (not a version gap). Any other Semgrep error stays `COLLECTION_FAILED`. Above 8.5 is still a `VERSION_GAP`. Kit versions before lane L-SG ran Semgrep 1.90.0, which read PHP only to 7.2 |
+| PHP target version | `.php-version`, or `config.platform.php` / `require.php` in `composer.json` (a constraint such as `^8.1` is recorded as a constraint, never a version) | no version declared: the PHP capability is `VERSION_GAP` (recorded, not enforced), so Semgrep's PASS reads `PARTIAL` |
 | IaC | Terraform, Bicep, ARM, Kubernetes, Helm or a Dockerfile under `paths`; `iac_mode` (default `auto`) not `disabled` | `NOT_APPLICABLE` with the path searched. `iac_mode: required` makes absence a finding; `disabled` is a recorded weakening. (`enable_iac` is deprecated and ignored — the run says so) |
 | Container image | `image_ref` (prefer a digest) | `NOT_APPLICABLE`, never a clean result |
 | Everything Semgrep | Your code must not sit under a path Semgrep ignores by default (`tests/`, `fixtures/`, …) | **the kit overrides this** with its own `.semgrepignore`, because the default caused silent empty results |
@@ -181,7 +412,7 @@ discovery, against the content under `paths`** — a selector can only narrow it
 | `language:` | Meaning |
 |---|---|
 | **`auto`** (default), `multi` | Consider every family. Each still runs only if discovery finds something for it to analyze. `multi` is a synonym |
-| a list of `python`, `node`, `dotnet`, `java`, `go`, `cpp`, `iac` (aliases `js`/`ts`, `py`, `c#`, `c++`, `tf`) | **Exclude** every discovered ecosystem not listed. It can never add one discovery did not find, and the narrowing is recorded as a weakening (`SCOPE_NARROWED`) — attribute it or the verdict is `DECISION_REQUIRED` |
+| a list of `python`, `node`, `dotnet`, `java`, `go`, `cpp`, `php`, `iac` (aliases `js`/`ts`, `py`, `c#`, `c++`, `tf`) | **Exclude** every discovered ecosystem not listed. It can never add one discovery did not find, and the narrowing is recorded as a weakening (`SCOPE_NARROWED`) — attribute it or the verdict is `DECISION_REQUIRED` |
 
 So the default on a repository containing Python and Terraform runs the Python and IaC paths and
 **skips** Go, Java, .NET and C/C++. That is the correct outcome, not a coverage gap. Running a Go
@@ -252,3 +483,15 @@ manifest gives the run id or proof, what it asserted, and its scope.
 | **Ticketing** | reconciler proven live on a personal Jira; the armed workflow has no hosted run; Azure DevOps against stubs only |
 
 **Validate on one repo before rolling out**, on the kit commit you pinned.
+
+## Security review of an app that uses the kit
+
+A security reviewer brought in on an app, or asked to approve a CAB change or the adoption of an
+internally built app, starts at [`docs/security-review/README.md`](../security-review/README.md): the
+checklist in review order, when to stop and ask, when to escalate, how to read the run summary, the
+approval matrix and the sign-off rules. The security review of a change going to CAB (cloud or app)
+is [`CAB-CHANGE-SAFETY-STEPS.md`](../security-review/CAB-CHANGE-SAFETY-STEPS.md) with its checklist
+[`CAB-CHANGE-REVIEW-CHECKLIST.md`](../security-review/CAB-CHANGE-REVIEW-CHECKLIST.md) (understanding
+gate, boundary triage, app and read-only Azure, AWS and GitHub checks, rollback, the verdict pasted onto
+the existing CAB ticket); pulled in before the CAB presentation,
+[`EARLY-REVIEW-REQUESTS.md`](../security-review/EARLY-REVIEW-REQUESTS.md). Authored, not field-tested.

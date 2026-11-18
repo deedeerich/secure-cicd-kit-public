@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/tickets/compliance-exception.schema.json",
+  "title": "ticket template: compliance request, compliance exception (template_version 2)",
+  "description": "COMPLIANCE_EXCEPTION (owner, 2026-11-04): a separate, STRICTER standard -- an exception against a named framework's control. It needs the framework, the control id, the requirement text, a specific scope, compensating controls, an expiry and a named approving authority. Opens a COMPLIANCE_EXCEPTION_REQUEST. KDEC-037.",
+  "x-template": "compliance-exception",
+  "x-template-version": 2,
+  "x-enabled": true,
+  "x-ticket-class": "COMPLIANCE_EXCEPTION_REQUEST",
+  "x-requested-disposition": "compliance_exception",
+  "x-disposition-type": "ACCEPTED_RISK",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "finding",
+    "framework",
+    "control_id",
+    "requirement_text",
+    "scope",
+    "compensating_controls",
+    "expires",
+    "approving_authority",
+    "justification",
+    "requested_by",
+    "evidence"
+  ],
+  "properties": {
+    "finding": {
+      "description": "The finding (finding.schema.json).",
+      "type": "object"
+    },
+    "requested_by": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9 @._+\\[\\]-]{1,100}$"
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "sha256"
+      ],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 500
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "receipt": {
+          "description": "A custody receipt for the evidence (a store's object id or signature).",
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 300
+        }
+      }
+    },
+    "framework": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 100
+    },
+    "control_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 60
+    },
+    "requirement_text": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 2000
+    },
+    "scope": {
+      "description": "A SPECIFIC scope: from what, to what, under what condition.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to",
+        "condition"
+      ],
+      "properties": {
+        "from": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 300
+        },
+        "to": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 300
+        },
+        "condition": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 500
+        }
+      }
+    },
+    "compensating_controls": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "type": "string",
+        "minLength": 5,
+        "maxLength": 500
+      }
+    },
+    "expires": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+      "description": "YYYY-MM-DD, after today."
+    },
+    "approving_authority": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9 @._+\\[\\]-]{1,100}$",
+      "description": "The named authority who approves it."
+    },
+    "justification": {
+      "type": "string",
+      "minLength": 20,
+      "maxLength": 2000
+    }
+  }
+}

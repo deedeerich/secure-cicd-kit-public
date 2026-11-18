@@ -1,0 +1,5 @@
+{
+  "schema": "kit-id-mappings/1",
+  "_about": "Mappings a PERSON made for ids the kit could not read (scripts/unknown_ids.py). Each entry is a reviewed change: author, date (YYYY-MM-DD) and review_ref (the pull request) are required, or the entry is refused and maps nothing. Kinds: rule-family {tool, rule, family}, cwe-form {raw, canonical}, vuln-id-form {raw, canonical}. Protected by CODEOWNERS.",
+  "mappings": []
+}

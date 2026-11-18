@@ -68,7 +68,10 @@ GUI's three-state dropdown maps to one or the other, never both.
 
 ## Scanners
 
-**A missing `NVD_API_KEY` does not fail the NVD workflow** — it degrades to unauthenticated and
+**The NVD workflow's data comes from a third-party public datafeed by default** (the
+Dependency-Check project's, no organisation-hosted mirror unless the optional Release 4 organisation mirror is configured -- KDEC-032, built, not yet run live), so the
+runner needs egress to it, and `NVD_API_KEY` is used only if `nvd_datafeed_url` is emptied. In that
+mode **a missing `NVD_API_KEY` does not fail the NVD workflow** — it degrades to unauthenticated and
 rate-limited. *"The scan ran"* and *"the scan had current data"* are different claims.
 
 **gitleaks release downloads return HTTP 503 intermittently.** The URL is fine; the CDN is not. Pull

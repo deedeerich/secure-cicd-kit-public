@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/params/evidence.export.schema.json",
+  "title": "params of evidence.export",
+  "description": "The kit's half of the per-app evidence bundle (KDEC-039): for this repository, at one commit or one release (a kit-release-record deployment, read for its commit). Exactly one of commit and release (API_SCHEMA_VIOLATION otherwise); a repository other than the one this API serves is API_REPOSITORY_NOT_SERVED. A read: no idempotency key.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "commit": {
+      "description": "The full 40-hex commit.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "release": {
+      "description": "The id of a GitHub deployment with task kit-release-record (the durable release record).",
+      "type": [
+        "integer",
+        "string"
+      ],
+      "minimum": 1,
+      "pattern": "^[1-9][0-9]{0,19}$"
+    },
+    "repository": {
+      "description": "Optional: the repository the caller expects. Must be the one this API serves.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+# The kit's OWN Dependabot configuration check (owner, 2026-11-06), dogfooded: the same reusable a
+# consumer calls through templates/dependabot-config-check.yml, by `./`. A pull request that adds a
+# manifest no entry reads, or leaves an entry without its manifest, fails with the fix.
+# No `paths:` filter (a required check behind one never starts); a change that touches no manifest
+# is answered NOTHING_TO_CHECK in seconds. Every push to main runs it in full
+# (tests/prove_push_to_main_runs_all.py).
+name: Dependabot configuration
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  dependabot-config:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/reusable-dependabot-config-check.yml

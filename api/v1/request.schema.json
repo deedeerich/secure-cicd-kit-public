@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/request.schema.json",
+  "title": "secure-cicd-kit API v1 request envelope",
+  "description": "Every call to the kit's API is one of these, sent as the `request` input of a workflow_dispatch of the repository's kit-api.yml (or the `request` member of a repository_dispatch client_payload). `params` is validated against api/v1/params/<operation>.schema.json. KDEC-035.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "operation", "correlation_id", "params"],
+  "properties": {
+    "api_version": {
+      "description": "The contract version. Only v1 exists; any other value is refused API_VERSION_UNSUPPORTED.",
+      "type": "string",
+      "pattern": "^v[0-9]{1,3}$"
+    },
+    "operation": {
+      "description": "What is asked. An operation the repository has not enabled is refused API_OPERATION_NOT_ENABLED.",
+      "type": "string",
+      "pattern": "^[a-z]{2,16}\\.[a-z]{2,16}$"
+    },
+    "correlation_id": {
+      "description": "Made by the caller, unique per call, echoed in the run name, the result and the check run. kapi-<UTC yyyymmddThhmmssZ>-<12 hex>.",
+      "type": "string",
+      "pattern": "^kapi-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}$"
+    },
+    "idempotency_key": {
+      "description": "Required for a write (tickets.write, tickets.comment, deploy.request). The same key twice is API_DUPLICATE_REQUEST naming the first call. Never a secret: it is shown in run names.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{8,128}$"
+    },
+    "on_behalf_of": {
+      "description": "Who the caller acts for, as the caller DECLARES it. A hint, never a claim: recorded, never used to authorise anything.",
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^[A-Za-z0-9 @._+-]{1,200}$"
+    },
+    "client": {
+      "description": "The calling program, for the record.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string", "pattern": "^[A-Za-z0-9._ -]{1,64}$"},
+        "version": {"type": "string", "pattern": "^[A-Za-z0-9._+-]{1,32}$"}
+      }
+    },
+    "dry_run": {
+      "description": "Plan only: nothing is written to a tracker and nothing is deployed. Honoured by tickets.write and tickets.comment.",
+      "type": "boolean"
+    },
+    "params": {
+      "description": "The operation's own parameters (api/v1/params/<operation>.schema.json).",
+      "type": "object"
+    }
+  }
+}

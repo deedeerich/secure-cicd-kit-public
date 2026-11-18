@@ -27,17 +27,22 @@ HOW IT RUNS WITHOUT A CONTAINER RUNTIME
     shipped step.
 
 SCENARIOS
-    seeded          one module with flaws, soft_fail off  -> count >= 1, enforce FAILS
+    seeded          one module with flaws, soft_fail off  -> count >= 1, enforce hands it to the gate
+                    (findings_state=FINDINGS; the step succeeds -- lane L-S, O-24)
     clean           one clean module                      -> count 0, enforce passes
     newer_beside    clean + a module that will not load   -> COLLECTION_FAILED (regression)
     silent_beside   seeded + a module that writes nothing -> COLLECTION_FAILED
     corrupt_beside  seeded + a module with broken SARIF   -> COLLECTION_FAILED
+    mirror          clean, vars.KIT_SCANNER_IMAGE_REGISTRY set (KDEC-032) -> count 0, and the step
+                    runs the mirror's copy BY THE SAME DIGEST; every other scenario leaves it unset
+                    (the public default) and must run Docker Hub's image by that digest
 
 EXIT
     0  every scenario decided as it must
     1  a scenario decided wrongly
     2  could not be checked (no bash, no gosec, no go, no jq) -- UNKNOWN, never PASS
 """
+import io
 import os
 import sys
 
@@ -47,6 +52,9 @@ import _scan_step_harness as h  # noqa: E402
 import prove_bootstrap_failure as pbf  # noqa: E402
 
 JOB = 'sast-go'
+# The digest the step pins (tests/prove_feed_mirror_gaps.py G1 holds it to one digest at every site).
+GOSEC_DIGEST = 'sha256:2cf71ea78210c496c65e3a987576a9c8317b68e20f2960520b3f6f8f9f539be5'
+MIRROR_REGISTRY = 'mirror.example.io'
 SCAN, ENFORCE = 'gosec', 'gosec — enforce'
 
 DOCKER = r'''#!/usr/bin/env bash
@@ -65,8 +73,10 @@ while [ $# -gt 0 ]; do
     *) break ;;
   esac
 done
-shift   # the image
 host="${vol%:/src}"
+printf '%s
+' "$1" >> "$host/../docker-images.txt"   # the image, for the proof to read
+shift
 case "$(basename "$host")" in
   silent) exit 0 ;;
   corrupt) printf '{"runs": [ truncated' > "$host/gosec.sarif"; exit 0 ;;
@@ -118,26 +128,38 @@ def main():
         dshim = os.path.join(sb.root, 'docker-shim')
         h.write(os.path.join(dshim, 'docker'), DOCKER)
         os.chmod(os.path.join(dshim, 'docker'), 0o755)
+        # enforce: HANDED (exit 0, findings_state=FINDINGS: the security gate enforces it -- lane
+        # L-S, O-24) | PASS (exit 0, nothing handed) | FAIL (could not analyse every module)
         scenarios = [
-            ('seeded', module('svc', src=SEEDED_SRC), '', True, False),
-            ('clean', module('svc'), '', False, True),
+            ('seeded', module('svc', src=SEEDED_SRC), '', True, 'HANDED'),
+            ('clean', module('svc'), '', False, 'PASS'),
             ('newer_beside', merge(module('svc'), module('newer', go='1.99')),
-             'COLLECTION_FAILED', None, False),
+             'COLLECTION_FAILED', None, 'FAIL'),
             ('silent_beside', merge(module('svc', src=SEEDED_SRC), module('silent')),
-             'COLLECTION_FAILED', None, False),
+             'COLLECTION_FAILED', None, 'FAIL'),
             ('corrupt_beside', merge(module('svc', src=SEEDED_SRC), module('corrupt')),
-             'COLLECTION_FAILED', None, False),
+             'COLLECTION_FAILED', None, 'FAIL'),
+            ('mirror', module('svc'), '', False, 'PASS'),
         ]
         for name, files, want_coll, finds, enforce_ok in scenarios:
             ws = sb.workspace(name, files)
+            registry = MIRROR_REGISTRY if name == 'mirror' else ''
             vals = {'inputs.paths': '.', 'inputs.soft_fail_sast': 'false',
-                    'inputs.advisory_mode': 'false', 'inputs.go_version': '1.22'}
+                    'inputs.advisory_mode': 'false', 'inputs.go_version': '1.22',
+                    'vars.KIT_SCANNER_IMAGE_REGISTRY': registry}
             rc, log, out, unk = sb.run(bash, steps[SCAN], vals, ws, extra_path=dshim)
             if unk:
                 bad.append('%s: scan step reads unmodelled %s' % (name, unk))
+            ilog = os.path.join(ws, 'docker-images.txt')
+            images = sorted(set(io.open(ilog, encoding='utf-8').read().split())) if os.path.isfile(ilog) else []
+            want_img = (MIRROR_REGISTRY + '/securego/gosec@' + GOSEC_DIGEST) if registry else                 ('securego/gosec:2.24.6@' + GOSEC_DIGEST)
+            if images != [want_img]:
+                bad.append('%s: the step ran image(s) %r, expected exactly %r (registry %r)'
+                           % (name, images, want_img, registry or 'unset'))
             evals = dict(vals, **{'steps.gosec.outputs.%s' % k: out.get(k, '')
                                   for k in ('count', 'collection')})
-            erc, elog, _o, unk = sb.run(bash, steps[ENFORCE], evals, ws)
+            erc, elog, eout, unk = sb.run(bash, steps[ENFORCE], evals, ws)
+            handed = eout.get('findings_state', '')
             if unk:
                 bad.append('%s: enforce step reads unmodelled %s' % (name, unk))
             coll, n = out.get('collection', ''), out.get('count', '')
@@ -152,9 +174,15 @@ def main():
                            % (name, log[-600:]))
             if finds is False and n != '0':
                 bad.append('%s: count=%r, expected 0' % (name, n))
-            if enforce_ok and erc != 0:
-                bad.append('%s: enforce failed (exit %d)\n%s' % (name, erc, elog[-300:]))
-            if not enforce_ok and erc == 0:
+            if enforce_ok in ('PASS', 'HANDED') and erc != 0:
+                bad.append('%s: enforce failed (exit %d) -- findings go to the gate, never a '
+                           'failed job\n%s' % (name, erc, elog[-300:]))
+            if enforce_ok == 'HANDED' and handed != 'FINDINGS':
+                bad.append('%s: findings_state=%r -- a counted finding with soft_fail_sast off must '
+                           'be handed to the gate' % (name, handed))
+            if enforce_ok == 'PASS' and handed:
+                bad.append('%s: findings_state=%r where nothing is enforced' % (name, handed))
+            if enforce_ok == 'FAIL' and erc == 0:
                 bad.append('%s: enforce PASSED where it must fail' % name)
     finally:
         sb.close()

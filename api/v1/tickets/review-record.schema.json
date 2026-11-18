@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/tickets/review-record.schema.json",
+  "title": "finalized review record (template_version 2)",
+  "description": "The record that lets a review's tickets be written (O-35g as amended, KDEC-037). Kept at .security/reviews/<review_id>.json on the PROTECTED DEFAULT BRANCH, merged by a pull request the concurring reviewer APPROVED (read back through the GitHub API). The concurring reviewer is on the review approver list and is never the submitter, the API caller or the declared on_behalf_of. evidence_set_sha256 binds the concurrence to exactly what will be written (scripts/ticket_templates.py evidence_set_sha256; scripts/kit_api.py evidence-hash). v2 (owner, 2026-11-04): concurrence is AGREE or DISAGREE with an alternative (sent back, the dissent recorded), per review or per item; separation of duties -- the concurrer is none of submitted_by, run_started_by (the person who started the AI run), triaged_by, the caller.",
+  "x-template": "review-record",
+  "x-template-version": 2,
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "review_id",
+    "status",
+    "submitted_by",
+    "concurred_by",
+    "concurred_on",
+    "decision",
+    "evidence_set_sha256",
+    "statement"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "kit-review-record/2"
+    },
+    "review_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,79}$"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "FINALIZED",
+        "DRAFT",
+        "WITHDRAWN"
+      ]
+    },
+    "title": {
+      "type": "string",
+      "maxLength": 200
+    },
+    "submitted_by": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9 @._+\\[\\]-]{1,100}$",
+      "description": "Who (or what) submitted the review."
+    },
+    "concurred_by": {
+      "description": "The concurring reviewer's GitHub login.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
+    },
+    "concurred_on": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+      "description": "The date of the concurrence."
+    },
+    "evidence_set_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "statement": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 1000
+    },
+    "run_started_by": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9 @._+\\[\\]-]{1,100}$",
+      "description": "The person who started the AI run under review."
+    },
+    "triaged_by": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9 @._+\\[\\]-]{1,100}$",
+      "description": "The person who made the triage decisions in it."
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "AGREE",
+        "DISAGREE"
+      ]
+    },
+    "alternative": {
+      "description": "Required with DISAGREE: what the reviewer would do instead.",
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 2000
+    },
+    "item_decisions": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "item",
+          "decision"
+        ],
+        "properties": {
+          "item": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 49
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "AGREE",
+              "DISAGREE"
+            ]
+          },
+          "alternative": {
+            "type": "string",
+            "minLength": 5,
+            "maxLength": 2000
+          }
+        }
+      }
+    }
+  }
+}

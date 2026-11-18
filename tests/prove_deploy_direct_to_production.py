@@ -113,7 +113,7 @@ def main():
 
     st = W.appservice_state(unhealthy_images=[W.ref(W.NEW)])
     before = st['webapp']['slots']['production']['linuxFxVersion']
-    res, final, _ = W.run_world(W.D.APPSERVICE, inputs('prod', 'staging'), st)
+    res, final, _ = W.run_world(W.D.APPSERVICE, W.break_glass(inputs('prod', 'staging')), st)
     after = final['webapp']['slots']['production']['linuxFxVersion']
     text = res['log'] + res['summary']
     print('  recovery prod  slot=staging unhealthy  production unchanged=%s' % (before == after))

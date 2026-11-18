@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "tickets": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-e", "TICKETS_TOKEN", "example/tickets-mcp:latest"],
+      "env": {"TICKETS_TOKEN": "${TICKETS_TOKEN}"}
+    }
+  }
+}

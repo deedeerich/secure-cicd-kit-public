@@ -168,6 +168,9 @@ omits both optional arrays, and genuinely read nothing is still `EXAMINED`. This
 that case — only a denominator could. It is the weakest row in `examination_of` and the first to
 revisit against real scanner output.
 
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep prove_hollow_scan.py and the hollow-scan witness required; add any new scanner to the hollow fixtures when it is added.
+
 ---
 
 ## D-2 · The durable finding identity is empty for every finding, from every scanner — **SEVERE** · **FIXED**
@@ -269,6 +272,9 @@ gitleaks, detect-secrets, trufflehog and any secret/credential rule namespace, s
 refuses them with `SECRET_SUBJECT_NOT_BASELINEABLE` instead of `CONTENT_UNDERIVABLE`. This is
 both a better sentence and the precondition for hashing constructs at all — see D-8.
 
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep prove_report_emits_findings.py and the identity proofs required; alert when identity is empty on more than a set share of findings.
+
 ---
 
 ## D-3 · `SOURCE` requires a construct, so no dependency finding can ever be fingerprinted — **SEVERE** · **FIXED**
@@ -356,9 +362,22 @@ identify({'finding_subject': 'SOURCE', 'cwe': 'CWE-89', 'rule_family': 'f',
   -> UNFINGERPRINTABLE / CONTENT_UNDERIVABLE      # still refuses, by design
 ```
 
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep the split subject (SOURCE_DEPENDENCY) proven; review the subject table when a new finding kind is added.
+
 ---
 
-## D-8 · The redactor strips the only carrier of CONTENT before the reporter reads it — **SEVERE** · **DOCUMENTED, NOT FIXED**
+## D-8 · The redactor strips the only carrier of CONTENT before the reporter reads it — **SEVERE** · **FIXED IN CODE (KDEC-038), PROVEN LOCALLY; HOSTED RUN OWED**
+
+**2026-11-06, lane kit-sast-export (KDEC-038).** The report no longer depends on the snippet. The security-gate job
+checks out the scanned commit, and `scan_report` (with `--source-root`, passed by the scan-report composite) reads
+a SOURCE finding's reported line from the file: the construct, the enclosing symbol and a code anchor (the
+normalised line and its ordinal -- never the line number), through `scripts/code_finding_key.py`. Every tool reads
+the same text, so bandit and semgrep on one line are one identity. A path outside the checkout is never read
+(SOURCE_PATH_REFUSED); a file not in the checkout leaves the old behaviour, said in the basis. Proven by
+`tests/prove_sast_secret_tickets.py` on SARIF that carries NO snippet; not yet observed in a hosted report job.
+The rest of this entry is the record as it stood.
+
 
 **What it is.** Two controls in this kit are in direct conflict, and fixing D-2 is what made the
 conflict visible rather than academic.
@@ -397,6 +416,9 @@ finding refuses outright and no secret-derived material can reach a ledger under
 the gate reports a fixed identity model — the worst combination, because the proof is green.
 Dependency and image findings are unaffected: neither has a construct to strip.
 
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep tests/prove_sast_secret_tickets.py required (the line read from the checkout replaces the redacted snippet), and run it hosted once on the public mirror.
+
 ---
 
 ## D-9 · The advisory alias SET had exactly one member by construction — **MODERATE** · **FIXED**
@@ -424,6 +446,9 @@ change — it was always going to happen the first time two aliases appeared in 
 the honest answer to it is a lineage event, not a smaller set. It is registered as
 `ADVISORY_ALIAS_ADDED` and it is the one cause where nothing in the repository and nothing in the
 scanner changed.
+
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep the alias-set proof required; add advisories with three or more aliases to its fixtures.
 
 ---
 
@@ -464,6 +489,9 @@ results from. Git for Windows' bash is named explicitly as a fallback candidate.
 observed: with only the stub reachable the probe rejects it and names the WSL error and the file
 exits 2; with Git Bash present the gate proves itself and exits 0.
 
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Use the shared usable_bash() probe in every harness; the battery puts Git for Windows bash ahead of the WSL stub (tools/battery.ps1).
+
 ---
 
 ## D-5 · Structurally malformed SARIF raises out of the parser instead of returning `UNPARSEABLE` — **MODERATE**
@@ -497,6 +525,9 @@ rather than swallowed, so the behaviour is pinned and a future fix will be visib
 TypeError)` returning `UNPARSEABLE`, and have `batch()` isolate each scanner so one bad document
 costs one row.
 
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep prove_malformed_sarif_isolated.py required and add each new malformed shape found in the wild to its fixtures.
+
 ---
 
 ## D-6 · Five validation deferrals expired 8 days ago and the gate is RED — **MODERATE** · **DELIBERATELY NOT "FIXED"**
@@ -528,6 +559,9 @@ exhaustion**: 10 of 15 slots are used, and a red gate that stays red for weeks i
 eventually works around. That is the same muting dynamic as D-4, on a longer clock.
 
 **State: REPORTED, UNCHANGED.** Needs a dated decision by the owner, not a worker's edit.
+
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep the expired-deferral gate red until each deferral is closed by evidence or re-dated by the owner with a reason.
 
 ---
 
@@ -566,6 +600,9 @@ are owned by another worker mid-change and were not touched. The fix is to give
 it — **the same "one truth in two places" failure the exporter's own `exportable()` docstring
 warns about**, one layer out — and it belongs with whoever owns that surface.
 
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep the export profile excluded from the export it governs, and prove it in prove_export_scope.py.
+
 ---
 
 ## D-10 · The resolve position caps CodeQL on a platform pre-flight the analysis contradicts — **MODERATE** · **DOCUMENTED, NOT FIXED**
@@ -593,6 +630,193 @@ rather than silent, which is why it is MODERATE and not CATASTROPHIC.
 `PLATFORM_UNAVAILABLE` only from *publication*, and let the capability verdict read the job's own
 `cq_state` (COMPLETE / COLLECTION_FAILED / UNAVAILABLE) rather than the pre-flight. It touches
 `tests/test_resolve.py`'s platform rows and was deliberately not folded into the gate fix.
+
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Let CodeQL run when the analysis can read the code even if the platform probe says UNAVAILABLE, recording the probe and the result separately.
+
+---
+
+## D-11 · A rejected job token was reported five different ways, none naming it — **MODERATE** · **FIXED**
+
+**Observed (owner's work copy, GHE.com data-residency host, GitHub-hosted runners, 2026-11-02;
+screenshots only).** Every API call with the job's own `github.token` was answered 401 "Bad
+credentials", at `https://api.github.com/...`: resolve "Consume the platform-probe values" crashed on
+`Invalid format '  "message": "Bad credentials",'`; the consumer path's dispatch and collect steps
+printed a raw `HTTP 401` with `gh auth login` advice; the self-test pin step said *"rate-limited ...
+(set GITHUB_TOKEN to lift the unauthenticated limit)"* with GITHUB_TOKEN set; every Trivy scan was
+COLLECTION_FAILED after setup-trivy's checkout of `aquasecurity/trivy`; Dependabot Updates failed
+`dependency_file_not_found` on `/Dockerfile`.
+
+**Root cause, traced.** Those messages are KDEC-027's defects, and they are not in the kit the owner
+exported (`82e95a7`): the unsanitised `dependabot_basis=...${body:0:160}` write was fixed in
+`8b64f97`, the "lift the unauthenticated limit" text removed in `686431b`, trivy-action/setup-trivy
+removed in `3fdb59f` (all 2026-10-23, all ancestors of `82e95a7`). `tests/prove_job_token_named.py`
+run against the `c7e1ea9` tree (`KIT_PROOF_ROOT`) reproduces the crash (6 unparseable output lines)
+and the 8 setup-trivy sites; against `82e95a7` the output parses and Trivy is the pinned binary. So
+the runs executed a pre-KDEC-027 revision -- scheduled runs use the DEFAULT branch's workflow files --
+on a ghe.com host, where a token sent to github.com is always 401. The kit fixed the crash then; what
+it still lacked was the NAME: nothing said "GitHub refused this job's token, on which host, whose
+setting". Separately, `.github/dependabot.yml` listed eight ecosystems at `/` where the kit has no
+manifest; Dependabot fails such a job instead of skipping it (the file's comment said otherwise).
+
+**Fixed (2026-11-02).**
+1. **A job token preflight**, in a step that already ran: the discover platform step's repository GET
+   classifies its answer (`scripts/api_token_cause.sh`, taxonomy `api_token_preflight`):
+   `JOB_TOKEN_REJECTED`, `ORG_IP_ALLOW_LIST_BLOCKS_RUNNER`, `ORG_SSO_BLOCKS_TOKEN`, `RATE_LIMITED`,
+   `API_UNREACHABLE`, `TOKEN_PREFLIGHT_UNCLASSIFIED`; output `token_preflight`, one summary row with
+   the owner role and the checklist, one annotation titled with the cause. No new job, no new check.
+2. **Downstream reports the same word**: resolve's Dependabot basis and owner row; the consumer
+   path's three gh jobs run the same preflight first and fail on it, named; the pin checkers' UNKNOWN
+   names the cause per path (git: `API_UNREACHABLE`; REST: `JOB_TOKEN_REJECTED (HTTP 401)` /
+   `RATE_LIMITED (HTTP 403)` / "no token api.github.com issued"). Exit codes unchanged (2).
+3. **The host is written, never defaulted**: every `GH_REPO` and `-R`/`--repo` naming this run's
+   repository is `${GH_HOST}/OWNER/REPO`; `gh attestation verify` passes `--hostname`
+   (`tests/prove_ghe_host.py` H8 static, H9 under bash on a simulated ghe.com host).
+4. **Trivy**: the self-test tool composite's `install.sh` (unpinned script, run as root) is the same
+   pinned, sha256-verified release binary as every scan job (T8 refuses setup-trivy, a checkout of
+   aquasecurity/trivy, or install.sh).
+5. **Dependabot**: entries only where a manifest is (github-actions; terraform at
+   `/infra/feed-mirrors`; the held fixture directories); `tests/check_action_pins.py` P7 refuses an
+   entry whose directory has no manifest of its ecosystem.
+
+**Follow-up (2026-11-02): the proof failed in every exported copy.** The exporter leaves
+`.github/workflows/consumer-path-test.yml` out by design (`EXCLUDE_PATHS`), so T3's consumer-path
+part and T6 failed on the `91d4e73` work package, and would have turned Normalizer drift and
+`Self-test required` red at work. In a tree carrying `.neutral-export-watermark.json` whose exporter
+excludes the file, both now report `SOURCE-ONLY` by name (as `prove_export_scope.py` E9 does);
+without the watermark, or when the exporter does not exclude it, a missing file still fails (T9,
+four cases, two failing before the rule).
+
+**Proof.** `tests/prove_job_token_named.py` T1..T9 (31 failures before the fix on this tree),
+`tests/prove_ghe_host.py` H8/H9, `tests/check_action_pins.py` P7 (8 refusals before). Local only;
+a hosted run on a ghe.com host is owed.
+
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep the job-token preflight in every job that calls the API, and prove_job_token_named.py required.
+
+---
+
+## D-12 · A kit host's copy had no pre-flight, and a licence could pass the grade — **MODERATE** · **FIXED**
+
+**Observed (owner ruling, 2026-11-03).** *"If the consumer path test is no longer good why is it
+still in the package, or why haven't you fixed it so that it runs and tests things out before a true
+run of the pipeline?"* The exporter withheld `.github/workflows/consumer-path-test.yml` from every
+export (`EXCLUDE_PATHS`: "tests the kit where it is developed; in a recipient's copy it is a scheduled
+job billing their minutes"). The consumer-am copy is not a mere recipient: it is that organisation's
+private kit HOST, which their other repositories call, on a GHE.com host with GitHub-hosted runners
+and GitHub Advanced Security off. It kept a pre-2026-10-16 copy of the workflow that failed with 401s,
+and no package replaced it; the documents told the owner to disable it.
+
+**Two defects behind it.** (1) Scope: the one run that proves caller → reusable → scanners → finding →
+gate → caller fails, on the host's own platform, could not reach the host. (2) Grading: the
+expected-vs-observed grade counted CodeQL's SARIF as detection, so on a host where CodeQL analyses a
+signal the open-source scanner missed read DETECTED, and on a GHAS-off host the same tree could read
+MISSED — a licence deciding the grade (`tests/prove_consumer_path_preflight.py` C4 reproduced the
+first on `60506ad`: a Semgrep signal flagged only by CodeQL graded 24/24).
+
+**Fixed (2026-11-03).**
+1. **A profile may send a withheld path**: `INCLUDE_PATH <path> || <reason>` in
+   `scripts/export-profiles/*.txt`, only for an `EXCLUDE_PATHS` entry and only with a reason. The full
+   export, the incremental (a never-received included path arrives as new; an older file at that path
+   is a CONFLICT, left alone), the zip and the watermark (`included_paths`) all honour it. consumer-am
+   includes the consumer path test; the neutral export still withholds it.
+2. **Dispatch-only by default**: every job of the workflow is conditioned on
+   `github.event_name != 'schedule' || vars.KIT_CONSUMER_PATH_SCHEDULE == 'true'`, so its weekly cron
+   starts no job unless a repository opts in. The owner's use: run it by hand until green, disable
+   it, re-enable it to troubleshoot or after a kit import.
+3. **GHAS off is a supported host**: `assert-contract` records Security-tab publication and each CodeQL
+   leg in "GHAS-dependent rows (recorded, never graded)" — `UNAVAILABLE` when the platform says so,
+   never a pass, never failing the job (it reads the code-scanning API with `security-events: read`);
+   the grade runs `verify_expected_signals.py --not-graded codeql`, which lists CodeQL's SARIF as NOT
+   GRADED (or UNAVAILABLE when absent), makes a CodeQL-pinned signal UNAVAILABLE outside the
+   denominator, and fails a run left with nothing to grade.
+4. **`prove_job_token_named.py` checks the file where it was sent**: T3/T6 are SOURCE-ONLY only in a
+   copy whose watermark records neither shipping nor including the file; in a kit host's copy the
+   shipped file is checked, and an older work-side file left at that path fails.
+5. The proof census counts a schedule that starts nothing unless opted in as dispatch-only.
+
+**Proof.** `tests/prove_consumer_path_preflight.py` C1..C4 (18 failures on `60506ad`), including the
+three assertion jobs run step by step as shipped on a simulated GHE.com host with GHAS off;
+`tests/prove_export_scope.py` E11 (synthetic kit-host profile) and E12 (the real consumer-am copy
+carries the workflow, the negative workflow, every fixture file, the generator and the verifier, and
+its `prove_job_token_named.py` checks the shipped file); `prove_job_token_named.py` T9 (seven cases).
+Local only; the first hosted run on a GHE.com host is the owner's dispatch after import.
+
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep the pre-flight in every kit-host export profile and its GHAS-off proof (prove_consumer_path_preflight.py) required.
+
+---
+
+## D-13 · AKS, VMs and code-packaged Functions have no deploy adapter -- **MODERATE** · **NAMED, ADAPTER PLAN SIZED**
+
+**What it is.** The kit releases Azure App Service (Linux container), Azure Container Apps, Azure Static Web
+Apps and -- since KDEC-036 -- Azure Functions hosted as a Linux custom container on a Premium or Dedicated
+plan (the App Service reusable with `site_kind: functionapp`). An application on AKS, on virtual machines
+(or scale sets), or a Functions app packaged as code (zip, run-from-package, Flex Consumption) is scanned by
+the kit and deployed by something else. Until 2026-11-03 nothing said so at run time: the gap was a line in
+the hand-off contract, and a reviewer reading a green run saw no sign that the release path was outside
+the kit (the security-review lane's G10).
+
+**State: NAMED (KDEC-036 G10).** Discovery now reports `NO_KIT_ADAPTER:aks`, `NO_KIT_ADAPTER:vm` and
+`NO_KIT_ADAPTER:function_app_code` from the repository (Kubernetes manifests, a Helm chart or kustomization,
+a workflow step deploying to AKS; VM infrastructure or `az vm` in a workflow; a `host.json` with no
+Dockerfile beside it, or the functions action), in the security gate's summary, `kit-security-record.json`
+and the workflow output `no_kit_adapter`. A deploy whose environment vends a `KIT_HOSTING_KIND` its adapter
+does not serve is refused before login, by name. Proof: `tests/prove_reviewer_signals.py` R3, R7, R8. This
+is a missing capability, not wrong code; it is recorded here because the owner asked for the build plan
+beside the defect it leaves (and `docs/assurance/KNOWN_GAPS.md` is the coverage register).
+
+**Blast radius while it stands.** No deployment governance from the kit for those workloads: no verdict
+before login, no digest binding, no release approval bound to the digest, no readiness, no promotion, no
+verified reversal. The review sheets mark them `MOD-OUTSIDE-KIT`, and a sign-off may not claim deployment
+governance for them.
+
+**The adapter plan (each on the contract the other adapters keep: verdict and gates before login, by
+digest, staged first, verified from live state, reversed on failure, every step recorded).** Estimates are
+working days for one engineer, built test-first against the stub cloud as K-8 was, plus the live run.
+
+| adapter | how it keeps the contract | new pieces | estimate |
+|---|---|---|---|
+| **AKS** (`reusable-deploy-aks.yml`) | the deploy identity gets a kubeconfig through `az aks get-credentials` with Entra (no admin credentials, a namespace-scoped Kubernetes RBAC role); capture reads the Deployment's current image digest and revision (`kubectl get deploy -o json`, `rollout history`); deploy sets the image BY DIGEST (`kubectl set image ...@sha256:`) into a staging Deployment or a canary (a second Deployment behind the same Service at weight 0, or Gateway API weights), verifies `rollout status` and the health endpoint from inside the cluster, then promotes; reversal is `rollout undo` to the captured revision, verified by reading the digest back; ownership stamp as an annotation; the lease keyed on the cluster/namespace/deployment id | a `kubectl` stand-in for the stub cloud (Deployments, ReplicaSets, rollouts, Services), new hand-off items naming the cluster, the namespace and the Deployment, Helm-managed releases refused until a Helm path is built (Helm owns the manifest) | **12-15 days** (+3 for a Helm path) |
+| **VM / VM scale set** (`reusable-deploy-vmss.yml`) | releases an IMAGE, never a mutable host: a scale set whose model points at a Compute Gallery image version built by the kit (digest = the gallery version's id and its source image hash); capture reads the scale set's model and each instance's `latestModelApplied`; deploy updates the model and rolls a canary batch (`az vmss update-instances` on one instance, or a rolling upgrade policy with a max batch of one), verifies health through the load balancer probe, then rolls the rest; reversal points the model back to the captured image version and rolls again | an image-build reusable (Packer or `az image builder`) with SBOM and provenance like `reusable-build-docker.yml`, the gallery hand-off items, a stub for the scale set and the gallery | **15-20 days** (single VMs by script or SSH: out of scope -- there is no digest to bind, and the owner's rule is build once, promote the same digest) |
+| **Functions, code-packaged** (`site_kind: functionapp-zip`, or `reusable-deploy-functions-zip.yml`) | the static site's pattern: the package is an artefact with a content digest (`static-site-package`-style), deployed to the staging slot by `az functionapp deployment source config-zip` (Premium, Dedicated, Consumption) and verified by a marker endpoint returning the digest; swap; reversal redeploys the prior artefact (kept for the retention period). Flex Consumption has no slots: refused at uat/prod (no pre-traffic check), as `preview_environment: ''` is for a static site | the packaging composite and the marker, the zip-deploy calls in the fake az | **6-8 days** |
+
+**Owner decision owed (O-36i):** which of the three to build, in what order. Default: none until asked;
+the gap is named on every run in the meantime.
+
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Size and build an AKS adapter first (the most likely target), then VMs; until then name NO_KIT_ADAPTER in every run.
+
+---
+
+## D-14 · A weakening could be approved by the person who asked for it, and need never end -- **SEVERE** · **FIXED**
+
+**What it was.** Every reusable's posture step called a weakening `WEAKENING_ATTRIBUTED` when a reason and
+an authority were present, and checked an expiry only if one was given. `weakening_authority` was free
+text: it could name the requester, or the team itself, and an exception with no `weakening_expires` stood
+forever. A reviewer reading `WEAKENING_ATTRIBUTED` read "a person who may decide has decided, until a
+date"; the kit had established neither.
+
+**Why the expiry was optional.** The weakening record was added (2026-09) to make softened controls
+VISIBLE without breaking a single existing caller: every governance input was optional, so a caller that
+supplied none got identical behaviour plus a record saying it was unattributed. The expiry was treated as
+the one OPTIONAL refinement of an attribution ("any stated expiry is in the future"), because the first
+users were the kit's own dogfood runs and early adopters recording standing adoption-baseline decisions.
+The cost of that compatibility was never revisited once the record started to route releases (KDEC-014,
+KDEC-029): optional-until-reviewed became optional forever.
+
+**Removed (owner rulings 2026-11-03, KDEC-036).** An exception with no expiry is never approved, in any
+mode. A weakening is approved only with an evidence reference, a reason, a named owner, an expiry within
+the ceiling (default 90 days) and an approver on a registered approver list who is not the requester; a
+missing field is `WEAKENING_NOT_APPROVED`, named (proceeds at crawl, the control still counted weakened;
+refused at uat/prod); the requester, the actor or the released commit's author as owner or approver is
+`WEAKENING_SELF_APPROVED`, BLOCKED by the gate and refused by every deploy. Proof:
+`tests/prove_reviewer_signals.py` R2, R3 (seen failing on `1567af2`). **Consequence for adopters:** a caller
+with an attributed weakening and no `weakening_approver` or `weakening_exception_ref` now reads
+`WEAKENING_NOT_APPROVED`, and its uat/prod deploys refuse until the record is completed.
+
+**Suggested mitigations** (each PROPOSED until an approver records evidence; `scripts/check_register_mitigations.py` refuses a COMPLETED one without evidence and a human approver):
+- M1 PROPOSED — Keep the five-field rule and the self-approval refusal proven (prove_reviewer_signals.py); audit approved weakenings monthly.
 
 ---
 

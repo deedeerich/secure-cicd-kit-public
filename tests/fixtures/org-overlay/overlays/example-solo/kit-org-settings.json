@@ -1,0 +1,16 @@
+{
+  "schema": "kit-org-settings/1",
+  "note": "A NEUTRAL fixture: an organisation of one or two developers with no approver pools (small-team self-approval, owner ruling 2026-11-07).",
+  "github_orgs": ["example-solo"],
+  "host": "github.com",
+  "adoption": {"default_level": "crawl"},
+  "azure_clouds": {"declared": ["commercial"]},
+  "known_solo_developers": {"example-solo": ["example-solo-dev1", "example-solo-dev2"]},
+  "app_teams": {"example-solo/tiny-app": {"team": "@example-solo/devs", "size": 2,
+                "members": ["example-solo-dev1", "example-solo-dev2"],
+                "small_team_self_approval": {"approved_by": "the organisation owner (role)", "ref": "DEC-2026-11-07-1",
+                                             "date": "2026-11-07", "reason": "two developers and no external approver group",
+                                             "expires": "2027-02-05", "review_days": 90,
+                                             "external_approver_group_available": false}}},
+  "repositories": {"example-solo/tiny-app": {"adoption_level": "run"}}
+}

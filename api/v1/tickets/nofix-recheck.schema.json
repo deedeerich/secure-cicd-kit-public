@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/tickets/nofix-recheck.schema.json",
+  "title": "ticket template: no-fix re-check (template_version 2)",
+  "description": "NO_FIX_AVAILABLE (owner, 2026-11-04): a 30-day automatic exemption (ceiling 90; a ticket-level SLA pause, never a gate exception), a vendor re-check EVERY 30 days, a review EVERY 90 days, and at 180 days the advisory \"this has become something like a permanent risk acceptance; look for an alternative\" -- earlier and escalated for critical and high, none for low. All configurable. A later submission saying FIX_AVAILABLE reopens it as remediation. KDEC-037.",
+  "x-template": "nofix-recheck",
+  "x-template-version": 2,
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "finding",
+    "vendor",
+    "requested_by",
+    "evidence"
+  ],
+  "properties": {
+    "finding": {
+      "description": "The finding (finding.schema.json), fix_status NO_FIX_AVAILABLE.",
+      "type": "object"
+    },
+    "vendor": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 120
+    },
+    "vendor_advisory_ref": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 500
+    },
+    "exemption_days": {
+      "description": "The automatic exemption in days (default and ceiling: owner settings).",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 365
+    },
+    "recheck_days": {
+      "description": "Days until the vendor re-check (default: the register's numbers.no_fix_recheck_days, else the kit default).",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 365
+    },
+    "requested_by": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9 @._+\\[\\]-]{1,100}$"
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "sha256"
+      ],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 500
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "receipt": {
+          "description": "A custody receipt for the evidence (a store's object id or signature).",
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 300
+        }
+      }
+    }
+  },
+  "x-enabled": true
+}

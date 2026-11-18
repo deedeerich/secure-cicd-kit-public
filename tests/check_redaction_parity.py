@@ -32,6 +32,17 @@ MASK = re.compile(r'def _mask\(value, label\):(.*?)\n\n', re.S)
 REDACT = re.compile(r'def redact\(text\):(.*?)\n\n', re.S)
 
 
+def _expand(doc):
+    """The workflow with every `$/` composite step expanded into its job, as the runner sees it.
+
+    Scanner job bodies live in `.github/actions/<scanner>/` (ledger L64); this reads the steps a
+    job actually runs. One rule, tests/_composite_expand.py, for every reader.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.expanded_doc(doc)
+
+
 def grab(path, rx, what):
     txt = io.open(path, encoding='utf-8').read()
     m = rx.search(txt)
@@ -121,7 +132,7 @@ def check_order():
         print('::error title=Redaction order::self-test failed: %s' % err)
         return False
     wf = os.path.join(ROOT, '.github', 'workflows', 'reusable-security.yml')
-    doc = yaml.safe_load(io.open(wf, encoding='utf-8'))
+    doc = _expand(yaml.safe_load(io.open(wf, encoding='utf-8')))
     problems, checked, uploads = [], 0, 0
     for job, v in (doc.get('jobs') or {}).items():
         steps = v.get('steps') or []

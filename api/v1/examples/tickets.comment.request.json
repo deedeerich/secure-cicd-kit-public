@@ -1,0 +1,14 @@
+{
+  "api_version": "v1",
+  "client": {
+    "name": "tines-3b-step",
+    "version": "1.0.0"
+  },
+  "correlation_id": "kapi-20261103T101500Z-000000000002",
+  "idempotency_key": "vuln-triage:wf-12:comment-88",
+  "operation": "tickets.comment",
+  "params": {
+    "ref": "SEC-1042",
+    "text": "Owner team confirmed; fix targeted for the next sprint."
+  }
+}

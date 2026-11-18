@@ -1,0 +1,11 @@
+{
+  "inputs": [{"type": "promptString", "id": "docs-key", "description": "Docs key", "password": true}],
+  "servers": {
+    "docs": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@example/docs-mcp@1.4.0"],
+      "env": {"DOCS_KEY": "${input:docs-key}"}
+    }
+  }
+}

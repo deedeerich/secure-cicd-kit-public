@@ -1,0 +1,27 @@
+# Starter: drop this into a calling repo at .github/workflows/dependabot-config-check.yml
+# Replace YOUR_ORG and pin the kit by COMMIT SHA. Guide: docs/adoption/DEPENDABOT_IN_YOUR_REPO.md.
+#
+# WHAT IT DOES: on every pull request, if the change touches a manifest (package.json,
+# requirements.txt, pom.xml, go.mod, a Dockerfile, *.tf, a workflow ...) or .github/dependabot.yml,
+# it checks that every manifest is read by a Dependabot entry and every entry reads a manifest. A
+# problem fails the check with the exact fix, and a corrected dependabot.yml to copy. Any other
+# pull request is answered "nothing to check" in seconds.
+#
+# NO `paths:` FILTER, ON PURPOSE: if you make this a required check, a path filter would leave it
+# pending forever on pull requests that do not match. The job decides for itself, quickly.
+name: Dependabot configuration
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  dependabot-config:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: YOUR_ORG/secure-cicd-kit/.github/workflows/reusable-dependabot-config-check.yml@0000000000000000000000000000000000000000   # pin a commit SHA
+    # No inputs. To leave a manifest out on purpose, give it a HELD entry in .github/dependabot.yml
+    # (open-pull-requests-limit: 0 and ignore every dependency): explicit, and visible in review.

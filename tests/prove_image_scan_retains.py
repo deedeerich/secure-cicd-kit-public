@@ -36,6 +36,7 @@ sys.path.insert(0, HERE)
 import _scan_step_harness as h  # noqa: E402
 import prove_bootstrap_failure as pbf  # noqa: E402
 import prove_image_scan_enforces as pis  # noqa: E402
+import _trivy_step as ts  # noqa: E402 - the shipped Trivy step read as trivy-action's `with:`
 
 JOB = 'image-scan'
 FILES = ('trivy-image.sarif', 'trivy-image-secret.sarif')
@@ -49,15 +50,17 @@ def order_problems(job):
     bad = []
     needs = job.get('needs') or []
     needs = [needs] if isinstance(needs, str) else needs
-    if 'kit-scripts' not in needs:
-        bad.append('image-scan does not need kit-scripts, so the redactor never reaches it')
+    # G1 (KDEC-033): the bundle is produced by the kit-scripts part of `plan`.
+    if 'plan' not in needs:
+        bad.append('image-scan does not need plan (the kit-scripts producer), so the redactor never reaches it')
     steps = job.get('steps') or []
     if not any('download-artifact' in uses(s) and 'kit-scripts' in str((s.get('with') or {})
                                                                        .get('name', ''))
                for s in steps):
         bad.append('image-scan never fetches the kit-scripts bundle')
     for f in FILES:
-        prod = [i for i, s in enumerate(steps) if str((s.get('with') or {}).get('output', '')) == f
+        prod = [i for i, s in enumerate(steps) if (str((s.get('with') or {}).get('output', '')) == f
+                                                  or (ts.is_trivy(s) and ts.output_of(s) == f))
                 and 'upload' not in uses(s)]
         art = [i for i, s in enumerate(steps) if 'upload-artifact' in uses(s)
                and f in str((s.get('with') or {}).get('path', '')).split()]
@@ -117,12 +120,12 @@ def main():
         if not h.have(bash, 'trivy', h.path_prefix(sb.shim)):
             print('UNKNOWN: trivy is required to produce a real secret report.')
             return 2
-        secret_step = [s for s in job['steps'] if 'trivy-action' in uses(s)
-                       and str((s.get('with') or {}).get('output')) == 'trivy-image-secret.sarif']
+        secret_step = [s for s in job['steps'] if ts.is_trivy(s)
+                       and ts.output_of(s) == 'trivy-image-secret.sarif']
         if not secret_step:
-            print('UNKNOWN: no trivy-action step writes trivy-image-secret.sarif.')
+            print('UNKNOWN: no Trivy step writes trivy-image-secret.sarif.')
             return 2
-        w = secret_step[0].get('with') or {}
+        w = ts.trivy_with(secret_step[0])
         ws = sb.workspace('ws')
         img = os.path.join(sb.root, 'secret.tar')
         tok = pis.token()

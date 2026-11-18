@@ -1,0 +1,4 @@
+# Shell scripts run on Linux runners: always LF in the repository and in every checkout,
+# whatever core.autocrlf says on the machine that commits or exports (external review 2026-11-07).
+*.sh   text eol=lf
+*.bash text eol=lf

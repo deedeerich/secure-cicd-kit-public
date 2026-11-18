@@ -6,7 +6,10 @@ it, and what is left over.**
 
 ```
 Phase:              1
-Truth State:        control states VERIFIED 2026-10-06 against the tree; residual risk is judgement
+Truth State:        control states VERIFIED 2026-10-06; RE-READ 2026-11-07 against the trunk (c1420ea)
+                    and corrected where the code moved (each correction says so). Residual risk is
+                    judgement. The full STRIDE model per element and per boundary is now
+                    09_THREAT_MODEL.md and 09b_THREATS_BY_BOUNDARY.md; this file keeps T-01..T-16.
 Audience:           anyone changing the kit, and anyone signing off on a release that uses it
 Decision Supported: whether a change needs a threat review before it ships
 Deferred Depth:     consumer-specific flows and assets — those belong in an overlay, see §6
@@ -28,9 +31,12 @@ another appearance-of-control, exactly like a pipeline file that proves a securi
 rather than an intention.
 
 **Control states use the stage ladder**, and nothing is inherited: `ABSENT` · `DESIGNED` · `BUILT`
-· `EXERCISED` · `PROVEN` · `ENFORCED`. Across this entire file, **nothing is ENFORCED** — no
-control here has yet refused a real prohibited operation. That is the honest headline and it is the
-same zero the stage gate reports.
+· `EXERCISED` · `PROVEN` · `ENFORCED`. When this file was written (2026-10-06) no control here had
+refused a real prohibited operation. Since then the stage register records one stage at `ENFORCED`:
+deployment and verification (stage 15, `tests/check_stage_phase.py`), with live refusals -- a deploy
+on a BLOCKED verdict refused before login (run 38853176286), an irreversible prod deploy refused
+(38853184615), a second actor's change not overwritten (38886279650). Every other control here is
+still below `ENFORCED`.
 
 ---
 
@@ -58,7 +64,10 @@ same zero the stage gate reports.
 checks out PR head while holding the base repo's token.
 *Consequence:* arbitrary code with read access to secrets and write access to the Security tab.
 *Control:* triggers restricted so PR content is never executed with privileged context.
-*State:* `BUILT` — `workflow-policy-check.yml` exists and `tests/lint_injection.py` passes.
+*State:* `BUILT` — `workflow-policy-check.yml` exists and `tests/lint_injection.py` passes. *Re-read
+2026-11-07:* rule R4 (a `pull_request_target` head checkout) refuses its seeded violation
+(`tests/prove_workflow_policy_rules.py`), and the Dependabot triage reads a PR as data with nothing
+checked out (`tests/prove_dependabot_triage.py`).
 *Test:* a fixture PR from a fork proving the privileged path does not execute its content.
 *Residual:* the test has never run. `BUILT` is not `PROVEN`, and this is the threat where that
 difference is most expensive.
@@ -90,7 +99,9 @@ a Go scanner pinned to a container tag that has never existed, producing no find
 green and another scanner's rules covering the seeded signal.
 *Control:* acquisition failure is a named state (`DEPENDENCY_ACQUISITION_UNAVAILABLE`), and seeded
 signals are **tool-pinned** so one scanner cannot satisfy another's assertion.
-*State:* `BUILT`, fix unpublished. Tool pinning is `PROVEN`.
+*State:* `BUILT`; *re-read 2026-11-07:* the fix is published, `DEPENDENCY_ACQUISITION_UNAVAILABLE` is
+emitted by the scanner composites and the gate, and a scanner that read nothing is never zero
+(`tests/prove_hollow_scan.py`). Tool pinning is `PROVEN`.
 *Test:* the existing consumer-path probe, run against the commit holding the fix.
 *Residual:* **the highest-value open item in the kit.** Until that run exists, every coverage claim
 rests on scanners that may or may not have acquired.
@@ -101,17 +112,22 @@ rests on scanners that may or may not have acquired.
 last year's technology and passing today's code.
 *Control:* a pre-scan capability check — version discovered, tool range declared per tool,
 `VERSION_UNSUPPORTED` declared **before** the scan so a zero never has to be interpreted afterwards.
-*State:* `DESIGNED` — specified in `PIPELINE_ORDERING_AND_SCAN_VALIDITY.md` §2, demonstrated
-experimentally in §3, implemented nowhere.
-*Residual:* unmitigated. This is T-04 generalised and it is wider.
+*State:* `BUILT` (re-read 2026-11-07; it was `DESIGNED` here) — the resolve composite discovers
+versions and declares `VERSION_UNSUPPORTED` / `VERSION_GAP` per tool before the scan, and a job
+pointed at a gap has its PASS capped at PARTIAL (KDEC-010, KDEC-014; `tests/test_resolve.py`,
+`tests/prove_capability_selection.py`, `tests/prove_version_gap_production.py`).
+*Residual:* only as good as each tool's declared range; a range not yet proven by a seeded corpus is
+recorded UNVERIFIED and does not refuse at uat/prod.
 
 **T-06 · Rule-set or advisory drift**
 *Entry:* a pinned scanner ages; new rule classes and advisories never arrive.
 *Consequence:* silent decay. Coverage shrinks while every run stays green, and it gets *more* likely
 the longer the kit is stable, because stability is what keeps pins unexamined.
 *Control:* currency review on a schedule, against authoritative sources.
-*State:* `ABSENT`.
-*Residual:* unmitigated, and invisible without a review cadence.
+*State:* `ABSENT` for tool binaries and rule sets pinned inside steps; *re-read 2026-11-07:* pinned
+actions are kept current by Dependabot and its triage (`templates/dependabot-triage.yml`,
+`tests/prove_dependabot_bump_mergeable.py`).
+*Residual:* unmitigated for in-step tools, and invisible without a review cadence.
 
 ### B4 · Artifact identity
 
@@ -121,8 +137,10 @@ the longer the kit is stable, because stability is what keeps pins unexamined.
 that was never shipped.
 *Control:* build once, scan those bytes, push those bytes, deploy by digest. Chain specified in
 `PROVENANCE_AND_ATTESTATION.md` §3.
-*State:* `DESIGNED`. **A double build on the published build path is reported and not yet verified
-against the local tree** — recorded as an open assumption, not a finding.
+*State:* `BUILT` (re-read 2026-11-07; it was `DESIGNED` here) — the build pushes the scanned bytes and
+asserts the registry holds them (`REGISTRY_IDENTITY_PROVEN`), the composite builds once, and the deploy
+refuses anything but a digest (`tests/check_artifact_identity.py`, `tests/prove_composite_build_once.py`,
+`tests/prove_build_push_round_trip.py`); promotion moves the same digest (KDEC-029).
 *Test:* a release in which the scanned digest and the deployed digest are compared and a mismatch
 fails the gate.
 *Residual:* until that comparison exists, "we scanned it" and "we deployed it" are two claims about
@@ -133,8 +151,11 @@ possibly different objects.
 *Consequence:* a signature nobody checks is decoration. `PROVENANCE_AND_ATTESTATION.md` §1 is
 explicit that stamped, attested and verified are three different claims.
 *Control:* attestation produced *and* verified at the consuming end.
-*State:* `DESIGNED`; the stamp degrades on the shipped path.
-*Residual:* provenance currently supports an audit story, not an enforcement one.
+*State:* `BUILT` (re-read 2026-11-07) — the attest job signs only a proven digest, and V1 verifies it
+before login in the template's verdict job and inside every deploy (`tests/prove_attest_job_isolated.py`,
+`tests/prove_attestation_verify.py`, `tests/prove_deploy_attestation.py`). On a private repository whose
+plan offers no attestations V1 is `IMPLEMENTATION_HELD`.
+*Residual:* where V1 is held, provenance supports an audit story, not an enforcement one.
 
 ### B5 · Cloud identity
 
@@ -172,8 +193,11 @@ discipline around *new* writers does not hold itself.
 *Entry:* a writable artifact path, or a disposition file read from an unprotected ref.
 *Consequence:* findings suppressed by editing the evidence rather than fixing the code.
 *Control:* dispositions consumed **only** from the protected branch; artifact digests recorded.
-*State:* `DESIGNED` — the protected-branch rule is specified and not enforced at runtime.
-*Residual:* a disposition file supplied by a caller is currently trusted.
+*State:* `BUILT` (re-read 2026-11-07) — the policy register, the baseline ledger and the ticket ledger
+are read from the protected default branch, never the PR tree, and the ledger changes only through a
+pull request (`tests/prove_gate_reads_rung.py`, `tests/prove_ledger_read_authority.py`,
+`tests/prove_propose_ledger_job_scope.py`).
+*Residual:* artifacts carry no signature of their own; a reader trusts GitHub's artifact store.
 
 ### B7 · Deployment target
 
@@ -181,8 +205,10 @@ discipline around *new* writers does not hold itself.
 *Entry:* a deployment writing a resource another release or another consumer also owns.
 *Consequence:* one release silently reconfigures another's dependency.
 *Control:* field-level change manifest; only this run's owned, separable change is written.
-*State:* `DESIGNED` — `ROLLBACK_CONTRACT.md`.
-*Residual:* no deployment has executed, so ownership stamping is untested.
+*State:* `BUILT` (re-read 2026-11-07) — field ownership at the seam and the ownership stamp are
+built (`tests/prove_seam_setting_ownership.py`, `tests/prove_deploy_ownership_stamp.py`), and a second
+actor's change was not overwritten in a live run (38886279650).
+*Residual:* the seam and the cross-repository lease are opt-in until KDEC-030 is ruled on.
 
 **T-14 · Unsafe rollback**
 *Entry:* a failed release triggering reversal against state that moved after the snapshot.
@@ -191,9 +217,11 @@ causes the larger outage.
 *Control:* preconditions evaluated against **live** state before any removal; ownership, concurrent
 modification, later-introduced dependents, reverse-ancestry order; explicit
 `ROLLBACK_REQUIRES_HUMAN_DECISION` and `ROLLBACK_PROHIBITED` outcomes.
-*State:* `DESIGNED`, and the design is strong.
-*Residual:* unexercised. **A rollback command exiting zero is not evidence of restored service**,
-and nothing has yet proved the kit knows that in practice.
+*State:* `ENFORCED` for a run's own failed change (stage 15: seeded unhealthy digests reversed and
+verified live, runs 38878189985 and 38855747496); `BUILT` for a sequence of several releases
+(`tests/prove_rollback_sequence.py`, `tests/prove_rollback_dependencies.py`).
+*Residual:* a sequential rollback has not been exercised live. **A rollback command exiting zero is not
+evidence of restored service**; the kit reads the target back after every reversal.
 
 ### B8 · Approval
 
@@ -210,41 +238,45 @@ and nothing has yet proved the kit knows that in practice.
 *Consequence:* an approval granted for one thing silently suppressing another.
 *Control:* durable finding identity excluding scanner name and rule id; inheritance requires a
 matched identity and a rationale.
-*State:* `BUILT, and wrongly` — the current fingerprint contains two components it forbids, so a
-scanner upgrade resets every finding's history.
-*Residual:* **active defect.** Dispositions do not survive a scanner upgrade today.
+*State:* `BUILT` (re-read 2026-11-07; it was `BUILT, and wrongly` here) — the durable identity and the
+rule-family alias table keep a finding's identity across a scanner upgrade
+(`tests/prove_identity_durability.py`, `tests/prove_rule_family_upgrade.py`, KDEC-038).
+*Residual:* a rule the alias table does not know yet is a new identity until a person maps it.
 
 ---
 
 ## 3 · What this adds up to
 
+Re-counted 2026-11-07 against the trunk (c1420ea). The 2026-10-06 count was PROVEN 1, BUILT 7 (one
+wrongly), DESIGNED 6, ABSENT 1, ENFORCED 0.
+
 | state | threats |
 |---|---|
-| `PROVEN` | 1 |
-| `BUILT` | 7 (one of them wrongly) |
-| `DESIGNED` | 6 |
-| `ABSENT` | 1 |
-| **`ENFORCED`** | **0** |
+| `ENFORCED` | 1 (T-14, for a run's own failed change) |
+| `PROVEN` | 1 (T-15) |
+| `BUILT` | 13 |
+| `DESIGNED` | 0 |
+| `ABSENT` | 1 (T-06, for tools and rule sets pinned inside steps) |
 
-Six threats have a named test that has never been run. One (T-16) has a control that is built and
-incorrect, which is worse than absent because it reads as present.
+T-16's wrong control is fixed. The named tests still owed are the fork-PR fixture (T-01), an attempted
+write outside a job's permission (T-03), the seeded identity-scope run (T-09) and a live sequential
+rollback (T-14).
 
 ---
 
 ## 4 · The two threats to fix first
 
-**T-04**, because it is the only one observed happening, the fix is written, and the test exists.
-**T-16**, because a wrong control is more dangerous than a missing one and it silently weakens every
-disposition already granted.
+Re-read 2026-11-07: the two named here on 2026-10-06 (T-04, T-16) are both built. The two now first:
+**T-06**, because in-step tool and rule-set drift is the one class still `ABSENT`; and **T-01**,
+because the privileged path has never met a real fork PR.
 
 ---
 
-## 5 · The first enforcement test
+## 5 · The next enforcement test
 
-Nothing here is `ENFORCED`. **T-03** is the cheapest honest candidate: a job attempting a write
-outside its declared permission, and the refusal recorded. It needs no deployment target, no
-consumer, and no production resource — and it would be the first `Enforced` state this programme has
-ever produced.
+**T-03** is still the cheapest honest candidate: a job attempting a write outside its declared
+permission, and the refusal recorded. It needs no deployment target, no consumer and no production
+resource. The full list of suggested mitigations is in `09b_THREATS_BY_BOUNDARY.md`.
 
 ---
 

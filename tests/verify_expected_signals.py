@@ -30,8 +30,21 @@ An unreadable report is a HARD FAILURE, never a skip. flawfinder once wrote its 
 to stdout, which the redirect captured as the report: a non-empty file that was not JSON. A
 malformed report is not a clean report.
 
+GHAS-DEPENDENT EVIDENCE IS NOT GRADED (--not-graded TOOL, 2026-11-03)
+
+On a private repository without GitHub Advanced Security, CodeQL may initialise and analyse, or
+may not -- the licence decides, not the kit. A grade that CodeQL's SARIF can satisfy therefore
+passes on one host and fails on the next for a reason that is not about the open-source scanners
+at all, and on a GHAS-off host a signal only CodeQL found reads DETECTED where the scanner that
+owns it saw nothing. `--not-graded codeql` (the consumer path test passes it) sets such a tool's
+SARIF aside: it is listed as NOT GRADED when present and UNAVAILABLE when absent, never counted
+as detection; a signal pinned to such a tool is UNAVAILABLE, outside the denominator, never a
+pass and never a miss; and a run left with nothing to grade fails rather than passing vacuously.
+A tool matches by name or by name prefix (`codeql` covers `codeql-python`, `codeql-java-kotlin`).
+tests/prove_consumer_path_preflight.py C3.
+
 Usage:
-    verify_expected_signals.py --fixture <dir> --sarif-dir <dir> [--json]
+    verify_expected_signals.py --fixture <dir> --sarif-dir <dir> [--not-graded TOOL]... [--json]
 """
 from __future__ import annotations
 import argparse, glob, json, os, re, sys
@@ -52,8 +65,22 @@ def tool_of(path: str, doc: dict) -> str:
     return "unknown"
 
 
-def collect_observed(sarif_dir: str) -> tuple[dict[str, set[str]], int, list[str]]:
-    """Map every flagged artifact URI to the set of scanners that flagged it."""
+def not_graded_tool(tool: str, not_graded: list[str]) -> str | None:
+    """-> the --not-graded name `tool` falls under, or None."""
+    for n in not_graded:
+        if tool == n or tool.startswith(n + "-"):
+            return n
+    return None
+
+
+def collect_observed(sarif_dir: str, not_graded: list[str] | None = None
+                     ) -> tuple[dict[str, set[str]], int, list[str], dict[str, list[int]]]:
+    """Map every flagged artifact URI to the set of scanners that flagged it.
+
+    SARIF from a --not-graded tool is read (a malformed one is still a hard failure) and counted
+    into the last return value, {name: [files, results]}, but never into the map."""
+    not_graded = not_graded or []
+    aside: dict[str, list[int]] = {}
     seen: dict[str, set[str]] = {}
     unreadable: list[str] = []
     files = 0
@@ -67,6 +94,12 @@ def collect_observed(sarif_dir: str) -> tuple[dict[str, set[str]], int, list[str
             unreadable.append(f"{os.path.relpath(path, sarif_dir)}: {e}")
             continue
         tool = tool_of(path, doc)
+        ng = not_graded_tool(tool, not_graded)
+        if ng:
+            row = aside.setdefault(ng, [0, 0])
+            row[0] += 1
+            row[1] += sum(len(r.get("results", []) or []) for r in doc.get("runs", []))
+            continue
         for run in doc.get("runs", []):
             for res in run.get("results", []):
                 for loc in res.get("locations", []):
@@ -75,27 +108,41 @@ def collect_observed(sarif_dir: str) -> tuple[dict[str, set[str]], int, list[str
                               .get("uri", ""))
                     if uri:
                         seen.setdefault(uri.replace("\\", "/").lstrip("./"), set()).add(tool)
-    return seen, files, unreadable
+    return seen, files, unreadable, aside
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--fixture", required=True)
     ap.add_argument("--sarif-dir", required=True)
+    ap.add_argument("--not-graded", action="append", default=[], metavar="TOOL",
+                    help="a tool whose SARIF depends on the platform licence (codeql): listed, "
+                         "never graded; signals pinned to it are UNAVAILABLE")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
 
     expected = json.load(open(os.path.join(a.fixture, "EXPECTED_SIGNALS.json"), encoding="utf-8"))
-    observed, n_sarif, unreadable = collect_observed(a.sarif_dir)
+    observed, n_sarif, unreadable, aside = collect_observed(a.sarif_dir, a.not_graded)
 
     print(f"collected {n_sarif} SARIF file(s); {len(observed)} distinct flagged path(s)")
     tools = sorted({t for ts in observed.values() for t in ts})
     print(f"scanners that produced findings: {', '.join(tools) or 'NONE'}")
     print()
 
+    for n in a.not_graded:
+        if n in aside:
+            print(f"NOT GRADED  {n}: {aside[n][0]} SARIF file(s), {aside[n][1]} result(s) -- this tool "
+                  "depends on GitHub Advanced Security on a private repository, so its findings are "
+                  "recorded and never counted as detection")
+        else:
+            print(f"UNAVAILABLE {n}: no SARIF from it in this run (on a private repository without "
+                  "GitHub Advanced Security that is expected) -- recorded, never a pass, never a miss")
+    if a.not_graded:
+        print()
+
     detected, missed, wrong_tool = [], [], []
     negatives_ok, negatives_bad = [], []
-    absent = []
+    absent, unavailable = [], []
 
     for item in expected:
         rel, signal = item["path"], item["expected_signal"]
@@ -103,7 +150,10 @@ def main() -> int:
         # Tools report paths relative to different roots, so match on suffix.
         hits = {t for uri, ts in observed.items() if uri.endswith(rel) for t in ts}
 
-        if not os.path.isfile(os.path.join(a.fixture, rel)):
+        if want and not_graded_tool(want, a.not_graded):
+            # PINNED TO A LICENCE-DEPENDENT TOOL: not gradable here, in either direction.
+            unavailable.append((rel, signal, want))
+        elif not os.path.isfile(os.path.join(a.fixture, rel)):
             # NOT IN THE SCANNED TREE, SO NOT GRADABLE (tests/prove_expected_signals_honest.py).
             # A generated, git-ignored file is absent from every checkout: no scanner could
             # have flagged it, and a negative control there passed nothing.
@@ -133,17 +183,21 @@ def main() -> int:
         print(f"{'FALSE-POS':11} {sig:30} {'-':11} {rel}  [{','.join(by)}]")
     for rel, sig in absent:
         print(f"{'ABSENT':11} {sig:30} {'-':11} {rel}")
+    for rel, sig, want in unavailable:
+        print(f"{'UNAVAILABLE':11} {sig:30} {want:11} {rel}  [pinned to a not-graded tool]")
 
     total_pos = len(detected) + len(missed) + len(wrong_tool)
     print()
     print(f"detected {len(detected)}/{total_pos} seeded signals; "
           f"{len(negatives_ok)}/{len(negatives_ok) + len(negatives_bad)} negative controls clean; "
-          f"{len(absent)} expectation(s) ABSENT from the scanned tree")
+          f"{len(absent)} expectation(s) ABSENT from the scanned tree"
+          + (f"; {len(unavailable)} UNAVAILABLE (pinned to a not-graded tool)" if unavailable else ""))
 
     if a.json:
         json.dump({"detected": detected, "missed": missed, "wrong_tool": wrong_tool,
                    "negatives_ok": negatives_ok, "negatives_bad": negatives_bad,
-                   "absent": absent, "unreadable": unreadable},
+                   "absent": absent, "unreadable": unreadable, "unavailable": unavailable,
+                   "not_graded": aside},
                   open("expected-signals-result.json", "w", encoding="utf-8"), indent=2)
 
     rc = 0
@@ -179,6 +233,11 @@ def main() -> int:
               "result -- do not read it as a scanner miss.")
         for rel, sig in absent:
             print(f"::error file={rel}::`{sig}` -- file absent from --fixture")
+        rc = 1
+    if total_pos == 0 and (a.not_graded or unavailable):
+        print()
+        print("::error title=Nothing left to grade::Every positive signal is pinned to a not-graded "
+              "tool, so this run graded nothing. A grade of 0/0 is not a pass.")
         rc = 1
     if negatives_bad:
         print()

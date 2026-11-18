@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/tickets/triage.schema.json",
+  "title": "ticket template: triage decision (template_version 2)",
+  "description": "A person's decision on a possible duplicate or a dedupe-pending ticket (owner, 2026-11-04: a near match is never auto-merged and never lost; a person decides merge or separate). merge closes `ref` as a duplicate of `original_ref` and tells the original what it added; separate keeps both. The triager never approves their own triage (SOD_SELF_APPROVAL). KDEC-037.",
+  "x-template": "triage",
+  "x-template-version": 2,
+  "x-enabled": true,
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ref",
+    "original_ref",
+    "decision",
+    "triaged_by",
+    "reason"
+  ],
+  "properties": {
+    "ref": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}-[0-9]{1,12}$|^[0-9]{1,12}$"
+    },
+    "original_ref": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}-[0-9]{1,12}$|^[0-9]{1,12}$"
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "merge",
+        "separate"
+      ]
+    },
+    "triaged_by": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9 @._+\\[\\]-]{1,100}$"
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 1000
+    }
+  }
+}

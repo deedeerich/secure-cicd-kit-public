@@ -121,6 +121,27 @@ Not a workflow bug. Something refused to start it:
 They look identical at a glance and both read like flaky CI. **Read the run's annotation, not the
 logs** — there are no logs, because nothing ran.
 
+### "Bad credentials (401)" on the job token
+
+**Symptom:** every step that calls the GitHub API fails at once: `HTTP 401: Bad credentials`,
+`Try authenticating with: gh auth login`, a self-test pin check `UNKNOWN`, Dependabot read as
+`UNAVAILABLE`. Checkout may still work.
+
+**Read first:** the discover job's **Job token preflight** row (and the consumer path's preflight
+step). It names one cause, its owner role and what to check:
+
+| Cause | Owner | Check |
+|---|---|---|
+| `JOB_TOKEN_REJECTED` (401) | organisation owner, then workflow maintainer | `GITHUB_SERVER_URL` and the API host in the error are the **same** deployment (a `<tenant>.ghe.com` token sent to `api.github.com` is always 401 — KDEC-027: run a kit revision that sets `GH_HOST` and host-qualified `GH_REPO`/`-R`); the org IP allow list; Settings → Actions → General → Workflow permissions; a proxy stripping `Authorization`; a step overriding `GH_TOKEN` |
+| `ORG_IP_ALLOW_LIST_BLOCKS_RUNNER` (403) | organisation owner | add the runner's static egress range, or use self-hosted / static-IP larger runners |
+| `ORG_SSO_BLOCKS_TOKEN` (403) | organisation owner | a personal/app token in `GH_TOKEN` needs SSO authorisation; the job token is exempt |
+| `RATE_LIMITED` | workflow maintainer | wait for the reset; not a token fault |
+| `API_UNREACHABLE` | runner administrator | egress, proxy, DNS to `GITHUB_API_URL` |
+
+**Not a scan result and not a kit defect:** nothing downstream turns it into PASS or clean; every
+value the API would have given stays `UNKNOWN`/`UNAVAILABLE` with the cause beside it
+(`docs/KNOWN_DEFECTS.md` D-11, `tests/prove_job_token_named.py`).
+
 ---
 
 ## 5 · References that were never valid
