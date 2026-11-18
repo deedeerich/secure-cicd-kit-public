@@ -23,6 +23,7 @@ CASES (docs/PROOF_RULE.md)
 
 EXIT 0 every case decided as it must; 1 a case decided wrongly; 2 could not be checked (UNKNOWN).
 """
+import hashlib
 import io
 import os
 import shutil
@@ -38,17 +39,24 @@ SCANNED = 'sha256:' + '5' * 64
 OTHER = 'sha256:' + '6' * 64
 PUSHED = 'sha256:' + '7' * 64
 
+# The registry serves exactly the bytes of SHIM_DOC, and the push reports their sha256 as the pushed
+# digest: a content-addressed registry (KDEC-065 M5 -- the composite hashes what it fetched).
 DOCKER = r'''
 case "$1" in
   push) exit 0 ;;
   image) printf 'reg.example/app@%s\n' "$SHIM_PUSHED" ;;
-  buildx) case "$SHIM_REGISTRY" in
-            index) printf '{"manifests":[]}' ;;
-            *) printf '{"config":{"digest":"%s"}}' "$SHIM_REGISTRY" ;;
-          esac ;;
+  buildx) cat "$SHIM_DOC" ;;
   *) echo "docker shim: unhandled $*" >&2; exit 64 ;;
 esac
 '''
+
+
+def registry_doc(registry):
+    """-> the bytes the registry serves for the case: an index with no manifests, or a manifest whose
+    config is `registry`."""
+    if registry == 'index':
+        return b'{"manifests":[]}'
+    return ('{"config":{"digest":"%s"}}' % registry).encode('utf-8')
 
 
 def main():
@@ -95,7 +103,11 @@ def main():
             if sbom:
                 io.open(os.path.join(ws, 'sbom.spdx.json'), 'w').write('{}')
             ctx = dict(base, **{'inputs.push': push_flag})
-            env = {'SHIM_PUSHED': PUSHED, 'SHIM_REGISTRY': registry}
+            body = registry_doc(registry)
+            docp = os.path.join(ws, '.registry-doc')
+            with io.open(docp, 'wb') as fh:
+                fh.write(body)
+            env = {'SHIM_PUSHED': 'sha256:' + hashlib.sha256(body).hexdigest(), 'SHIM_DOC': docp}
             outcome = 'skipped'
             if push_flag == 'true':
                 p = H.run(bash, push, ctx, ws, shims, env, composite=True)

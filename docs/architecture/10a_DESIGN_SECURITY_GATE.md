@@ -60,6 +60,7 @@ From `docs/errors/errors.json` (the full catalogue is `docs/errors/ERRORS.md`).
 | `advisory_cause.VERSION_GAP` | No scanner the kit carries can read the language or framework version this code targets, so part of the code was not checked. |
 | `advisory_cause.COVERAGE_PARTIAL` | A scanner checked most of the code but could not read some files. |
 | `advisory_cause.KEV_UNAVAILABLE` | The list of known-exploited vulnerabilities could not be read on this run, so that check did not happen. |
+| `advisory_cause.SCANNER_DID_NOT_RUN` | A scanner the repository is set up to run (delivered by the caller as external evidence) crashed, timed out or could not reach its server; at crawl this is shown and does not block, above crawl it is refused. |
 | `advisory_cause.WEAKENING_NOT_APPROVED` | A control is weakened, but the record approving it is missing a field (reason, owner, approver, reference or expiry). |
 | `scanner_state.COLLECTION_FAILED` | A scanner ran, but its results could not be collected (the report was empty or unreadable). |
 | `scanner_state.UNAVAILABLE` | A scanner never ran on this run. |
@@ -78,6 +79,8 @@ From `docs/errors/errors.json` (the full catalogue is `docs/errors/ERRORS.md`).
 | a scanner's job fails on findings | it does not: scanners report, the gate decides | `tests/prove_scanners_survive_enforce.py` |
 | the register cannot be read | `REGISTRATION_UNAVAILABLE`, `EVIDENCE_UNTRUSTED`; never the default | `tests/prove_policy_registration.py` |
 | the KEV catalog cannot be read | `KEV_UNAVAILABLE`, advisory, never PROCEED | `tests/prove_known_exploited.py` |
+| a core scanner job fails or never runs | refused at every rung: `EVIDENCE_UNTRUSTED` (O-24) | `tests/prove_external_evidence.py` G (crawl_core_failed, run_core_failed) |
+| a required external (caller-delivered) scanner did not run | named FAILED / COLLECTION_FAILED / UNAVAILABLE, assurance PARTIAL; crawl `PROCEED_WITH_ADVISORY` + `SCANNER_DID_NOT_RUN`, walk/run `EVIDENCE_UNTRUSTED`; NOT_CONFIGURED is not required (KDEC-067) | `tests/prove_external_evidence.py` O, G |
 | the workflow grows past GitHub's start limit | a self-test check fails first | `tests/check_workflow_size.py` |
 | an expression in a script grows past GitHub's limit | every value arrives through `env:` | `tests/check_expression_length.py` |
 | a PR edits the registry to drop a scanner | the capability floor still expects it | `tests/prove_capability_floor.py` |

@@ -700,6 +700,12 @@
    "fix": "Re-run later; if it persists, the platform team checks the network path to the catalog or the organisation feed mirror.",
    "link": "docs/adoption/FEED_MIRRORS.md"
   },
+  "advisory_cause.SCANNER_DID_NOT_RUN": {
+   "what": "A scanner this repository is set up to run (for example the overlay's Sonar, ZAP or WordPress scan) did not run: it crashed, timed out or could not reach its server, so nothing it covers was checked.",
+   "why": "While the repository is at crawl this is shown and does not block; at walk or run the same run is refused, because a scan that did not happen is not a clean scan.",
+   "fix": "Open the run summary and the scanner's own job: it names the scanner and why it stopped (an expired token, an unreachable server or target). Fix that and re-run; if the scanner is not meant to run yet, remove its token or target so it reads NOT_CONFIGURED.",
+   "link": "docs/security-review/READING-THE-RUN-SUMMARY.md"
+  },
   "control_weakening.GATE_SOFTENED": {
    "what": "A workflow input lets a scanner report without blocking (for example soft_fail_sast: true).",
    "why": "The scanner still looks, but its findings can no longer stop a bad change.",

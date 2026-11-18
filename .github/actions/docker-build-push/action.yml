@@ -240,16 +240,32 @@ runs:
           fi
         done
         PLATFORM="${PLATFORM:-linux/amd64}"
-        RAW="$(docker buildx imagetools inspect --raw "$REPO@$DIGEST")"
+        # THE BYTES ARE HASHED, NEVER TRUSTED (KDEC-065 M5). `imagetools inspect --raw` prints the
+        # registry's bytes unchanged and does not check them against the digest asked for (measured
+        # 2026-11-18, buildx v0.34.1: other bytes served for <repo>@<digest> were printed, exit 0). A
+        # digest is the sha256 of exactly one document, so the step hashes what it fetched -- from a
+        # file, because a command substitution drops trailing newlines -- and refuses any difference,
+        # for the pushed digest and for the platform manifest. tests/prove_oci_index_identity.py.
+        DOC="$(mktemp)"
+        trap 'rm -f "$DOC"' EXIT
+        fetch_exact() {
+          docker buildx imagetools inspect --raw "$REPO@$1" > "$2"
+          got="sha256:$(sha256sum < "$2" | cut -d' ' -f1)"
+          if [ "$got" != "$1" ]; then
+            echo "::error title=ARTIFACT IDENTITY MISMATCH::the registry answered $REPO@$1 with bytes whose sha256 is $got. A digest names exactly one document and these bytes are another, so nothing read from them is the pushed artifact. Refusing to publish this digest as assured."
+            exit 1
+          fi
+        }
+        fetch_exact "$DIGEST" "$DOC"
         PLATFORM_MANIFEST="$DIGEST"
         IS_INDEX=false
-        if printf '%s' "$RAW" | jq -e 'type == "object" and has("manifests")' >/dev/null; then
+        if jq -e 'type == "object" and has("manifests")' < "$DOC" >/dev/null; then
           IS_INDEX=true
           IFS=/ read -r P_OS P_ARCH P_VAR <<< "$PLATFORM"
-          CANDS="$(printf '%s' "$RAW" | jq -r --arg o "$P_OS" --arg a "$P_ARCH" --arg v "${P_VAR:-}" '[.manifests[]
+          CANDS="$(jq -r --arg o "$P_OS" --arg a "$P_ARCH" --arg v "${P_VAR:-}" '[.manifests[]
             | select((.annotations // {})["vnd.docker.reference.type"] != "attestation-manifest")
             | select(.platform.os == $o and .platform.architecture == $a)
-            | select($v == "" or (.platform.variant // "") == $v) | .digest] | unique | .[]')"
+            | select($v == "" or (.platform.variant // "") == $v) | .digest] | unique | .[]' < "$DOC")"
           N="$(printf '%s' "$CANDS" | grep -c . || true)"
           if [ "$N" != 1 ] || ! printf '%s' "$CANDS" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
             REASON=NO_PLATFORM_MANIFEST; [ "$N" -gt 1 ] && REASON=AMBIGUOUS_PLATFORM_MANIFEST
@@ -257,9 +273,9 @@ runs:
             exit 1
           fi
           PLATFORM_MANIFEST="$CANDS"
-          RAW="$(docker buildx imagetools inspect --raw "$REPO@$PLATFORM_MANIFEST")"
+          fetch_exact "$PLATFORM_MANIFEST" "$DOC"
         fi
-        REGISTRY_CONFIG="$(printf '%s' "$RAW" | jq -r '.config.digest // empty')"
+        REGISTRY_CONFIG="$(jq -r '.config.digest // empty' < "$DOC")"
         if ! printf '%s' "$REGISTRY_CONFIG" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
           echo "::error title=Artifact identity UNESTABLISHED::$REPO@$PLATFORM_MANIFEST resolved to a document with no .config.digest -- an index or attestation manifest rather than a plain image manifest. The link between the scanned image and the pushed digest could not be established. UNESTABLISHED is not established: refusing to publish this digest as assured."
           exit 1

@@ -24,11 +24,18 @@ WHAT THIS PROVES, RUNNING THE SHIPPED CODE
        identity is the same across two runs whose URLs differ only in query string; findings
        count under job `external` / `external-floor` in blocking_findings / jobs_with_findings
     P  the policy resolver names `external` among the job minimums (advisory at crawl)
+    O  (KDEC-067) the state builder names every adopted row's OUTCOME to the gate: a REQUIRED row
+       (APPLICABLE / UNAVAILABLE / UNKNOWN) that did not complete as external_not_run
+       name(FAILED | COLLECTION_FAILED | UNAVAILABLE); a NOT_CONFIGURED or NOT_APPLICABLE row as
+       external_not_required; a complete row in neither
     G  the security-gate's gate/posture/verdict steps, as shipped: crawl + external findings ->
        PROCEED_WITH_ADVISORY, verdict 0; crawl + external-floor -> BLOCKED, verdict 1; run +
-       external findings -> BLOCKED; walk -> DECISION_REQUIRED; a crashed external scanner (its
-       row FAILED, so nothing is counted) -> PROCEED, verdict 0 (KDEC-019 item 3: reported, never
-       blocking)
+       external findings -> BLOCKED; walk -> DECISION_REQUIRED. A REQUIRED external scanner that
+       did not run (KDEC-067) is never the outcome of a clean scan: at crawl PROCEED_WITH_ADVISORY
+       with advisory_cause SCANNER_DID_NOT_RUN, assurance PARTIAL, verdict 0 (KDEC-019 item 3: not
+       blocking at crawl); at walk and run, and with no resolved policy, EVIDENCE_UNTRUSTED,
+       verdict 1. NOT_CONFIGURED stays PROCEED and is named NOT_CONFIGURED in scanner_states. A
+       core scanner job that failed is EVIDENCE_UNTRUSTED at every rung (O-24), unchanged
 
 EXIT  0 proven   1 a case failed   2 could not be checked
 """
@@ -112,6 +119,17 @@ def case_rows(bad):
         # a crashed external scanner: a row, no SARIF
         '_sarif/state-ext-quality.json': json.dumps(
             row('ext-quality', 'external', '', subject='SOURCE', execution='FAILED')),
+        # KDEC-067 outcomes: could not reach its API; collection failed; not configured; not applicable
+        '_sarif/state-ext-reach.json': json.dumps(
+            row('ext-reach', 'external', '', subject='SOURCE', execution='NOT_RUN',
+                applicability='UNAVAILABLE')),
+        '_sarif/state-ext-collect.json': json.dumps(
+            row('ext-collect', 'external', '', subject='SOURCE', execution='COLLECTION_FAILED')),
+        '_sarif/state-ext-notoken.json': json.dumps(
+            row('ext-notoken', 'external', '', subject='SOURCE', execution='NOT_RUN',
+                applicability='NOT_CONFIGURED')),
+        '_sarif/state-ext-notarget.json': json.dumps(
+            row('ext-notarget', 'external', '', execution='NOT_RUN', applicability='NOT_APPLICABLE')),
         # refused rows
         '_sarif/state-ext-Bad.json': json.dumps(row('ext-Bad', 'external', '')),
         '_sarif/state-ext-steal.json': json.dumps(row('ext-steal', 'secret-scan', '')),
@@ -127,10 +145,18 @@ def case_rows(bad):
     sb = h.Sandbox('external-rows-')
     try:
         ws = sb.workspace('rows', files)
-        rc, log, _o, _u = sb.run(bash, step, vals, ws)
+        rc, log, outs, _u = sb.run(bash, step, vals, ws)
         st = os.path.join(ws, '_states')
         if rc != 0:
             bad.append('R: the state builder exited %d\n%s' % (rc, log[-600:]))
+        nr = sorted((outs.get('external_not_run') or '').split())
+        nq = sorted((outs.get('external_not_required') or '').split())
+        print('  O  external_not_run=%s external_not_required=%s' % (nr, nq))
+        if nr != sorted(['ext-quality(FAILED)', 'ext-reach(UNAVAILABLE)', 'ext-collect(COLLECTION_FAILED)']):
+            bad.append('O: external_not_run is %r: every required row that did not run, by outcome, '
+                       'and nothing else' % nr)
+        if nq != sorted(['ext-notoken(NOT_CONFIGURED)', 'ext-notarget(NOT_APPLICABLE)']):
+            bad.append('O: external_not_required is %r' % nq)
         for name in ('ext-dast', 'ext-dast-floor', 'ext-quality'):
             p = os.path.join(st, 'state-%s.json' % name)
             if not os.path.exists(p):
@@ -244,37 +270,71 @@ def case_gate(bad, work):
     doc = yaml.safe_load(io.open(pbf.WF, encoding='utf-8'))
     steps = doc['jobs']['security-gate'].get('steps') or []
 
-    def seeded(jobs):
-        d = gp.scanners()
+    def seeded(jobs, not_run='', not_required='', failed=()):
+        d = gp.scanners(failed=failed)
         d['steps.render.outputs.jobs_with_findings'] = jobs
         d['steps.render.outputs.blocking_findings'] = '2' if jobs else '0'
+        d['steps.rows.outputs.external_not_run'] = not_run
+        d['steps.rows.outputs.external_not_required'] = not_required
         return d
     crawl = gp.policy_outputs(work, None, environment='dev')
     walk = gp.policy_outputs(work, gp.central([{'id': 'w', 'scope': {'org': 'acme'},
                                                 'rung': 'walk'}]))
     run = gp.policy_outputs(work, gp.central([{'id': 'r', 'scope': {'org': 'acme'},
                                                'rung': 'run'}]))
+    crashed, reach = 'ext-quality(FAILED)', 'ext-reach(UNAVAILABLE)'
+    # (name, policy, jobs with findings, external_not_run, external_not_required, failed core jobs,
+    #  route, verdict 0?, advisory cause wanted, assurance wanted)
     cases = [
-        ('crawl_external', crawl, 'external', 'PROCEED_WITH_ADVISORY', True),
-        ('crawl_external_floor', crawl, 'external-floor', 'BLOCKED', False),
-        ('crawl_both', crawl, 'external external-floor', 'BLOCKED', False),
-        ('walk_external', walk, 'external', 'DECISION_REQUIRED', True),
-        ('run_external', run, 'external', 'BLOCKED', False),
-        ('crawl_external_crashed', crawl, '', 'PROCEED', True),
+        ('crawl_external', crawl, 'external', '', '', (), 'PROCEED_WITH_ADVISORY', True, None, None),
+        ('crawl_external_floor', crawl, 'external-floor', '', '', (), 'BLOCKED', False, None, None),
+        ('crawl_both', crawl, 'external external-floor', '', '', (), 'BLOCKED', False, None, None),
+        ('walk_external', walk, 'external', '', '', (), 'DECISION_REQUIRED', True, None, None),
+        ('run_external', run, 'external', '', '', (), 'BLOCKED', False, None, None),
+        # KDEC-067: a required external scanner that did not run is never a clean scan's outcome.
+        ('crawl_clean', crawl, '', '', '', (), 'PROCEED', True, None, 'PASS'),
+        ('crawl_external_crashed', crawl, '', crashed, '', (), 'PROCEED_WITH_ADVISORY', True,
+         'SCANNER_DID_NOT_RUN', 'PARTIAL'),
+        ('crawl_external_unavailable', crawl, '', reach, '', (), 'PROCEED_WITH_ADVISORY', True,
+         'SCANNER_DID_NOT_RUN', 'PARTIAL'),
+        ('crawl_crashed_and_findings', crawl, 'external', crashed, '', (), 'PROCEED_WITH_ADVISORY', True,
+         'SCANNER_DID_NOT_RUN', 'PARTIAL'),
+        ('walk_external_crashed', walk, '', crashed, '', (), 'EVIDENCE_UNTRUSTED', False, None, 'PARTIAL'),
+        ('run_external_crashed', run, '', crashed, '', (), 'EVIDENCE_UNTRUSTED', False, None, 'PARTIAL'),
+        ('run_external_unavailable', run, '', reach, '', (), 'EVIDENCE_UNTRUSTED', False, None, 'PARTIAL'),
+        ('unresolved_external_crashed', {}, '', crashed, '', (), 'EVIDENCE_UNTRUSTED', False, None, None),
+        ('crawl_not_configured', crawl, '', '', 'ext-notoken(NOT_CONFIGURED)', (), 'PROCEED', True,
+         None, 'PASS'),
+        ('run_not_configured', run, '', '', 'ext-notoken(NOT_CONFIGURED)', (), 'PROCEED', True, None, 'PASS'),
+        # The core's own rule, unchanged (O-24): a core scanner job that failed is refused at every rung.
+        ('crawl_core_failed', crawl, '', '', '', ('sast-semgrep',), 'EVIDENCE_UNTRUSTED', False, None, 'PARTIAL'),
+        ('run_core_failed', run, '', '', '', ('sast-semgrep',), 'EVIDENCE_UNTRUSTED', False, None, 'PARTIAL'),
     ]
-    for name, pol, jobs, want_route, want_ok in cases:
-        r = gp.run_job(bash, steps, pol, seeded(jobs))
+    for name, pol, jobs, not_run, not_req, failed, want_route, want_ok, want_cause, want_as in cases:
+        r = gp.run_job(bash, steps, pol, seeded(jobs, not_run, not_req, failed))
         ok_v = (r['verdict_rc'] == 0) == want_ok
-        print('  G  %-24s gate=%s enforcement=%s route=%s verdict=%s %s'
-              % (name, r['gate_rc'], r['enforcement'], r['route'], r['verdict_rc'],
-                 'ok' if (ok_v and r['route'] == want_route) else 'FAIL'))
-        if r['route'] != want_route or not ok_v:
-            bad.append('G/%s: route %r verdict %r, wanted %r verdict %s\n%s'
-                       % (name, r['route'], r['verdict_rc'], want_route,
-                          '0' if want_ok else 'non-zero', r['log'][-500:]))
+        causes = set(c for c in (r['causes'] or '').split(',') if c)
+        assurance = r['gate'].get('assurance_state')
+        good = ok_v and r['route'] == want_route and (want_cause is None or want_cause in causes) \
+            and (want_as is None or assurance == want_as)
+        print('  G  %-28s gate=%s enforcement=%-8s assurance=%-8s route=%-21s causes=%s verdict=%s %s'
+              % (name, r['gate_rc'], r['enforcement'], assurance, r['route'], ','.join(sorted(causes)),
+                 r['verdict_rc'], 'ok' if good else 'FAIL'))
+        if not good:
+            bad.append('G/%s: route %r causes %r assurance %r verdict %r, wanted %r cause %r assurance %r '
+                       'verdict %s\n%s' % (name, r['route'], sorted(causes), assurance, r['verdict_rc'],
+                                           want_route, want_cause, want_as, '0' if want_ok else 'non-zero',
+                                           r['log'][-500:]))
         if jobs and 'external' in jobs and 'external' not in r['gate'].get('scanner_states', ''):
             bad.append('G/%s: scanner_states does not name the external evidence (%r)'
                        % (name, r['gate'].get('scanner_states')))
+        for x in (not_run + ' ' + not_req).split():
+            want = '"%s":"%s"' % (x.split('(')[0], x.split('(')[1].rstrip(')'))
+            if want not in r['gate'].get('scanner_states', ''):
+                bad.append('G/%s: scanner_states does not name %s as itself (%r)'
+                           % (name, x, r['gate'].get('scanner_states')))
+        if not_run and want_cause is None and 'SCANNER_DID_NOT_RUN' in causes:
+            bad.append('G/%s: a refused run carries an advisory cause' % name)
 
 
 def main():

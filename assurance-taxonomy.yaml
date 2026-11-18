@@ -3892,6 +3892,22 @@ namespaces:
         rule: >-
           VISIBLE AND NEVER A PASS: a run that is otherwise PROCEED routes PROCEED_WITH_ADVISORY
           with this cause. It does not block -- nothing was observed -- and the deploy records it.
+      SCANNER_DID_NOT_RUN:
+        definition: >-
+          A REQUIRED scanner whose evidence a caller delivered (an adopted external row, KDEC-028)
+          did not run: its row is APPLICABLE, UNAVAILABLE or UNKNOWN and its execution is not
+          COMPLETE -- scanner_state FAILED or COLLECTION_FAILED (it ran and broke) or UNAVAILABLE
+          (it never ran, timed out before reporting, or could not reach what it scans). The gate
+          names it in scanner_states and unestablished by that state, and the assurance is
+          PARTIAL, never PASS (KDEC-067). NOT_CONFIGURED (the approved adoption phase: no token,
+          no target) and NOT_APPLICABLE are not required and are not this cause.
+        rule: >-
+          ADVISORY ONLY AT CRAWL. At the crawl rung (KDEC-019 item 3: a crashed overlay scan does
+          not block while the consumer connects it) the run routes PROCEED_WITH_ADVISORY with this
+          cause and the deploy records it. At walk or run, or with no resolved policy, the same row
+          is refused like a core scanner that could not scan: EVIDENCE_UNTRUSTED, and this cause is
+          not emitted. A core scanner job that failed or never ran is refused at every rung (O-24)
+          and never reaches this cause.
 
   # ─────────────────────────────────────────────────────────────────────────
   secret_exception_refusal:

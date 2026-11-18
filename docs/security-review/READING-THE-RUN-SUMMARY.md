@@ -17,7 +17,8 @@ Truth State:  Authored, not field-tested (2026-11-03). Definitions are condensed
 
 `advisory_causes`: `FINDINGS_NOT_BLOCKED` (findings recorded, not blocked at this rung),
 `WEAKENING_ATTRIBUTED`, `SECRET_EXCEPTION_ATTRIBUTED`, `KNOWN_EXPLOITED_EXCEPTION_ATTRIBUTED`,
-`KEV_UNAVAILABLE`, `COVERAGE_PARTIAL`, `VERSION_GAP` (refused at uat/prod without a named
+`KEV_UNAVAILABLE`, `SCANNER_DID_NOT_RUN` (a required caller-delivered scanner did not run;
+advisory only at crawl, refused above it), `COVERAGE_PARTIAL`, `VERSION_GAP` (refused at uat/prod without a named
 acceptance), `VERSION_GAP_UNVERIFIED`, `WEAKENING_NOT_APPROVED` (refused by a uat/prod deploy, KDEC-036).
 
 ## What was established vs what was done

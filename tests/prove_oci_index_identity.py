@@ -36,10 +36,20 @@ CASES (docs/PROOF_RULE.md)
                       Id that is neither the config nor the image target -> refused (the tag moved)
     recovery          the config digest is the build's containerimage.config.digest on BOTH stores:
                       the classic Id (= config) and the containerd Id (= index) each yield it
+    registry (M5)     the registry serves bytes that are NOT the document the requested digest
+                      names -- for the pushed digest (index and single manifest) and for the
+                      selected platform manifest -- and the step must refuse ARTIFACT IDENTITY
+                      MISMATCH. `docker buildx imagetools inspect --raw` prints the registry's bytes
+                      unchanged and does not check them (measured 2026-11-18, buildx v0.34.1, a local
+                      registry serving other bytes for <repo>@<digest>: printed, exit 0), so the step
+                      hashes what it fetched. Every recorded document is now content-addressed (its
+                      digest is the sha256 of the bytes served, trailing newline included); a control
+                      serves a compact document with no trailing newline and must still prove
     mutants           each new branch, broken in the shipped text, is caught by a case above
 
 EXIT 0 every case decided as it must; 1 a case decided wrongly; 2 could not be checked (UNKNOWN).
 """
+import hashlib
 import io
 import json
 import os
@@ -61,10 +71,9 @@ def d(c):
     return 'sha256:' + c * 64
 
 
+# Config digests are never fetched, so they stay symbolic. Every DOCUMENT the registry serves is
+# content-addressed below: its digest is the sha256 of exactly the bytes the shim serves.
 SCANNED, OTHER, ARMCFG, ATTCFG = d('5'), d('6'), d('8'), d('9')
-M1, M2, M3, M4, M5, ATT = d('a'), d('b'), d('c'), d('d'), d('e'), d('f')
-I1, I2, I3, I4, I5, L1 = d('1'), d('2'), d('3'), d('4'), d('0'), d('7')
-I6 = 'sha256:' + '12' * 32
 OCI_M = 'application/vnd.oci.image.manifest.v1+json'
 OCI_I = 'application/vnd.oci.image.index.v1+json'
 DKR_M = 'application/vnd.docker.distribution.manifest.v2+json'
@@ -94,17 +103,44 @@ def index(entries, mt=OCI_I):
 
 
 UNKNOWN_P = {'architecture': 'unknown', 'os': 'unknown'}
-DOCS = {
-    M1: manifest(SCANNED), M2: manifest(SCANNED, DKR_M), M3: manifest(ARMCFG),
-    M4: manifest(d('3')), M5: manifest(OTHER), ATT: manifest(ATTCFG),
-    I1: index([entry(M1, AMD), entry(ATT, UNKNOWN_P, att=True)]),
-    I2: index([entry(ATT, AMD, att=True), entry(M1, AMD)]),
-    I3: index([entry(M1, AMD), entry(M4, AMD), entry(ATT, UNKNOWN_P, att=True)]),
-    I4: index([entry(M3, ARM), entry(ATT, UNKNOWN_P, att=True)]),
-    I5: index([entry(M5, AMD), entry(ATT, UNKNOWN_P, att=True)]),
-    I6: index([entry(I1, AMD, mt=OCI_I)]),
-    L1: index([entry(M2, AMD, mt=DKR_M), entry(M3, ARM, mt=DKR_M)], mt=DKR_L),
-}
+DOCS = {}   # digest -> the exact bytes the registry shim serves for <repo>@<digest>
+
+
+def blob(doc):
+    return (json.dumps(doc, indent=2) + '\n').encode('utf-8')
+
+
+def put(data, served=None):
+    """Register a document by its content address; `served` (M5 attacks) is what the registry
+    returns instead of `data` when asked for that address."""
+    dg = 'sha256:' + hashlib.sha256(data).hexdigest()
+    DOCS[dg] = data if served is None else served
+    return dg
+
+
+M1, M2, M3 = put(blob(manifest(SCANNED))), put(blob(manifest(SCANNED, DKR_M))), put(blob(manifest(ARMCFG)))
+M4, M5, ATT = put(blob(manifest(d('3')))), put(blob(manifest(OTHER))), put(blob(manifest(ATTCFG)))
+I1 = put(blob(index([entry(M1, AMD), entry(ATT, UNKNOWN_P, att=True)])))
+I2 = put(blob(index([entry(ATT, AMD, att=True), entry(M1, AMD)])))
+I3 = put(blob(index([entry(M1, AMD), entry(M4, AMD), entry(ATT, UNKNOWN_P, att=True)])))
+I4 = put(blob(index([entry(M3, ARM), entry(ATT, UNKNOWN_P, att=True)])))
+I5 = put(blob(index([entry(M5, AMD), entry(ATT, UNKNOWN_P, att=True)])))
+I6 = put(blob(index([entry(I1, AMD, mt=OCI_I)])))
+L1 = put(blob(index([entry(M2, AMD, mt=DKR_M), entry(M3, ARM, mt=DKR_M)], mt=DKR_L)))
+# A compact document with NO trailing newline: hashing must be over the bytes as fetched, never over
+# a shell variable (a command substitution drops trailing newlines, so every other document, which
+# ends in one, would then mismatch -- and a document without one must not gain one).
+N1 = put(json.dumps(manifest(SCANNED), separators=(',', ':')).encode('utf-8'))
+# M5 -- THE REGISTRY SERVES OTHER BYTES THAN THE DIGEST NAMES. Each requested address is the hash of
+# a genuine document; what comes back is a different (well-formed, otherwise provable) document.
+#   T_TOP  the pushed index: serves I1's bytes (containerd store: the scanned Id IS T_TOP, so before
+#          the hash check CONTENT_ADDRESS_INDEX "proved" it on the strength of the string alone)
+#   T_ONE  a pushed single manifest: serves M1's bytes (classic store, config matches)
+#   T_PM   the platform manifest named by a genuine index I7: serves M1's bytes
+T_TOP = put(blob(index([entry(M1, AMD), entry(ATT, UNKNOWN_P, att=True)], mt=DKR_L)), served=DOCS[I1])
+T_ONE = put(blob(dict(manifest(SCANNED), annotations={'kit.example/variant': 'genuine'})), served=DOCS[M1])
+T_PM = put(blob(dict(manifest(SCANNED), annotations={'kit.example/variant': 'platform'})), served=DOCS[M1])
+I7 = put(blob(index([entry(T_PM, AMD), entry(ATT, UNKNOWN_P, att=True)])))
 
 DOCKER = r'''
 case "$1 $2" in
@@ -138,6 +174,10 @@ ASSERT_CASES = (
     ('allowed-att-labelled-amd64', I2, SCANNED, '', 'linux/amd64', True, M1, 'CONFIG_DIGEST', None),
     ('allowed-declared-arm64', I4, ARMCFG, '', 'linux/arm64', True, M3, 'CONFIG_DIGEST', None),
     ('allowed-platform-unset', I1, I1, '', '', True, M1, 'CONTENT_ADDRESS_INDEX', None),
+    ('allowed-no-trailing-newline', N1, SCANNED, '', 'linux/amd64', True, N1, 'CONFIG_DIGEST', None),
+    ('attack-registry-index', T_TOP, T_TOP, '', 'linux/amd64', False, '', '', 'ARTIFACT IDENTITY MISMATCH'),
+    ('attack-registry-manifest', T_ONE, SCANNED, '', 'linux/amd64', False, '', '', 'ARTIFACT IDENTITY MISMATCH'),
+    ('attack-registry-platform', I7, SCANNED, '', 'linux/amd64', False, '', '', 'ARTIFACT IDENTITY MISMATCH'),
     ('attack-containerd', I1, I5, '', 'linux/amd64', False, '', '', 'ARTIFACT IDENTITY MISMATCH'),
     ('attack-classic', M1, OTHER, '', 'linux/amd64', False, '', '', 'ARTIFACT IDENTITY MISMATCH'),
     ('attack-index-config', I5, SCANNED, '', 'linux/amd64', False, '', '', 'ARTIFACT IDENTITY MISMATCH'),
@@ -187,6 +227,11 @@ MUTANTS = (
     ('assert_identity', '[ "$BUILD_CONFIG" != "$REGISTRY_CONFIG" ]', 'false', 'attack-metadata-contradicts'),
     ('assert_identity', 'RULE=CONTENT_ADDRESS_INDEX', 'RULE=CONTENT_ADDRESS_MANIFEST', 'allowed-containerd-index'),
     ('built', '[ -n "$BUILD_CONFIG" ] && ! printf', '! printf', 'recovery-containerd-no-metadata'),
+    # KDEC-065 M5: the fetched bytes are hashed, and the hash is over the file, not a shell variable.
+    ('assert_identity', '[ "$got" != "$1" ]', 'false', 'attack-registry-platform'),
+    ('assert_identity', 'fetch_exact "$DIGEST" "$DOC"', 'docker buildx imagetools inspect --raw "$REPO@$DIGEST" > "$DOC"',
+     'attack-registry-index'),
+    ('assert_identity', 'sha256sum < "$2"', 'printf %s "$(cat "$2")" | sha256sum', 'allowed-classic-single'),
 )
 
 
@@ -209,9 +254,9 @@ def main():
         shims, docs = os.path.join(tmp, 'shim'), os.path.join(tmp, 'docs')
         H.shim(shims, 'docker', DOCKER)
         os.makedirs(docs)
-        for dg, doc in DOCS.items():
-            io.open(os.path.join(docs, dg[7:] + '.json'), 'w', encoding='utf-8',
-                    newline='\n').write(json.dumps(doc, indent=2) + '\n')
+        for dg, data in DOCS.items():
+            with io.open(os.path.join(docs, dg[7:] + '.json'), 'wb') as fh:
+                fh.write(data)
         n = [0]
 
         def run(s, ctx, env, composite):
@@ -316,7 +361,9 @@ def main():
     print('PASS: on both the reusable workflow and the composite, an OCI index or Docker manifest '
           'list resolves to the one image manifest for the built platform, attestation manifests '
           'are never selected, none or several refuse by name, a different config is a MISMATCH, '
-          'and the scanned config digest is the build\'s own config digest on either image store.')
+          'bytes that do not hash to the requested digest (pushed or platform manifest) are a '
+          'MISMATCH, and the scanned config digest is the build\'s own config digest on either '
+          'image store.')
     return 0
 
 

@@ -56,6 +56,17 @@ the private release PR #17 stays on HOLD until the owner approves.
 - **KDEC-064:** two deferrals that expired 2026-11-15 were closed by fixing (the context-currency check is now
   wired in self-test), not by moving their dates.
 
+- **KDEC-065 (revised): image identity by content address.** The scanned image is proven to be the pushed one
+  by the registry's digests (the containerd store's index or manifest, or the classic store's config), never
+  by build metadata that ubuntu-26.04 runners may omit. M5: the bytes the registry serves are hashed and a
+  mismatch is refused (`imagetools inspect --raw` was measured not to check them).
+- **KDEC-066: one exclusion rule for every export path.** `.claude` under `tests/fixtures/` ships; `.claude`,
+  `.context` and export profiles anywhere else never do, in the full export, the incremental and the zip.
+- **KDEC-067: a required scanner that did not run is never a clean scan.** A configured external scanner that
+  failed or was unavailable routes `PROCEED_WITH_ADVISORY` with cause `SCANNER_DID_NOT_RUN` at crawl and
+  `EVIDENCE_UNTRUSTED` at walk or run; one not configured reads `NOT_CONFIGURED` and does not block. Core
+  required scanners are unchanged (`EVIDENCE_UNTRUSTED` at every rung).
+
 ### Caller migration
 
 - `reusable-external-findings.yml` callers: grant `actions: read` (the baseline run is selected from the

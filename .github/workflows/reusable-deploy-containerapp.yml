@@ -6322,7 +6322,7 @@ jobs:
               case "$c" in
                 VERSION_GAP) gap=1 ;;
                 VERSION_GAP_UNVERIFIED) unverified=1 ;;
-                COVERAGE_PARTIAL|WEAKENING_ATTRIBUTED|FINDINGS_NOT_BLOCKED|SECRET_EXCEPTION_ATTRIBUTED|KNOWN_EXPLOITED_EXCEPTION_ATTRIBUTED|KEV_UNAVAILABLE) ;;
+                COVERAGE_PARTIAL|WEAKENING_ATTRIBUTED|FINDINGS_NOT_BLOCKED|SECRET_EXCEPTION_ATTRIBUTED|KNOWN_EXPLOITED_EXCEPTION_ATTRIBUTED|KEV_UNAVAILABLE|SCANNER_DID_NOT_RUN) ;;
                 # KDEC-036: registered here; the reviewer-signals step refuses them at uat/prod by name.
                 WEAKENING_NOT_APPROVED) ;;
                 *) unknown=1 ;;

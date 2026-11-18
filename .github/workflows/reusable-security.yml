@@ -5434,6 +5434,7 @@ jobs:
           # it could impersonate), every value is from the registered vocabulary, and its SARIF is
           # empty or exactly <scanner>.sarif and present. Anything else is refused out loud and
           # not adopted -- it can never become a row that reads clean. The kit names no tool here.
+          ext_not_run=""; ext_off=""
           for _x in _sarif/state-ext-*.json; do
             [ -f "$_x" ] || continue
             _xn="$(jq -r '.scanner // ""' "$_x" 2>/dev/null)" || _xn=""
@@ -5459,7 +5460,22 @@ jobs:
               "$_x" > "_states/state-${_xn}.json"
             [ -z "$_xs" ] || cp -f "_sarif/$_xs" "_states/$_xs"
             echo "adopted external evidence: ${_xn} ($(jq -r '.job + " " + .execution' "$_x"))"
+            # WHETHER IT RAN, AS THE GATE MUST READ IT (KDEC-067). A row the caller switched on
+            # (APPLICABLE) or could not establish (UNAVAILABLE, UNKNOWN) is REQUIRED. One that did not
+            # complete is FAILED / COLLECTION_FAILED (it ran and broke) or UNAVAILABLE (it never ran,
+            # or could not reach what it scans) -- it counted no findings, so without this the gate
+            # would never see it. NOT_CONFIGURED (the approved adoption phase) and NOT_APPLICABLE are
+            # not required; they are named to the gate as themselves, never as a clean scan.
+            _xa="$(jq -r '.applicability' "$_x")"; _xe="$(jq -r '.execution' "$_x")"
+            case "$_xa:$_xe" in
+              NOT_CONFIGURED:*|NOT_APPLICABLE:*) ext_off="${ext_off}${ext_off:+ }${_xn}(${_xa})" ;;
+              APPLICABLE:COMPLETE|UNKNOWN:COMPLETE) ;;
+              UNAVAILABLE:*|*:NOT_RUN) ext_not_run="${ext_not_run}${ext_not_run:+ }${_xn}(UNAVAILABLE)" ;;
+              *) ext_not_run="${ext_not_run}${ext_not_run:+ }${_xn}(${_xe})" ;;
+            esac
           done
+          echo "external_not_run=${ext_not_run}" >> "$GITHUB_OUTPUT"
+          echo "external_not_required=${ext_off}" >> "$GITHUB_OUTPUT"
 
           echo "built $(ls -1 _states/state-*.json | wc -l) scanner state file(s)"
 
@@ -5677,6 +5693,12 @@ jobs:
           K_WHY: ${{ steps.kev.outputs.kev_why }}
           K_KNOWN_EXPLOITED: ${{ steps.kev.outputs.known_exploited }}
           P_KEV_EXCEPTION_REFUSALS: ${{ steps.policy.outputs.policy_known_exploited_exception_refusals }}
+          # KDEC-067: adopted external rows that are REQUIRED and did not run (name(FAILED|
+          # COLLECTION_FAILED|UNAVAILABLE)), those not required (name(NOT_CONFIGURED|NOT_APPLICABLE)),
+          # and the rung the gate obeys, which decides whether the first list blocks.
+          G_EXTERNAL_NOT_RUN: ${{ steps.rows.outputs.external_not_run }}
+          G_EXTERNAL_NOT_REQUIRED: ${{ steps.rows.outputs.external_not_required }}
+          P_RUNG: ${{ steps.policy.outputs.policy_rung_effective }}
         run: |
           set -u
           fail=0
@@ -5973,7 +5995,7 @@ jobs:
           # gate, routed by the resolved policy like any scanner job's -- advisory at crawl. Their
           # secret / KEV / malicious class arrives as `external-floor` and blocks at every rung, as
           # a secret does; it is not exceptable here. A crashed external scanner counts nothing, so
-          # it never reaches this point: the report shows it, and it never blocks (KDEC-019 item 3).
+          # it never reaches this point: its row's outcome is read below (KDEC-067).
           case "$FINDINGS_JOBS" in
             *" external "*)
               fail=1; findings_named="${findings_named} external"
@@ -6377,6 +6399,33 @@ jobs:
               fi
             done
           fi
+          # A REQUIRED SCANNER THAT DID NOT RUN IS NEVER A CLEAN ONE (KDEC-067). A core scanner job that
+          # failed or never ran is read above as nonfinding_fail: refused at every rung (O-24). An
+          # ADOPTED external row that is required and did not complete counted no findings, so nothing
+          # above saw it. It is named here by its outcome and the assurance cannot be PASS. Enforcement
+          # follows the resolved rung: at crawl it is advisory (KDEC-019 item 3) and the posture routes
+          # PROCEED_WITH_ADVISORY with advisory_cause SCANNER_DID_NOT_RUN; at walk or run, or with no
+          # resolved policy, it is refused exactly as a core scanner that could not scan.
+          # tests/prove_external_evidence.py G (crashed_*, unavailable_*, not_configured).
+          ext_advisory=""
+          for x in ${G_EXTERNAL_NOT_REQUIRED:-}; do
+            xs="${x##*(}"; states="${states}${states:+,}\"${x%%(*}\":\"${xs%)}\""
+          done
+          if [ -n "${G_EXTERNAL_NOT_RUN:-}" ]; then
+            undetermined=1
+            for x in ${G_EXTERNAL_NOT_RUN}; do
+              xs="${x##*(}"; states="${states}${states:+,}\"${x%%(*}\":\"${xs%)}\""
+              unestablished="${unestablished}${unestablished:+ }${x}"
+            done
+            if [ "$policy_on" = "1" ] && [ "${P_RUNG:-}" = "crawl" ]; then
+              ext_advisory="${G_EXTERNAL_NOT_RUN}"
+              echo "::warning title=SCANNER_DID_NOT_RUN (crawl, advisory)::required external scanner(s) did not run: ${G_EXTERNAL_NOT_RUN}. Nothing they cover was checked. At crawl this is reported and does not block; above crawl it is refused."
+            else
+              fail=1; nonfinding_fail=1
+              echo "::error title=Required external scanner did not run::${G_EXTERNAL_NOT_RUN} (rung ${P_RUNG:-unresolved}). A required scanner that did not run is not a clean one; above crawl it is refused, as a core scanner that could not scan is."
+            fi
+            echo "> **Required external scanner(s) did not run:** \`${G_EXTERNAL_NOT_RUN}\` -- not clean (rung \`${P_RUNG:-unresolved}\`)." >> "$GITHUB_STEP_SUMMARY"
+          fi
           # OWNER RULING O-24 (2026-10-22): the policy softens FINDINGS only. A job that crashed or
           # could not collect -- the kit unable to run its own scan -- is never made advisory by it.
           findings_advisory="${IN_ADVISORY_MODE}"
@@ -6438,6 +6487,9 @@ jobs:
           emit version_gapped_unverified "$version_gapped_unverified"
           emit policy_findings_route "$policy_findings_route"
           emit coverage_partial "$coverage_partial"
+          # KDEC-067: required external scanners that did not run, and those of them advisory at crawl.
+          emit external_not_run "${G_EXTERNAL_NOT_RUN:-}"
+          emit external_not_run_advisory "$ext_advisory"
 
           if [ "${G_NEEDS_DISCOVER_OUTPUTS_STATE}" = "DISCOVERY_UNAVAILABLE" ] || [ "$discover_dead" = "1" ]; then
             echo "::error title=UNDETERMINED::Discovery failed, so the set of capabilities that"
@@ -6651,6 +6703,8 @@ jobs:
           G_VERSION_GAPPED_UNVERIFIED: ${{ steps.gate.outputs.version_gapped_unverified }}
           G_POLICY_FINDINGS_ROUTE: ${{ steps.gate.outputs.policy_findings_route }}
           G_COVERAGE_PARTIAL: ${{ steps.gate.outputs.coverage_partial }}
+          # KDEC-067: required external scanners that did not run, advisory at crawl.
+          G_EXTERNAL_ADVISORY: ${{ steps.gate.outputs.external_not_run_advisory }}
           G_kev_state: ${{ steps.gate.outputs.kev_state }}
           G_KEV_VERDICT: ${{ steps.gate.outputs.kev_verdict }}
           W_TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
@@ -6866,7 +6920,12 @@ jobs:
           if [ -n "${G_UNESTABLISHED:-}" ]; then
             partial_only=1
             for u in ${G_UNESTABLISHED}; do
-              case "$u" in *"(PARTIAL)") ;; *) partial_only=0 ;; esac
+              # KDEC-067: a required external scanner that did not run, advisory at crawl, is a named
+              # gap the gate decided -- not missing evidence of the core's own.
+              case "$u" in
+                *"(PARTIAL)") ;;
+                *) case " ${G_EXTERNAL_ADVISORY:-} " in *" $u "*) ;; *) partial_only=0 ;; esac ;;
+              esac
             done
           fi
 
@@ -6917,7 +6976,9 @@ jobs:
           if [ "$route" = "PROCEED_WITH_ADVISORY" ]; then
             if [ "${G_ASSURANCE:-}" = "PARTIAL" ]; then
               for u in ${G_UNESTABLISHED:-}; do
-                if inlist "${G_VERSION_GAPPED:-}" "${u%%(*}"; then
+                if inlist "${G_EXTERNAL_ADVISORY:-}" "$u"; then
+                  causes="$causes,SCANNER_DID_NOT_RUN"
+                elif inlist "${G_VERSION_GAPPED:-}" "${u%%(*}"; then
                   causes="$causes,VERSION_GAP"
                 elif inlist "${G_VERSION_GAPPED_UNVERIFIED:-}" "${u%%(*}"; then
                   causes="$causes,VERSION_GAP_UNVERIFIED"

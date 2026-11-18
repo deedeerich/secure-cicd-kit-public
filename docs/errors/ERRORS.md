@@ -8,7 +8,7 @@ In a run, the same sentence is the title of the annotation at the top of the run
 
 ## Contents
 
-- [advisory_cause](#advisory_cause) (9)
+- [advisory_cause](#advisory_cause) (10)
 - [alias_continuity](#alias_continuity) (4)
 - [api_boundary](#api_boundary) (4)
 - [api_token_preflight](#api_token_preflight) (6)
@@ -143,6 +143,14 @@ A dependency has a vulnerability that attackers are known to exploit, and an app
 - **Why it matters:** Known-exploited vulnerabilities block by default; this one passes only because a named person accepted it until a date.
 - **Fix:** Upgrade the dependency to a fixed version before the exception expires.
 - **More:** [docs/adoption/POLICY_REGISTER.md](../adoption/POLICY_REGISTER.md)
+
+### SCANNER_DID_NOT_RUN (advisory_cause)
+
+A scanner this repository is set up to run (for example the overlay's Sonar, ZAP or WordPress scan) did not run: it crashed, timed out or could not reach its server, so nothing it covers was checked. **[SCANNER_DID_NOT_RUN]**
+
+- **Why it matters:** While the repository is at crawl this is shown and does not block; at walk or run the same run is refused, because a scan that did not happen is not a clean scan.
+- **Fix:** Open the run summary and the scanner's own job: it names the scanner and why it stopped (an expired token, an unreachable server or target). Fix that and re-run; if the scanner is not meant to run yet, remove its token or target so it reads NOT_CONFIGURED.
+- **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
 
 ### SECRET_EXCEPTION_ATTRIBUTED (advisory_cause)
 
