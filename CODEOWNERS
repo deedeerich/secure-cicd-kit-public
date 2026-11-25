@@ -39,51 +39,51 @@
 # self-test contract job) holds every protected path to this owner, and REFUSES the placeholder in an
 # adopted copy (one carrying the export watermark): a placeholder team owns nothing. Replace it here
 # AND on the declaration line.
-# kit-protected-owner: @YOUR_ORG/replace-me-kit-control-owners
+# kit-protected-owner: @deedeerich
 
 # ── The machinery: what the control DOES ────────────────────────────────────────
 # Changing these changes what "secure" means for every consumer. Formerly
-# @YOUR_ORG/pipeline-maintainers: populate the protected owner with them.
-/.github/                    @YOUR_ORG/replace-me-kit-control-owners
-/assurance-taxonomy.yaml     @YOUR_ORG/replace-me-kit-control-owners
-/scripts/                    @YOUR_ORG/replace-me-kit-control-owners
-/tests/                      @YOUR_ORG/replace-me-kit-control-owners
-/api/                        @YOUR_ORG/replace-me-kit-control-owners
-/templates/                  @YOUR_ORG/replace-me-kit-control-owners
-/schemas/                    @YOUR_ORG/replace-me-kit-control-owners
-/rollback-resource-classes.yaml  @YOUR_ORG/replace-me-kit-control-owners
-/CODEOWNERS                  @YOUR_ORG/replace-me-kit-control-owners
-/docs/CODEOWNERS             @YOUR_ORG/replace-me-kit-control-owners
+# @deedeerich: populate the protected owner with them.
+/.github/                    @deedeerich
+/assurance-taxonomy.yaml     @deedeerich
+/scripts/                    @deedeerich
+/tests/                      @deedeerich
+/api/                        @deedeerich
+/templates/                  @deedeerich
+/schemas/                    @deedeerich
+/rollback-resource-classes.yaml  @deedeerich
+/CODEOWNERS                  @deedeerich
+/docs/CODEOWNERS             @deedeerich
 
 # ── Policy: how hard it enforces ────────────────────────────────────────────────
 # Profiles decide adoption-vs-strict and which capabilities are required; the central policy
 # register decides what every repository inherits. Security decisions about enforcement posture:
 # the protected owner's membership must include the security approvers' view (see above).
-/profiles/                   @YOUR_ORG/replace-me-kit-control-owners
-/policy/                     @YOUR_ORG/replace-me-kit-control-owners
+/profiles/                   @deedeerich
+/policy/                     @deedeerich
 
 # ── The protected capability floor and the scanner registry (KDEC-033, KDEC-050) ──
 # What the gate must expect WHATEVER scanner-registry.yaml says. Kit-owned, and it only shrinks
 # through a tombstone with a recorded decision. The registry is the population denominator: a row
 # removed there is a scanner removed. Their checkers and the composite are under /scripts/ and
 # /.github/ above.
-/capability-floor.json       @YOUR_ORG/replace-me-kit-control-owners
-/scanner-registry.yaml       @YOUR_ORG/replace-me-kit-control-owners
+/capability-floor.json       @deedeerich
+/scanner-registry.yaml       @deedeerich
 # The scanner obligations (KDEC-069): what discovery makes a repository owe, who may provide it, provider
 # retirements, gap acceptances and control retirements. A control is removed here only by a recorded decision.
-/scanner-obligations.json    @YOUR_ORG/replace-me-kit-control-owners
+/scanner-obligations.json    @deedeerich
 # Mappings a person made for ids the kit could not read (owner ruling 2026-11-06, scripts/unknown_ids.py):
 # a mapping changes which family a finding joins.
-/id-mappings.json            @YOUR_ORG/replace-me-kit-control-owners
+/id-mappings.json            @deedeerich
 # The governance profile (KDEC-059): which authorizer a protected change needs. The gate reads it from
 # the BASE only, and a change to it is itself protected.
-/governance-profile.json     @YOUR_ORG/replace-me-kit-control-owners
+/governance-profile.json     @deedeerich
 
 # ── Exceptions: may THIS finding pass ───────────────────────────────────────────
 # Security approves exceptions and NOTHING ELSE. Deliberately no ownership of the gate itself.
-/dispositions/                             @YOUR_ORG/security-approvers
-/schemas/disposition.schema.json           @YOUR_ORG/security-approvers
-/schemas/disposition-request.schema.json   @YOUR_ORG/security-approvers
+/dispositions/                             @deedeerich
+/schemas/disposition.schema.json           @deedeerich
+/schemas/disposition-request.schema.json   @deedeerich
 
 # Requests are NOT owned by security -- anyone may open one. They are reviewed, not gate-kept at
 # authorship. Gate-keeping the request instead of the approval just stops people asking, and a team
@@ -93,4 +93,4 @@
 # Environment protection rules are configured in repository settings, not here. deploy-approvers is
 # named as the required reviewer THERE. Listed in this comment so the third role is visible in the
 # same place as the other two rather than living only in a settings page nobody reads.
-#   @YOUR_ORG/deploy-approvers  -> required reviewers on the `prod` environment
+#   @deedeerich  -> required reviewers on the `prod` environment

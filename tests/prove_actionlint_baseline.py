@@ -9,7 +9,7 @@ WHY (KDEC-058, 2026-11-13)
     actionlint binary is needed; the actionlint job also runs the check itself over the real tree).
 
 WHAT IT PROVES
-    B1  POSITIVE   the real baseline parses (57 rows, every class 1, two versions) and findings equal to its
+    B1  POSITIVE   the real baseline parses (58 rows, every class 1, two versions) and findings equal to its
                    rows PASS on 1.7.12 and on 1.7.7 (the 1.7.7-only rows are compared only on 1.7.7)
     B2  POSITIVE   lines that moved with the count unchanged are a NOTE, not a failure
     B3  POSITIVE   a row whose workflow is absent from the tree (withheld by a profile) is NOTED, not stale
@@ -93,11 +93,11 @@ def main():
     present = set(r['file'] for r in rows)
     v12, v77 = '1.7.12', '1.7.7'
     print('B positives')
-    check(len(rows) == 57 and set(r['class'] for r in rows) == {'1'} and verified == [v77, v12],
-          'B1 the real baseline: 57 rows, every one class 1, verified with %s' % verified)
-    check(sum(r['count'] for r in rows if v12 in r['versions']) == 99
-          and sum(r['count'] for r in rows if v77 in r['versions']) == 101,
-          'B1 the rows account for 99 findings on 1.7.12 and 101 on 1.7.7')
+    check(len(rows) == 58 and set(r['class'] for r in rows) == {'1'} and verified == [v77, v12],
+          'B1 the real baseline: 58 rows, every one class 1, verified with %s' % verified)
+    check(sum(r['count'] for r in rows if v12 in r['versions']) == 100
+          and sum(r['count'] for r in rows if v77 in r['versions']) == 102,
+          'B1 the finding counts of the rows are 100 on 1.7.12 and 102 on 1.7.7 (AL-058 added 2026-11-25)')
     for v in (v12, v77):
         p = run(ca.evaluate, findings_from(rows, v), rows, v, verified, present)
         check(not p, 'B1 findings equal to the rows PASS on %s %s' % (v, p[:1]))

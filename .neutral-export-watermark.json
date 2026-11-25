@@ -1,5 +1,5 @@
 {
-  "exported_at_utc": "2026-11-25T18:30:39Z",
+  "exported_at_utc": "2026-11-25T19:13:30Z",
   "files": {
     ".custody.json": "56adfbefa20942fd8d03f2927ebe2c8b3d967152252c5b43303566e97928b168",
     ".env.example": "2803cf35729edfa1785d56e21070c95d7c656da07b422fa8be98b8b1320d34d9",
@@ -271,7 +271,7 @@
     "docs/architecture/prototypes/build_grouped.py": "ba772e50b2a6995bb94fb60df5089fb76d6c1fde2bf89e22699c56906330f179",
     "docs/architecture/prototypes/reusable-security-grouped.yml": "4b423ac8c7c8a17091570389d5b0193a441c60058b663b7c2a67d9ba4b9bbf6e",
     "docs/architecture/prototypes/scan_step_state.sh": "9edf5caac98ca791933b14e3a6d3943022ff6db29ee9a42dbd48418703d253b6",
-    "docs/assurance/ACTIONLINT_BASELINE.md": "f93e4617141d5346c8617c6de1096254bb17f6e17daca8f13ba38db1ec566db3",
+    "docs/assurance/ACTIONLINT_BASELINE.md": "1a3d4ac315a53636405200f335d9d9975ecd894fe4a14d2b1330b777c8ff9dfa",
     "docs/assurance/CAPABILITY_INVENTORY_GENERATED.csv": "82dca282094d3efe0c8791aed8d2ae9a587b51e3843412351c6a8fbf2ae75959",
     "docs/assurance/CAPABILITY_MATRIX.md": "5e006230109d92f5352212e6b1610abc33453b77ed6945ceb297fb353ad018e8",
     "docs/assurance/COMPLETION_LEDGER.md": "766467ee17289037f5cfa5bfa3e16be78bcfdddeae4b8c832468c1d009bce102",
@@ -645,7 +645,7 @@
     "tests/live_ticketing_run.py": "4c4cc16dc3b2b1cc435cf17366eea894851099ff8b3a3ef3289d9c17ffb08570",
     "tests/make_fixture.py": "e37b8e5c46b0cc4f3c6ce12f2864812cc108d5ad1c8d3c66954ad8e9e0c90fd6",
     "tests/negative-test-manifest.json": "8b3f88fb2f1d13cec224ebaf037207e3312f56dab3e7673b0d64924c0eac1934",
-    "tests/prove_actionlint_baseline.py": "9db5d49389031affb05e49fab5aaacb4f9b1cb92e04fad85c651cea56202b311",
+    "tests/prove_actionlint_baseline.py": "e8209ca5d010ddd71d1593f133181462ef87ad8b426268a8f73413064640acb6",
     "tests/prove_adoption_guides.py": "da9ccd952e57edbb04eb12e65b35788c0ab612a5c86c40f7fbec702026f89d3d",
     "tests/prove_ai_artifact_inventory.py": "7cc0dd7a5134ff8debff4e535b6989f4f0aa3801074ec43df4e264dc3b7b8bfd",
     "tests/prove_anchored_correlation.py": "cb6ebb600f4717ebcec78c83f54e7b04465eb79c001833a0a2e2c557d5682234",
@@ -952,7 +952,7 @@
   "note": "Written by scripts/export_for_adoption.py. It records what this copy RECEIVED, so the next export can tell a source change from a change made here. Deleting it does not break anything; it only forces the next export to be told its baseline with --baseline.",
   "profile": "neutral",
   "source": "the kit's source repository (commit recorded; branch names are not)",
-  "source_commit": "b00644e32ac74785d34aec3890087fcffcc2ab64",
+  "source_commit": "06d35267c8e2e3ed81ff7458d9cf0f4a906f41e0",
   "source_dirty": false,
   "unresolved_conflicts": {}
 }

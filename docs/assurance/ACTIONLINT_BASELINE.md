@@ -7,9 +7,9 @@ Verified with actionlint: 1.7.7, 1.7.12
 
 ## What this is
 
-`actionlint -no-color .github/workflows/*.yml` reports **101** findings with actionlint 1.7.7 and **99** with the
+`actionlint -no-color .github/workflows/*.yml` reports **102** findings with actionlint 1.7.7 and **100** with the
 pinned 1.7.12 (`.github/tool-pins.json`; the Windows build was fetched and its sha256 matched the pin). The same
-89 occur on the earlier trunk 644d90d; the other 12 are the deploy-safety lanes' new `$/` calls (rows AL-050 to AL-056, integration 2026-11-13; AL-057, lane deploy-bounds 2026-11-13). Until 2026-11-13 `tests/check_actionlint.py` hid them by
+89 occur on the earlier trunk 644d90d; the other 13 are the deploy-safety lanes' new `$/` calls (rows AL-050 to AL-056, integration 2026-11-13; AL-057, lane deploy-bounds 2026-11-13) and the scanner-obligations composite's (AL-058, KDEC-069, found by the first hosted run on 2026-11-25). Until 2026-11-13 `tests/check_actionlint.py` hid them by
 dropping every line that CONTAINED one of two strings. A reviewer asked that they be classified, not
 grandfathered. Every finding is now a row below, and the check compares EXACTLY:
 
@@ -42,7 +42,7 @@ when that lane adds or removes a `$/` call there, the check prints the exact row
 
 ## Reasons
 
-**R1. The `$/` self-repository action reference (99 findings, every version).** Each finding reads
+**R1. The `$/` self-repository action reference (every version; 100 of the findings on 1.7.12).** Each finding reads
 `specifying action "$/.github/actions/NAME" in invalid format because ref is missing`. actionlint parses `$/...`
 as a remote `owner/repo` reference without `@ref`. GitHub defines `$/` as the workflow's OWN repository at the
 exact commit that is running, with no checkout and no ref: "resolves to your workflow's own repository at the
@@ -132,3 +132,4 @@ Rows AL-050 to AL-056 were added at integration (2026-11-13) for the deploy-safe
 | AL-055 | 1 | R1 | `.github/workflows/reusable-deploy-staticwebapp.yml` | action | 1 | 1.7.7, 1.7.12 | 7238 | `specifying action "$/.github/actions/live-target-authorisation" in invalid format because ref is missing. available formats are "{owner}/{repo}@{ref}" or "{owner}/{repo}/{path}@{ref}"` |
 | AL-056 | 1 | R1 | `.github/workflows/reusable-deployed-scan.yml` | action | 1 | 1.7.7, 1.7.12 | 81 | `specifying action "$/.github/actions/live-target-authorisation" in invalid format because ref is missing. available formats are "{owner}/{repo}@{ref}" or "{owner}/{repo}/{path}@{ref}"` |
 | AL-057 | 1 | R1 | `.github/workflows/reusable-build-docker.yml` | action | 2 | 1.7.7, 1.7.12 | 256, 728 | `specifying action "$/.github/actions/deploy-interruption" in invalid format because ref is missing. available formats are "{owner}/{repo}@{ref}" or "{owner}/{repo}/{path}@{ref}"` |
+| AL-058 | 1 | R1 | `.github/workflows/reusable-security.yml` | action | 1 | 1.7.7, 1.7.12 | 5562 | `specifying action "$/.github/actions/scanner-obligations" in invalid format because ref is missing. available formats are "{owner}/{repo}@{ref}" or "{owner}/{repo}/{path}@{ref}"` |
