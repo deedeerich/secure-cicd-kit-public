@@ -3311,8 +3311,10 @@ def row_established(row):
 
 TICKET_CEILING_OVERFLOW = 'TICKET_CEILING_OVERFLOW'
 # KDEC-062: the rescan disqualifiers that mean the absence is NOT a fix, so the clearance closes nothing.
+# KDEC-069: a retired provider's finding with no replacement showing equivalence never auto-closes either.
 CLEARANCE_BLOCKING_RESCAN = (tc.RESCAN_PATH_REMOVED, tc.RESCAN_PATH_EXCLUDED, tc.RESCAN_PATH_OUT_OF_SCOPE,
-                             tc.RESCAN_SCOPE_CHANGED, tc.RESCAN_CONFIG_CHANGED)
+                             tc.RESCAN_SCOPE_CHANGED, tc.RESCAN_CONFIG_CHANGED,
+                             tc.RESCAN_PROVIDER_RETIRED_NO_EQUIVALENCE)
 
 
 def ceiling_overflow(result, setting, limit, cluster_key, count=1, escalate=True, identities=None, total=None):

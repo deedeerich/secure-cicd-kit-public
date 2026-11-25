@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "usr.review-outcome/v1",
+  "title": "USR review outcome (envelope)",
+  "type": "object",
+  "required": [
+    "schema",
+    "package_id",
+    "review_id",
+    "outcome",
+    "decided_at_utc",
+    "decided_by"
+  ],
+  "properties": {
+    "schema": {
+      "const": "usr.review-outcome/v1"
+    },
+    "package_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "review_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "outcome": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decided_at_utc": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decided_by": {
+      "type": "object"
+    }
+  }
+}

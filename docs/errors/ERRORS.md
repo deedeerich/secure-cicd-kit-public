@@ -64,7 +64,7 @@ In a run, the same sentence is the title of the annotation at the top of the run
 - [prerequisite_readiness](#prerequisite_readiness) (4)
 - [previous_state](#previous_state) (1)
 - [promotion_check](#promotion_check) (4)
-- [promotion_gate](#promotion_gate) (23)
+- [promotion_gate](#promotion_gate) (29)
 - [promotion_revocation](#promotion_revocation) (6)
 - [publication_state](#publication_state) (2)
 - [readiness_source](#readiness_source) (4)
@@ -85,6 +85,7 @@ In a run, the same sentence is the title of the annotation at the top of the run
 - [routing_result](#routing_result) (4)
 - [scan_examination](#scan_examination) (2)
 - [scan_partial_reason](#scan_partial_reason) (3)
+- [scanner_obligation_state](#scanner_obligation_state) (6)
 - [scanner_state](#scanner_state) (4)
 - [seam_ownership_check](#seam_ownership_check) (1)
 - [seam_ownership_refusal](#seam_ownership_refusal) (2)
@@ -92,7 +93,7 @@ In a run, the same sentence is the title of the annotation at the top of the run
 - [small_team_self_approval](#small_team_self_approval) (9)
 - [target_lease](#target_lease) (12)
 - [ticket_clearance_hold](#ticket_clearance_hold) (8)
-- [ticket_completion](#ticket_completion) (25)
+- [ticket_completion](#ticket_completion) (26)
 - [ticket_governance_state](#ticket_governance_state) (9)
 - [ticket_intake_state](#ticket_intake_state) (3)
 - [ticket_lookup_outcome](#ticket_lookup_outcome) (4)
@@ -2858,12 +2859,52 @@ Active DAST (attack testing) was configured against prod. **[DAST_REFUSED_PRODUC
 - **Fix:** Leave dast_command empty for prod (the template already does).
 - **More:** [docs/adoption/USAGE.md](../adoption/USAGE.md)
 
+### PROMOTION_REFUSED_APPROVAL_STATE (promotion_gate)
+
+The deployment being promoted was rejected by its approver, or its uat approval was never given. **[PROMOTION_REFUSED_APPROVAL_STATE]**
+
+- **Why it matters:** A promotion cannot skip the approval its predecessor needed.
+- **Fix:** Get the uat deployment approved (or redeploy it), then promote that run.
+- **More:** [docs/adoption/USAGE.md](../adoption/USAGE.md)
+
 ### PROMOTION_REFUSED_DIGEST_MISMATCH (promotion_gate)
 
 The image you are promoting is not the one the earlier environment verified. **[PROMOTION_REFUSED_DIGEST_MISMATCH]**
 
 - **Why it matters:** Promotion must move the exact same bytes; a substitute is refused.
 - **Fix:** Promote by run id with the template's promote job (it reads the digest from the record); do not type a digest.
+- **More:** [docs/adoption/USAGE.md](../adoption/USAGE.md)
+
+### PROMOTION_REFUSED_EVIDENCE_DIGEST (promotion_gate)
+
+The evidence recorded for the source deployment belongs to a different build than the one being promoted. **[PROMOTION_REFUSED_EVIDENCE_DIGEST]**
+
+- **Why it matters:** Evidence only counts for the exact image digest it was produced for.
+- **Fix:** Promote the digest the evidence names, or deploy and verify this digest in test first.
+- **More:** [docs/adoption/USAGE.md](../adoption/USAGE.md)
+
+### PROMOTION_REFUSED_EVIDENCE_MISSING (promotion_gate)
+
+Evidence the target environment needs for this exact build (the security gate, the SBOM or the signed attestation) is missing or was cancelled. **[PROMOTION_REFUSED_EVIDENCE_MISSING]**
+
+- **Why it matters:** A check that did not finish is not a check that passed: promoting on it would deploy something nobody verified.
+- **Fix:** Deploy a fresh build to test with its security gate, SBOM and attestation completing, and promote that run.
+- **More:** [docs/adoption/USAGE.md](../adoption/USAGE.md)
+
+### PROMOTION_REFUSED_EVIDENCE_STALE (promotion_gate)
+
+The evidence for this build is older than the target environment allows (30 days by default at uat and prod), or has no date. **[PROMOTION_REFUSED_EVIDENCE_STALE]**
+
+- **Why it matters:** Old scan evidence misses advisories and rules published since; nothing is rescanned at promotion.
+- **Fix:** Build again (or let the daily deployed scan rescan this digest) and promote the fresh evidence.
+- **More:** [docs/adoption/USAGE.md](../adoption/USAGE.md)
+
+### PROMOTION_REFUSED_EXCEPTION_INVALID (promotion_gate)
+
+An exception this build relied on has expired, has no expiry, or was revoked. **[PROMOTION_REFUSED_EXCEPTION_INVALID]**
+
+- **Why it matters:** The exception was the only reason the build was allowed; without it the build is not allowed either.
+- **Fix:** Fix the excepted issue, or have the exception renewed by its approver, then promote again.
 - **More:** [docs/adoption/USAGE.md](../adoption/USAGE.md)
 
 ### PROMOTION_REFUSED_HISTORY_INCOMPLETE (promotion_gate)
@@ -2984,6 +3025,14 @@ A newer build has been verified for the same deployment target in the same envir
 
 - **Why it matters:** Promoting an older build would skip the newer one. Another app's record in the same environment never counts.
 - **Fix:** Promote the newest verified run of this target instead.
+- **More:** [docs/adoption/USAGE.md](../adoption/USAGE.md)
+
+### PROMOTION_REFUSED_TARGET_POLICY (promotion_gate)
+
+The target environment's promotion policy does not accept how this build's security gate ended (its route or an advisory cause), or the policy file could not be read. **[PROMOTION_REFUSED_TARGET_POLICY]**
+
+- **Why it matters:** Each environment decides what it accepts; an unreadable policy is not the default.
+- **Fix:** Fix the cause the policy refuses (for example a scanner that did not run) and rebuild, or fix .security/promotion-policy.json on the default branch.
 - **More:** [docs/adoption/USAGE.md](../adoption/USAGE.md)
 
 ### PROMOTION_REFUSED_TARGET_UNKNOWN (promotion_gate)
@@ -3550,6 +3599,58 @@ Semgrep could not parse some PHP files, so those files were not checked; everyth
 - **Fix:** Open the sast-semgrep summary for the file list; fix the syntax or accept the gap (it does not block).
 - **More:** [docs/security-review/READING-THE-RUN-SUMMARY.md](../security-review/READING-THE-RUN-SUMMARY.md)
 
+## scanner_obligation_state
+
+Not failures (nothing to do): `CONTROL_RETIRED`, `EVALUATED_ELSEWHERE`, `NOT_REQUIRED`, `REMOVED_BY_EXCEPTION`, `SATISFIED`.
+
+### COVERAGE_GAP (scanner_obligation_state)
+
+This repository needs a kind of scan (found by discovery) that no adopted scanner provides. **[COVERAGE_GAP]**
+
+- **Why it matters:** A required control with nothing covering it is a gap, not a pass.
+- **Fix:** Adopt a scanner for it, or have the risk owner record a time-bound acceptance (or a control retirement) in scanner-obligations.json.
+- **More:** [docs/operations/SCANNER_OBLIGATIONS.md](../operations/SCANNER_OBLIGATIONS.md)
+
+### DECLARATION_REFUSED (scanner_obligation_state)
+
+This repository's .kit/obligations.json tried to remove a required scan without a recorded exception. **[DECLARATION_REFUSED]**
+
+- **Why it matters:** A repository can add checks for itself but never remove one by its own word.
+- **Fix:** Remove the entry, or ask security to record an exception for this repository in the kit's scanner-obligations.json.
+- **More:** [docs/operations/SCANNER_OBLIGATIONS.md](../operations/SCANNER_OBLIGATIONS.md)
+
+### GAP_ACCEPTED (scanner_obligation_state)
+
+A coverage gap is accepted by its risk owner until the date shown. **[GAP_ACCEPTED]**
+
+- **Why it matters:** An accepted gap is still a gap: the run says so and never claims full coverage.
+- **Fix:** Nothing until the acceptance expires; before then, adopt a scanner or renew the acceptance.
+- **More:** [docs/operations/SCANNER_OBLIGATIONS.md](../operations/SCANNER_OBLIGATIONS.md)
+
+### NOT_EVALUATED (scanner_obligation_state)
+
+The kit could not work out which scans this repository needs on this run. **[NOT_EVALUATED]**
+
+- **Why it matters:** If what is required is unknown, no result can be read as complete.
+- **Fix:** Re-run; if it persists, the kit copy may be broken or out of date: update the pinned kit SHA or tell the platform team.
+- **More:** [docs/operations/FAILURE_MODES.md](../operations/FAILURE_MODES.md)
+
+### PARTIAL (scanner_obligation_state)
+
+The scanners that ran cover only part of what this repository needs; the missing part is named. **[PARTIAL]**
+
+- **Why it matters:** A replacement that covers less than the tool it replaced leaves a gap.
+- **Fix:** Adopt a scanner for the missing part, or have the risk owner record a time-bound acceptance of that part.
+- **More:** [docs/operations/SCANNER_OBLIGATIONS.md](../operations/SCANNER_OBLIGATIONS.md)
+
+### UNAVAILABLE (scanner_obligation_state)
+
+A scanner your organisation adopted did not run on this repository, and nobody recorded retiring it (often its token was removed). **[UNAVAILABLE]**
+
+- **Why it matters:** Removing a token must not silently remove a security check. At crawl this is reported; above crawl the run is refused.
+- **Fix:** Restore the scanner's token or connection, or record its retirement in scanner-obligations.json (one line: date and who).
+- **More:** [docs/operations/SCANNER_OBLIGATIONS.md](../operations/SCANNER_OBLIGATIONS.md)
+
 ## scanner_state
 
 Not failures (nothing to do): `FINDINGS`, `NOT_APPLICABLE`, `PASS`.
@@ -4011,6 +4112,10 @@ Same meaning and fix as [`ticket_completion.RESCAN_NOT_VERIFIED`](#rescan_not_ve
 Same meaning and fix as [`ticket_completion.RESCAN_NOT_VERIFIED`](#rescan_not_verified-ticket_completion).
 
 ### RESCAN_PATH_STATE_NOT_ESTABLISHED (ticket_completion)
+
+Same meaning and fix as [`ticket_completion.RESCAN_NOT_VERIFIED`](#rescan_not_verified-ticket_completion).
+
+### RESCAN_PROVIDER_RETIRED_NO_EQUIVALENCE (ticket_completion)
 
 Same meaning and fix as [`ticket_completion.RESCAN_NOT_VERIFIED`](#rescan_not_verified-ticket_completion).
 
@@ -4645,6 +4750,7 @@ These taxonomy namespaces hold vocabulary a developer never sees as a run outcom
 | `content_normalisation_policy` | how a matched construct is normalised before hashing, internal to identity |
 | `corpus_family_outcome` | the outcome of a kit scanner-corpus probe, run by kit maintainers only |
 | `cost_measurement_state` | what the kit's cost measurement can say, read by kit maintainers |
+| `cpu_exposure` | the read-only Java4Shell pilot's per-runtime verdicts (scripts/java4shell_check.py), read by the person running it; CI reads them against policy, never as a gate outcome yet |
 | `credential_redaction` | a rule about redaction with no values of its own |
 | `dast_policy` | the promotion record's dast_basis; the refusal a developer sees is the missing promotion condition, explained by the promotion state |
 | `deferral_obligation` | whether a recorded deferral is in force, reported inside ticket records |
@@ -4661,6 +4767,9 @@ These taxonomy namespaces hold vocabulary a developer never sees as a run outcom
 | `finding_identity_match` | matching a finding against the baseline ledger, internal to the gate |
 | `finding_subject` | what a finding is about, a field of the evidence model, not an outcome |
 | `fix_availability` | whether a finding can be fixed, a field of the remediation record |
+| `fixture_seed_cause` | the negative-test manifest classifier (scripts/fixture_seeds.py), read by the person triaging fixture alerts; never a run outcome |
+| `fixture_seed_match` | the negative-test manifest classifier (scripts/fixture_seeds.py), read by the person triaging fixture alerts; never a run outcome |
+| `fixture_seed_outcome` | the negative-test manifest classifier (scripts/fixture_seeds.py), read by the person triaging fixture alerts; never a run outcome |
 | `handoff_write_refusal` | the landing zone's own refusal, which the kit cites and never emits |
 | `human_approval` | whether a person permitted one ticket mutation, internal to the reconciler |
 | `iac_mode` | an input value (auto, disabled, required); a disabled one is reported as discovery_state.DISABLED |
@@ -4668,6 +4777,7 @@ These taxonomy namespaces hold vocabulary a developer never sees as a run outcom
 | `identity_refusal` | why a durable finding identity was not computed, read by the ledger and its proofs |
 | `identity_scope` | how far a finding identity may be trusted, a field of the evidence model |
 | `kit_api_data` | words the API writes inside result data, not refusals |
+| `kit_evidence_copyout_outcome` | why the kit's scheduled evidence copy-out did not run, read by the kit maintainer who set it up |
 | `kit_harness_pair_outcome` | why the kit and harness pair proof refused, a kit maintainer's test outcome only |
 | `kit_init_inventory` | kit init writes these into its checklist; never a run outcome |
 | `kit_survey_cell` | a per-cell read state inside the survey report, never a run outcome |
@@ -4687,6 +4797,7 @@ These taxonomy namespaces hold vocabulary a developer never sees as a run outcom
 | `policy_mode` | derived from the rung, never set or seen as a refusal (lowercase mode names) |
 | `projection` | a rule about how consumers reduce evidence, with no values of its own |
 | `promotion_approval` | a field inside the promotion record, explained by release_approval refusals |
+| `promotion_outcome` | the outcome field of promotion-gate.json beside its causes; the deploy shows the promotion_gate code |
 | `promotion_record_state` | a field inside the promotion record, explained by promotion_gate refusals |
 | `provenance_identity` | a rule about binding identity at capture, with no values of its own |
 | `reconciliation_finding_state` | a finding state recorded beside a held ticket, never a refusal |
@@ -4695,7 +4806,15 @@ These taxonomy namespaces hold vocabulary a developer never sees as a run outcom
 | `reversal_disposition` | what recovery may do to one object, internal to the rollback contract |
 | `rollback_resource_class` | how a rollback treats one Azure resource type, a registry field |
 | `rollback_step_eligibility` | why a rollback step was eligible, an explanation not a refusal |
+| `runtime_exposure` | the read-only Java4Shell pilot's per-runtime verdicts (scripts/java4shell_check.py), read by the person running it; CI reads them against policy, never as a gate outcome yet |
+| `runtime_version_state` | the read-only Java4Shell pilot's per-runtime verdicts (scripts/java4shell_check.py), read by the person running it; CI reads them against policy, never as a gate outcome yet |
 | `scan_depth` | how hard a scan looks by trigger (pr, merge, nightly ...), configuration rather than an outcome |
+| `scanner_obligation_cause` | the cause field beside scanner_obligation_state in the obligations evidence; the gate shows the state |
+| `scanner_obligation_closure` | the closure decision for a retired provider's finding; the ticket shows RESCAN_PROVIDER_RETIRED_NO_EQUIVALENCE |
+| `scanner_obligation_declaration` | recorded in the obligations evidence; the gate shows DECLARATION_REFUSED (scanner_obligation_state) |
+| `scanner_obligation_outcome` | the outcome field beside scanner_obligation_state in the obligations evidence; the gate shows the state |
+| `scanner_obligation_route` | an informational route in the obligations evidence; the security gate applies the rung itself |
+| `scanner_provider_lifecycle` | a provider's lifecycle record in scanner-obligations.json, read by kit maintainers and the evaluator |
 | `seam_field_drift` | a CANDIDATE vocabulary of the landing zone's seam detector, not emitted by the kit |
 | `selftest_reach` | how the kit's own CI exercises a workflow, read by kit maintainers |
 | `severity_comparison` | recorded in the enhancement comment on the existing ticket, never a run outcome |

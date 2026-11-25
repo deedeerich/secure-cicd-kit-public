@@ -46,7 +46,7 @@ resource "azurerm_storage_account" "mirror" {
   # refresh; a regional outage is a refresh away from recovery, and the runners are regional too.
   account_replication_type = "ZRS"
 
-  public_network_access_enabled     = false
+  public_network_access             = "Disabled"
   shared_access_key_enabled         = false
   default_to_oauth_authentication   = true
   allow_nested_items_to_be_public   = false
@@ -81,13 +81,12 @@ resource "azurerm_private_dns_zone" "zone" {
 }
 
 resource "azurerm_private_dns_zone_virtual_network_link" "link" {
-  for_each              = local.links
-  name                  = "link-${each.key}"
-  resource_group_name   = var.resource_group_name
-  private_dns_zone_name = azurerm_private_dns_zone.zone[each.value.zone].name
-  virtual_network_id    = each.value.vnet
-  registration_enabled  = false
-  tags                  = var.tags
+  for_each             = local.links
+  name                 = "link-${each.key}"
+  private_dns_zone_id  = azurerm_private_dns_zone.zone[each.value.zone].id
+  virtual_network_id   = each.value.vnet
+  registration_enabled = false
+  tags                 = var.tags
 }
 
 # Readers (every scan job, and the refresh's own read-back) use the static website endpoint.
@@ -174,12 +173,11 @@ resource "azurerm_user_assigned_identity" "refresh" {
 }
 
 resource "azurerm_federated_identity_credential" "refresh" {
-  name                = "github-${var.github_environment}"
-  resource_group_name = var.resource_group_name
-  parent_id           = azurerm_user_assigned_identity.refresh.id
-  issuer              = var.oidc_issuer
-  audience            = ["api://AzureADTokenExchange"]
-  subject             = "repo:${var.github_repository}:environment:${var.github_environment}"
+  name                      = "github-${var.github_environment}"
+  user_assigned_identity_id = azurerm_user_assigned_identity.refresh.id
+  issuer                    = var.oidc_issuer
+  audience                  = ["api://AzureADTokenExchange"]
+  subject                   = "repo:${var.github_repository}:environment:${var.github_environment}"
 }
 
 # LEAST PRIVILEGE: write the $web container, nothing else on the account (no keys, no network rules, no

@@ -81,7 +81,19 @@ RELEASE_PATHS = ('normal', 'hotfix', 'rollback', 'break-glass')
 DAST_TIMEOUT_SECONDS = 1800   # bound on the caller's DAST command
 TRIVY_VERSION = '0.71.2'
 REVOCATIONS_PATH = '.security/promotion-revocations.json'
-REVOCATION_KINDS = ('digest', 'signer', 'approval', 'test-evidence')
+REVOCATION_KINDS = ('digest', 'signer', 'approval', 'test-evidence', 'exception')
+# KDEC-070: the target environment's promotion policy, read from the default branch like the revocations.
+# Absent: the kit default below. uat and prod require the bound evidence; dev and test are ungated.
+TARGET_POLICY_PATH = '.security/promotion-policy.json'
+EVIDENCE_KINDS = ('security-gate', 'sbom', 'attestation')
+ACCEPTED_GATE_ROUTES = ('PROCEED', 'PROCEED_WITH_ADVISORY')
+DEFAULT_TARGET_POLICY = {
+    'uat': {'required_evidence': list(EVIDENCE_KINDS), 'max_evidence_age_days': 30,
+            'accepted_gate_routes': list(ACCEPTED_GATE_ROUTES), 'refuse_advisory_causes': []},
+    'prod': {'required_evidence': list(EVIDENCE_KINDS), 'max_evidence_age_days': 30,
+             'accepted_gate_routes': list(ACCEPTED_GATE_ROUTES), 'refuse_advisory_causes': []},
+}
+OUTCOME_ALLOWED, OUTCOME_REFUSED = 'ALLOWED', 'REFUSED'
 # R08 (external review 2026-11-07): every listing pages to its end (Link rel="next", the API host only,
 # total_count checked) or says it did not; record downloads are bounded too. Never a silent cut.
 PAGE_CAP = 30                # pages of 100 per listing, as evidence.export
@@ -129,13 +141,29 @@ REFUSALS = {
     'BREAK_GLASS_REFUSED_EXPIRED': 'the break-glass exception has expired',
     'BREAK_GLASS_REFUSED_TOO_LONG': 'a break-glass exception lives at most %d days'
                                     % BREAK_GLASS_MAX_DAYS,
+    # KDEC-070 (owner 2026-11-18 / 2026-11-24): the promotion binds to the evidence of this exact digest and
+    # RE-EVALUATES it. Nothing is rescanned; what is re-judged is named by its own cause.
+    'PROMOTION_REFUSED_EVIDENCE_MISSING': 'evidence the target requires for this digest is missing or was '
+                                          'cancelled: never a pass',
+    'PROMOTION_REFUSED_EVIDENCE_DIGEST': 'the evidence is bound to another digest than the one promoted',
+    'PROMOTION_REFUSED_EVIDENCE_STALE': 'the evidence is older than the target environment allows, or undated',
+    'PROMOTION_REFUSED_EXCEPTION_INVALID': 'an exception this digest relied on has expired, has no expiry, or '
+                                           'was revoked',
+    'PROMOTION_REFUSED_APPROVAL_STATE': 'the predecessor\'s approval was rejected, or a uat predecessor was '
+                                        'not approved',
+    'PROMOTION_REFUSED_TARGET_POLICY': 'the target environment\'s policy refuses this digest\'s recorded gate '
+                                       'route or advisory cause, or the policy could not be read',
 }
 # What break-glass may override at the gate, and what nothing overrides. A revoked signer, a
 # substituted digest or a build from another branch is not an emergency the exception covers.
 BREAK_GLASS_OVERRIDES = ('PROMOTION_REFUSED_NOT_VERIFIED', 'PROMOTION_REFUSED_WRONG_PREDECESSOR',
                          'PROMOTION_REFUSED_STALE', 'PROMOTION_REFUSED_SUPERSEDED',
                          'PROMOTION_REFUSED_NEW_FINDING', 'PROMOTION_REFUSED_RECHECK_INCOMPLETE',
-                         'PROMOTION_REFUSED_TARGET_UNKNOWN', 'PROMOTION_REFUSED_HISTORY_INCOMPLETE')
+                         'PROMOTION_REFUSED_TARGET_UNKNOWN', 'PROMOTION_REFUSED_HISTORY_INCOMPLETE',
+                         # KDEC-070: old evidence may be lifted by break-glass; missing, cancelled or another
+                         # digest's evidence, an invalid exception, a rejected approval and the target's
+                         # policy may not.
+                         'PROMOTION_REFUSED_EVIDENCE_STALE')
 
 env = dc.env
 output = dc.output
@@ -412,6 +440,24 @@ def revocations():
     return [e for e in entries if isinstance(e, dict)]
 
 
+def target_policy(tier):
+    """-> the target environment's promotion policy for `tier` (KDEC-070) from the default branch, or None
+    (the kit default applies). Unreadable raises: a policy nobody could read is not the default."""
+    try:
+        doc = api_optional('contents/' + TARGET_POLICY_PATH, {'ref': default_branch()})
+    except Missing:
+        return None
+    if isinstance(doc, dict) and 'content' in doc:
+        doc = json.loads(base64.b64decode(doc['content']).decode('utf-8'))
+    tiers = doc.get('tiers') if isinstance(doc, dict) else None
+    if not isinstance(tiers, dict):
+        raise rh.Unreadable('%s has no tiers object' % TARGET_POLICY_PATH)
+    pol = tiers.get(tier)
+    if pol is not None and not isinstance(pol, dict):
+        raise rh.Unreadable('%s tiers.%s is not an object' % (TARGET_POLICY_PATH, tier))
+    return pol
+
+
 def approvals(run_id):
     """-> the environment approvals of a run, as the API reports them."""
     try:
@@ -426,6 +472,104 @@ def approvals(run_id):
     state = 'APPROVED' if any(a['state'] == 'approved' for a in out) else (
         'REJECTED' if any(a['state'] == 'rejected' for a in out) else 'NONE_REQUIRED_OR_RECORDED')
     return {'state': state, 'approvers': out, 'recorded_at': iso(now_dt())}
+
+
+# ----------------------------------------------------------------------------- the evidence binding
+def _built_at(artifact):
+    vm = (artifact or {}).get('version_metadata')
+    if isinstance(vm, str):
+        try:
+            vm = json.loads(vm)
+        except ValueError:
+            vm = {}
+    return (vm or {}).get('built_at') if isinstance(vm, dict) else None
+
+
+def evidence_binding_of(rec):
+    """-> the record's evidence_binding (KDEC-070). A record written before it carried one derives the same
+    binding from the fields it already has; a field it lacks is MISSING, never assumed."""
+    # Carried in `provenance` (an open object in kit-promotion-record/1 and in the evidence store's
+    # publication schema), so the record's closed top level is unchanged.
+    b = ((rec or {}).get('provenance') or {}).get('evidence_binding') or (rec or {}).get('evidence_binding')
+    if isinstance(b, dict) and isinstance(b.get('items'), list) and b['items']:
+        return b
+    art, prov = (rec or {}).get('artifact') or {}, (rec or {}).get('provenance') or {}
+    digest, at = art.get('digest'), _built_at(art)
+    route = prov.get('gate_routing_result')
+    return {'digest': digest, 'derived': True, 'items': [
+        {'kind': 'security-gate', 'state': 'COMPLETE' if route else 'MISSING', 'digest': digest if route else None,
+         'produced_at': at, 'ref': prov.get('build_run_id'), 'route': route},
+        {'kind': 'sbom', 'state': 'COMPLETE' if art.get('sbom_sha256') else 'MISSING',
+         'digest': digest if art.get('sbom_sha256') else None, 'produced_at': at, 'ref': art.get('sbom_sha256')},
+        {'kind': 'attestation', 'state': 'COMPLETE' if prov.get('attestation_outcome') == 'ATTESTATION_VERIFIED'
+         else 'MISSING', 'digest': digest, 'produced_at': at, 'ref': prov.get('attestation_outcome')}]}
+
+
+def bind_evidence(digest, routing, sbom_sha, attestation, built_at, build_run):
+    """The binding a deploy records for the digest it deployed (cmd_record). The security gate's route is the
+    evidence the gate produced; empty (the gate was cancelled or never reported) is MISSING."""
+    return {'digest': digest, 'items': [
+        {'kind': 'security-gate', 'state': 'COMPLETE' if routing else 'MISSING', 'digest': digest if routing else None,
+         'produced_at': built_at, 'ref': build_run, 'route': routing or None},
+        {'kind': 'sbom', 'state': 'COMPLETE' if sbom_sha else 'MISSING', 'digest': digest if sbom_sha else None,
+         'produced_at': built_at, 'ref': sbom_sha},
+        {'kind': 'attestation', 'state': 'COMPLETE' if attestation == 'ATTESTATION_VERIFIED' else 'MISSING',
+         'digest': digest, 'produced_at': built_at, 'ref': attestation or None}]}
+
+
+def reevaluate(rec, ctx, refuse):
+    """KDEC-070: re-judge the source's bound evidence against THIS digest and the target's policy. Nothing is
+    rescanned. Applies where the target has a policy (uat and prod by default)."""
+    tier = ctx.get('destination_tier')
+    if ctx.get('target_policy_error'):
+        refuse('PROMOTION_REFUSED_TARGET_POLICY', '%s could not be read: %s' % (TARGET_POLICY_PATH,
+                                                                               ctx['target_policy_error']))
+        return
+    pol = ctx.get('target_policy') or DEFAULT_TARGET_POLICY.get(tier)
+    if not pol:
+        return
+    today = ctx['now'].date()
+    binding = evidence_binding_of(rec)
+    items = dict((i.get('kind'), i) for i in binding.get('items') or [] if isinstance(i, dict))
+    max_age = pol.get('max_evidence_age_days')
+    for kind in pol.get('required_evidence') or []:
+        it = items.get(kind)
+        if not it or it.get('state') != 'COMPLETE':
+            refuse('PROMOTION_REFUSED_EVIDENCE_MISSING', '%s evidence for %s is %s' % (
+                kind, ctx['digest'], (it or {}).get('state') or 'absent'))
+            continue
+        if it.get('digest') != ctx['digest']:
+            refuse('PROMOTION_REFUSED_EVIDENCE_DIGEST', '%s evidence is bound to %s; promoting %s' % (
+                kind, it.get('digest'), ctx['digest']))
+        at = parse_ts(it.get('produced_at'))
+        if at is None:
+            refuse('PROMOTION_REFUSED_EVIDENCE_STALE', '%s evidence records no production time' % kind)
+        elif max_age and (ctx['now'] - at) > datetime.timedelta(days=max_age):
+            refuse('PROMOTION_REFUSED_EVIDENCE_STALE', '%s evidence produced %s (%d days ago); %s allows %d' % (
+                kind, iso(at), (ctx['now'] - at).days, tier, max_age))
+    revoked = set(str(e.get('match') or '') for e in ctx.get('revocations') or [] if e.get('kind') == 'exception')
+    for exc in ((rec.get('provenance') or {}).get('exceptions_relied_on') or rec.get('exceptions_relied_on') or []):
+        ref, exp = str((exc or {}).get('ref') or ''), parse_day((exc or {}).get('expires'))
+        if ref in revoked:
+            refuse('PROMOTION_REFUSED_EXCEPTION_INVALID', 'exception %s was revoked' % ref)
+        elif exp is None:
+            refuse('PROMOTION_REFUSED_EXCEPTION_INVALID', 'exception %s records no expiry' % (ref or '(unnamed)'))
+        elif exp < today:
+            refuse('PROMOTION_REFUSED_EXCEPTION_INVALID', 'exception %s expired %s' % (ref, exp.isoformat()))
+    appr = (rec.get('approval') or {}).get('state')
+    if appr == 'REJECTED':
+        refuse('PROMOTION_REFUSED_APPROVAL_STATE', 'the predecessor deployment\'s approval was REJECTED')
+    elif ((rec.get('environment') or {}).get('tier') == 'uat') and appr != 'APPROVED':
+        refuse('PROMOTION_REFUSED_APPROVAL_STATE', 'the uat predecessor\'s approval reads %s, not APPROVED'
+               % (appr or 'nothing'))
+    route = (items.get('security-gate') or {}).get('route') or (rec.get('provenance') or {}).get('gate_routing_result')
+    if route and route not in (pol.get('accepted_gate_routes') or ACCEPTED_GATE_ROUTES):
+        refuse('PROMOTION_REFUSED_TARGET_POLICY', 'the security gate routed %s; %s accepts %s' % (
+            route, tier, ', '.join(pol.get('accepted_gate_routes') or ACCEPTED_GATE_ROUTES)))
+    causes = set((rec.get('provenance') or {}).get('advisory_causes') or [])
+    bad = sorted(causes & set(pol.get('refuse_advisory_causes') or []))
+    if bad:
+        refuse('PROMOTION_REFUSED_TARGET_POLICY', 'the build carried %s, which %s refuses' % (', '.join(bad), tier))
 
 
 # ----------------------------------------------------------------------------- the judgement
@@ -546,6 +690,7 @@ def judge(ctx):
         refuse('PROMOTION_REFUSED_SUPERSEDED', '%s was verified for this target in %s at %s, after this one' % (
             ctx['superseded_by']['digest'], ctx['required_predecessor'],
             ctx['superseded_by']['verified_at']))
+    reevaluate(rec, ctx, refuse)
     return finish_judgement(refusals, ctx)
 
 
@@ -560,7 +705,14 @@ def finish_judgement(refusals, ctx):
             else:
                 kept.append(r)
         refusals = kept
+    causes = []
+    for r in refusals:
+        if r['code'] not in causes:
+            causes.append(r['code'])
     return {'verdict': refusals[0]['code'] if refusals else 'PROMOTION_ALLOWED',
+            # KDEC-070: the outcome and its causes are separate fields, never one overloaded word.
+            'outcome': OUTCOME_REFUSED if refusals else OUTCOME_ALLOWED,
+            'cause': causes[0] if causes else None, 'causes': causes,
             'refusals': refusals, 'overridden': overridden,
             'superseded_by': ctx.get('superseded_by')}
 
@@ -708,6 +860,10 @@ def cmd_gate_collect(a):
         col['revocations'] = revocations()
     except Exception as exc:  # noqa: BLE001
         col['revocations_error'] = str(exc)[:300]
+    try:
+        col['target_policy'] = target_policy(env('environment_tier'))
+    except Exception as exc:  # noqa: BLE001 -- a policy nobody could read is not the default
+        col['target_policy_error'] = str(exc)[:300]
     if col['source']:
         sbom, why = fetch_sbom(env('image_digest'),
                                (col['source'].get('artifact') or {}).get('sbom_sha256'), out)
@@ -736,13 +892,15 @@ def cmd_gate_decide(a):
            'rescan': col.get('rescan') or {}, 'kev': kev, 'attestation': env('attestation_outcome'),
            'release_path': env('release_path') or 'normal', 'exception': exception_record(),
            'destination_tier': env('environment_tier'), 'expected_target': col.get('expected_source_target'),
+           'target_policy': col.get('target_policy'), 'target_policy_error': col.get('target_policy_error'),
            'now': now_dt()}
     if col.get('revocations_error'):
         ctx['rescan'] = dict(ctx['rescan'], state='NOT_ESTABLISHED',
                              why='the revocation register could not be read')
     res = judge(ctx)
     src = col.get('source') or {}
-    gate = {'promotion_gate': res['verdict'], 'refusals': res['refusals'],
+    gate = {'promotion_gate': res['verdict'], 'outcome': res['outcome'], 'cause': res['cause'],
+            'causes': res['causes'], 'refusals': res['refusals'],
             'overridden': res['overridden'], 'superseded_by': res['superseded_by'],
             'source': {'run_id': col.get('run_id'), 'environment': col.get('source_environment'),
                        'record_id': src.get('record_id'), 'target': target_key(src.get('environment')),
@@ -750,6 +908,7 @@ def cmd_gate_decide(a):
                        'verified_at': (src.get('validity') or {}).get('verified_at')},
             'required_predecessor': ctx['required_predecessor'],
             'carried': {k: src.get(k) for k in ('artifact', 'provenance')},
+            'evidence_binding': evidence_binding_of(src) if src else None,
             'rescan': {k: v for k, v in (col.get('rescan') or {}).items() if k != 'sarif'},
             'kev': kev, 'attestation': ctx['attestation'], 'decided_at': iso(ctx['now'])}
     dc.write_evidence('promotion-gate.json', gate)
@@ -1007,6 +1166,19 @@ def cmd_record(a):
                       'controls_unavailable': [c for c in env('controls_unavailable').split(',') if c.strip()],
                       'advisory_causes': [c for c in env('advisory_causes').split(',') if c.strip()]}
     provenance['attestation_outcome'] = env('attestation_outcome') or None
+    # KDEC-070: the evidence of THIS digest, bound to it. A promotion carries its source's binding unchanged
+    # (no rescan); a build deploy binds what its own gate, SBOM and attestation produced.
+    if promoted and (carried.get('provenance') or {}).get('evidence_binding'):
+        provenance['evidence_binding'] = carried['provenance']['evidence_binding']
+    else:
+        provenance['evidence_binding'] = bind_evidence(
+            env('image_digest'), env('routing_result'), artifact.get('sbom_sha256'), env('attestation_outcome'),
+            _built_at(artifact) or meta.get('built_at'), provenance.get('build_run_id'))
+    relied = list((carried.get('provenance') or {}).get('exceptions_relied_on') or []) if promoted else []
+    if env('weakening_exception_ref'):
+        relied.append({'ref': env('weakening_exception_ref'), 'expires': env('weakening_expires') or None,
+                       'authority': env('weakening_authority') or None, 'kind': 'weakening_record'})
+    provenance['exceptions_relied_on'] = relied
     run = {'id': env('github_run_id') or None, 'attempt': env('github_run_attempt') or None,
            'url': '%s/%s/actions/runs/%s' % (env('github_server_url', 'https://github.com'),
                                               env('github_repository'), env('github_run_id'))}

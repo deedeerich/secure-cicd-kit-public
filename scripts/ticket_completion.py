@@ -46,6 +46,7 @@ RECURRENCE AFTER LEVEL 2: A NEW LINKED RECURRENCE TICKET (never a reopen)
     completion in `completion_history` and the chain in `recurrences`. Deterministic: recurrence number n is the
     count already recorded + 1; the same run seen twice records one recurrence.
 """
+import os
 import re
 import sys
 
@@ -83,6 +84,10 @@ RESCAN_SCOPE_CHANGED = 'RESCAN_SCOPE_CHANGED'
 RESCAN_BASIS_NOT_RECORDED = 'RESCAN_BASIS_NOT_RECORDED'
 RESCAN_CONFIG_CHANGED = 'RESCAN_CONFIG_CHANGED'
 RESCAN_UNIDENTIFIED_AT_PATH = 'RESCAN_UNIDENTIFIED_AT_PATH'
+# KDEC-069: the scanner that saw it is RETIRED (scanner-obligations.json provider_lifecycle) and no replacement's
+# clean result shows equivalence (issue type, location, version, detection capability). Never auto-closed:
+# it waits for a verifier who is not the fixer, or an authorised disposition.
+RESCAN_PROVIDER_RETIRED_NO_EQUIVALENCE = 'RESCAN_PROVIDER_RETIRED_NO_EQUIVALENCE'
 PATH_INVENTORY_ESTABLISHED = 'PATH_INVENTORY_ESTABLISHED'
 PATH_INVENTORY_NOT_ESTABLISHED = 'PATH_INVENTORY_NOT_ESTABLISHED'
 
@@ -220,7 +225,44 @@ def path_excluded(excluded, path):
     return False
 
 
-def qualify_rescan(entry, present_identities, coverage_doc, withheld=(), run='', commit=''):
+def _obligations_policy(obligations):
+    """The kit's scanner-obligations.json (KDEC-069) beside this script, or the one given. None when absent."""
+    if obligations is not None:
+        return obligations or None
+    import scanner_obligations as so
+    pol, _ = so.load_policy(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                         'scanner-obligations.json'))
+    return pol
+
+
+def retired_replacement(obs, ident, rows, paths, present, commit, pol):
+    """-> (row, decision) for a finding whose scanner is RETIRED: the first replacement row whose clean result
+    shows equivalence, else (None, the last decision). (None, None) when the scanner is not retired."""
+    import scanner_obligations as so
+    import reconcile_tickets as rt
+    sc = _s(obs.get('scanner'))
+    if not pol or so.lifecycle(pol, sc, 'external' if sc.startswith('ext-') else 'core')[0] != so.RETIRED:
+        return None, None
+    finding = {'identity': ident, 'scanner': sc, 'issue_type': _s(obs.get('issue_type')), 'cwe': _s(obs.get('cwe')),
+               'path': _s(obs.get('path')), 'seen_at_digest': _s(obs.get('artifact_digest'))}
+    last = None
+    for name, row in sorted((rows or {}).items()):
+        if name == sc:
+            continue
+        view = {'scanner': name, 'established': rt.row_established(row), 'scope': row.get('scope'),
+                'commit': _s(row.get('commit')) or _s(commit), 'artifact_digest': _s(row.get('artifact_digest')),
+                'path_inventory': sorted(paths or []), 'present_identities': sorted(present),
+                'issue_types': list(row.get('issue_types') or []), 'cwes': list(row.get('cwes') or [])}
+        d = so.closure_decision(finding, view, pol)
+        if d['decision'] == so.CLOSE_EQUIVALENT:
+            return row, d
+        if not any(m.startswith('capability: %s is not a provider' % name) for m in d['missing']):
+            last = d
+    return None, last or {'decision': so.PENDING_VERIFICATION, 'missing': ['no replacement for %s ran' % sc],
+                          'pending_route': so.PENDING_ROUTE}
+
+
+def qualify_rescan(entry, present_identities, coverage_doc, withheld=(), run='', commit='', obligations=None):
     """-> {verdict, reasons [{identity, scanner, path, reason, detail}], instances, limits, run, commit}.
 
     `coverage_doc` is the rescan's findings-coverage.json document ({rows, path_inventory}) or None."""
@@ -231,6 +273,7 @@ def qualify_rescan(entry, present_identities, coverage_doc, withheld=(), run='',
         reasons.append({'identity': ident, 'scanner': scanner, 'path': path, 'reason': reason, 'detail': detail})
 
     present = set(present_identities or [])
+    obl_policy = _obligations_policy(obligations)
     rows = None
     inv = None
     if isinstance(coverage_doc, dict) and isinstance(coverage_doc.get('rows'), list):
@@ -258,6 +301,19 @@ def qualify_rescan(entry, present_identities, coverage_doc, withheld=(), run='',
                 no(ident, sc, path, RESCAN_OUTPUT_MISSING, 'the rescan has no readable coverage record')
                 continue
             row = rows.get(sc)
+            # KDEC-069: a finding from a RETIRED provider keeps its identity and never closes on its own tool's
+            # absence; a replacement closes it only with shown equivalence, and is then judged as that row.
+            repl, decision = retired_replacement(obs, ident, rows, paths, present, commit, obl_policy)
+            if decision is not None and repl is None:
+                no(ident, sc, path, RESCAN_PROVIDER_RETIRED_NO_EQUIVALENCE,
+                   '%s is retired; no replacement shows equivalence (%s); pending %s'
+                   % (sc, '; '.join(decision.get('missing') or []), decision.get('pending_route')))
+                continue
+            if repl is not None:
+                limits.append('%s is retired: closed through %s under shown equivalence (%s)' % (
+                    sc, decision['replacement'], ', '.join('%s=%s' % kv for kv in sorted(decision['equivalence'].items()))))
+                row, sc = repl, decision['replacement']
+                obs = dict(obs, scanner=sc, scan_scope=repl.get('scope'))
             if not row:
                 no(ident, sc, path, RESCAN_SCANNER_NOT_RUN, '%s has no row in the rescan' % sc)
                 continue

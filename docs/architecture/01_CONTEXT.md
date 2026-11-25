@@ -99,7 +99,7 @@ section 5 and in [ARCH_02_IDENTITIES_AND_TRUST.md](ARCH_02_IDENTITIES_AND_TRUST.
 | Freshservice | fourth tracker (KDEC-043); notes instead of tag rewrites | TB-5 |
 | Scanner supply chain | gitleaks, detect-secrets, Semgrep, Bandit, CodeQL, Trivy, Checkov, hadolint, OSV-Scanner, Syft, gosec, cppcheck, flawfinder, mobsfscan, Dependency-Check, actionlint, zizmor, shellcheck, PSScriptAnalyzer; data feeds NVD, CISA KEV, Trivy DB, OSV | TB-6 |
 | SonarQube, Aikido | read-only pull of their findings into the kit's intake (KDEC-040 item 5) | TB-13 |
-| Evidence harness | a separate repository; reads the kit's `evidence.export` into a per-app bundle. The kit holds no evidence-store identity | TB-11 |
+| Evidence harness | a separate repository; reads the kit's `evidence.export` into a per-app bundle. The kit holds one evidence-store identity, in its scheduled copy-out only, create-only in its own two containers (KDEC-068) | TB-11 |
 | Landing zone vending | a separate repository; writes each environment's `KIT_*` variables and federated identity | TB-14 |
 | Public mirror | a neutral export of the kit, used for hosted release self-tests; the private organisation copy is the one consumers call | TB-9 |
 

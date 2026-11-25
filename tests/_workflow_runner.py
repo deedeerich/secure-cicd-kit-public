@@ -290,11 +290,15 @@ def promoted(inputs, source_environment='test', source_run='90'):
     rec = {'schema': 'kit-promotion-record/1', 'record_id': '%s-1-%s' % (source_run, source_environment),
            'state': 'verified-for-promotion',
            'artifact': {'digest': digest, 'sbom_sha256': hashlib.sha256(sbom).hexdigest(),
-                        'artifact_identity': 'REGISTRY_IDENTITY_PROVEN'},
+                        'artifact_identity': 'REGISTRY_IDENTITY_PROVEN',
+                        # As render-version-metadata writes it: the evidence's production time (KDEC-070).
+                        'version_metadata': json.dumps({'built_at': at})},
            'environment': {'name': source_environment, 'tier': 'test', 'adapter': 'containerapp',
                            'target_resource_id': PROMOTION_SOURCE_TARGET},
+           # The security gate's route and the verified attestation a deploy records (KDEC-070 binds them).
            'provenance': {'source_ref': 'refs/heads/main', 'build_workflow': PROMOTION_SIGNER,
-                          'build_run_id': source_run},
+                          'build_run_id': source_run, 'gate_routing_result': 'PROCEED',
+                          'attestation_outcome': 'ATTESTATION_VERIFIED'},
            'conditions': {'established': [], 'missing': []}, 'validity': {'verified_at': at},
            'run': {'id': source_run}, 'approval': {'approvers': []}}
     # R08 (28ba4d1): the gate reads its source from the source run's OWN artifact listing and needs a record that

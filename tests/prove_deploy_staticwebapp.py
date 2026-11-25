@@ -224,10 +224,14 @@ def promotion_world(verified_in='test', run_id='90', sbom=True):
     body = b'{"spdxVersion": "SPDX-2.3", "packages": []}'
     rec = {'schema': 'kit-promotion-record/1', 'record_id': '%s-1-%s' % (run_id, verified_in),
            'state': 'verified-for-promotion',
-           'artifact': {'digest': NEW_D, 'sbom_sha256': hashlib.sha256(body).hexdigest()},
+           # As a deploy writes it (KDEC-070 re-evaluates the bound evidence at the prod promotion): the build
+           # time in the version metadata, the security gate's route and the verified attestation.
+           'artifact': {'digest': NEW_D, 'sbom_sha256': hashlib.sha256(body).hexdigest(),
+                        'version_metadata': json.dumps({'built_at': at})},
            'environment': {'name': verified_in, 'tier': 'test', 'adapter': 'staticwebapp',
                            'target_resource_id': SWA_RID},
-           'provenance': {'source_ref': 'refs/heads/main', 'build_workflow': SIGNER, 'build_run_id': run_id},
+           'provenance': {'source_ref': 'refs/heads/main', 'build_workflow': SIGNER, 'build_run_id': run_id,
+                          'gate_routing_result': 'PROCEED', 'attestation_outcome': 'ATTESTATION_VERIFIED'},
            'conditions': {'established': [], 'missing': []}, 'validity': {'verified_at': at},
            'run': {'id': run_id}, 'approval': {'approvers': []}}
 

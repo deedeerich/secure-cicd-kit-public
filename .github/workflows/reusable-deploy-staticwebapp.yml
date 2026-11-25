@@ -631,7 +631,6 @@ jobs:
           UNKNOWN = 'unknown'
 
 
-          # ----------------------------------------------------------------------------- plumbing
           def evidence_dir():
               d = os.path.join(os.environ.get('RUNNER_TEMP') or '.', 'deploy-evidence')
               os.makedirs(d, exist_ok=True)
@@ -650,14 +649,6 @@ jobs:
                   return None
 
 
-          # KDEC-030 draft (the seam contract, "The kit's wiring"): when the GitHub environment opts into the
-          # cross-repository target lease (KIT_TARGET_LEASE_ACCOUNT), EVERY mutating az call below is fenced
-          # immediately before it is sent -- this function is the one path every kit mutation takes (the deploy
-          # steps, the reversal, the rollback sequence through `reverse`, the generic ARM rollback through
-          # rollback_dependencies). A refused fence means the call is NOT sent: (False, None, '<CODE>: why'),
-          # and the loss is sticky for the rest of the run (target_lease.py records it beside the token). Reads
-          # are never fenced. Off (the variable empty): nothing here runs and az behaves exactly as before.
-          # Fencing stops a stale holder before its next call; it cannot recall a call already sent.
           AZ_MUTATING_VERBS = frozenset(['update', 'set', 'swap', 'activate', 'deactivate', 'create', 'delete',
                                          'restart', 'start', 'stop', 'add', 'remove', 'purge', 'deploy', 'import',
                                          'assign', 'unassign', 'reset', 'invoke-action', 'up'])
@@ -760,8 +751,6 @@ jobs:
           def output(**kv):
               path = os.environ.get('GITHUB_OUTPUT')
               for k, v in kv.items():
-                  # One line per value: a newline in a value would end the file command early and let the
-                  # rest set another output (output injection; KDEC-027, tests/check_output_writes.py).
                   line = '%s=%s' % (k, '' if v is None else ' '.join(str(v).splitlines()))
                   print(line)
                   if path:
@@ -785,7 +774,6 @@ jobs:
               return '%s/%s@%s' % (env('acr_login_server'), env('image_repository'), env('image_digest'))
 
 
-          # ----------------------------------------------------------------------------- live reads
           def containerapp_serving():
               """-> list of {revision, weight, image} receiving traffic, or None when unreadable."""
               app, rg = env('containerapp_name'), env('resource_group')
@@ -843,8 +831,6 @@ jobs:
               rows = [(CONFIGURED_ROW, UNKNOWN if image is None else
                        (image or 'nothing (no container configured)')),
                       (STARTED_ROW, started)]
-              # DCR-2: when this run changed production (directly, or by a swap), what RUNS there is the
-              # verdict, read from the start record since that change -- not the configured image.
               NOW['running'] = None
               if run_since() and (not env('slot') or env('swapped') == 'success'):
                   NOW['running'] = appservice_running('production', intended_ref())
@@ -855,9 +841,6 @@ jobs:
           NOW = {'running': None}
 
 
-          # App Service exposes no running digest. Two readings exist and they are different claims: the
-          # CONFIGURED image (linuxFxVersion -- what the platform will start next) and the platform's own
-          # container log (which image it last reported started). Each row names which one it is.
           CONFIGURED_ROW = 'production image (configured)'
           STARTED_ROW = 'production container (last start the platform reported)'
 
@@ -903,7 +886,6 @@ jobs:
               return appservice_slot_image('production'), appservice_last_start('production')
 
 
-          # ----------------------------------------------------------------------------- capture
           def _unknown(reason, snapshot):
               """L97: a capture that cannot establish the previous state FAILS LOUDLY. It does not
               degrade a read error into an absence -- that is how a throttled API became "no rollback
@@ -939,7 +921,6 @@ jobs:
               previous = ''
               for t in serving:
                   previous = props.get('latestRevisionName') if t.get('latestRevision') else t.get('revisionName')
-              # KDEC-036 G4: what the target shows of production, read from the answer already in hand.
               ing, scale = conf.get('ingress') or {}, (props.get('template') or {}).get('scale') or {}
               snap['reality'] = {'public_ingress': bool(ing.get('external')),
                                  'custom_domains': [d.get('name') for d in ing.get('customDomains') or [] if isinstance(d, dict)],
@@ -947,7 +928,6 @@ jobs:
               snap.update(revision_mode=conf.get('activeRevisionsMode') or 'unknown',
                           latest_revision=props.get('latestRevisionName') or '', traffic=traffic,
                           revisions=revisions, tags=shown.get('tags') or {}, app_id=shown.get('id', ''))
-              # EMPTY is MEASURED: both reads succeeded and nothing is active and nothing takes traffic.
               any_active = any(r['active'] for r in revisions.values())
               state = 'EXISTING_DEPLOYMENT' if (serving or any_active) else 'EMPTY'
               snap['previous_state'] = state
@@ -969,8 +949,6 @@ jobs:
                       return _unknown('The %s slot configuration could not be read.' % s, snap)
                   images[s] = img
               snap['images'] = images
-              # KDEC-036 G10, G4: the site's kind decides the adapter (a code-packaged Functions app has none),
-              # and its host names and network access are the tier's reality signal.
               ok, site, err = az('webapp', 'show', '-n', env('webapp_name'), '-g', env('resource_group'))
               if not ok or not isinstance(site, dict):
                   return _unknown('The site could not be read (%s).' % err, snap)
@@ -1004,7 +982,6 @@ jobs:
               return capture_containerapp() if a.adapter == 'containerapp' else capture_appservice()
 
 
-          # ----------------------------------------------------------------------------- capability
           PRODUCTION_TIERS = ('uat', 'prod')
 
 
@@ -1050,28 +1027,12 @@ jobs:
               return 0
 
 
-          # ----------------------------------------------------------------------------- the seam (OF-5 K-6)
-          # KDEC-030 R3: every app setting and environment key has exactly one owner. An unassigned key is the
-          # landing zone's; the kit owns the env key release_ownership_stamp and the keys the hand-off assigns
-          # it in KIT_SETTING_KEYS (empty by default). With the seam in force (the environment opts into the
-          # lease), the `seam` step refuses, after the capture and before the first mutation:
-          #   SEAM_SETTING_OWNERSHIP_CONFLICT  a key the kit would write that it does not own, or a kit key the
-          #                                    landing zone also claims (made slot-sticky -- sticky configuration
-          #                                    is the landing zone's, R1 -- or backed by a secret, also the landing
-          #                                    zone's), or a KIT_SETTING_KEYS value that is not a list of names
-          #   SEAM_SWAP_MOVES_LZ_SETTING       an App Service swap that would carry a non-sticky landing-zone
-          #                                    setting or connection string differing between slot and production
-          #   SEAM_OWNERSHIP_NOT_ESTABLISHED   the settings could not be read, or the key list could not be parsed
-          # Values are never shown: keys are named, values compared by digest. tests/prove_seam_setting_ownership.py.
           SEAM_HELD = 'SEAM_OWNERSHIP_HELD'
           SEAM_NOT_IN_FORCE = 'SEAM_OWNERSHIP_NOT_IN_FORCE'
           SEAM_NOT_ESTABLISHED = 'SEAM_OWNERSHIP_NOT_ESTABLISHED'
           SEAM_CONFLICT = 'SEAM_SETTING_OWNERSHIP_CONFLICT'
           SEAM_SWAP = 'SEAM_SWAP_MOVES_LZ_SETTING'
           KIT_STAMP_KEY = 'release_ownership_stamp'
-          # What each adapter's own steps write as settings or env keys (cmd_mutate). App Service writes tags and
-          # the image only (whether App Service's container-set command also writes DOCKER_* settings is the seam
-          # contract's U4, a live question).
           KIT_PLANNED_SETTING_WRITES = {'containerapp': [KIT_STAMP_KEY], 'appservice': []}
           SETTING_NAME = r'^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$'
 
@@ -1168,13 +1129,6 @@ jobs:
               return 0
 
 
-          # ----------------------------------------------------------------------------- edge purge (D-4, OF-5 K-7)
-          # KDEC-030 D-4 (decided 2026-10-26): after a VERIFIED release the kit purges the edge cache of the app's
-          # OWN Front Door endpoint, the one the landing zone names in KIT_EDGE_ENDPOINT (one endpoint per
-          # user-facing app, purge-only role at that endpoint). The kit purges no other endpoint: the vended one
-          # is the only one it is ever handed. Without one it is not applicable, recorded, never a pass. A failed
-          # purge leaves a healthy release serving behind a stale cache: an advisory, never a failed release.
-          # tests/prove_handoff_extended.py.
           EDGE_PURGED = 'EDGE_PURGED'
           EDGE_PURGE_NOT_APPLICABLE = 'EDGE_PURGE_NOT_APPLICABLE'
           EDGE_PURGE_REFUSED = 'EDGE_PURGE_REFUSED'
@@ -1220,7 +1174,6 @@ jobs:
                                                                                        endpoint))
 
 
-          # ----------------------------------------------------------------------------- manifest
           def release_id():
               return 'run-%s-%s' % (env('github_run_id') or 'local', env('github_run_attempt') or '1')
 
@@ -1263,11 +1216,6 @@ jobs:
                   follows = [t for t in snap.get('traffic') or []
                              if t.get('latestRevision') and (t.get('weight') or 0) > 0]
                   if snap.get('revision_mode') == 'Multiple' and follows:
-                      # Traffic that FOLLOWS THE LATEST REVISION moves to the revision the update creates,
-                      # at once -- observed live on a sandbox Container App: the public health path went
-                      # from 200 to 404 on an unverified image the moment the update returned. Pin what
-                      # serves now to explicit revision names first, recorded as a REDIRECTION, so the
-                      # verification below really happens before traffic moves.
                       weights, post = [], []
                       for t in snap.get('traffic') or []:
                           w = t.get('weight') or 0
@@ -1309,9 +1257,6 @@ jobs:
               slot = env('slot') or 'production'
               prior_img = (snap.get('images') or {}).get(slot, '')
               rid, err, prior_stamp = resource_id('appservice', slot, with_stamp=True)
-              # KDEC-021: the slot's previous ownership stamp is kept, as the swap keeps production's, so the
-              # reversal hands the slot back to the release it held before. Without it a stacked sequence
-              # could never reverse the earlier release: the slot still carried the later one's stamp.
               entry = {'action': 'MODIFIED', 'object_type': 'slot-container', 'object': slot,
                        'prior': ('DOCKER|' + prior_img) if prior_img else '', 'post': 'DOCKER|' + ref,
                        'stamp': stamp_value(ref), 'mutated_at': utc_now(), 'object_id': rid,
@@ -1347,9 +1292,6 @@ jobs:
               slot = env('slot')
               m = manifest()
               snap = read_evidence('snapshot.json') or {}
-              # DCR-OWN (8.3 rule 1, the stamp travels with the mutation). Tags do not move with a swap, so
-              # the slot's stamp never reaches production: production is stamped with this release BEFORE
-              # the swap, and its previous stamp is kept for the swap-back to restore.
               stamp = stamp_value(intended_ref())
               ok, shown, err = az('webapp', 'show', '-n', env('webapp_name'), '-g', env('resource_group'))
               if not ok or not isinstance(shown, dict) or not shown.get('id'):
@@ -1380,7 +1322,6 @@ jobs:
               return 0
 
 
-          # ----------------------------------------------------------------------------- verification
           def probe(url):
               """-> True when the endpoint answered 200 within the configured attempts."""
               import time
@@ -1513,7 +1454,6 @@ jobs:
               if running is True:
                   return ref
               if running is False:
-                  # Never names the attempted image: a NOW SERVING cell that holds it reads as serving it.
                   return ('not this release: the platform last created another image since this run\'s '
                           'change, or has not reported a start (the start-record row names what it last '
                           'started)')
@@ -1563,10 +1503,6 @@ jobs:
                                 False: 'not started yet', None: 'log unreadable'}[started]))
                           if started is not False:
                               break
-                          # An idle site on a plan that unloads it starts its container only when a request
-                          # arrives (live run 38867771912, F1): wait without asking and nothing ever starts.
-                          # The answer to this wake-up is NOT evidence -- it may be the previous container's
-                          # -- so it is discarded; only the platform's start record is read.
                           wake('https://%s/' % host)
                           if i < tries:
                               import time
@@ -1655,8 +1591,6 @@ jobs:
                       record_verification(serving_verified=None if image is None else False, loaded=image)
                       print('::error::Production is not configured with %s (read back: %s).' % (ref, image))
                       return 1
-                  # DCR-2 / L101: the configured image is what the platform will start next. What RUNS is
-                  # read from production's own start record -- after a swap too, where nothing re-read it.
                   running = appservice_running('production', ref,
                                                waits=max(1, int(env('health_retries') or '1')))
                   if running is not True:
@@ -1668,8 +1602,6 @@ jobs:
                       return 1
                   host = appservice_host('production')
               if host:
-                  # The consumer-facing URL is published whether or not it answers, so a caller can see
-                  # what was probed; `serving_verified` says whether it served the intended artefact.
                   output(app_url='https://%s' % host)
               good = bool(host) and probe('https://%s%s' % (host, path))
               record_verification(serving_verified=good)
@@ -1681,7 +1613,6 @@ jobs:
               return 0
 
 
-          # ----------------------------------------------------------------------------- reversal
           def _derive(entries):
               """Per-object dispositions from scripts/derive_reversal_disposition.py (inlined beside this
               file). Imported, not re-implemented: one derivation, proven in one place."""
@@ -1766,14 +1697,9 @@ jobs:
                       'current_version': _canon(traffic, latest) if readable else None,
                       'recorded_post_version': _canon(entry.get('post'), latest),
                       'later_releases': [], 'descendants': descendants, 'other_claims': [],
-                      # Traffic configuration carries no dependents of its own (adapter declaration).
                       'dependents': [], 'prior_traffic': entry.get('prior') or [],
                       'prior_latest': snap.get('latest_revision', '')})
               elif entry['action'] == 'CREATED':
-                  # Who still routes to, or labels, this revision NOW. Redirections recorded after the
-                  # creation have already been undone by the time this entry's turn comes (entries are
-                  # reversed newest first, each against a fresh read), so traffic still on it is a real
-                  # dependency -- or a restore that did not take -- and either way it is not removed.
                   deps = []
                   for t in traffic:
                       name = latest if t.get('latestRevision') else t.get('revisionName')
@@ -1788,7 +1714,6 @@ jobs:
                       'stamp': _rev_stamp(ours_props) if readable and ours_props else None,
                       'current_version': image if readable and ours_props else None,
                       'recorded_post_version': entry.get('post'),
-                      # A revision is immutable: no later release can rewrite it (adapter declaration).
                       'later_releases': [], 'descendants': descendants, 'other_claims': [],
                       'dependents': deps if readable else None})
               else:
@@ -1817,9 +1742,6 @@ jobs:
               elif (prop['action'] == 'CREATED'
                     and snap.get('revision_mode') != 'Multiple'
                     and snap.get('previous_state') == 'EXISTING_DEPLOYMENT'):
-                  # DCR gap 7: the mechanism must be valid for the OBSERVED configuration. In single-
-                  # revision mode the prior revision cannot be reactivated beside ours, and traffic
-                  # weights cannot be set; deactivating ours would leave nothing serving.
                   r['not_reversed_because'] = ('mechanism not valid for the observed configuration: '
                                                'single revision mode cannot reactivate the prior '
                                                'revision or set traffic weights')
@@ -1842,8 +1764,6 @@ jobs:
               results = []
               for entry in reversed(m.get('entries') or []):
                   slot = 'production' if entry['action'] == 'REDIRECTED' else entry['object']
-                  # DCR-OWN: each entry is judged by the stamp on the object IT names -- production for the
-                  # swap, the slot for the slot's image -- never by the deploy target's stamp.
                   ok, shown, _ = az('webapp', 'show', *(base + (['--slot', slot]
                                                                 if slot != 'production' else [])))
                   stamp = ((shown or {}).get('tags') or {}).get('release_ownership_stamp', '') \
@@ -1852,8 +1772,6 @@ jobs:
                   prop = dict(entry, **{
                       'stamp': stamp, 'current_version': None if img is None else ('DOCKER|' + img if img else ''),
                       'recorded_post_version': entry.get('post'),
-                      # Within this run no other kit release can write this app: the concurrency group
-                      # serialises them. A configuration value has no dependents of its own.
                       'later_releases': [], 'descendants': [], 'other_claims': [], 'dependents': [],
                       'slot': slot})
                   d = _derive([prop])[0]
@@ -1874,7 +1792,6 @@ jobs:
                           okk, _, e = az(*c)
                           done, err = done and okk, err or e
                       if done and prop['action'] == 'REDIRECTED' and prop.get('production_id'):
-                          # The swap is undone; so is this release's claim on production (DCR-OWN).
                           okk, _, e = az('tag', 'update', '--resource-id', prop['production_id'],
                                          '--operation', 'Merge', '--tags',
                                          'release_ownership_stamp=%s' % (prop.get('prior_stamp') or ''))
@@ -1882,7 +1799,6 @@ jobs:
                           err = err or e
                       elif done and prop['action'] == 'MODIFIED' and prop.get('object_id') \
                               and 'prior_stamp' in prop:
-                          # The slot's image is restored; so is its previous owner's claim (KDEC-021).
                           okk, _, e = az('tag', 'update', '--resource-id', prop['object_id'],
                                          '--operation', 'Merge', '--tags',
                                          'release_ownership_stamp=%s' % (prop.get('prior_stamp') or ''))
@@ -1909,17 +1825,8 @@ jobs:
               for r in results:
                   print('  %-12s %-34s performed=%s  %s' % (r['object'], r['reversal_disposition'],
                                                            r['performed'], r['reason']))
-              # DCR gap 7: the terminal state is RECONCILED REALITY. Command exit is an input to the
-              # comparison, never a substitute for it -- read live state back and compare it with the
-              # pre-change snapshot, absences included.
               verification = (verify_containerapp_reversal if a.adapter == 'containerapp'
                               else verify_appservice_reversal)(snap)
-              # DCR 8.2 / 8.5: an entry this reversal did not reverse -- refused, withheld, deferred, or
-              # whose mechanism was not valid -- leaves the rollback PARTIAL at minimum, whatever live state
-              # happens to equal. Live run 38879879589: the reversal REFUSED (an external actor had set
-              # production meanwhile, to an image that happened to be the prior one), the snapshot
-              # comparison was coincidentally true, and the run reported ROLLBACK_VERIFIED. Only entries
-              # this reversal set out to reverse are decided by the live comparison (exit status is not).
               not_reversed = [{'object': r['object'], 'reversal_disposition': r['reversal_disposition'],
                                'reversal_conflict': r.get('reversal_conflict'),
                                'reason': r.get('not_reversed_because') or r['reason']}
@@ -1948,8 +1855,6 @@ jobs:
               return 0
 
 
-          # The two dispositions under which this reversal ACTS on an entry (DCR 8.2 "contributes to a
-          # complete reversal"). Every other disposition leaves that entry's change in place.
           REVERSING = ('REVERSAL_REMOVE', 'REVERSAL_RESTORE_PRIOR')
 
 
@@ -1990,16 +1895,12 @@ jobs:
                       return None
                   if now != want:
                       residual.append({'field': '%s image (configured)' % slot, 'snapshot': want, 'now': now})
-              # What this comparison CAN establish: the configured image of each slot. App Service exposes
-              # no running digest, and a restored configuration is not a restarted container; the platform's
-              # start record is reported beside it in the outcome report, as its own row.
               return {'matches_snapshot': not residual, 'residual': residual,
                       'compared': 'the configured image (linuxFxVersion) of each slot',
                       'not_compared': 'the running container: the outcome report reads the platform\'s '
                                       'container start record for production as a separate row'}
 
 
-          # ----------------------------------------------------------------------------- provenance
           def resource_id(adapter, slot='', with_stamp=False):
               """-> (id, error), or (id, error, ownership stamp) with `with_stamp` -- one read for both."""
               if adapter == 'containerapp':
@@ -2034,7 +1935,6 @@ jobs:
                   verified = bool(live) and all(t['image'] == intended for t in live)
               else:
                   target = 'production' if (not env('slot') or env('swapped') == 'success') else env('slot')
-                  # Configured AND started: a stamp says "this is running", and only the start record can.
                   verified = appservice_slot_image(target) == intended and \
                       appservice_running(target, intended) is True
               if not verified:
@@ -2093,7 +1993,6 @@ jobs:
               return 0
 
 
-          # ----------------------------------------------------------------------------- outcome
           def derive_outcome(adapter, live):
               """-> (deployment_outcome, why). Asserted from evidence and live state, never from intent.
 
@@ -2147,16 +2046,6 @@ jobs:
                                                   'change is still in place')
 
 
-          # ----------------------------------------------------------------------------- promotion
-          # DCR gap 11 / 7.7; KDEC-029 (owner, 2026-10-26, closing O-11). Deployment success is not trust
-          # progression. Verified-for-promotion is a CONJUNCTION, and every condition now has a source:
-          # identity from the build (artifact_identity) AND V1 in this deploy; running, traffic and
-          # reconciliation from the live read-back; the end-to-end test period, DAST and the security-
-          # settings posture from the steps after serving (scripts/promotion.py, their evidence files); the
-          # release verdict; and the default branch the digest was built from. "Tested" is the owner's
-          # definition: health, the e2e test period, DAST (where configured) with no new blocking finding,
-          # and the posture check. At prod the active checks are not run (passive only) and read as
-          # not-applicable there; DAST not configured is not a failure (decision 3: "where configured").
           PROMOTION_CONDITIONS = ['exact artefact identity established', 'expected artefact observed running',
                                   'intended traffic observed', 'state reconciliation complete',
                                   'end-to-end test period passed', 'dynamic scan passed, or recorded as not required',
@@ -2175,8 +2064,6 @@ jobs:
               held = []
               if outcome == 'DEPLOY_HEALTHY':
                   identity = env('artifact_identity') or (carried.get('artifact') or {}).get('artifact_identity')
-                  # P-02: V1 inside the deploy VERIFIED the signed provenance of exactly this digest, and the
-                  # build proved the registry identity of what it scanned. A held or absent V1 credits nothing.
                   if env('attestation_outcome') == 'ATTESTATION_VERIFIED' and (identity == 'REGISTRY_IDENTITY_PROVEN' or
                                                                              content_proven):
                       held.append('exact artefact identity established')
@@ -2193,8 +2080,6 @@ jobs:
                       pol = (json.loads(env('kit_org_settings') or '{}').get('dast') or {}).get('state') or 'DAST_NO_ORG_POLICY'
                   except ValueError:
                       pol = 'DAST_REQUIRED'      # an unreadable org policy never waives a scan
-                  # R07 (external review 2026-11-07): NOT_CONFIGURED is never a passed scan. It satisfies the condition only
-                  # when no org policy requires DAST, or the org recorded a decision that this repository does not need it.
                   if da == 'DAST_PASSED' or da in PASSIVE_OK or (da == 'NOT_CONFIGURED' and pol != 'DAST_REQUIRED'):
                       held.append('dynamic scan passed, or recorded as not required')
                   dast_basis = ('DAST_PASSED' if da == 'DAST_PASSED' else 'passive at prod' if da in PASSIVE_OK else
@@ -2216,10 +2101,6 @@ jobs:
                               'identity and V1 verified in this deploy; prod runs passive checks only'}
 
 
-          # ----------------------------------------------------------------------------- six questions
-          # L96 / DCR 3.4. Questions 4 and 5 are separate on purpose: "a fix exists" and "a machine may apply
-          # it" are different claims. Owners are ROLES, never individuals; channels and service levels are
-          # policy placeholders the adopting team sets (numbers are never constants in this kit).
           EVIDENCE_FILES = ['manifest.json', 'snapshot.json', 'capability.json', 'verification.json',
                             'reversal.json', 'outcome.json']
           MAY = ['re-read live state and re-evaluate the reversal preconditions',
@@ -2258,7 +2139,6 @@ jobs:
           }
 
 
-          # KREQ-706 (KDEC-060): the overlay's `escalation`; at prod a placeholder is refused.
           escalation_placeholder_channel = 'the deploy environment\'s change or incident queue (set by policy)'
           escalation_placeholder_service_level = 'placeholder: set by the adopting team\'s policy'
           ESCALATION_ROUTE_CONFIGURED, ESCALATION_ROUTE_PLACEHOLDER, ESCALATION_ROUTE_REFUSED = (
@@ -2303,7 +2183,6 @@ jobs:
               return q, esc
 
 
-          # ----------------------------------------------------------------------------- report
           def cmd_report(a):
               adapter = a.adapter
               attempted = [('image', intended_ref())]
@@ -2312,20 +2191,14 @@ jobs:
               if adapter == 'appservice':
                   attempted.append(('target', env('slot') or 'production (direct)'))
               if read_evidence('snapshot.json') is None:
-                  # Refused before the capture ran: the run never authenticated and changed nothing, so
-                  # there is no live read to make. Said, not guessed.
                   rows, live = [('image', 'not read: the run stopped before login and changed nothing')], None
               else:
                   rows, live = now_serving(adapter)
               unavailable = [c.strip() for c in env('controls_unavailable').split(',') if c.strip()]
               causes = [c.strip() for c in env('advisory_causes').split(',') if c.strip()]
-              # KDEC-014: the version-gap ruling the verdict step made, and the exception weighed for it --
-              # the existing weakening record (accepter = weakening_authority). Recorded whenever a proven
-              # gap was ruled on, so a refused exception is on the record too.
               ruling = env('version_gap_ruling')
               exc = {'accepted_by': env('weakening_authority'), 'reason': env('weakening_reason'),
                      'exception_ref': env('weakening_exception_ref'), 'expires': env('weakening_expires'),
-                     # KDEC-018 item 4: how often it was renewed, and its history, as the verdict step read them.
                      'renewals': (int(env('exception_renewals')) if env('exception_renewals').isdigit()
                                   else env('exception_renewals') or None),
                      'history': env('exception_history') or None}
@@ -2335,17 +2208,12 @@ jobs:
                         'adapter': adapter, 'attempted': dict(attempted),
                         'now_serving': [{'field': f, 'value': v} for f, v in rows],
                         'health': env('health_outcome') or 'not run',
-                        # L93: the verdict the deploy proceeded (or refused) on, and the controls the gate
-                        # could not run. Recorded, never re-decided here.
                         'gate': {'routing_result': env('routing_result'),
                                  'controls_unavailable': unavailable,
                                  'advisory_causes': causes,
                                  'version_gap_ruling': ruling or None,
                                  'version_gap_exception': exc,
-                                 # The GitHub environment the job ran in; at uat/prod its required
-                                 # reviewers are the approval half of a version-gap exception.
                                  'github_environment': env('deploy_environment')}}
-              # P-02: what V1 established about this digest, before login. Empty when the run stopped first.
               report['attestation'] = {'outcome': env('attestation_outcome') or None,
                                        'routing_result': env('attestation_route') or None,
                                        'debt': env('attestation_debt') or None}
@@ -2368,7 +2236,6 @@ jobs:
                   report['gate']['routing_result'] or 'none',
                   ', '.join('`%s`' % c for c in unavailable) if unavailable else 'none recorded'))
               if causes or report['gate']['version_gap_ruling']:
-                  # Caller text stays in outcome.json; the summary shows only registered-shape tokens.
                   lines.append('Advisory causes: %s; version-gap ruling (KDEC-014): `%s`%s' % (
                       ', '.join('`%s`' % c for c in causes if c.replace('_', '').isalnum()) or 'none',
                       report['gate']['version_gap_ruling'] or 'not reported',
@@ -2416,13 +2283,10 @@ jobs:
                       'provenance': cmd_provenance, 'report': cmd_report}
               for name in cmds:
                   p = sub.add_parser(name)
-                  # staticwebapp: only `purge` (the Static Web Apps reusable's D-4 step); its other steps are
-                  # static_site_contract.py's. A static site has no slot, so the purge reads no swap.
                   p.add_argument('--adapter', choices=('containerapp', 'appservice', 'staticwebapp'), required=True)
               sub.add_parser('created-revision')
               a = ap.parse_args(argv)
               if a.cmd == 'created-revision':
-                  # Prints ONLY the revision the manifest records as CREATED (empty if none).
                   sys.stdout.write(created_revision() + '\n')
                   return 0
               return cmds[a.cmd](a)
@@ -2674,8 +2538,6 @@ jobs:
               if pools is not None and not any(w in pools for _k, w in map(_who, reviewers)):
                   return POOL_MISSING, ('no reviewer is in the platform or security pool (%s)' % ', '.join(sorted(pools))), '-'
               if pools is not None and not small_used and small != ST_IN_FORCE:
-                  # GitHub waits for ONE approval from ANY listed reviewer: a reviewer outside the pools could approve alone
-                  # (external review R09). Every reviewer in the pools makes the approver a pool member by construction.
                   outside = sorted(w for _k, w in map(_who, reviewers) if w not in pools)
                   if outside:
                       return OUTSIDE_POOL, ('reviewer(s) outside the platform or security pool (%s) can approve alone, because '
@@ -2873,7 +2735,6 @@ jobs:
           import urllib.request
           import zipfile
 
-          # rollback_dependency_check (assurance-taxonomy.yaml)
           NOT_REQUIRED = 'ROLLBACK_CHECK_NOT_REQUIRED'
           NO_DEPENDENCY = 'DEPLOY_NO_ROLLBACK_DEPENDENCY'
           REFUSED = 'DEPLOY_REFUSED_ROLLBACK_DEPENDENCY'
@@ -2900,7 +2761,6 @@ jobs:
               return 'kit-rollback-marker-' + target_key(environment, resource_group, name)
 
 
-          # ----------------------------------------------------------------------------- GitHub API
           def _env(name, default=''):
               return os.environ.get(name.upper(), default)
 
@@ -2911,7 +2771,6 @@ jobs:
                                                          'X-GitHub-Api-Version': '2022-11-28'})
               token = _env('gh_token')
               if token and url.startswith('https://'):
-                  # Unredirected: an artifact download redirects to storage, which must not get the token.
                   req.add_unredirected_header('Authorization', 'Bearer %s' % token)
               with urllib.request.urlopen(req, timeout=60) as resp:
                   if headers_out is not None:
@@ -2949,7 +2808,6 @@ jobs:
                   raise Unreadable('the marker artifact could not be downloaded or read: %s' % type(exc).__name__)
 
 
-          # ----------------------------------------------------------------------------- marker
           def _image(v):
               v = v if isinstance(v, str) else ''
               v = v.split('|', 1)[-1]
@@ -3065,7 +2923,6 @@ jobs:
                           fh.write('%s=%s\n' % (k, str(v).replace('\n', ' ')))
 
 
-          # ----------------------------------------------------------------------------- check
           def _short(v):
               s = v if isinstance(v, str) else json.dumps(v, sort_keys=True)
               return s if len(s) <= 70 else s[:67] + '...'
@@ -3198,7 +3055,6 @@ jobs:
               return 1 if outcome in (REFUSED, INCOMPLETE) else 0
 
 
-          # ----------------------------------------------------------------------------- self-test
           def self_test():
               fails = []
               k1, k2 = marker_name('prod', 'rg', 'app'), marker_name('dev', 'rg', 'app')
@@ -3287,15 +3143,21 @@ jobs:
           DAST_TIMEOUT_SECONDS = 1800   # bound on the caller's DAST command
           TRIVY_VERSION = '0.71.2'
           REVOCATIONS_PATH = '.security/promotion-revocations.json'
-          REVOCATION_KINDS = ('digest', 'signer', 'approval', 'test-evidence')
-          # R08 (external review 2026-11-07): every listing pages to its end (Link rel="next", the API host only,
-          # total_count checked) or says it did not; record downloads are bounded too. Never a silent cut.
+          REVOCATION_KINDS = ('digest', 'signer', 'approval', 'test-evidence', 'exception')
+          TARGET_POLICY_PATH = '.security/promotion-policy.json'
+          EVIDENCE_KINDS = ('security-gate', 'sbom', 'attestation')
+          ACCEPTED_GATE_ROUTES = ('PROCEED', 'PROCEED_WITH_ADVISORY')
+          DEFAULT_TARGET_POLICY = {
+              'uat': {'required_evidence': list(EVIDENCE_KINDS), 'max_evidence_age_days': 30,
+                      'accepted_gate_routes': list(ACCEPTED_GATE_ROUTES), 'refuse_advisory_causes': []},
+              'prod': {'required_evidence': list(EVIDENCE_KINDS), 'max_evidence_age_days': 30,
+                       'accepted_gate_routes': list(ACCEPTED_GATE_ROUTES), 'refuse_advisory_causes': []},
+          }
+          OUTCOME_ALLOWED, OUTCOME_REFUSED = 'ALLOWED', 'REFUSED'
           PAGE_CAP = 30                # pages of 100 per listing, as evidence.export
           MAX_RECORD_READS = 100       # records downloaded per history read
           ADAPTERS = ('containerapp', 'appservice', 'staticwebapp')   # the canonical adapter ids (--adapter)
 
-          # Every refusal the gate and the preflight can give. The code is the reason's name; the text says
-          # what to do about it.
           REFUSALS = {
               'PROMOTION_REFUSED_SOURCE_UNREADABLE': 'the source record (run, environment) could not be read',
               'PROMOTION_REFUSED_DIGEST_MISMATCH': 'the digest to deploy is not the digest the source record '
@@ -3335,20 +3197,28 @@ jobs:
               'BREAK_GLASS_REFUSED_EXPIRED': 'the break-glass exception has expired',
               'BREAK_GLASS_REFUSED_TOO_LONG': 'a break-glass exception lives at most %d days'
                                               % BREAK_GLASS_MAX_DAYS,
+              'PROMOTION_REFUSED_EVIDENCE_MISSING': 'evidence the target requires for this digest is missing or was '
+                                                    'cancelled: never a pass',
+              'PROMOTION_REFUSED_EVIDENCE_DIGEST': 'the evidence is bound to another digest than the one promoted',
+              'PROMOTION_REFUSED_EVIDENCE_STALE': 'the evidence is older than the target environment allows, or undated',
+              'PROMOTION_REFUSED_EXCEPTION_INVALID': 'an exception this digest relied on has expired, has no expiry, or '
+                                                     'was revoked',
+              'PROMOTION_REFUSED_APPROVAL_STATE': 'the predecessor\'s approval was rejected, or a uat predecessor was '
+                                                  'not approved',
+              'PROMOTION_REFUSED_TARGET_POLICY': 'the target environment\'s policy refuses this digest\'s recorded gate '
+                                                 'route or advisory cause, or the policy could not be read',
           }
-          # What break-glass may override at the gate, and what nothing overrides. A revoked signer, a
-          # substituted digest or a build from another branch is not an emergency the exception covers.
           BREAK_GLASS_OVERRIDES = ('PROMOTION_REFUSED_NOT_VERIFIED', 'PROMOTION_REFUSED_WRONG_PREDECESSOR',
                                    'PROMOTION_REFUSED_STALE', 'PROMOTION_REFUSED_SUPERSEDED',
                                    'PROMOTION_REFUSED_NEW_FINDING', 'PROMOTION_REFUSED_RECHECK_INCOMPLETE',
-                                   'PROMOTION_REFUSED_TARGET_UNKNOWN', 'PROMOTION_REFUSED_HISTORY_INCOMPLETE')
+                                   'PROMOTION_REFUSED_TARGET_UNKNOWN', 'PROMOTION_REFUSED_HISTORY_INCOMPLETE',
+                                   'PROMOTION_REFUSED_EVIDENCE_STALE')
 
           env = dc.env
           output = dc.output
           summary = dc.summary
 
 
-          # ----------------------------------------------------------------------------- small helpers
           def now_dt():
               """The clock, overridable for tests (KIT_PROMOTION_NOW, ISO-8601 Z)."""
               fixed = env('kit_promotion_now')
@@ -3454,7 +3324,6 @@ jobs:
               return None
 
 
-          # ----------------------------------------------------------------------------- GitHub reads
           class Missing(Exception):
               """The API answered that the thing does not exist (HTTP 404, or no recorded file)."""
 
@@ -3618,6 +3487,24 @@ jobs:
               return [e for e in entries if isinstance(e, dict)]
 
 
+          def target_policy(tier):
+              """-> the target environment's promotion policy for `tier` (KDEC-070) from the default branch, or None
+              (the kit default applies). Unreadable raises: a policy nobody could read is not the default."""
+              try:
+                  doc = api_optional('contents/' + TARGET_POLICY_PATH, {'ref': default_branch()})
+              except Missing:
+                  return None
+              if isinstance(doc, dict) and 'content' in doc:
+                  doc = json.loads(base64.b64decode(doc['content']).decode('utf-8'))
+              tiers = doc.get('tiers') if isinstance(doc, dict) else None
+              if not isinstance(tiers, dict):
+                  raise rh.Unreadable('%s has no tiers object' % TARGET_POLICY_PATH)
+              pol = tiers.get(tier)
+              if pol is not None and not isinstance(pol, dict):
+                  raise rh.Unreadable('%s tiers.%s is not an object' % (TARGET_POLICY_PATH, tier))
+              return pol
+
+
           def approvals(run_id):
               """-> the environment approvals of a run, as the API reports them."""
               try:
@@ -3634,7 +3521,101 @@ jobs:
               return {'state': state, 'approvers': out, 'recorded_at': iso(now_dt())}
 
 
-          # ----------------------------------------------------------------------------- the judgement
+          def _built_at(artifact):
+              vm = (artifact or {}).get('version_metadata')
+              if isinstance(vm, str):
+                  try:
+                      vm = json.loads(vm)
+                  except ValueError:
+                      vm = {}
+              return (vm or {}).get('built_at') if isinstance(vm, dict) else None
+
+
+          def evidence_binding_of(rec):
+              """-> the record's evidence_binding (KDEC-070). A record written before it carried one derives the same
+              binding from the fields it already has; a field it lacks is MISSING, never assumed."""
+              b = ((rec or {}).get('provenance') or {}).get('evidence_binding') or (rec or {}).get('evidence_binding')
+              if isinstance(b, dict) and isinstance(b.get('items'), list) and b['items']:
+                  return b
+              art, prov = (rec or {}).get('artifact') or {}, (rec or {}).get('provenance') or {}
+              digest, at = art.get('digest'), _built_at(art)
+              route = prov.get('gate_routing_result')
+              return {'digest': digest, 'derived': True, 'items': [
+                  {'kind': 'security-gate', 'state': 'COMPLETE' if route else 'MISSING', 'digest': digest if route else None,
+                   'produced_at': at, 'ref': prov.get('build_run_id'), 'route': route},
+                  {'kind': 'sbom', 'state': 'COMPLETE' if art.get('sbom_sha256') else 'MISSING',
+                   'digest': digest if art.get('sbom_sha256') else None, 'produced_at': at, 'ref': art.get('sbom_sha256')},
+                  {'kind': 'attestation', 'state': 'COMPLETE' if prov.get('attestation_outcome') == 'ATTESTATION_VERIFIED'
+                   else 'MISSING', 'digest': digest, 'produced_at': at, 'ref': prov.get('attestation_outcome')}]}
+
+
+          def bind_evidence(digest, routing, sbom_sha, attestation, built_at, build_run):
+              """The binding a deploy records for the digest it deployed (cmd_record). The security gate's route is the
+              evidence the gate produced; empty (the gate was cancelled or never reported) is MISSING."""
+              return {'digest': digest, 'items': [
+                  {'kind': 'security-gate', 'state': 'COMPLETE' if routing else 'MISSING', 'digest': digest if routing else None,
+                   'produced_at': built_at, 'ref': build_run, 'route': routing or None},
+                  {'kind': 'sbom', 'state': 'COMPLETE' if sbom_sha else 'MISSING', 'digest': digest if sbom_sha else None,
+                   'produced_at': built_at, 'ref': sbom_sha},
+                  {'kind': 'attestation', 'state': 'COMPLETE' if attestation == 'ATTESTATION_VERIFIED' else 'MISSING',
+                   'digest': digest, 'produced_at': built_at, 'ref': attestation or None}]}
+
+
+          def reevaluate(rec, ctx, refuse):
+              """KDEC-070: re-judge the source's bound evidence against THIS digest and the target's policy. Nothing is
+              rescanned. Applies where the target has a policy (uat and prod by default)."""
+              tier = ctx.get('destination_tier')
+              if ctx.get('target_policy_error'):
+                  refuse('PROMOTION_REFUSED_TARGET_POLICY', '%s could not be read: %s' % (TARGET_POLICY_PATH,
+                                                                                         ctx['target_policy_error']))
+                  return
+              pol = ctx.get('target_policy') or DEFAULT_TARGET_POLICY.get(tier)
+              if not pol:
+                  return
+              today = ctx['now'].date()
+              binding = evidence_binding_of(rec)
+              items = dict((i.get('kind'), i) for i in binding.get('items') or [] if isinstance(i, dict))
+              max_age = pol.get('max_evidence_age_days')
+              for kind in pol.get('required_evidence') or []:
+                  it = items.get(kind)
+                  if not it or it.get('state') != 'COMPLETE':
+                      refuse('PROMOTION_REFUSED_EVIDENCE_MISSING', '%s evidence for %s is %s' % (
+                          kind, ctx['digest'], (it or {}).get('state') or 'absent'))
+                      continue
+                  if it.get('digest') != ctx['digest']:
+                      refuse('PROMOTION_REFUSED_EVIDENCE_DIGEST', '%s evidence is bound to %s; promoting %s' % (
+                          kind, it.get('digest'), ctx['digest']))
+                  at = parse_ts(it.get('produced_at'))
+                  if at is None:
+                      refuse('PROMOTION_REFUSED_EVIDENCE_STALE', '%s evidence records no production time' % kind)
+                  elif max_age and (ctx['now'] - at) > datetime.timedelta(days=max_age):
+                      refuse('PROMOTION_REFUSED_EVIDENCE_STALE', '%s evidence produced %s (%d days ago); %s allows %d' % (
+                          kind, iso(at), (ctx['now'] - at).days, tier, max_age))
+              revoked = set(str(e.get('match') or '') for e in ctx.get('revocations') or [] if e.get('kind') == 'exception')
+              for exc in ((rec.get('provenance') or {}).get('exceptions_relied_on') or rec.get('exceptions_relied_on') or []):
+                  ref, exp = str((exc or {}).get('ref') or ''), parse_day((exc or {}).get('expires'))
+                  if ref in revoked:
+                      refuse('PROMOTION_REFUSED_EXCEPTION_INVALID', 'exception %s was revoked' % ref)
+                  elif exp is None:
+                      refuse('PROMOTION_REFUSED_EXCEPTION_INVALID', 'exception %s records no expiry' % (ref or '(unnamed)'))
+                  elif exp < today:
+                      refuse('PROMOTION_REFUSED_EXCEPTION_INVALID', 'exception %s expired %s' % (ref, exp.isoformat()))
+              appr = (rec.get('approval') or {}).get('state')
+              if appr == 'REJECTED':
+                  refuse('PROMOTION_REFUSED_APPROVAL_STATE', 'the predecessor deployment\'s approval was REJECTED')
+              elif ((rec.get('environment') or {}).get('tier') == 'uat') and appr != 'APPROVED':
+                  refuse('PROMOTION_REFUSED_APPROVAL_STATE', 'the uat predecessor\'s approval reads %s, not APPROVED'
+                         % (appr or 'nothing'))
+              route = (items.get('security-gate') or {}).get('route') or (rec.get('provenance') or {}).get('gate_routing_result')
+              if route and route not in (pol.get('accepted_gate_routes') or ACCEPTED_GATE_ROUTES):
+                  refuse('PROMOTION_REFUSED_TARGET_POLICY', 'the security gate routed %s; %s accepts %s' % (
+                      route, tier, ', '.join(pol.get('accepted_gate_routes') or ACCEPTED_GATE_ROUTES)))
+              causes = set((rec.get('provenance') or {}).get('advisory_causes') or [])
+              bad = sorted(causes & set(pol.get('refuse_advisory_causes') or []))
+              if bad:
+                  refuse('PROMOTION_REFUSED_TARGET_POLICY', 'the build carried %s, which %s refuses' % (', '.join(bad), tier))
+
+
           def revoked_reasons(rec, entries, rescan, kev):
               """-> [reason] that revoke this record's eligibility now."""
               out = []
@@ -3673,8 +3654,6 @@ jobs:
               def refuse(code, why):
                   refusals.append({'code': code, 'why': why})
 
-              # Review 2026-11-09 policy: into uat or prod the source application must be named, never inferred from
-              # the digest. Not in BREAK_GLASS_OVERRIDES: break-glass lifts none of the source-identity refusals.
               if ctx.get('destination_tier') in ('uat', 'prod') and not str(ctx.get('expected_target') or '').strip():
                   refuse('PROMOTION_REFUSED_SOURCE_TARGET_REQUIRED', 'a %s promotion names no promote_from_target_resource_id; '
                          'set it to the target_resource_id of the predecessor target (migration: existing callers add the input)'
@@ -3730,8 +3709,6 @@ jobs:
                               ctx['release_path'], (ctx.get('exception') or {}).get('exception_ref'))})
                   else:
                       refuse('PROMOTION_REFUSED_STALE', why)
-              # R08: supersession is per TARGET. Only a newer verified record of the source's own target
-              # (adapter + target_resource_id) supersedes it; a record of another target, or of no target, never does.
               key = target_key(envd)
               if key is None:
                   refuse('PROMOTION_REFUSED_TARGET_UNKNOWN', 'the source record (run %s) names no environment '
@@ -3752,6 +3729,7 @@ jobs:
                   refuse('PROMOTION_REFUSED_SUPERSEDED', '%s was verified for this target in %s at %s, after this one' % (
                       ctx['superseded_by']['digest'], ctx['required_predecessor'],
                       ctx['superseded_by']['verified_at']))
+              reevaluate(rec, ctx, refuse)
               return finish_judgement(refusals, ctx)
 
 
@@ -3766,7 +3744,13 @@ jobs:
                       else:
                           kept.append(r)
                   refusals = kept
+              causes = []
+              for r in refusals:
+                  if r['code'] not in causes:
+                      causes.append(r['code'])
               return {'verdict': refusals[0]['code'] if refusals else 'PROMOTION_ALLOWED',
+                      'outcome': OUTCOME_REFUSED if refusals else OUTCOME_ALLOWED,
+                      'cause': causes[0] if causes else None, 'causes': causes,
                       'refusals': refusals, 'overridden': overridden,
                       'superseded_by': ctx.get('superseded_by')}
 
@@ -3795,7 +3779,6 @@ jobs:
               return out
 
 
-          # ----------------------------------------------------------------------------- preflight
           def cmd_preflight(a):
               tier = env('environment_tier')
               codes = preflight_codes(tier, bool(env('promote_from_run_id')), env('release_path') or 'normal',
@@ -3818,7 +3801,6 @@ jobs:
               return 0
 
 
-          # ----------------------------------------------------------------------------- gate
           def sbom_rescan(sbom_path, out_dir):
               """-> {state, critical, high, sarif, why}. The pinned Trivy re-scans the build's SBOM at the
               build gate's thresholds (HIGH,CRITICAL, unfixed ignored): the build passed clean, so anything
@@ -3872,15 +3854,12 @@ jobs:
               re-scan of the build's SBOM. Writes promotion/collected.json; the decision is gate-decide."""
               out = wdir()
               run_id, src_env = env('promote_from_run_id'), env('promote_from_environment')
-              # Optional (backward compatible): the predecessor target the caller promotes from. Empty: the
-              # source is chosen by digest among the run's records, and two targets with that digest refuse.
               want = str(env('promote_from_target_resource_id') or '').strip().lower()
               col = {'run_id': run_id, 'source_environment': src_env, 'expected_source_target': want or None,
                      'required_predecessor': env('promotion_predecessor') or 'test',
                      'source': None, 'source_error': '', 'history': [], 'revocations': [],
                      'rescan': {'state': 'NOT_ESTABLISHED', 'why': 'not reached', 'critical': [], 'high': []}}
               try:
-                  # The source run's OWN listing (R08): every target's record of src_env in that run.
                   mine = [read_record(x) for x in artifacts(None, 'actions/runs/%s/artifacts' % run_id)
                           if in_family(x.get('name'), src_env)]
                   if want:   # the request names its source target (review 2026-11-09 F5): digest AND target
@@ -3914,6 +3893,10 @@ jobs:
                   col['revocations'] = revocations()
               except Exception as exc:  # noqa: BLE001
                   col['revocations_error'] = str(exc)[:300]
+              try:
+                  col['target_policy'] = target_policy(env('environment_tier'))
+              except Exception as exc:  # noqa: BLE001 -- a policy nobody could read is not the default
+                  col['target_policy_error'] = str(exc)[:300]
               if col['source']:
                   sbom, why = fetch_sbom(env('image_digest'),
                                          (col['source'].get('artifact') or {}).get('sbom_sha256'), out)
@@ -3942,13 +3925,15 @@ jobs:
                      'rescan': col.get('rescan') or {}, 'kev': kev, 'attestation': env('attestation_outcome'),
                      'release_path': env('release_path') or 'normal', 'exception': exception_record(),
                      'destination_tier': env('environment_tier'), 'expected_target': col.get('expected_source_target'),
+                     'target_policy': col.get('target_policy'), 'target_policy_error': col.get('target_policy_error'),
                      'now': now_dt()}
               if col.get('revocations_error'):
                   ctx['rescan'] = dict(ctx['rescan'], state='NOT_ESTABLISHED',
                                        why='the revocation register could not be read')
               res = judge(ctx)
               src = col.get('source') or {}
-              gate = {'promotion_gate': res['verdict'], 'refusals': res['refusals'],
+              gate = {'promotion_gate': res['verdict'], 'outcome': res['outcome'], 'cause': res['cause'],
+                      'causes': res['causes'], 'refusals': res['refusals'],
                       'overridden': res['overridden'], 'superseded_by': res['superseded_by'],
                       'source': {'run_id': col.get('run_id'), 'environment': col.get('source_environment'),
                                  'record_id': src.get('record_id'), 'target': target_key(src.get('environment')),
@@ -3956,6 +3941,7 @@ jobs:
                                  'verified_at': (src.get('validity') or {}).get('verified_at')},
                       'required_predecessor': ctx['required_predecessor'],
                       'carried': {k: src.get(k) for k in ('artifact', 'provenance')},
+                      'evidence_binding': evidence_binding_of(src) if src else None,
                       'rescan': {k: v for k, v in (col.get('rescan') or {}).items() if k != 'sarif'},
                       'kev': kev, 'attestation': ctx['attestation'], 'decided_at': iso(ctx['now'])}
               dc.write_evidence('promotion-gate.json', gate)
@@ -3977,7 +3963,6 @@ jobs:
               return 0
 
 
-          # ----------------------------------------------------------------------------- tested
           def end_to_end(cmd, timeout, extra):
               """-> ('passed'|'failed'|'timed-out', exit code). Without the deploy identity's Azure session."""
               cfg = tempfile.mkdtemp(prefix='e2e-azure-config-')
@@ -4108,11 +4093,6 @@ jobs:
               """-> (result, [failed checks], [checks read]). Passive: reads only."""
               failed, read = [], []
               if adapter == 'staticwebapp':
-                  # OF-5 K-8. What a static site's posture can show: a Free plan (no private endpoint, no custom
-                  # authentication, no SLA) and a site still LINKED to a repository -- whose own generated SWA
-                  # workflow can deploy around the kit, with no verdict, digest or read-back -- fail; the
-                  # public network access is read and recorded (a public website is the point; R8 is the
-                  # landing zone's network decision, never a release's).
                   ok, shown, err = dc.az('staticwebapp', 'show', '-n', env('site_name'), '-g', env('resource_group'))
                   if not ok or not isinstance(shown, dict):
                       return 'POSTURE_UNREADABLE', [err or 'no answer'], read
@@ -4166,7 +4146,6 @@ jobs:
               return 0 if result == 'POSTURE_PASSED' else 1
 
 
-          # ----------------------------------------------------------------------------- the record
           def cmd_record(a):
               """Always: what this deploy establishes about this digest in this environment."""
               outcome = dc.read_evidence('outcome.json') or {}
@@ -4191,13 +4170,11 @@ jobs:
                   rid, _ = dc.resource_id(a.adapter)
               artifact = dict(carried.get('artifact') or {}) if promoted else {}
               artifact.update({'digest': env('image_digest'),
-                               # OF-5 K-8: a static site has no image; its artefact is named by its content digest.
                                'image': ('static-site:%s@%s' % (env('site_name'), env('image_digest'))
                                          if a.adapter == 'staticwebapp' else dc.intended_ref()),
                                'sbom_sha256': artifact.get('sbom_sha256') or meta.get('sbom_sha256') or None,
                                'artifact_identity': artifact.get('artifact_identity') or
                                env('artifact_identity') or meta.get('artifact_identity') or None,
-                               # The build's stamp, carried so a promotion stamps the same provenance.
                                'version_metadata': artifact.get('version_metadata') or env('version_metadata') or None})
               if promoted and carried.get('provenance'):
                   provenance = dict(carried['provenance'])
@@ -4213,6 +4190,17 @@ jobs:
                                 'controls_unavailable': [c for c in env('controls_unavailable').split(',') if c.strip()],
                                 'advisory_causes': [c for c in env('advisory_causes').split(',') if c.strip()]}
               provenance['attestation_outcome'] = env('attestation_outcome') or None
+              if promoted and (carried.get('provenance') or {}).get('evidence_binding'):
+                  provenance['evidence_binding'] = carried['provenance']['evidence_binding']
+              else:
+                  provenance['evidence_binding'] = bind_evidence(
+                      env('image_digest'), env('routing_result'), artifact.get('sbom_sha256'), env('attestation_outcome'),
+                      _built_at(artifact) or meta.get('built_at'), provenance.get('build_run_id'))
+              relied = list((carried.get('provenance') or {}).get('exceptions_relied_on') or []) if promoted else []
+              if env('weakening_exception_ref'):
+                  relied.append({'ref': env('weakening_exception_ref'), 'expires': env('weakening_expires') or None,
+                                 'authority': env('weakening_authority') or None, 'kind': 'weakening_record'})
+              provenance['exceptions_relied_on'] = relied
               run = {'id': env('github_run_id') or None, 'attempt': env('github_run_attempt') or None,
                      'url': '%s/%s/actions/runs/%s' % (env('github_server_url', 'https://github.com'),
                                                         env('github_repository'), env('github_run_id'))}
@@ -4271,7 +4259,6 @@ jobs:
               return 0
 
 
-          # ----------------------------------------------------------------------------- daily scan
           def serving_now(adapter):
               """-> list of {where, weight, image, digest} actually serving, or None when unreadable.
               Container Apps: every revision receiving traffic, with its weight. App Service: the production
@@ -4283,7 +4270,6 @@ jobs:
                   return [{'where': 'revision %s' % t['revision'], 'weight': t['weight'], 'image': t['image'],
                            'digest': t['image'].split('@', 1)[1] if '@' in t['image'] else None} for t in live]
               if adapter == 'staticwebapp':
-                  # OF-5 K-8 x K-10: a static site serves what its live marker names (the content digest), read now.
                   import static_site_contract as ss  # noqa: E402  (beside this file in the kit and the deploy)
                   digest, _why = ss.read_marker(ss.host_of(ss.PRODUCTION))
                   if digest is None:
@@ -4322,12 +4308,6 @@ jobs:
                          'KIT-RESCAN-NOT-ESTABLISHED': 'the serving digest could not be re-scanned'}
 
 
-          # OF-5 K-10 (the LZ-vs-kit review's P13): every finding of the daily scan ALSO carries the landing zone's
-          # drift vocabulary -- a DIMENSION (iac, identity, authentication, authorisation, network_exposure,
-          # security_control, monitoring, and release from its seam detector) and a CLASS (benign, operational,
-          # critical; not_attempted when nothing was established, never "no drift") -- so one view serves the
-          # platform admins and the application owner. The kit's own rules, routing and tickets are unchanged.
-          # Vocabulary: assurance-taxonomy.yaml :: lz_drift_dimension, lz_drift_class.
           LZ_DRIFT = {'KIT-ARTIFACT-DRIFT': ('release', 'operational'),
                       'KIT-SERVING-UNREADABLE': ('release', 'not_attempted'),
                       'KIT-PROMOTION-HISTORY-INCOMPLETE': ('release', 'not_attempted'),
@@ -4335,7 +4315,6 @@ jobs:
                       'KIT-BREAK-GLASS-TESTING-OWED': ('release', 'operational'),
                       'KIT-RESCAN-NOT-ESTABLISHED': ('security_control', 'not_attempted'),
                       'KIT-KNOWN-EXPLOITED-SERVING': ('security_control', 'critical')}
-          # Plain-text traffic to what serves is exposure, the landing zone's critical class.
           LZ_EXPOSURE_FAILURES = ('ingress allows plain HTTP (allowInsecure true)', 'HTTPS is not enforced')
 
 
@@ -4431,8 +4410,6 @@ jobs:
               where = 'deployed/%s/%s' % (envname, env('containerapp_name') or env('webapp_name') or env('site_name'))
               serving = serving_now(adapter)
               doc['serving'] = serving
-              # R08: THIS target's records only (adapter + its resource id, read now); another target's, or a
-              # record naming no target, is never compared with what this target serves.
               doc['target'] = key = target_key({'adapter': adapter, 'target_resource_id': own_resource_id(adapter)})
               recs = []
               try:
@@ -4441,11 +4418,6 @@ jobs:
               except Exception as exc:  # noqa: BLE001
                   doc['records_error'] = str(exc)[:300]
               last, verified, doc['records_ignored'] = select_promoted(recs, key)
-              # Compared only when THIS target's newest records were read: a complete read, or one cut ONLY by
-              # the read bound (every listing read to its end, the newest of it read, sorted here) that still
-              # holds a healthy record. A short LISTING is never established, whatever it holds: no API ordering
-              # is assumed, so the newest record may be the one missing (review 2026-11-09 F2). No record of this
-              # target at all is named too: never a silent "no drift".
               known = bool(key) and not doc.get('records_error') and (
                   not doc.get('records_short') or bool(last and doc.get('records_listed')))
               if not known or last is None:
@@ -4463,13 +4435,11 @@ jobs:
                   drift = [s for s in serving if s['weight'] > 0 and s['digest'] != want]
                   doc['artifact_drift'] = bool(drift) if want else None
                   for s in drift:
-                      # A digest no kit run of this environment verified is serving: the landing zone's critical class.
                       results.append(lz_tag(finding('KIT-ARTIFACT-DRIFT', '%s serves %s at %d%%; the last promoted '
                                                     'digest is %s.' % (s['where'], s['digest'] or s['image'], s['weight'],
                                                                        want or 'none on record'),
                                                     '%s/%s' % (where, s['where'].replace(' ', '-'))),
                                             cls='operational' if s['digest'] in verified else 'critical'))
-              # Security drift: re-scan EVERY digest truly serving -- never a nominal tag -- from its build SBOM.
               vuln_results = []
               for s in [x for x in (serving or []) if x['digest']]:
                   rec = next((r for r in recs if (r.get('artifact') or {}).get('digest') == s['digest']), None)
@@ -4508,9 +4478,6 @@ jobs:
                   if 'lz_drift_dimension' not in (r.get('properties') or {}):
                       lz_tag(r)
               doc['drift_view'] = lz_view(results, doc['rescans'])
-              # The state rows the core report reads (scripts/scan_report.py --batch): one for the state
-              # findings, one per re-scan SARIF, named by environment so every environment's rows can be
-              # merged into one report. Coverage rows are what let a ticket close on clearance.
               slug = record_key(envname)[len('kit-promotion-record-'):]
               jsave(os.path.join(out, 'deployed-state-%s.sarif' % slug), sarif(results, 'kit-deployed-state', DRIFT_RULES))
               rows = [{'scanner': 'deployed-state-%s' % slug, 'applicability': 'APPLICABLE', 'execution': 'COMPLETE',
@@ -4596,7 +4563,6 @@ jobs:
               return 0
 
 
-          # ----------------------------------------------------------------------------- self-test
           def self_test():
               fails = []
               now = parse_ts('2026-10-26T12:00:00Z')
@@ -4678,7 +4644,6 @@ jobs:
           from email.utils import formatdate
           from urllib.parse import urlparse
 
-          # ----------------------------------------------------------------------------- the blob service
           AVAILABLE, LEASED, EXPIRED, BREAKING, BROKEN = 'available', 'leased', 'expired', 'breaking', 'broken'
 
 
@@ -4792,7 +4757,6 @@ jobs:
                   return copy.deepcopy(b['md'])
 
 
-          # ----------------------------------------------------------------------------- the seam protocol
           CLEAN, MUTATING, broken_mark = 'clean', 'mutating', 'broken'
           HUMAN = 'ROLLBACK_REQUIRES_HUMAN_DECISION'
 
@@ -4813,7 +4777,6 @@ jobs:
                   self.store, self.ttl = store, heartbeat_ttl
                   self.authority = set(break_authority)
 
-              # -- acquisition
               def acquire(self, target, holder, now):
                   lid, took_over = str(uuid.uuid4()), None
                   try:
@@ -4844,7 +4807,6 @@ jobs:
                                                  'mutation': None, 'history': hist[-20:]}, now)
                   return Token(target, lid, gen, holder, took_over)
 
-              # -- the fence
               def fence(self, token, now):
                   try:
                       md = self.store.read(token.target, token.lease_id, now)
@@ -4898,7 +4860,6 @@ jobs:
                                        'first' % (token, md.get('mutation')))
                   self.store.release(token.target, token.lease_id, now)
 
-              # -- break authority
               def break_lease(self, target, actor, reason, now):
                   if actor not in self.authority:
                       raise LeaseError('BREAK_NOT_AUTHORISED', '%s is not in the break authority' % actor)
@@ -4911,7 +4872,6 @@ jobs:
                   return md
 
 
-          # ----------------------------------------------------------------------------- the live adapter
           API_VERSION = '2021-12-02'
           STORAGE_RESOURCE = 'https://storage.azure.com/'
           BLOB_SUFFIX = {'public': 'blob.core.windows.net', 'gov': 'blob.core.usgovcloudapi.net'}
@@ -5036,7 +4996,6 @@ jobs:
                   enc = base64.b64encode(json.dumps(md, sort_keys=True).encode('utf-8')).decode('ascii')
                   self._call('PUT', key, 'metadata', {'x-ms-lease-id': lease_id, 'x-ms-meta-' + META_KEY: enc})
 
-              # OF-5 K-4 (KDEC-030 kit item 2): the target's durable `releases/` folder, beside its lease blob.
               def put_record(self, key, name, data):
                   """Create `releases/...` once (If-None-Match: *): a record is never overwritten (409 instead)."""
                   self._call('PUT', key, blob=name, data=data,
@@ -5075,18 +5034,6 @@ jobs:
                       raise LeaseError('LEASE_STORE_UNREACHABLE', 'the lease metadata is unreadable (%s)' % e)
 
 
-          # ----------------------------------------------------------------------------- the command line
-          # One subcommand per pipeline step; the token file carries the fencing token between steps.
-          # Prints `target_lease=<VALUE>` and `target_lease_reason=<text>` (and appends them to
-          # $GITHUB_OUTPUT when set). EXIT 0 done; 1 refused, by name; 2 could not check -- fail closed.
-          #
-          #   hold  runs a long step (the e2e test period, a whole rollback sequence) as a child process
-          #         and renews the lease every --every seconds (default 180, below a third of the 10-minute
-          #         TTL). A failed renewal stops the child at once and ends LEASE_LOST, exit 1; the loss is
-          #         recorded beside the token, so every later fence of this run -- including the one each
-          #         mutating az call takes (deploy_contract.az) -- is refused LEASE_LOST without asking the
-          #         store again: no further mutation. --mark-mutating marks the lease `mutating` for the
-          #         child's whole run and clean only when it exits 0 (a halted rollback stays a human decision).
           UNKNOWN_CODES = ('LEASE_STORE_UNREACHABLE', 'LEASE_TARGET_NOT_VENDED')
           ARM_TYPES = {'containerapp': 'Microsoft.App/containerApps', 'appservice': 'Microsoft.Web/sites',
                        'staticwebapp': 'Microsoft.Web/staticSites'}
@@ -5422,19 +5369,16 @@ jobs:
           PRODUCTION_TIERS = ('uat', 'prod')
           TIERS = ('sandbox', 'dev', 'test', 'uat', 'prod')
 
-          # release_block (K-3). The LZ's values of KIT_RELEASE_BLOCK; `none` is the only permitting one.
           BLOCK_VALUES = ('none', 'platform_halted', 'ttl_expired', 'budget_cap_reached')
           NOT_BLOCKED = 'RELEASE_NOT_BLOCKED'
           BLOCK_NOT_VENDED = 'RELEASE_BLOCK_NOT_VENDED'
           BLOCKED = 'RELEASE_BLOCKED_BY_PLATFORM'
 
-          # zone_readiness (the LZ's register vocabulary, as vended) and zone_readiness_gate (K-2).
           READINESS = ('READY', 'READY_WITH_EXCEPTIONS', 'NOT_READY', 'UNKNOWN')
           READINESS_PERMITS = ('READY', 'READY_WITH_EXCEPTIONS')
           ZONE_PERMITTED = 'ZONE_READINESS_PERMITTED'
           ZONE_NOT_REQUIRED = 'ZONE_READINESS_NOT_REQUIRED'
           ZONE_REFUSED = 'RELEASE_REFUSED_ZONE_NOT_READY'
-          # readiness_source (KDEC-036 G1, owner ruling 2026-11-03): who issued the readiness value.
           SRC_LZ = 'READINESS_SOURCE_LZ_HANDOFF'
           SRC_APPSEC = 'READINESS_SOURCE_APPSEC_ATTESTATION'
           SRC_SELF = 'READINESS_SOURCE_SELF_SET_REFUSED'
@@ -5443,18 +5387,12 @@ jobs:
           SRC_UNSET = 'READINESS_NOT_SET'
           SRC_REFUSED_AT_PRODUCTION = (SRC_SELF, SRC_ATT_REFUSED)
 
-          # release_approval (K-1)
           APPROVAL_VERIFIED = 'RELEASE_APPROVAL_VERIFIED'
           APPROVAL_NOT_REQUIRED = 'RELEASE_APPROVAL_NOT_REQUIRED'
           APPROVAL_ABSENT = 'RELEASE_APPROVAL_ABSENT'
           SELF_APPROVAL = 'SELF_DEPLOYMENT_APPROVAL'
           NOT_BOUND = 'RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST'
           NOT_ESTABLISHED = 'RELEASE_APPROVAL_NOT_ESTABLISHED'
-          # Owner 2026-11-07: a team of two or fewer with no external approver group, declared in the ORG overlay
-          # (scripts/org_settings.py, a five-field weakening, time-boxed): the developer may approve their own
-          # deployment. The approval must still exist and still quote the digest; only "not the requester or the
-          # author" is waived, and the outcome says so in plain words. The deploy's protection step decides whether
-          # the mode is in force (small_team_self_approval=SMALL_TEAM_SELF_APPROVAL); nothing a caller passes can.
           SMALL_TEAM_APPROVAL = 'RELEASE_APPROVAL_SMALL_TEAM_SELF_APPROVAL'
           APPROVAL_PERMITS = (APPROVAL_VERIFIED, APPROVAL_NOT_REQUIRED, SMALL_TEAM_APPROVAL)
           MIN_DIGEST_PREFIX = 12          # hex characters an approval comment must quote, at least
@@ -5494,7 +5432,6 @@ jobs:
               return "'%s'" % v if plain(v) else '(a value that is not a plain token, not shown)'
 
 
-          # ----------------------------------------------------------------------------- K-2, K-3
           def decide_block(value):
               """-> (release_block, permits, why)."""
               v = (value or '').strip()
@@ -5582,7 +5519,6 @@ jobs:
               return 0
 
 
-          # ----------------------------------------------------------------------------- K-1
           class Unreadable(Exception):
               pass
 
@@ -5751,7 +5687,6 @@ jobs:
               return 0
 
 
-          # ----------------------------------------------------------------------------- self-test
           def self_test():
               fails = []
               d = 'sha256:' + 'ab' * 32
@@ -5843,7 +5778,6 @@ jobs:
               dc.output(**kv)
 
 
-          # ----------------------------------------------------------------------------- the digest
           def tree_digest(root):
               """-> 'sha256:<hex>' of every file under root except the root marker. A symlink is refused:
               what it points at is not part of the artefact a digest can name."""
@@ -5896,7 +5830,6 @@ jobs:
               return 0
 
 
-          # ----------------------------------------------------------------------------- the artefact
           def _api():
               import rollback_hold as rh
               return rh
@@ -5979,7 +5912,6 @@ jobs:
               return 0
 
 
-          # ----------------------------------------------------------------------------- V1
           def gh_host():
               """This run's host for gh (KDEC-027): GH_HOST, else GITHUB_SERVER_URL's host, else github.com.
               `gh attestation verify --repo` takes OWNER/REPO only, so the host goes in --hostname."""
@@ -6040,7 +5972,6 @@ jobs:
               return 0
 
 
-          # ----------------------------------------------------------------------------- live reads
           def g(d, k):
               """az flattens a static site's properties; read either shape."""
               if not isinstance(d, dict):
@@ -6079,7 +6010,6 @@ jobs:
               exe = shutil.which('curl')
               if not exe or not host:
                   return None, 'no curl or no host'
-              # The status after a separator no JSON body ends with (a newline would not survive a .cmd shim).
               p = subprocess.run([exe, '-sS', '--max-time', '10', '-w', '@@%{http_code}', 'https://%s/%s' % (host, MARKER)],
                                  capture_output=True, text=True, encoding='utf-8', errors='replace')
               body, _, code = (p.stdout or '').rpartition('@@')
@@ -6092,7 +6022,6 @@ jobs:
               return (d, '') if DIGEST_RE.match(d or '') else (None, 'the marker names no digest')
 
 
-          # ----------------------------------------------------------------------------- capture, capability
           def _unknown(reason, snap):
               snap.update(previous_state='UNKNOWN', reason=reason)
               dc.write_evidence('snapshot.json', snap)
@@ -6114,12 +6043,10 @@ jobs:
                   return _unknown('The static site\'s environments could not be read.', snap)
               snap.update(resource_id=g(shown, 'id'), host=g(shown, 'defaultHostname'), tags=g(shown, 'tags') or {},
                           environments=sorted(envs),
-                          # KDEC-036 G4: a custom domain under a dev/test tier is the tier's reality signal.
                           reality={'public_ingress': True, 'min_replicas': 0,
                                    'custom_domains': [str(d) for d in (g(shown, 'customDomains') or [])]})
               prod = envs.get(PRODUCTION_BUILD)
               if not prod or str(prod.get('status') or '').lower() not in ('ready',):
-                  # MEASURED: both reads succeeded and production holds no build.
                   snap.update(previous_state='EMPTY', prior_digest=None)
                   dc.write_evidence('snapshot.json', snap)
                   output(previous_state='EMPTY', previous='')
@@ -6183,7 +6110,6 @@ jobs:
               return 0
 
 
-          # ----------------------------------------------------------------------------- the seam (K-6)
           KV_REFERENCE = '@microsoft.keyvault('
 
 
@@ -6206,7 +6132,6 @@ jobs:
               if ok and isinstance(got, dict) and props is None:
                   props = {}   # a site with no settings: az shows no properties map
               prod = seam_entries(props) if isinstance(props, dict) else None
-              # Nothing planned: the stamp and provenance are tags on the site, never app settings.
               outcome, why = dc.decide_seam('staticwebapp', env('kit_setting_keys'), prod, None, None, False, planned=[])
               dc.write_evidence('seam.json', {'seam_ownership': outcome, 'why': why, 'swap_checked': False,
                                               'kit_setting_keys': [k for k in (env('kit_setting_keys') or '').replace(',', ' ').split()
@@ -6220,7 +6145,6 @@ jobs:
               return 0
 
 
-          # ----------------------------------------------------------------------------- mutation
           def fence(what):
               """KDEC-030: the SWA CLI is not an az call, so its fence is taken here. '' when it may proceed."""
               if not os.environ.get('KIT_TARGET_LEASE_ACCOUNT'):
@@ -6239,7 +6163,6 @@ jobs:
               ok, sec, err = dc.az('staticwebapp', 'secrets', 'list', '-n', env('site_name'), '-g', env('resource_group'))
               t = g(sec, 'apiKey') if ok else None
               if t:
-                  # Masked before anything else can print it; it is never written to an output or evidence file.
                   print('::add-mask::%s' % t)
               return t, err
 
@@ -6271,7 +6194,6 @@ jobs:
               entry = dict({'action': 'MODIFIED', 'object_type': 'static-site-environment', 'object': envname,
                             'post': digest, 'status': 'planned'}, **entry_extra)
               if envname == PRODUCTION:
-                  # The stamp travels with the mutation (DCR-OWN): production is claimed before it changes.
                   stamp = stamp_value()
                   prior_stamp = (snap.get('tags') or {}).get('release_ownership_stamp', '')
                   ok, _, terr = dc.az('tag', 'update', '--resource-id', snap.get('resource_id', ''), '--operation', 'Merge',
@@ -6418,7 +6340,6 @@ jobs:
               return 0
 
 
-          # ----------------------------------------------------------------------------- report
           def derive_outcome(live):
               m = dc.read_evidence('manifest.json')
               snap = dc.read_evidence('snapshot.json') or {}
@@ -6451,8 +6372,6 @@ jobs:
           def promotion(outcome):
               """The deploy contract's conjunction; identity here is the content digest proven before login plus V1."""
               proven = (dc.read_evidence('artifact.json') or {}).get('identity') == CONTENT_PROVEN
-              # For a static site the registry proof's equivalent is the content digest recomputed from the very
-              # files released; the deploy contract credits it only when this adapter says so.
               p = dc.promotion(outcome, content_proven=proven)
               p['identity_basis'] = CONTENT_PROVEN if proven else 'not established'
               return p
@@ -6507,7 +6426,6 @@ jobs:
               return 0
 
 
-          # ----------------------------------------------------------------------------- self-test
           def self_test():
               d = tempfile.mkdtemp(prefix='static-site-selftest-')
               fails = []

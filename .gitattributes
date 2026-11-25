@@ -2,3 +2,5 @@
 # whatever core.autocrlf says on the machine that commits or exports (external review 2026-11-07).
 *.sh   text eol=lf
 *.bash text eol=lf
+# The vendored evidence-store client is pinned by a tree hash over its bytes (KDEC-068): LF everywhere.
+tools/evidence-store-client/** text eol=lf

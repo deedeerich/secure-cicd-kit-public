@@ -94,8 +94,11 @@ def inlined(script):
     """The copy a deploy carries: the script with its module docstring cut to its first line and a pointer.
     Owner 2026-11-07 (lane r5final): the static-site deploy sat 7.5 KB under the 475 KB fail line
     (tests/check_workflow_size.py) and every inlined docstring line costs ten spaces more. The WHY and the
-    rules stay in scripts/<name> at the same kit commit; the code itself is byte for byte the source's."""
-    src = source(script)
+    rules stay in scripts/<name> at the same kit commit; the code itself is byte for byte the source's.
+    Kit revision 2026-11-25 (KDEC-070): the promotion re-evaluation took the static-site and App Service deploys
+    over the line, so whole-line comments are dropped from the copy too (found by the tokenizer, so a `#`
+    inside a string is never touched). Every line of code, and every trailing comment, is kept as it is."""
+    src = drop_comment_lines(source(script))
     m = re.match(r'^(#![^\n]*\n)?"""(.*?)"""\n', src, re.S)
     if not m:
         return src
@@ -103,6 +106,19 @@ def inlined(script):
     doc = ('"""%s\n\nINLINED COPY (scripts/inline_deploy_scripts.py): the full text is scripts/%s at this kit '
            'commit."""\n' % (head, script))
     return (m.group(1) or '') + doc + src[m.end():]
+
+
+def drop_comment_lines(src):
+    """-> src without the lines that hold only a comment (the shebang on line 1 is kept)."""
+    import tokenize
+    comment, code = set(), set()
+    for t in tokenize.generate_tokens(io.StringIO(src).readline):
+        if t.type == tokenize.COMMENT:
+            comment.add(t.start[0])
+        elif t.type not in (tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER):
+            code.update(range(t.start[0], t.end[0] + 1))
+    drop = (comment - code) - {1}
+    return '\n'.join(ln for i, ln in enumerate(src.split('\n'), 1) if i not in drop)
 
 
 def render_step(scripts=SCRIPTS):

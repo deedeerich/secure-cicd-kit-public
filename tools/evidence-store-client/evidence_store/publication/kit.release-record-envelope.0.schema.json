@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kit.release-record-envelope/0",
+  "title": "Kit release-record-<id>.json (payload.schema kit-release-record/1)",
+  "type": "object",
+  "required": [
+    "task",
+    "payload"
+  ],
+  "properties": {
+    "task": {
+      "const": "kit-release-record"
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "schema"
+      ],
+      "properties": {
+        "schema": {
+          "const": "kit-release-record/1"
+        }
+      }
+    }
+  }
+}

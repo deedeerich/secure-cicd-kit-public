@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "lz.plan-evaluation/v1",
+  "title": "Landing zone plan and its policy evaluation (envelope)",
+  "type": "object",
+  "required": [
+    "schema",
+    "request_id",
+    "plan_sha256",
+    "evaluation"
+  ],
+  "properties": {
+    "schema": {
+      "const": "lz.plan-evaluation/v1"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "plan_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "evaluation": {
+      "type": "object"
+    }
+  }
+}

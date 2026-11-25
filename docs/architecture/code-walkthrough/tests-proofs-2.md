@@ -10,7 +10,7 @@ Columns:   "called by" = files that run, import, inline or `uses:` it; "proved b
 
 [Back to the walkthrough index](README.md)
 
-60 files.
+61 files.
 
 | file | what it proves or checks | run by | exercises | inputs |
 |---|---|---|---|---|
@@ -43,6 +43,7 @@ Columns:   "called by" = files that run, import, inline or `uses:` it; "proved b
 | `tests/prove_gosec_modules.py` | Run the sast-go job's gosec and enforce steps, as shipped, with the real gosec and Go. | `.github/workflows/self-test.yml` | - | - |
 | `tests/prove_handoff_extended.py` | The extended hand-off set the landing zone now vends is read by the deploy, recorded by name, and documented; the app's own edge endpoint is purged after a verified release. | `.github/workflows/self-test.yml` | `.github/workflows/reusable-deploy-staticwebapp.yml` | - |
 | `tests/prove_harness_pair_gate.py` | The hosted kit-harness pair never mints its token on pull-request events, runs only at a full 40-hex pinned harness commit, and reports an absent credential as HARNESS_LEG_NOT_RUN (exit 1), never a pass; the workflow's shape and nine mutants (KDEC-058). | `.github/workflows/self-test.yml` | `scripts/harness_pair_gate.py`, `.github/workflows/kit-harness-pair.yml`, `.github/harness-pair.json` | - |
+| `tests/prove_evidence_copyout.py` | The evidence copy-out routes only evidence artifacts, each to a container and layer the landing zone's real store contract allows; refuses untrusted events and refs, unsafe zip names and a changed client; 0 and 3 pass, a conflict fails; the transport (kit API app by default, direct only with the flag, NO_API otherwise) and the publication gate before any upload; the workflow's shape and API wiring; five mutants (KDEC-068). | `.github/workflows/self-test.yml` | `scripts/evidence_copyout.py`, `.github/workflows/evidence-copyout.yml`, `tests/fixtures/evidence-store/store_contract.terraform.raw.json`, `tools/evidence-store-client/` | - |
 | `tests/prove_harness_teardown.py` | Full teardown is a TEST-HARNESS behaviour, safe only where absence was proven first. | `.github/workflows/self-test.yml` | - | - |
 | `tests/prove_hollow_scan.py` | A scan that ran and examined NOTHING must not produce a clean verdict. | `.github/workflows/self-test.yml` | `scripts/scan_report.py` | args: `--self-test` |
 | `tests/prove_iac_corpus.py` | The IaC ranges KDEC-014 enforces on are MEASURED, by a probe that can tell "could not read". | `.github/workflows/self-test.yml` | `.github/workflows/probe-scanner-corpora.yml`, `scanner-registry.yaml` | - |
@@ -50,6 +51,7 @@ Columns:   "called by" = files that run, import, inline or `uses:` it; "proved b
 | `tests/prove_image_scan_enforces.py` | Run the image-scan job's Trivy configuration, as shipped, against seeded and clean images. | `.github/workflows/self-test.yml` | `.github/workflows/reusable-security.yml` | - |
 | `tests/prove_image_scan_retains.py` | Prove the image-scan job RETAINS its evidence: redact -> upload-artifact -> upload-sarif -> degraded notice, for BOTH trivy-image.sarif and trivy-image-secret.sarif (ledger L12, KG section 1). | `.github/workflows/self-test.yml` | - | - |
 | `tests/prove_image_secret_row.py` | Secrets found in the container image get a report row of their own (docs/assurance/KNOWN_GAPS.md section 1 remainder). | `.github/workflows/self-test.yml` | `scripts/scan_report.py` | - |
+| `tests/prove_java4shell_check.py` | The Java4Shell exposure check classifies every runtime it finds, and could-not-establish never reads as not affected. | `.github/workflows/self-test.yml` | `scripts/java4shell_check.py` | - |
 | `tests/prove_jira_auth_and_routing.py` | Jira without a personal binding, and tickets routed to the right board. | `.github/workflows/self-test.yml` | `.github/workflows/reusable-exception-due.yml`, `.github/workflows/reusable-ticket-reconcile.yml`, `.github/workflows/reusable-ticket-reference.yml`, `templates/exception-due.yml` +1 more | - |
 | `tests/prove_jira_host_secret.py` | The Jira host may be a SECRET: read from secrets first, the variable second, and never written out. | `.github/workflows/self-test.yml` | `.github/workflows/reusable-ticket-reconcile.yml`, `templates/ticket-reconcile.yml` | - |
 | `tests/prove_job_token_named.py` | A rejected job token is NAMED once, early, with an owner role -- and nothing downstream crashes on it. | `.github/workflows/self-test.yml` | `.github/actions/discover/action.yml`, `.github/actions/resolve/action.yml`, `.github/workflows/consumer-path-test.yml`, `assurance-taxonomy.yaml` +2 more | - |
@@ -74,6 +76,7 @@ Columns:   "called by" = files that run, import, inline or `uses:` it; "proved b
 | `tests/prove_malformed_sarif_isolated.py` | A malformed SARIF is one UNPARSEABLE row, and it takes no other scanner's row with it (L06). | `.github/workflows/self-test.yml` | `scripts/scan_report.py` | - |
 | `tests/prove_malicious_deps_enforces.py` | Run the malicious-deps job's own steps, as shipped, with the real osv-scanner. | `.github/workflows/self-test.yml` | - | - |
 | `tests/prove_negative_control_caller.py` | KREQ-632 (FW section 12 option (b)): the negative control is not independently runnable; every job needs the `caller` check, which refuses a run with no reader. | `.github/workflows/self-test.yml` | `.github/workflows/consumer-path-negative.yml`, `scripts/negative_control_caller.py` | - |
+| `tests/prove_negative_test_manifest.py` | The negative-test manifest tells a known fixture seed from a new alert, and never by directory. | `.github/workflows/self-test.yml` | `scripts/fixture_seeds.py`, `tests/negative-test-manifest.json` | - |
 | `tests/prove_no_fix_stays_active.py` | Proves NO_FIX_AVAILABLE is never turned into cleared, fixed, false positive, resolved or closed by the disposition engine, the report, the tickets or the export, and that an expired exception or no-fix exemption returns it to review (review round 2). | `.github/workflows/self-test.yml` | `scripts/remediation_sla.py`, `scripts/scan_report.py`, `scripts/reconcile_tickets.py`, `scripts/evidence_export.py` | - |
 | `tests/prove_nuget_audit.py` | Run the sast-dotnet job's restore, NuGet audit, count and enforce steps with the real dotnet. | `.github/workflows/self-test.yml` | - | - |
 | `tests/prove_nvd_cvss_default.py` | The NVD workflow ships a CVSS gate that can block: `fail_on_cvss` defaults to 9.0 (owner ruling O-12). | `.github/workflows/self-test.yml` | `.github/workflows/reusable-nvd-cve.yml` | - |

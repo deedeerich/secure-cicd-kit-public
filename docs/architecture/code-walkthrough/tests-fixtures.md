@@ -10,12 +10,13 @@ Columns:   "called by" = files that run, import, inline or `uses:` it; "proved b
 
 [Back to the walkthrough index](README.md)
 
-82 files.
+83 files.
 
 | file | what it does | called by | inputs and outputs | proved by |
 |---|---|---|---|---|
 | `tests/consumer-fixture/README.md` | Why the consumer-path fixtures are committed, what each directory asserts, and why they hold synthetic secrets on purpose. | - | - | - |
 | `tests/consumer-fixture/SEED_PINS.json` | The sha256 of every fixture manifest, so a deliberately vulnerable pin cannot change without a reviewed edit. | - | keys: `manifests`, `seeds` | `tests/check_fixture_seed_pins.py` |
+| `tests/negative-test-manifest.json` | Every intentional fixture vulnerability with its expected finding (advisory ids, rules, signal, why, proving test), and every fixture pin that is deliberately not a seed. | - | keys: `seeds`, `non_seed_pins` | `tests/prove_negative_test_manifest.py` |
 | `tests/consumer-fixture/buildonly/Dockerfile` | A FROM-scratch image for the build-only path: a deterministic clean Trivy result with no registry and no Azure. | `.github/workflows/consumer-path-test.yml` | - | - |
 | `tests/consumer-fixture/buildonly/marker.txt` | The one file the build-only image carries. | - | - | - |
 | `tests/consumer-fixture/clean/requirements.txt` | Current, non-vulnerable Python pins: the gate must pass this fixture. | `.github/workflows/self-test.yml` | - | `tests/prove_kit_dependabot_triage_caller.py` |
@@ -99,3 +100,4 @@ Columns:   "called by" = files that run, import, inline or `uses:` it; "proved b
 | `tests/fixtures/ai_artifacts/negative/AGENTS.md` | A plain instruction file; also the PR-base file the diff case removes. | - | - | `tests/prove_ai_artifact_inventory.py` |
 | `tests/fixtures/ai_artifacts/negative/docs/mcp-notes.json` | A file whose name mentions mcp but carries no `mcpServers`: not an artifact. | - | - | `tests/prove_ai_artifact_inventory.py` |
 | `tests/fixtures/ai_artifacts/negative/README.md` | A README: not an artifact. | - | - | `tests/prove_ai_artifact_inventory.py` |
+| `tests/fixtures/evidence-store/store_contract.terraform.raw.json` | The landing-zone Terraform's real `store_contract` output, byte-exact (`terraform output -raw`); the copy-out's routing is checked against it (KDEC-068). | - | - | `tests/prove_evidence_copyout.py` |

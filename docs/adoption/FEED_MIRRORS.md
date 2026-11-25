@@ -5,7 +5,11 @@ Truth State:   KDEC-032 PROPOSED (lane L-MIRROR, 2026-10-27). BUILT AND PROVEN L
                Nothing here has run against a real storage account, private endpoint, registry or
                runner. tests/prove_feed_mirror.py (M1-M14) proves the logic on file:// fixtures and
                runs the consumer composites' steps as shipped; infra/feed-mirrors passes
-               `terraform validate` (azurerm 4.81.0), tflint and Trivy's own misconfiguration scan.
+               `terraform validate` and its mocked `terraform test` on azurerm 5.14.0 and 5.15.0
+               (the committed lock names 5.15.0; constraint `~> 5.14`), Terraform 1.17.1, offline,
+               2026-11-25 (KDEC-071); earlier tflint and Trivy misconfiguration scans were on 4.81.0.
+               The self-test job "Terraform feed-mirrors (validate, mocked test)" re-runs fmt, init
+               against the committed lock, validate and the test on every push and pull request.
                The first live run is the "Verify" section below.
 Audience:      the owner, at work; the platform team that deploys into the security platform
                subscription; whoever adopts the kit in an application repository
@@ -100,6 +104,27 @@ feed unless you configured that and the run records it.
 Prerequisites: a resource group; the **private-endpoint subnet** of the network the runners use (or a
 network peered with it); either the hub's central private DNS zones (pass their ids) or this module
 creates them and links them to the runners' network.
+
+**Register the resource providers first.** azurerm 5.x registers no resource provider on start-up (4.x
+registered about 60), and the module says so explicitly (`resource_provider_registrations = "none"` in
+`versions.tf`), so the applying identity never attempts a subscription-wide registration. Before the
+first apply, confirm each of these reads `Registered` in the target subscription, and have a
+subscription owner register any that does not (`az provider register -n <namespace>`):
+
+```sh
+for ns in Microsoft.Storage Microsoft.Network Microsoft.ContainerRegistry Microsoft.ManagedIdentity Microsoft.Insights; do
+  az provider show -n "$ns" --query "{namespace: namespace, state: registrationState}" -o tsv
+done
+```
+
+The list is inferred from the resource types the module declares; it has not been exercised against a
+fresh subscription (UNVERIFIED until the first apply). A missing one fails at apply, never at plan.
+
+**Provider version.** Proven: azurerm 5.14.0 and 5.15.0 (`terraform validate` and
+`infra/feed-mirrors/tests/feed_mirrors.tftest.hcl`, the same posture assertions as on 4.81.0). Run
+`init` with the committed `.terraform.lock.hcl`; a Dependabot terraform update bumps the lock and the
+constraint together, and the self-test job "Terraform feed-mirrors (validate, mocked test)" must be
+green before it merges (it is a required check on `main` once the owner adds it to the ruleset).
 
 ```hcl
 # feed-mirrors.tfvars

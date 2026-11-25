@@ -98,6 +98,22 @@ NOT_VOCABULARY = {
     "DCMAKE_EXPORT_COMPILE_COMMANDS", "FATAL_ERROR", "DEBIAN_FRONTEND", "DOTNET_CLI_TELEMETRY_OPTOUT",
     "DOTNET_NOLOGO", "IN_DISCOVERED_KOTLIN", "MOBSF_ENFORCE_STEP", "RULES_ENFORCE_STEP",
     "PLATFORM_SIGNALS",
+    # Java4Shell check (owner 2026-11-19): keys of a JDK `release` file the check reads, the JVM's
+    # own options environment variable, the image-mode argument name, and the advisory document's
+    # filename stem (JAVA4SHELL_CVE-2026-114938.md). None is a state.
+    "JAVA_VERSION", "JAVA_RUNTIME_VERSION", "JVM_VARIANT", "JAVA_TOOL_OPTIONS", "IMAGE_REF",
+    "JAVA4SHELL_CVE",
+    # Scanner obligations (KDEC-069) and the promotion re-evaluation (KDEC-070): Python constant NAMES whose
+    # values are the registered terms (scanner_obligation_*, promotion_outcome), the gate's env names, and a
+    # reconciler tuple name. None is a state.
+    "OUT_SATISFIED", "OUT_NOT_SATISFIED", "OUT_NOT_REQUIRED", "CAUSE_UNAVAILABLE", "CAUSE_GAP", "CAUSE_PARTIAL",
+    "CAUSE_ACCEPTED", "CAUSE_CONTROL_RETIRED", "CAUSE_REMOVED", "ROUTE_PROCEED", "ROUTE_PROCEED_NAMED",
+    "ROUTE_ADVISORY", "ROUTE_REFUSED", "ROUTE_DECISION", "PENDING_ROUTE", "OUTCOME_ALLOWED", "OUTCOME_REFUSED",
+    "G_OBL_STATE", "G_OBL_UNAVAILABLE", "G_OBL_GAPS", "G_OBL_ACCEPTED", "G_OBL_RETIRED", "OBL_STATE",
+    "CLEARANCE_BLOCKING_RESCAN", "PHASE_GATE", "TARGET_POLICY_PATH", "DEFAULT_TARGET_POLICY",
+    # The negative-test manifest (owner 2026-11-19): the dismissal record it is built from is cited by its
+    # filename stem (KIT_FIXTURE_ALERT_DISMISSALS_2026-11-19.md). A document name, not a state.
+    "KIT_FIXTURE_ALERT_DISMISSALS_2026",
     # Script-internal identifiers and shell variables.
     "WF_DIR", "TX_PY", "STRIP_PY", "TRUSTED_ORGS", "WORKFLOWS_PATH", "SCAN_DIRS", "SCAN_EXT",
     "NOT_VOCABULARY", "CAPABILITY_REGISTRY", "VALIDATION_REGISTRY", "TEST_RESOURCE_GROUP",
@@ -292,6 +308,18 @@ NOT_VOCABULARY = {
     # kit_harness_pair_outcome.
     "KIT_HARNESS_APP_PRIVATE_KEY", "KIT_HARNESS_APP_CLIENT_ID", "KIT_HARNESS_REPOSITORY", "APP_CLIENT_ID",
     "HAS_APP_KEY", "HARNESS_REPOSITORY", "HARNESS_PIN_FILE", "TRUSTED_EVENTS",
+    # scripts/evidence_copyout.py and the scheduled evidence copy-out (KDEC-068): setting NAMES (the App's secret
+    # and variables, the writer's identifiers, the runner label; never values), the script's environment-variable
+    # names, the kit's evidence-floor constant named in its doc, and a stdlib file-mode constant its proof uses.
+    # Its states are kit_evidence_copyout_outcome.
+    "KIT_COPYOUT_APP_CLIENT_ID", "KIT_COPYOUT_APP_PRIVATE_KEY", "KIT_COPYOUT_REPOSITORIES", "KIT_EVIDENCE_RUNNER",
+    "KIT_EVIDENCE_TENANT_ID", "KIT_EVIDENCE_WRITER_CLIENT_ID", "COPYOUT_GH_TOKEN", "COPYOUT_REPOSITORIES",
+    "EVIDENCE_STORE_CONTRACT", "AUDIT_FLOOR_DAYS", "S_IFLNK",
+    # 2026-11-24 (KDEC-068 item 6): the copy-out's transport settings -- the kit API app's URL and audience
+    # variables, the direct-write fallback flag, and the client environment-variable names they map to.
+    # Names of settings, never values; the state they can produce, NO_API, is kit_evidence_copyout_outcome.
+    "EVIDENCE_KIT_API_URL", "EVIDENCE_KIT_API_AUDIENCE", "EVIDENCE_DIRECT_WRITE", "EVIDENCE_API_URL",
+    "EVIDENCE_API_AUDIENCE",
     # scripts/finding_ids.py self-test inputs: spellings of a CVE and a CWE the normaliser must accept
     # (the format table). Ids of a vulnerability and a weakness, not states of this kit.
     "CVE_2021_44228", "CWE_79",

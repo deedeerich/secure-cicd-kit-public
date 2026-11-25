@@ -2775,7 +2775,7 @@ jobs:
         id: cs_semgrep
         if: always() && steps.sarif_semgrep.outputs.exists == 'true'
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: semgrep.sarif
           category: semgrep
@@ -2978,7 +2978,7 @@ jobs:
         id: cs_bandit
         if: always() && steps.sarif_bandit.outputs.exists == 'true'
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: bandit.sarif
           category: bandit
@@ -3068,7 +3068,7 @@ jobs:
         id: cq_init
         if: matrix.gate == 'true'
         continue-on-error: true
-        uses: github/codeql-action/init@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: ${{ matrix.lang }}
           # From the plan: `none` (buildless) or `autobuild` (go; java-kotlin with Kotlin).
@@ -3082,13 +3082,13 @@ jobs:
         id: cq_build
         if: matrix.gate == 'true' && steps.cq_init.outcome == 'success' && matrix.build_mode == 'autobuild'
         continue-on-error: true
-        uses: github/codeql-action/autobuild@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        uses: github/codeql-action/autobuild@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
 
       - name: CodeQL — analyse
         id: cq_analyze
         if: matrix.gate == 'true' && steps.cq_init.outcome == 'success'
         continue-on-error: true
-        uses: github/codeql-action/analyze@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           category: "/language:${{ matrix.lang }}"
           # NEVER, AND PUBLISHED BELOW AFTER REDACTION. `upload: always` sent the SARIF to the
@@ -3264,7 +3264,7 @@ jobs:
         id: cs_codeql
         if: always() && matrix.gate == 'true' && steps.cq_analyze.outcome == 'success'
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: codeql-results
           category: "/language:${{ matrix.lang }}"
@@ -3952,7 +3952,7 @@ jobs:
         id: cs_gosec
         if: always() && steps.sarif_gosec.outputs.exists == 'true'
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: gosec.sarif
           category: gosec
@@ -4302,7 +4302,7 @@ jobs:
         id: cs_img
         if: always() && steps.sarif_img.outputs.vuln == 'true'
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: trivy-image.sarif
           category: trivy-image
@@ -4347,7 +4347,7 @@ jobs:
         id: cs_img_secret
         if: always() && steps.sarif_img.outputs.secret == 'true'
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: trivy-image-secret.sarif
           category: trivy-image-secret
@@ -4654,7 +4654,7 @@ jobs:
         id: cs_osv
         if: always() && steps.sarif_osv.outputs.exists == 'true'
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: osv.sarif
           category: osv
@@ -5551,6 +5551,20 @@ jobs:
         uses: $/.github/actions/capability-floor
         with:
           states-dir: _states
+      # SCANNER OBLIGATIONS (owner 2026-11-18, KDEC-069). What this repository must be scanned for is
+      # decided by discovery and the kit's versioned scanner-obligations.json -- read from the kit through
+      # `$/`, never from the checkout -- and never by which tokens are set. An adopted provider that did
+      # not run with no retirement record is UNAVAILABLE (never NOT_CONFIGURED); a required control no
+      # provider covers is a COVERAGE_GAP. Read by the verdict below. tests/prove_scanner_obligations.py.
+      - name: Scanner obligations (discovery decides; a token only says a provider can run)
+        id: obligations
+        if: always()
+        uses: $/.github/actions/scanner-obligations
+        with:
+          states-dir: _states
+          discovery: ${{ toJSON(needs.plan.outputs) }}
+          image-ref: ${{ inputs.image_ref }}
+          repository: ${{ github.repository }}
       # THE VERDICT RUNS ON THE EMPTY WORKSPACE IT ALWAYS HAD. As its own job the gate never checked
       # out the code; the report part did (fetch-depth 0) and its evidence is already uploaded above.
       # Nothing below reads the workspace, and clearing it keeps it that way by construction: no
@@ -5699,6 +5713,14 @@ jobs:
           G_EXTERNAL_NOT_RUN: ${{ steps.rows.outputs.external_not_run }}
           G_EXTERNAL_NOT_REQUIRED: ${{ steps.rows.outputs.external_not_required }}
           P_RUNG: ${{ steps.policy.outputs.policy_rung_effective }}
+          # KDEC-069: the scanner obligations (steps.obligations): the worst state ('' = not evaluated),
+          # adopted external providers that did not run with no retirement record (name(UNAVAILABLE)),
+          # required obligations no adopted provider covers, and gaps under a valid acceptance.
+          G_OBL_STATE: ${{ steps.obligations.outputs.obligation_state }}
+          G_OBL_UNAVAILABLE: ${{ steps.obligations.outputs.obligation_unavailable }}
+          G_OBL_GAPS: ${{ steps.obligations.outputs.obligation_gaps }}
+          G_OBL_ACCEPTED: ${{ steps.obligations.outputs.obligation_accepted }}
+          G_OBL_RETIRED: ${{ steps.obligations.outputs.obligation_retired_providers }}
         run: |
           set -u
           fail=0
@@ -6408,6 +6430,22 @@ jobs:
           # resolved policy, it is refused exactly as a core scanner that could not scan.
           # tests/prove_external_evidence.py G (crashed_*, unavailable_*, not_configured).
           ext_advisory=""
+          # SCANNER OBLIGATIONS (KDEC-069): A TOKEN NEVER DECIDES WHETHER A CONTROL IS OWED. An adopted
+          # external provider whose row says NOT_CONFIGURED (no token) or that left no row, with no
+          # retirement record, is REQUIRED and did not run: it joins the list below as UNAVAILABLE and
+          # follows the same rung rule, and it is no longer named as not required. A retired provider
+          # is named and blocks nothing itself; what it alone covered shows below as a gap.
+          for x in ${G_OBL_UNAVAILABLE:-}; do
+            case " ${G_EXTERNAL_NOT_RUN:-} " in
+              *" ${x%%(*}("*) ;;
+              *) G_EXTERNAL_NOT_RUN="${G_EXTERNAL_NOT_RUN:-}${G_EXTERNAL_NOT_RUN:+ }${x}" ;;
+            esac
+            _keep=""
+            for y in ${G_EXTERNAL_NOT_REQUIRED:-}; do
+              [ "${y%%(*}" = "${x%%(*}" ] || _keep="${_keep}${_keep:+ }${y}"
+            done
+            G_EXTERNAL_NOT_REQUIRED="$_keep"
+          done
           for x in ${G_EXTERNAL_NOT_REQUIRED:-}; do
             xs="${x##*(}"; states="${states}${states:+,}\"${x%%(*}\":\"${xs%)}\""
           done
@@ -6425,6 +6463,45 @@ jobs:
               echo "::error title=Required external scanner did not run::${G_EXTERNAL_NOT_RUN} (rung ${P_RUNG:-unresolved}). A required scanner that did not run is not a clean one; above crawl it is refused, as a core scanner that could not scan is."
             fi
             echo "> **Required external scanner(s) did not run:** \`${G_EXTERNAL_NOT_RUN}\` -- not clean (rung \`${P_RUNG:-unresolved}\`)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # A REQUIRED CONTROL WITH NO PROVIDER LEFT IS A VISIBLE COVERAGE_GAP (KDEC-069), never clean.
+          # It needs a time-bound acceptance by the risk owner (GAP_ACCEPTED: named, not clean, does not
+          # block) or a control retirement in the kit's policy. Until then: advisory at crawl (the same
+          # advisory cause as a scanner that did not run: nothing looked), refused above crawl or with no
+          # resolved policy. A policy the kit could not evaluate is refused at every rung, as the floor is.
+          OBL_STATE="${G_OBL_STATE:-}"
+          printf '  %-16s %s\n' "obligations" "${OBL_STATE:-NOT EVALUATED}"
+          echo "| scanner obligations | ${OBL_STATE:-NOT EVALUATED}${G_OBL_GAPS:+ (gaps: ${G_OBL_GAPS})}${G_OBL_RETIRED:+ (retired: ${G_OBL_RETIRED})} |" >> "$GITHUB_STEP_SUMMARY"
+          case "$OBL_STATE" in
+            '')
+              echo "::error title=Scanner obligations NOT EVALUATED::the kit's scanner-obligations policy was not evaluated on this run, so what is owed is not established. Refused at every rung."
+              fail=1; undetermined=1; tooling_fail=1
+              unestablished="${unestablished}${unestablished:+ }scanner-obligations(NOT_EVALUATED)"
+              ;;
+            DECLARATION_REFUSED)
+              echo "::warning title=Obligation declaration refused::the repository's .kit/obligations.json asked to remove an obligation without a governed exception; the obligation stays required and was evaluated."
+              ;;
+          esac
+          if [ -n "${G_OBL_GAPS:-}" ]; then
+            undetermined=1
+            for x in ${G_OBL_GAPS}; do
+              unestablished="${unestablished}${unestablished:+ }${x}"
+            done
+            if [ "$policy_on" = "1" ] && [ "${P_RUNG:-}" = "crawl" ]; then
+              ext_advisory="${ext_advisory}${ext_advisory:+ }${G_OBL_GAPS}"
+              echo "::warning title=COVERAGE_GAP (crawl, advisory)::required control(s) no adopted provider covers: ${G_OBL_GAPS}. Nothing looked. Above crawl this is refused until the risk owner accepts it for a time or the control is retired."
+            else
+              fail=1; nonfinding_fail=1
+              echo "::error title=COVERAGE_GAP::required control(s) no adopted provider covers: ${G_OBL_GAPS} (rung ${P_RUNG:-unresolved}). It needs a time-bound acceptance by the risk owner or a control retirement in scanner-obligations.json."
+            fi
+            echo "> **Coverage gap:** \`${G_OBL_GAPS}\` -- a required control nothing covered (rung \`${P_RUNG:-unresolved}\`)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -n "${G_OBL_ACCEPTED:-}" ]; then
+            undetermined=1
+            for x in ${G_OBL_ACCEPTED}; do
+              unestablished="${unestablished}${unestablished:+ }${x}"
+            done
+            echo "::notice title=Coverage gap accepted::${G_OBL_ACCEPTED}. Named on the run; never a clean claim."
           fi
           # OWNER RULING O-24 (2026-10-22): the policy softens FINDINGS only. A job that crashed or
           # could not collect -- the kit unable to run its own scan -- is never made advisory by it.
@@ -6922,8 +6999,12 @@ jobs:
             for u in ${G_UNESTABLISHED}; do
               # KDEC-067: a required external scanner that did not run, advisory at crawl, is a named
               # gap the gate decided -- not missing evidence of the core's own.
+              # KDEC-069: a coverage gap under a valid, time-bound acceptance by the risk owner is a
+              # named gap the policy decided (PROCEED_WITH_ADVISORY, cause COVERAGE_PARTIAL), not
+              # missing evidence -- and never PASS.
               case "$u" in
                 *"(PARTIAL)") ;;
+                *"(GAP_ACCEPTED:"*) ;;
                 *) case " ${G_EXTERNAL_ADVISORY:-} " in *" $u "*) ;; *) partial_only=0 ;; esac ;;
               esac
             done

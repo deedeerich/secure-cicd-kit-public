@@ -24,7 +24,7 @@
   ],
   "classes": [
     {"class": "merge_logic", "why": "decides whether a change may merge", "paths": [".github/workflows/dependabot-triage.yml", ".github/workflows/reusable-dependabot-triage.yml", ".github/workflows/reusable-dependabot-keep-current.yml"]},
-    {"class": "scanner_floor", "why": "decides which scanners must run", "paths": ["capability-floor.json", "scanner-registry.yaml", "scripts/capability_floor.py", ".github/actions/capability-floor/"]},
+    {"class": "scanner_floor", "why": "decides which scanners must run", "paths": ["capability-floor.json", "scanner-registry.yaml", "scripts/capability_floor.py", ".github/actions/capability-floor/", "scanner-obligations.json", "scripts/scanner_obligations.py", ".github/actions/scanner-obligations/"]},
     {"class": "validator", "why": "decides what the self-test and the policy gate prove", "paths": ["tests/", "scripts/selftest_required.py", "scripts/protected_paths.py"]},
     {"class": "policy", "why": "decides how hard the controls enforce and who owns them", "paths": ["policy/", "profiles/", "CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS", "dispositions/", "assurance-taxonomy.yaml", "id-mappings.json", "docs/assurance/"]},
     {"class": "security_control", "why": "the kit's workflows, actions, scripts, schemas, templates and API", "paths": [".github/", "scripts/", "schemas/", "templates/", "api/", "developer-safety/", "wiring/", "skills/", "tools/"]},

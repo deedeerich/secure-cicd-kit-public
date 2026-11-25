@@ -62,6 +62,9 @@ EXEMPT = {
     'kit-harness-pair.yml': 'dispatch-only until the owner creates the read-only App (KDEC-058 M6): with no '
                             'credential every run ends HARNESS_LEG_NOT_RUN, red on every push. After setup the '
                             'push trigger comes back (prove_harness_pair_gate.py W1) and this entry goes',
+    'evidence-copyout.yml': 'scheduled copy-out of completed runs\' evidence (KDEC-068): it reads other '
+                            'repositories\' finished runs, so a push has nothing new to copy; schedule and '
+                            'dispatch only, never beside pull-request code',
 }
 # Workflows whose push trigger is deliberately path-scoped, and why.
 PATH_SCOPED = {

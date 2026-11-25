@@ -143,8 +143,14 @@ def rec(digest=dig_a, rid=RID_A, at='2026-10-25T12:00:00Z', state=PR.VERIFIED, e
     e = {'name': envname, 'tier': tier, 'adapter': adapter}
     if rid is not None:
         e['target_resource_id'] = rid
-    return {'schema': PR.SCHEMA, 'state': state, 'artifact': {'digest': digest}, 'environment': e,
-            'provenance': {'source_ref': 'refs/heads/main', 'build_workflow': SIGNER},
+    # As a deploy writes it: the security gate's route, the SBOM hash, the attestation and the build time
+    # (KDEC-070 re-evaluates that bound evidence at a uat/prod promotion).
+    return {'schema': PR.SCHEMA, 'state': state,
+            'artifact': {'digest': digest, 'sbom_sha256': 'e' * 64,
+                         'version_metadata': json.dumps({'built_at': '2026-10-25T10:00:00Z'})},
+            'environment': e,
+            'provenance': {'source_ref': 'refs/heads/main', 'build_workflow': SIGNER, 'gate_routing_result': 'PROCEED',
+                           'attestation_outcome': 'ATTESTATION_VERIFIED'},
             'validity': {'verified_at': at}, 'run': {'id': run}, 'approval': {'approvers': []},
             'live_state': {'deployment_outcome': 'DEPLOY_HEALTHY'}, '_artifact': {'head_branch': 'main'}}
 
@@ -323,13 +329,14 @@ def collect(records, run_id, digest=dig_a):
     sets = dict((k.upper(), v) for k, v in sets.items())
     old = dict((k, os.environ.get(k)) for k in sets)
     os.environ.update(sets)
-    saved = PR.fetch_sbom, PR.revocations
+    saved = PR.fetch_sbom, PR.revocations, PR.target_policy
     PR.fetch_sbom, PR.revocations = (lambda d, s, o: (None, 'not in this proof')), (lambda: [])
+    PR.target_policy = lambda tier: None   # KDEC-070: absent here (the kit default applies)
     try:
         patched(records, lambda: PR.cmd_gate_collect(None))
         return PR.jload(os.path.join(tmp, 'promotion', 'collected.json')) or {}
     finally:
-        PR.fetch_sbom, PR.revocations = saved
+        PR.fetch_sbom, PR.revocations, PR.target_policy = saved
         for k, v in old.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -420,7 +427,9 @@ def gate_e2e(records, run_id, digest=dig_a, M=None, stubs=None, extra=None):
     os.environ.update(sets)
     patch = {'fetch_sbom': lambda d, s, o: (os.path.join(o, 'sbom.spdx.json'), ''),
              'sbom_rescan': lambda p, o: {'state': 'COMPLETE', 'why': '', 'critical': [], 'high': [], 'sarif': ''},
-             'revocations': lambda: []}
+             'revocations': lambda: [],
+             # KDEC-070: the target environment's promotion policy, absent here (the kit default applies).
+             'target_policy': lambda tier: None}
     patch.update(stubs or {})
     fetch, download = history_world(records)
     patch.update(fetch_page=fetch, download=download)

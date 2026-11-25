@@ -80,6 +80,8 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     "kit-survey.yml": ["org-survey"],
     # Owner-accepted 2026-11-13 (KDEC-052 item 9; built KDEC-058): the hosted kit-harness pair.
     "kit-harness-pair.yml": ["kit-harness-pair-hosted"],
+    # Owner ruling 2026-11-23 (one writer per tool; KDEC-068): the scheduled evidence copy-out.
+    "evidence-copyout.yml": ["evidence-copyout"],
     "external-findings.yml": ["external-findings-pull"],
     "reusable-deploy-appservice.yml": ["deploy-appservice"],
     "reusable-deploy-containerapp.yml": ["deploy-containerapp"],
@@ -154,6 +156,11 @@ CAPABILITY_REGISTRY: dict[str, list[str]] = {
     # evidence in the security gate. It scans nothing, so it names no capability; it feeds the gate's
     # verdict (BREACHED fails it). Proof: tests/prove_capability_floor.py.
     "action:capability-floor": [],
+    # KDEC-069 (owner 2026-11-18): the scanner obligations, evaluated over the run's evidence in the security gate
+    # beside the floor. It scans nothing, so it names no capability; it feeds the gate's verdict (an
+    # unevaluated policy, an UNAVAILABLE adopted provider or a COVERAGE_GAP refuses above crawl).
+    # Proof: tests/prove_scanner_obligations.py.
+    "action:scanner-obligations": [],
     # TEST-HARNESS TOOLING, NOT AN ASSURANCE CLAIM: the pinned scanner binaries and Python packages
     # the kit's own self-test proofs run with, installed from one list by normalizer-drift and the
     # tree-clean job (split 2026-10-28, public run 40687057324). It scans nothing of a consumer's
@@ -604,6 +611,10 @@ VALIDATION_REGISTRY: dict[str, dict] = {
     # checkout at its commit (rc 0). Level `tool`: no hosted run; the owner has not created the App, so a hosted
     # run today ends HARNESS_LEG_NOT_RUN by design (docs/operations/HARNESS_PAIR_HOSTED.md).
     "kit-harness-pair-hosted": {"probe": "tests/prove_harness_pair_gate.py", "state": "observed", "level": "tool"},
+    # OBSERVED 2026-11-23, locally (lane evidence-copyout): scripts/evidence_copyout.py routes, gates, extracts and
+    # pushes (tests/prove_evidence_copyout.py C1-C8 W1, four mutants) against the landing zone's real store contract.
+    # Level `tool`: no hosted run; no App, writer identity or store exists yet (docs/operations/EVIDENCE_COPYOUT.md).
+    "evidence-copyout": {"probe": "tests/prove_evidence_copyout.py", "state": "observed", "level": "tool"},
     "external-findings-pull": {"probe": "tests/prove_external_findings_pull.py", "state": "observed",
                                "level": "tool"},
     # OBSERVED 2026-10-22, locally (lane L-FX): scripts/exception_due.py against fixture registers and

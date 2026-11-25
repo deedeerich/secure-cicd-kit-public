@@ -625,6 +625,9 @@ jobs:
           # PHP (lane L-PHP): a vulnerable Composer package in composer.lock blocks deps-scan, a
           # clean lock passes, and a composer.json with no lock is a declared gap, never a pass.
           python3 tests/prove_deps_scan_composer.py
+          # Java4Shell (CVE-2026-114938, owner 2026-11-19): the read-only exposure check classifies a
+          # runtime by build, CPU and live flags, and an unestablished one is never NOT_AFFECTED.
+          python3 tests/prove_java4shell_check.py
 
       - name: A known-malicious package must block in every mode, and no evidence must not read as clean
         run: |
@@ -1048,6 +1051,13 @@ jobs:
           # by the report by contract, fingerprinted by its declared subject, routed by the rung,
           # and its secret/KEV/malicious class (external-floor) blocks at every rung.
           python3 tests/prove_external_evidence.py
+          # KDEC-069 (owner 2026-11-18): discovery and the versioned policy decide what is owed, never a
+          # token; an adopted provider gone with no retirement record is UNAVAILABLE, routed by the rung; a
+          # required control no provider covers is a COVERAGE_GAP; a retired tool's finding closes only
+          # on shown equivalence. Pure cases, the ticket path, and the SHIPPED gate step.
+          python3 scripts/scanner_obligations.py --self-test
+          python3 scripts/scanner_obligations.py check --policy scanner-obligations.json
+          python3 tests/prove_scanner_obligations.py
           # KDEC-018 (lane L-FX): the highest authority's rung is the floor -- narrower scopes only
           # tighten (POLICY_BELOW_AUTHORITY_FLOOR) -- and crawl is the absolute floor: no input,
           # weakening or entry lets a secret or an untrusted scan through, the secret scan included.
@@ -1168,6 +1178,10 @@ jobs:
           python3 tests/prove_dependency_purl_from_manifest.py
           # The fixtures' deliberately vulnerable pins move only with their registry (Dependabot PR #10 bumped one, 2026-11-06).
           python3 tests/check_fixture_seed_pins.py
+          # The negative-test manifest (owner 2026-11-19): every intentional fixture vulnerability and its expected
+          # finding, so a known seed is told from a new alert -- by file, package, pin and advisory id, never by directory.
+          python3 scripts/fixture_seeds.py --self-test
+          python3 tests/prove_negative_test_manifest.py
           # Every Dependabot-triage job grants what its GitHub calls need (PR #5 on main, 2026-11-06).
           python3 tests/prove_triage_job_permissions.py
           # KDEC-038: SAST (bandit, semgrep, CodeQL) and secret findings are keyed and ticketed: the rule-family
@@ -1201,6 +1215,9 @@ jobs:
           # KDEC-058: the hosted kit-harness pair's gate (kit-harness-pair.yml) -- never on PR code, only at a
           # pinned 40-hex harness commit, and an absent credential is HARNESS_LEG_NOT_RUN, never a pass.
           python3 tests/prove_harness_pair_gate.py
+          # KDEC-068: the evidence copy-out -- evidence artifacts only, contract-checked, trusted runs only,
+          # a read-only App token and the kit writer via OIDC; application repositories hold no storage identity.
+          python3 tests/prove_evidence_copyout.py
           # KDEC-037: ticket templates and external findings; nothing written without a finalized,
           # human-concurred review; every ticket (manual ones too) searched before a create; closure
           # never self-verified; extensions counted and capped; the no-fix re-check; tracker intake.
@@ -1397,6 +1414,9 @@ jobs:
           set -euo pipefail
           # The local battery reads this workflow, runs each check with its rc, and fails honestly.
           python3 tests/prove_battery_mirrors_selftest.py
+          # Kit revision 2026-11-25 (brief item 7): a missing tool is UNKNOWN, never PASS, in the battery, the
+          # tree-clean sweep and every required job; the 13 checks a laptop reports UNKNOWN each run here.
+          python3 tests/prove_unknown_never_passes.py
           # A behind Dependabot PR gets one `@dependabot rebase` per base commit; never a human or fixture PR.
           python3 tests/prove_dependabot_keep_current.py
           # verify-azure-oidc signs in to either cloud and checks the identity from the directory side.
@@ -1858,6 +1878,10 @@ jobs:
           # hosted promotion on the owner's personal tenant is owed.
           python3 scripts/promotion.py self-test
           python3 tests/prove_promotion.py
+          # KDEC-070 (owner 2026-11-18): the promotion binds to the evidence of the exact digest and
+          # re-evaluates it (freshness, exceptions, approval, target policy, new advisories) without a
+          # rescan; cancelled or missing required evidence never passes, at the gate-decide boundary.
+          python3 tests/prove_promotion_reevaluation.py
           # External review 2026-11-07 R08: promotion, supersession, rollback selection and the daily
           # scan are scoped to ONE target (adapter + target_resource_id); every listing pages or says not.
           python3 tests/prove_promotion_target_scope.py
@@ -2491,11 +2515,40 @@ jobs:
       require_sha_pinning: true
       soft_fail: false
 
+  terraform-feed-mirrors:
+    name: Terraform feed-mirrors (validate, mocked test)
+    # The kit's only Terraform root, infra/feed-mirrors, run through the Terraform CLI itself
+    # (KDEC-071). Until 2026-11-25 nothing in .github/workflows/ ran terraform: tests/prove_feed_mirror.py
+    # M13 is a text match, so an azurerm major that broke `terraform validate` (Dependabot #18 and
+    # #20, azurerm 4 -> 5) went fully green. Here: fmt, init against the COMMITTED lock only
+    # (-lockfile=readonly: a provider the lock does not name is refused), validate, and the mocked
+    # posture test (infra/feed-mirrors/tests/feed_mirrors.tftest.hcl, mock_provider -- no Azure,
+    # no credential). terraform test with mock_provider needs Terraform >= 1.7; 1.17.1 is the
+    # release the 2026-11-24 review proved. Never an apply, never a plan against a subscription.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.17.1
+          terraform_wrapper: false
+      - name: fmt, init (committed lock only), validate and the mocked test
+        run: |
+          set -euo pipefail
+          terraform version
+          terraform -chdir=infra/feed-mirrors fmt -check -recursive
+          terraform -chdir=infra/feed-mirrors init -backend=false -input=false -lockfile=readonly
+          terraform -chdir=infra/feed-mirrors validate
+          terraform -chdir=infra/feed-mirrors test
+
   # The ONE required check (see the contract job at the top). needs lists EVERY job:
   # tests/prove_selftest_required.py S2 fails if one is added and not listed here.
   required:
     name: Self-test required
-    needs: [contract, yaml-lint, actionlint, contract-check, profile-schema, normalizer-drift, tree-clean, platform-scanners, validation-coverage, ticket-reconcile-refuses-pr, ticket-reference-not-assessed-off-pr, exception-due-lists-on-push, ticket-reference-outcome-asserted, ledger-proposal-refuses-pr, kit-api-refuses-by-name, kit-api-refusal-asserted, dogfood-policy]
+    needs: [contract, yaml-lint, actionlint, contract-check, profile-schema, normalizer-drift, tree-clean, platform-scanners, validation-coverage, ticket-reconcile-refuses-pr, ticket-reference-not-assessed-off-pr, exception-due-lists-on-push, ticket-reference-outcome-asserted, ledger-proposal-refuses-pr, kit-api-refuses-by-name, kit-api-refusal-asserted, dogfood-policy, terraform-feed-mirrors]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

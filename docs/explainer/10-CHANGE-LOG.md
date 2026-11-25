@@ -5,6 +5,51 @@ Commit ids are on the build trunk `fix/normalization-and-discovery`. Versions 1.
 entries are in `10a-CHANGE-LOG-OCTOBER.md`; 1.11 and earlier in `10b-CHANGE-LOG-EARLIER.md`. A reader whose last copy was v1.10 (`a907dc8`) reads
 `12-CHANGES-SINCE-A907DC8.md` first: it groups every change since by what an integrator must do.
 
+## Unreleased — kit revision 2026-11-25: scanner obligations, promotion re-evaluation, only main needs approval (KDEC-069, 070, 073, 074 PROPOSED)
+
+Owner approval 2026-11-24 ("Yes I do"). Proven offline only (`prove_scanner_obligations.py` with the shipped gate step at
+crawl, walk and run and five mutants; `prove_promotion_reevaluation.py` at the gate-decide boundary;
+`prove_adoption_guides.py` B3/N5; `prove_unknown_never_passes.py` with four mutants). No hosted run yet. Folded in on the
+same branch: the Java4Shell read-only check (pilot) and the KDEC-068 evidence copy-out.
+
+| change | parts affected |
+|---|---|
+| `scanner-obligations.json` + `scripts/scanner_obligations.py` + `.github/actions/scanner-obligations`: what a repository must be scanned for comes from discovery and the versioned policy, never a token; providers with coverage and a lifecycle (retiring is one line); an adopted provider gone with no retirement record is UNAVAILABLE (crawl advisory, walk/run refused); a required control nothing covers is a visible COVERAGE_GAP until the risk owner accepts it for a time or the control is retired; the security gate reads it beside the capability floor | 04, 05, 10 |
+| `scripts/ticket_completion.py`: a retired tool's finding closes on a replacement's clean result only with shown equivalence (`RESCAN_PROVIDER_RETIRED_NO_EQUIVALENCE` otherwise; the reconciler's clearance refuses it too) | 06 |
+| `scripts/promotion.py` (inlined into the three deploy reusables): the record binds `provenance.evidence_binding` to the digest; a uat/prod promotion re-evaluates freshness, relied-on exceptions, approval state and the target's policy (`.security/promotion-policy.json`), beside the SBOM re-scan and KEV; missing or cancelled evidence never passes; `promotion-gate.json` has `outcome`, `cause`, `causes` | 07 |
+| `START_HERE_KIT.md` section 3 item 6, `BRANCH_PROTECTION_SETTINGS.md` section 3a: only `main` needs an approval; a `dev` ruleset has the checks and no approval | 01, 11 |
+| `scripts/inline_deploy_scripts.py`: the inlined copies drop whole-line comments (tokenizer, strings untouched), so the three deploy reusables stay under the 475 KB fail line with the promotion re-evaluation (static site 461.1 KB, App Service 452.0 KB, Container Apps 447.7 KB) | 07, 08 |
+| `tests/prove_tests_leave_tree_clean.py`: an exit 2 is named UNKNOWN, never inside the PASS line; an exit outside 0/1/2 fails the sweep | 08 |
+| `tools/evidence-store-client` re-vendored from evidence-store-client `e7aa774` (tree `43852cb4...9c4c`); retention unchanged | 03, 08 |
+| `docs/errors`: the six promotion refusals, the obligation states, and the scope of the Java4Shell pilot's three namespaces | 11 |
+
+## Unreleased — feed mirrors on azurerm 5, and a real Terraform check in the self-test (KDEC-071 PROPOSED, 2026-11-25)
+
+Proven offline with Terraform 1.17.1 (`init -backend=false -lockfile=readonly`, `validate`, `test`: 2 passed, 0
+failed on 5.15.0, the locked release, and on 5.14.0); `tests/prove_feed_mirror.py` M13 PASS on the fix and on the
+4.x text, FAIL on a `public_network_access = "Enabled"` negative control. No hosted run yet; no apply anywhere.
+Review: Dependabot PR #20 (azurerm `~> 4.20` -> `~> 5.14`) broke `terraform validate` with 6 errors and went green.
+
+| change | parts affected |
+|---|---|
+| `infra/feed-mirrors`: azurerm `~> 5.14`; the private DNS zone link by `private_dns_zone_id`; the federated credential by `user_assigned_identity_id`; the storage account's `public_network_access = "Disabled"` (the boolean is deprecated, removed in 6.0); `resource_provider_registrations = "none"` stated; a committed multi-platform `.terraform.lock.hcl` (5.15.0, linux_amd64, windows_amd64, darwin_arm64) | 07, 11 |
+| `infra/feed-mirrors/tests/feed_mirrors.tftest.hcl`: the mocked posture test (mock_provider, no Azure, no credential) | 08 |
+| self-test job `terraform-feed-mirrors` ("Terraform feed-mirrors (validate, mocked test)"): fmt, init against the committed lock only, validate and the test; `hashicorp/setup-terraform` pinned by SHA (v4.0.1), Terraform 1.17.1; a need of `Self-test required` | 08 |
+| `tests/prove_feed_mirror.py` M13 reads `public_network_access = "Disabled"` (5.x) or the boolean (4.x) on the storage account, the registry's own boolean, and refuses public access switched on anywhere | 08 |
+| `docs/adoption/FEED_MIRRORS.md`: the proven versions, the resource providers to register before the first apply, the new job | 11 |
+
+## Unreleased — the negative-test manifest: a known fixture seed told from a new alert (KDEC-072 PROPOSED, 2026-11-25)
+
+Proven locally (`prove_negative_test_manifest.py` N1-N4, 4 mutants caught; advisory ids from an offline Trivy 0.76.2
+scan, DB of 2026-11-24). No GitHub API call; no hosted run yet.
+
+| change | parts affected |
+|---|---|
+| `tests/negative-test-manifest.json`: every intentional fixture vulnerability (44 seeds: 20 dependency pins with their CVE/GHSA ids, 24 SAST, IaC, secret and negative-control seeds bound to EXPECTED_SIGNALS) with its expected finding, why it is there and the test that exercises it; 8 fixture pins that are deliberately not seeds, each with its reason | 08 |
+| `scripts/fixture_seeds.py`: `classify` an alert list (plain, Dependabot or code-scanning API shape) as KNOWN_SEED or NEW with its cause, by exact file, package, pin and advisory id, never by directory; `check` the manifest against the tree, SEED_PINS.json and every EXPECTED_SIGNALS.json (T1-T7); `propose` from a Trivy scan, writing nothing | 08 |
+| `START_HERE_KIT.md` section 6: the expected fixture alerts for the work side, which makes its own dispositions alert by alert | 01 |
+| Self-test Normalizer drift runs the checker's self-test and the proof (a row in the protected change log) | 08 |
+
 ## Unreleased — one version per tool (2026-11-07)
 
 Proven locally (`check_tool_pins_single_version.py`: red on fa88322 with 29 violations, green after; 14 sample

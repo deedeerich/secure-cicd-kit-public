@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evidence-store.seal/v1",
+  "title": "Seal (container seal, blob <container>/<yyyy>/<mm>/<dd>/seal-<n>.json, put-once)",
+  "description": "Unsigned, hash-chained stamp of every blob version in <container> not in an earlier seal. A stamp, not an attestation: it does not establish authenticity.",
+  "type": "object",
+  "required": ["schema", "container", "seal_number", "sealed_at_utc", "sealer", "client", "previous_seal", "counts", "entries", "entries_sha256", "note"],
+  "properties": {
+    "schema": {"const": "evidence-store.seal/v1"},
+    "container": {"type": "string"},
+    "seal_number": {"type": "integer", "minimum": 1, "description": "1..N per container, no gaps"},
+    "sealed_at_utc": {"type": "string"},
+    "sealer": {"type": "object", "description": "as asserted by the sealer's token (receipt writer shape)"},
+    "client": {"type": "object"},
+    "previous_seal": {
+      "description": "null for seal 1; otherwise the previous seal's blob name and the sha256 of its stored bytes",
+      "oneOf": [
+        {"type": "null"},
+        {"type": "object", "required": ["name", "sha256"], "properties": {"name": {"type": "string"}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}}
+      ]
+    },
+    "counts": {
+      "type": "object",
+      "required": ["entries", "objects", "receipts", "rehash_match", "rehash_mismatch", "no_receipt"]
+    },
+    "entries": {
+      "type": "array",
+      "description": "Ordered by (name, version_id).",
+      "items": {
+        "type": "object",
+        "required": ["name", "version_id", "kind", "size", "sha256_actual"],
+        "properties": {
+          "name": {"type": "string"},
+          "version_id": {"type": ["string", "null"]},
+          "kind": {"enum": ["object", "receipt"]},
+          "size": {"type": "integer"},
+          "sha256_actual": {"type": "string", "description": "the sealer's own rehash of the stored bytes"},
+          "sha256_receipt": {"type": ["string", "null"], "description": "objects only: sha256 named by the receipt"},
+          "receipt_sha256": {"type": ["string", "null"], "description": "objects only: sha256 of the receipt's stored bytes (binds the receipt)"},
+          "rehash": {"enum": ["MATCH", "MISMATCH", "NO_RECEIPT"], "description": "objects only"}
+        }
+      }
+    },
+    "entries_sha256": {"type": "string", "description": "sha256 of the Python client's canonical JSON of entries (json.dumps(indent=2, sort_keys=True, ensure_ascii=False) + newline, UTF-8)"},
+    "note": {"type": "string"}
+  }
+}

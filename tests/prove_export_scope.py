@@ -543,7 +543,9 @@ MUST_SHIP = ('.github/workflows/reusable-security.yml',
              'scripts/export_for_adoption.py',
              'tests/prove_export_scope.py',
              # E12: the AI-agent inventory's positive fixture, a `.claude` folder by design.
-             'tests/fixtures/ai_artifacts/positive/.claude/skills/release/SKILL.md')
+             'tests/fixtures/ai_artifacts/positive/.claude/skills/release/SKILL.md',
+             # KDEC-072: START_HERE_KIT.md tells the work side to classify its fixture alerts with these.
+             'tests/negative-test-manifest.json', 'scripts/fixture_seeds.py')
 
 
 def main():

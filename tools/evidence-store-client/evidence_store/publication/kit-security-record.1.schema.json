@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kit-security-record/1",
+  "title": "Kit security record",
+  "type": "object",
+  "required": [
+    "schema",
+    "run",
+    "verdict"
+  ],
+  "properties": {
+    "schema": {
+      "const": "kit-security-record/1"
+    }
+  }
+}

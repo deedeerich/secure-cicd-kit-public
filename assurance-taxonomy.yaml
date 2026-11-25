@@ -459,6 +459,132 @@ namespaces:
           The not-selected scanner's own PASS renders PARTIAL for that root; the substitute's result
           is labelled a substitution and is never presented as equivalent coverage.
 
+  # -----------------------------------------------------------------------------
+  fixture_seed_match:
+    description: >-
+      Whether one alert or finding on the kit's own test fixtures is a known, intentional seed of
+      tests/negative-test-manifest.json (scripts/fixture_seeds.py classify; owner 2026-11-19).
+    consumers: [fixture_seeds, tests/prove_negative_test_manifest.py, START_HERE_KIT.md, the work side's alert review]
+    rule: >-
+      A seed is matched by exact file, package (or rule), pinned version and an advisory id the
+      manifest records -- never by directory. This is a classification, not a disposition: each
+      organisation records its own disposition alert by alert.
+    values:
+      KNOWN_SEED:
+        definition: The alert matches a manifest seed exactly (file, package or rule, version, advisory id or alias).
+        rule: Expected by design; it is still dispositioned by the organisation that sees it, never dismissed by directory.
+      NEW:
+        definition: Anything else -- a new advisory on a seeded package, a changed pin, a new dependency, another file, an unrecorded rule.
+        rule: Evaluated on its own, as any alert outside the fixtures would be. Never folded into a known seed.
+
+  # -----------------------------------------------------------------------------
+  fixture_seed_cause:
+    description: >-
+      Why an alert on the fixtures read NEW (scripts/fixture_seeds.py classify). Kept separate from
+      the match itself: the outcome and its cause are two fields.
+    consumers: [fixture_seeds, tests/prove_negative_test_manifest.py]
+    rule: Exactly one cause per NEW alert; a KNOWN_SEED alert has none.
+    values:
+      NOT_A_SEED:
+        definition: No seed at that exact file, or not for that package, rule or tool.
+        rule: A file beside a seed, or the seed's directory, is not the seed.
+      PIN_CHANGED:
+        definition: The seeded package is pinned at another version than the manifest records (in the alert, or read from the tree).
+        rule: A moved pin is a new dependency state, never the old seed.
+      ADVISORY_NOT_IN_MANIFEST:
+        definition: The seeded package and pin match, but the advisory id is not one the manifest records for it.
+        rule: A new advisory on a known seed is a new alert.
+      NO_ADVISORY_ID:
+        definition: The alert names no advisory id, so it cannot be matched to a recorded one.
+        rule: A missing id never matches.
+      VERSION_NOT_ESTABLISHED:
+        definition: The alert carries no version and the tree could not supply exactly one.
+        rule: Unestablished is never a match.
+      RULE_NOT_IN_MANIFEST:
+        definition: A code-scanning rule on a seed whose recorded rules do not include it.
+        rule: A new rule on a seeded file is a new alert.
+      RULE_NOT_RECORDED:
+        definition: A code-scanning alert on a seed whose rule ids have not been recorded yet.
+        rule: NEW until a reviewed edit records the rules; recording them is the remediation.
+
+  # -----------------------------------------------------------------------------
+  fixture_seed_outcome:
+    description: The overall outcome of one scripts/fixture_seeds.py classify run (the --json document's `outcome`).
+    consumers: [fixture_seeds]
+    rule: One NEW alert makes the run NEW_ALERTS (exit 1).
+    values:
+      ALL_KNOWN_SEEDS:
+        definition: Every alert classified KNOWN_SEED.
+        rule: Not a disposition of any of them.
+      NEW_ALERTS:
+        definition: At least one alert classified NEW.
+        rule: Each NEW alert is evaluated on its own.
+
+  # -----------------------------------------------------------------------------
+  runtime_exposure:
+    description: >-
+      The per-runtime verdict of a runtime-CVE exposure check: scripts/java4shell_check.py for
+      Java4Shell (CVE-2026-114938, owner 2026-11-19). One verdict per runtime found on a host, in an
+      image or declared in a repository. Exposure needs an affected build AND a vulnerable CPU AND
+      the vulnerable code path active in the running JVM.
+    consumers: [java4shell_check, docs/advisories/JAVA4SHELL_CVE-2026-114938.md, the person running it]
+    rule: >-
+      COULD-NOT-ESTABLISH IS NEVER NOT_AFFECTED. A missing CPU, flag or build reading moves a verdict
+      toward AFFECTED_CPU_UNKNOWN or UNKNOWN, never toward NOT_AFFECTED or FIXED. Exit code 2 for any
+      AFFECTED value, 1 for UNKNOWN, 0 otherwise.
+    values:
+      AFFECTED:
+        definition: An affected build on a CPU confirmed vulnerable, with no workaround seen in the running JVM (or its flags unread).
+        rule: Patch and restart; until then the workaround. Unread flags never soften it.
+      AFFECTED_CPU_UNKNOWN:
+        definition: An affected build whose host CPU was not established (an image, a repository declaration, a host whose CPU could not be read).
+        rule: Treated as AFFECTED. Moves only when the CPU of the host it actually runs on is read.
+      AFFECTED_MITIGATED:
+        definition: An affected build where the RUNNING JVM shows the workaround (UseBASE64Intrinsics false, or UseAVX below 3).
+        rule: >-
+          Still owes the patch. Only a read of the running JVM's flags earns it; an environment
+          variable or a service definition alone does not.
+      AFFECTED_CPU_NOT_VULNERABLE:
+        definition: An affected build on an x86-64 CPU without AVX-512 VBMI.
+        rule: Not exploitable on that CPU today; patched in the normal cycle. A host move to a newer CPU makes it AFFECTED.
+      FIXED:
+        definition: The build is at or above the fixed build of its line.
+        rule: By number only; confirmed against the vendor advisory, and against a restart of the running JVM.
+      NOT_AFFECTED:
+        definition: A line, build or CPU the advisories rule out (standard Java 8 and 11, 17.0.0 to 17.0.5, ARM).
+        rule: Only from a positive reading. Never the result of a probe that failed or a value that was not read.
+      UNKNOWN:
+        definition: The build, line or VM could not be established; the cause is given.
+        rule: Never reported as clean. Established by hand, then re-run.
+
+  # -----------------------------------------------------------------------------
+  runtime_version_state:
+    description: >-
+      The version-only classification inside a runtime-CVE exposure check, before CPU and flags are
+      combined into runtime_exposure. Internal to scripts/java4shell_check.py; never emitted alone.
+    consumers: [java4shell_check]
+    rule: A bare line without a build (a floating tag, a platform setting) is UNKNOWN, never FIXED or NOT_AFFECTED.
+    values:
+      AFFECTED_VERSION:
+        definition: The build is in the affected range of its line, or its line is end-of-life with the vulnerable code.
+        rule: Becomes a runtime_exposure AFFECTED value once CPU and flags are combined; never shown as a verdict by itself.
+
+  # -----------------------------------------------------------------------------
+  cpu_exposure:
+    description: >-
+      Whether a host CPU has the instruction set a CPU-specific vulnerability needs (for Java4Shell:
+      x86-64 with avx512f, avx512bw, avx512vbmi and bmi2), read from /proc/cpuinfo or the JVM's own
+      os+cpu log.
+    consumers: [java4shell_check]
+    rule: No reading is UNKNOWN. Absence of a CPU line is not absence of the feature.
+    values:
+      VULNERABLE:
+        definition: Every required CPU feature was read as present.
+        rule: Read from the host the runtime runs on; an image or build host stands in for nothing.
+      NOT_VULNERABLE:
+        definition: A required feature was read as absent, or the CPU is ARM.
+        rule: Only from a CPU line or flags line that was actually read.
+
   # ─────────────────────────────────────────────────────────────────────────────
   corpus_family_outcome:
     description: >-
@@ -5548,6 +5674,144 @@ namespaces:
 
   # ─────────────────────────────────────────────────────────────────────────
   # KDEC-029 (owner, 2026-10-26, closing O-11): build once, promote the same digest.
+  scanner_obligation_state:
+    description: >-
+      Per obligation (a control a repository owes: secret scanning, SAST, a WordPress component scan, ...), what
+      scripts/scanner_obligations.py found on this run (KDEC-069). The obligation comes from discovery and the
+      versioned scanner-obligations.json, never from a token; the providers that ran give its coverage. The
+      worst value is the security gate's obligation_state.
+    consumers: [scripts/scanner_obligations.py, .github/actions/scanner-obligations, reusable-security security-gate, tests/prove_scanner_obligations.py]
+    rule: >-
+      A TOKEN NEVER DECIDES WHETHER A CONTROL IS OWED. An adopted provider that did not run with no retirement
+      record is UNAVAILABLE; a required aspect no adopted provider covers is a gap (COVERAGE_GAP or PARTIAL)
+      until the risk owner accepts it for a time (GAP_ACCEPTED, never SATISFIED) or the control is retired.
+    values:
+      SATISFIED:
+        definition: Every coverage aspect of a required obligation was covered by a provider that ran.
+      PARTIAL:
+        definition: Some aspects were covered and the rest no adopted provider covers (a partial replacement); the gap is named.
+        rule: Crawl advisory; walk and run refused until accepted or the control is retired.
+      COVERAGE_GAP:
+        definition: A required obligation no adopted, unretired provider covers at all.
+        rule: Crawl advisory; walk and run refused until accepted or the control is retired.
+      UNAVAILABLE:
+        definition: An adopted provider that would cover a missing aspect did not run and has no retirement record (its token missing, or it never reported).
+        rule: Crawl advisory (SCANNER_DID_NOT_RUN); walk and run refused.
+      GAP_ACCEPTED:
+        definition: A gap under a valid acceptance by the risk owner, dated and at most acceptance_max_days long.
+        rule: Named on the run; routes PROCEED_WITH_ADVISORY (COVERAGE_PARTIAL); never a clean claim.
+      CONTROL_RETIRED:
+        definition: The control itself was retired by a security decision whose residual risk the risk owner accepted.
+      REMOVED_BY_EXCEPTION:
+        definition: The repository removed the obligation with an exception the governed policy records for it, approved by someone other than its requester, unexpired.
+      NOT_REQUIRED:
+        definition: Discovery and the repository's declaration give no basis for the obligation.
+      EVALUATED_ELSEWHERE:
+        definition: A promotion-phase obligation (DAST), judged against the deploy evidence, not at the pull-request gate.
+      DECLARATION_REFUSED:
+        definition: The repository's .kit/obligations.json asked for something the policy does not allow; the obligation stays and was evaluated.
+      NOT_EVALUATED:
+        definition: The security gate received no obligation state (the composite crashed or the policy was refused).
+        rule: Refused at every rung, as a breached capability floor is.
+
+  scanner_obligation_outcome:
+    description: >-
+      The outcome field beside scanner_obligation_state and its cause (KDEC-069: outcome and cause are separate
+      fields, never one overloaded word).
+    consumers: [scripts/scanner_obligations.py, tests/prove_scanner_obligations.py]
+    rule: An accepted gap is NOT_SATISFIED with cause GAP_ACCEPTED, never SATISFIED.
+    values:
+      SATISFIED:
+        definition: Every aspect covered.
+      NOT_SATISFIED:
+        definition: Some aspect not covered, whatever the cause.
+      NOT_REQUIRED:
+        definition: Not owed on this run (no basis, removed by exception, control retired, or judged elsewhere).
+
+  scanner_obligation_cause:
+    description: Why an obligation is not SATISFIED, or why it is not required (KDEC-069). Null when SATISFIED or simply not required.
+    consumers: [scripts/scanner_obligations.py, tests/prove_scanner_obligations.py]
+    rule: One cause per obligation, beside its outcome.
+    values:
+      PROVIDER_UNAVAILABLE:
+        definition: An adopted provider did not run and has no retirement record.
+      COVERAGE_GAP:
+        definition: Nothing adopted covers it.
+      PARTIAL_COVERAGE:
+        definition: A partial replacement; the named aspects are uncovered.
+      GAP_ACCEPTED:
+        definition: The gap is under a valid acceptance by the risk owner.
+      CONTROL_RETIRED:
+        definition: The control was retired with the residual risk accepted by the risk owner.
+      REMOVED_BY_EXCEPTION:
+        definition: Removed for this repository by a governed exception.
+
+  scanner_provider_lifecycle:
+    description: >-
+      A provider's lifecycle in scanner-obligations.json provider_lifecycle (append-only; the last record per
+      provider wins), and its status on a run (KDEC-069).
+    consumers: [scripts/scanner_obligations.py, scanner-obligations.json, tests/prove_scanner_obligations.py]
+    rule: >-
+      Retiring a provider is one line (date, who) and never retires the control. Core providers are ADOPTED by
+      default; an external one is NOT_ADOPTED until a record adopts it.
+    values:
+      ADOPTED:
+        definition: Expected to run. Did not run, with no retirement record, is UNAVAILABLE.
+      RETIRED:
+        definition: "Retired by a one-line record {provider, state: RETIRED, on, by}; its findings keep their identity and close only on shown equivalence."
+      NOT_ADOPTED:
+        definition: An option the policy lists but nobody adopted (an optional, unfunded tool); it blocks nothing.
+      ACTIVE:
+        definition: It ran and its coverage counts.
+
+  scanner_obligation_route:
+    description: The informational route scanner_obligations.py records per obligation; the security gate applies the rung itself (KDEC-069).
+    consumers: [scripts/scanner_obligations.py, tests/prove_scanner_obligations.py]
+    rule: Unresolved stage is read at its strictest.
+    values:
+      PROCEED:
+        definition: Satisfied, not required, retired or removed by exception.
+      PROCEED_NAMED:
+        definition: An accepted gap, named on the run.
+      ADVISORY:
+        definition: Crawl, for UNAVAILABLE or a gap.
+      REFUSED:
+        definition: Walk or run, for UNAVAILABLE.
+      DECISION_REQUIRED:
+        definition: Walk or run, for a gap with no acceptance.
+
+  scanner_obligation_declaration:
+    description: What the repository's .kit/obligations.json may ask (KDEC-069).
+    consumers: [scripts/scanner_obligations.py, tests/prove_scanner_obligations.py]
+    rule: A repository may add an obligation; it never removes one by its own word.
+    values:
+      REMOVAL_REFUSED:
+        definition: A removal with no matching governed, independently approved, unexpired exception; the obligation stays.
+      DECLARATION_UNKNOWN_OBLIGATION:
+        definition: The repository declares an obligation the policy does not define; named, not silently dropped.
+
+  scanner_obligation_closure:
+    description: The closure decision for a finding whose provider was retired (scanner_obligations.closure_decision, KDEC-069).
+    consumers: [scripts/scanner_obligations.py, scripts/ticket_completion.py, tests/prove_scanner_obligations.py]
+    rule: The retired tool's absence never closes its finding.
+    values:
+      CLOSE_EQUIVALENT:
+        definition: A replacement's clean result with equivalence shown (issue type, location, version, detection capability).
+      PENDING_VERIFICATION:
+        definition: Equivalence not shown; it waits for a verifier who is not the fixer, or an authorised disposition.
+      SAME_PROVIDER:
+        definition: The provider is not retired; the ordinary rescan rules apply.
+
+  promotion_outcome:
+    description: The outcome field of promotion-gate.json, beside its causes (KDEC-070).
+    consumers: [scripts/promotion.py, tests/prove_promotion_reevaluation.py]
+    rule: Outcome and cause are separate fields; the causes are the promotion_gate refusal codes.
+    values:
+      ALLOWED:
+        definition: No refusal stands (break-glass overrides are listed in `overridden`).
+      REFUSED:
+        definition: At least one refusal stands; `cause` is the first, `causes` all of them.
+
   promotion_gate:
     description: >-
       The answer the promotion preflight and the promotion gate give a deploy, before login. Exactly
@@ -5613,6 +5877,31 @@ namespaces:
         rule: COULD-NOT-ESTABLISH IS NEVER ESTABLISHED.
       PROMOTION_REFUSED_SOURCE_AMBIGUOUS:
         definition: The source run published records for two or more targets in the environment with this digest.
+      PROMOTION_REFUSED_EVIDENCE_MISSING:
+        definition: >-
+          Evidence the target environment's promotion policy requires for this digest (the security gate, the
+          SBOM, the attestation; KDEC-070) is MISSING or CANCELLED in the source record's evidence binding.
+        rule: Cancelled or missing required evidence never passes. Not overridden by break-glass.
+      PROMOTION_REFUSED_EVIDENCE_DIGEST:
+        definition: An item of the source record's evidence binding is bound to another digest than the one promoted.
+        rule: Not overridden by break-glass.
+      PROMOTION_REFUSED_EVIDENCE_STALE:
+        definition: >-
+          Bound evidence is older than the target's max_evidence_age_days (default 30 at uat and prod), or records
+          no production time. Nothing is rescanned at promotion; a fresh scan of the digest or a new build is owed.
+        rule: Break-glass may lift it, and says so in `overridden`.
+      PROMOTION_REFUSED_EXCEPTION_INVALID:
+        definition: An exception the digest relied on (provenance.exceptions_relied_on) has expired, records no expiry, or was revoked (revocation kind `exception`).
+        rule: Not overridden by break-glass.
+      PROMOTION_REFUSED_APPROVAL_STATE:
+        definition: The predecessor deployment's approval was REJECTED, or a uat predecessor's approval is not APPROVED.
+        rule: Not overridden by break-glass.
+      PROMOTION_REFUSED_TARGET_POLICY:
+        definition: >-
+          The target environment's promotion policy (.security/promotion-policy.json on the default branch, or the
+          kit default) refuses the recorded security-gate route or an advisory cause the build carried, or the
+          policy file exists and could not be read.
+        rule: A policy nobody could read is not the default. Not overridden by break-glass.
       PROMOTION_REFUSED_SOURCE_TARGET_MISMATCH:
         definition: >-
           The request named promote_from_target_resource_id and the source run published no record of the
@@ -6920,6 +7209,8 @@ namespaces:
         definition: "A configuration digest was declared at either scan and differs (or one side declared none). The reconciler closes nothing."
       RESCAN_UNIDENTIFIED_AT_PATH:
         definition: "The scanner reported a finding with no durable identity at the affected file; it may be this one."
+      RESCAN_PROVIDER_RETIRED_NO_EQUIVALENCE:
+        definition: "The scanner that saw the instance is RETIRED (scanner-obligations.json) and no replacement's clean result shows equivalence: the same issue type and location, the relevant version, and detection capability (KDEC-069). The reconciler closes nothing; it waits for a verifier who is not the fixer, or an authorised disposition."
       PATH_INVENTORY_ESTABLISHED:
         definition: "scan_report.py listed the tracked files of the scanned checkout (git ls-files) into findings-coverage.json `path_inventory`."
       PATH_INVENTORY_NOT_ESTABLISHED:
@@ -7133,6 +7424,58 @@ namespaces:
         definition: The gate was told to run but no harness checkout exists (the mint or checkout step failed).
       HARNESS_PIN_MISMATCH:
         definition: The harness checkout's HEAD is not the pinned commit; the pair proof is not run.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  kit_evidence_copyout_outcome:
+    description: >-
+      KDEC-068: whether scripts/evidence_copyout.py may copy completed runs' evidence artifacts into the
+      governed evidence store, and the one store result that counts as a pass besides OK.
+    consumers: [scripts/evidence_copyout.py, .github/workflows/evidence-copyout.yml, tests/prove_evidence_copyout.py,
+                docs/operations/EVIDENCE_COPYOUT.md]
+    rule: >-
+      A COPY-OUT THAT DID NOT RUN IS A FAILURE, NEVER "NOT RUN, EXIT 0". Every refusal below ends the job red
+      with its name; the App token is never minted after one.
+    values:
+      COPYOUT_RUN:
+        definition: >-
+          The gate allows the copy-out: a schedule or dispatch on the default branch, the read-only App
+          configured, one owner's owner/repo list, and the vendored client at its pinned tree hash.
+        rule: A plan, never a result; the push step's exit code decides the run.
+      COPYOUT_NOT_RUN:
+        definition: The read-only GitHub App (client id or private key) or the repository list is not configured.
+        rule: Exits 1 by name; never read as a pass or as "not applicable".
+      EVENT_REFUSED:
+        definition: The copy-out was asked to run on an event other than schedule or workflow_dispatch.
+        rule: Adding pull_request or push to the trusted events is the defect it refuses.
+      REF_REFUSED:
+        definition: The copy-out was asked to run on a ref other than the default branch.
+      REPOS_REFUSED:
+        definition: The repository list names more than one owner (one App installation per run).
+      CLIENT_CHANGED:
+        definition: The vendored evidence-store client does not hash to its pinned tree; nothing is sent.
+        rule: Re-vendor with the client's vendor.py at a reviewed commit and change the pin in the same change.
+      ALREADY_PRESENT:
+        definition: >-
+          The evidence-store client's result (exit 3) when every object of a push was already stored with
+          identical bytes: an idempotent re-run.
+        rule: A pass, like OK (exit 0). A different object at the same name is CONFLICT (exit 4) and fails.
+      NO_API:
+        definition: >-
+          KDEC-068 item 6 (2026-11-24): no kit API URL (vars.EVIDENCE_KIT_API_URL) and the direct-write fallback
+          flag (vars.EVIDENCE_DIRECT_WRITE) is not true, or an API URL is set without its audience.
+        rule: Exits 5 before any upload, by name; never read as "nothing to copy".
+      PUB_NO_SCHEMA:
+        definition: >-
+          The evidence-store client's publication-gate reason (its PROTOCOL.md 4.2) when a file routed to
+          cicd-kit-gates, which Tines reads, carries no registered schema id and the client's policy declares
+          none for its name.
+        rule: The whole push is refused before any upload (exit 5). Cleared by an in-document id in the kit
+          record or a reviewed by-name declaration in the client's policy, never by routing it elsewhere.
+      PUB_SECRET:
+        definition: >-
+          The client's publication-gate reason when a file routed to cicd-kit-gates holds a credential or secret
+          shape; the message names the class, never the matched text.
+        rule: Refused before any upload (exit 5); the record is a leak to fix at its source, never to redact here.
 
   # ─────────────────────────────────────────────────────────────────────────
   actionlint_baseline_outcome:

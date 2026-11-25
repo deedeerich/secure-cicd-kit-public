@@ -654,10 +654,14 @@ def judge_promotion(attestation, path='normal'):
     import promotion as PR
     now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
     d = 'sha256:' + '7' * 64
-    rec = {'artifact': {'digest': d}, 'state': PR.VERIFIED,
+    # The fields a deploy writes (KDEC-070 re-evaluates this bound evidence at a prod promotion).
+    rec = {'artifact': {'digest': d, 'sbom_sha256': 'e' * 64,
+                        'version_metadata': json.dumps({'built_at': PR.iso(now)})}, 'state': PR.VERIFIED,
            'environment': {'name': 'test', 'tier': 'test', 'adapter': 'containerapp',
                            'target_resource_id': '/subscriptions/s/resourceGroups/rg-a/providers/Microsoft.App/containerApps/web'},
-           'provenance': {'source_ref': 'refs/heads/main'}, 'validity': {'verified_at': PR.iso(now)},
+           'provenance': {'source_ref': 'refs/heads/main', 'gate_routing_result': 'PROCEED',
+                          'attestation_outcome': 'ATTESTATION_VERIFIED'},
+           'validity': {'verified_at': PR.iso(now)},
            'run': {'id': '1'}}
     ctx = {'digest': d, 'required_predecessor': 'test', 'source_environment': 'test', 'source': rec,
            'destination_tier': 'prod', 'expected_target': rec['environment']['target_resource_id'],

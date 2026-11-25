@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "usr.review-package/v1",
+  "title": "USR review package (envelope)",
+  "type": "object",
+  "required": [
+    "schema",
+    "package_id",
+    "review_id",
+    "created_at_utc",
+    "scope",
+    "findings"
+  ],
+  "properties": {
+    "schema": {
+      "const": "usr.review-package/v1"
+    },
+    "package_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "review_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "created_at_utc": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope": {
+      "type": "object"
+    },
+    "findings": {
+      "type": "array"
+    }
+  }
+}

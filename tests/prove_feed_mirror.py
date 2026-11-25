@@ -667,7 +667,9 @@ def main():
                     tf += io.open(os.path.join(tf_dir, fn), encoding='utf-8').read() + '\n'
         norm = re.sub(r'\s+', ' ', tf)
         for rule, pat in (
-                ('public network access off on the storage account', r'public_network_access_enabled = false'),
+                # azurerm 5.x: public_network_access = "Disabled" (the boolean is deprecated, removed in 6.0).
+                ('public network access off on the storage account',
+                 r'resource "azurerm_storage_account" "mirror" \{[^}]*public_network_access(_enabled = false| = "Disabled")'),
                 ('shared key access off', r'shared_access_key_enabled = false'),
                 ('anonymous blob access off (the static website is network-gated)',
                  r'allow_nested_items_to_be_public = false'),
@@ -688,8 +690,10 @@ def main():
                 ('AcrPush', r'"AcrPush"'),
                 ('the federated credential is environment-scoped', r'environment:')):
             check(re.search(pat, norm), 'M13: the Terraform does not set %s' % rule)
-        check(norm.count('public_network_access_enabled = false') >= 2,
-              'M13: public network access is not off on both the storage account and the registry')
+        check(re.search(r'resource "azurerm_container_registry" "mirror" \{[^}]*public_network_access_enabled = false', norm),
+              'M13: public network access is not off on the registry')
+        check('public_network_access = "Enabled"' not in norm and 'public_network_access_enabled = true' not in norm,
+              'M13: public network access is switched on somewhere')
         for bad in ('"Owner"', '"Contributor"', 'Storage Blob Data Owner', 'Storage Account Contributor',
                     'Storage Blob Data Contributor" scope = azurerm_storage_account'):
             check(bad not in norm.replace('role_definition_name = ', ''),

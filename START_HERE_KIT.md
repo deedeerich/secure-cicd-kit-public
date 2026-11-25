@@ -31,7 +31,8 @@ that copy.
   files it lists. A file you edited is never overwritten, and an untracked file is never replaced.
 - Then run the kit's own checks in the repository: `python tools/battery.py --fast` (UNKNOWN for a tool your
   machine lacks, never a failure), and open the import pull request: the self-test must be green, with
-  `Self-test required` green.
+  `Self-test required` green. An import into `dev` needs those checks only; the approval is on the pull request from
+  `dev` into `main` (section 3, item 6).
 
 ## 3. The organisation's one-time setup (an organisation owner and the platform team)
 
@@ -51,6 +52,10 @@ that copy.
    level `docs/adoption/SETTINGS_PRECEDENCE.md` gives for each.
 5. **The kit repository's own rulesets:** require `Self-test required` (`docs/adoption/BRANCH_PROTECTION_SETTINGS.md`
    section 1).
+6. **Only `main` needs an approval** (KDEC-073). A long-lived `dev` branch requires the same status checks as `main`
+   but never an approval: work merges into `dev` when its checks are green, and a person approves once, on the pull
+   request from `dev` into `main`. The ruleset is `docs/adoption/BRANCH_PROTECTION_SETTINGS.md` section 3a. The uat
+   and prod environments keep their own deployment approval.
 
 ## 4. Each application repository: `kit init`
 
@@ -81,3 +86,31 @@ Or the button: copy `templates/kit-init.yml` into the repository, pin it, and ru
 Also: `docs/adoption/ROLLOUT_PLAN.md` (waves, crawl lasts 4 weeks optimally, 2 months preferred, 6 months at most),
 `docs/errors/ERRORS.md` (every refusal in plain words), `docs/adoption/BRANCH_PROTECTION_SETTINGS.md` (the rulesets
 and the uat/prod environments).
+
+## 6. Expected alerts on the kit's own test fixtures
+
+The kit's tests carry deliberately vulnerable fixtures: the scanners must be proven to detect them. So your kit
+repository will raise alerts on them. They are never installed, run, built into an image or deployed. Every one is
+listed, with its expected finding and why it is there, in `tests/negative-test-manifest.json`. The Dependabot alerts
+you should expect include:
+
+| file | package | pinned | advisories (GHSA) | why |
+|---|---|---|---|---|
+| `tests/consumer-fixture/full/java/pom.xml` | `org.apache.logging.log4j:log4j-core` | 2.14.1 | GHSA-jfh8-c2jp-5v3q, GHSA-7rjr-3q55-vv33, GHSA-p6xc-xr62-6r2g, GHSA-8489-44mv-ggj8, GHSA-vc5p-v9hr-52mj, GHSA-6hg6-v5c8-fphq, GHSA-h383-gmxw-35v2, GHSA-3pxv-7cmr-fjr4 | Java dependency seed (`deps:java-cve`) |
+| `tests/consumer-fixture/full/php/composer.lock` (and `composer.json`) | `phpmailer/phpmailer` | 5.2.18 | GHSA-4pc3-96mx-wwc8, GHSA-58mj-pw57-4vm2, GHSA-4x5h-cr29-fhp6, GHSA-7w4p-72j7-v7c2, GHSA-f7hx-fqxw-rvvj, GHSA-77mr-wc79-m8j3, GHSA-7q44-r25x-wm4q | PHP dependency seed (`deps:php-cve`); `tests/prove_deps_scan_composer.py` expects it at CRITICAL |
+| `tests/consumer-fixture/full/node/`, `full/services/api/`, `full/python/`, `full/go/`, `full/dotnet/`, `seeded/` | lodash, minimist, axios, handlebars, requests, pyyaml, jinja2, urllib3, gopkg.in/yaml.v2, Newtonsoft.Json, System.Text.Encodings.Web | see the manifest | see the manifest | the other ecosystems' seeds |
+
+The advisory ids came from an offline Trivy scan of 2026-11-24. The two .NET seeds record none yet, so any alert on
+them reads NEW until a reviewed edit adds the ids.
+
+**Your organisation makes its own dispositions.** Evaluate and record each alert under your own governance, one alert
+at a time. Never dismiss by directory: a new advisory on a seeded package, a pin that moved, or a new dependency beside
+the seeds is a real alert. To tell a known seed from a new one, save the alerts (for example
+`gh api repos/<org>/<kit-repo>/dependabot/alerts --paginate > alerts.json`) and run:
+
+```bash
+python3 scripts/fixture_seeds.py classify alerts.json     # KNOWN_SEED or NEW, with the cause; exit 1 if any is NEW
+python3 scripts/fixture_seeds.py check                    # the manifest still matches the tree
+```
+
+A KNOWN_SEED result says the alert was expected. It is not a disposition.

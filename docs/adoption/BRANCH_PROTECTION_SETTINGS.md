@@ -153,6 +153,45 @@ the workflow policy (`policy / Workflow policy`). Add `cve / NVD CVE scan` for a
 With `require_code_owner_review` true, a Dependabot PR touching an owned manifest waits for its owner
 even when the triage armed auto-merge. That is the recommended default (`AUTOMERGE_RISKS_AND_ROLLOUT.md`).
 
+## 3a. A long-lived `dev` branch: the checks, never an approval (KDEC-073, owner 2026-11-18)
+
+Only `main` needs an approval. If a repository keeps a long-lived `dev` branch (the work kit imports into one),
+protect it with the **same status checks** as `main` and the same deletion and force-push blocks, but **no
+approval**: merging into `dev` waits for green checks, not for a person. The approval happens once, on the pull
+request from `dev` into `main`, under the `main` ruleset above. The uat and prod deployments keep their own
+environment approval (below), whatever branch the build came from.
+
+Use the required checks of the repository type (the kit repository's are shown; an application repository uses
+its own section 3 list):
+
+```json
+{
+  "name": "dev: long-lived branch (checks, no approval)",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {"ref_name": {"include": ["refs/heads/dev"], "exclude": []}},
+  "bypass_actors": [],
+  "rules": [
+    {"type": "deletion"},
+    {"type": "non_fast_forward"},
+    {"type": "pull_request", "parameters": {
+      "required_approving_review_count": 0,
+      "dismiss_stale_reviews_on_push": false,
+      "require_code_owner_review": false,
+      "require_last_push_approval": false,
+      "required_review_thread_resolution": false,
+      "allowed_merge_methods": ["squash", "merge"]}},
+    {"type": "required_status_checks", "parameters": {
+      "strict_required_status_checks_policy": true,
+      "do_not_enforce_on_create": false,
+      "required_status_checks": [{"context": "Self-test required"}]}}
+  ]
+}
+```
+
+Approvals 0, no code-owner review and no last-push approval are deliberate: `tests/prove_adoption_guides.py` B3
+refuses a `dev` ruleset that requires an approval, and one that drops the status checks.
+
 ## 4. An infrastructure / landing-zone repository
 
 Infrastructure changes are high blast radius: two approvals, code owners, signed commits, linear history.

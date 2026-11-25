@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kit.promotion-preflight/0",
+  "title": "Kit promotion-preflight.json (no in-document id; declared by name)",
+  "type": "object"
+}

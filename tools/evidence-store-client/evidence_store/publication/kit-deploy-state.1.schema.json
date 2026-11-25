@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kit-deploy-state/1",
+  "title": "Kit deploy state (kind + schema_version)",
+  "type": "object",
+  "required": [
+    "kind",
+    "schema_version",
+    "target",
+    "run_id"
+  ],
+  "properties": {
+    "kind": {
+      "const": "kit-deploy-state"
+    },
+    "schema_version": {
+      "const": 1
+    }
+  }
+}

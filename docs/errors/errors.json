@@ -132,6 +132,7 @@
   "ticket_closure_rule": "internal: how ticket closure is evaluated, a field of the ticket model",
   "human_approval": "internal: whether a person permitted one ticket mutation, internal to the reconciler",
   "disposition_review": "internal: the review-time evaluation of an exported approval, read by a reviewer and the evidence harness, never a pipeline error",
+  "kit_evidence_copyout_outcome": "internal: why the kit's scheduled evidence copy-out did not run, read by the kit maintainer who set it up",
   "kit_harness_pair_outcome": "internal: why the kit and harness pair proof refused, a kit maintainer's test outcome only",
   "actionlint_baseline_outcome": "internal: why the kit's own actionlint baseline check refused, a kit maintainer's self-test outcome only",
   "mutation_class": "internal: which ticket mutations need a person, internal to the reconciler",
@@ -185,7 +186,21 @@
   "governance_gate_rule": "developer",
   "ticket_setting": "developer",
   "escalation_route": "developer",
-  "ticket_completion": "developer"
+  "ticket_completion": "developer",
+  "runtime_exposure": "internal: the read-only Java4Shell pilot's per-runtime verdicts (scripts/java4shell_check.py), read by the person running it; CI reads them against policy, never as a gate outcome yet",
+  "runtime_version_state": "internal: the read-only Java4Shell pilot's per-runtime verdicts (scripts/java4shell_check.py), read by the person running it; CI reads them against policy, never as a gate outcome yet",
+  "cpu_exposure": "internal: the read-only Java4Shell pilot's per-runtime verdicts (scripts/java4shell_check.py), read by the person running it; CI reads them against policy, never as a gate outcome yet",
+  "scanner_obligation_state": "developer",
+  "scanner_obligation_outcome": "internal: the outcome field beside scanner_obligation_state in the obligations evidence; the gate shows the state",
+  "scanner_obligation_cause": "internal: the cause field beside scanner_obligation_state in the obligations evidence; the gate shows the state",
+  "scanner_obligation_route": "internal: an informational route in the obligations evidence; the security gate applies the rung itself",
+  "scanner_obligation_declaration": "internal: recorded in the obligations evidence; the gate shows DECLARATION_REFUSED (scanner_obligation_state)",
+  "scanner_obligation_closure": "internal: the closure decision for a retired provider's finding; the ticket shows RESCAN_PROVIDER_RETIRED_NO_EQUIVALENCE",
+  "scanner_provider_lifecycle": "internal: a provider's lifecycle record in scanner-obligations.json, read by kit maintainers and the evaluator",
+  "promotion_outcome": "internal: the outcome field of promotion-gate.json beside its causes; the deploy shows the promotion_gate code",
+  "fixture_seed_match": "internal: the negative-test manifest classifier (scripts/fixture_seeds.py), read by the person triaging fixture alerts; never a run outcome",
+  "fixture_seed_cause": "internal: the negative-test manifest classifier (scripts/fixture_seeds.py), read by the person triaging fixture alerts; never a run outcome",
+  "fixture_seed_outcome": "internal: the negative-test manifest classifier (scripts/fixture_seeds.py), read by the person triaging fixture alerts; never a run outcome"
  },
  "not_a_failure": {
   "routing_result": [
@@ -577,6 +592,13 @@
    "CONFIG_DIGEST",
    "CONTENT_ADDRESS_INDEX",
    "CONTENT_ADDRESS_MANIFEST"
+  ],
+  "scanner_obligation_state": [
+   "CONTROL_RETIRED",
+   "EVALUATED_ELSEWHERE",
+   "NOT_REQUIRED",
+   "REMOVED_BY_EXCEPTION",
+   "SATISFIED"
   ]
  },
  "entries": {
@@ -3690,6 +3712,81 @@
    "why": "Configuration may not impersonate a kit system label.",
    "fix": "Choose a source label outside the <stamp>- prefix.",
    "link": "docs/ticketing/TICKET-GOVERNANCE.md"
+  },
+  "promotion_gate.PROMOTION_REFUSED_EVIDENCE_MISSING": {
+   "what": "Evidence the target environment needs for this exact build (the security gate, the SBOM or the signed attestation) is missing or was cancelled.",
+   "why": "A check that did not finish is not a check that passed: promoting on it would deploy something nobody verified.",
+   "fix": "Deploy a fresh build to test with its security gate, SBOM and attestation completing, and promote that run.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.PROMOTION_REFUSED_EVIDENCE_DIGEST": {
+   "what": "The evidence recorded for the source deployment belongs to a different build than the one being promoted.",
+   "why": "Evidence only counts for the exact image digest it was produced for.",
+   "fix": "Promote the digest the evidence names, or deploy and verify this digest in test first.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.PROMOTION_REFUSED_EVIDENCE_STALE": {
+   "what": "The evidence for this build is older than the target environment allows (30 days by default at uat and prod), or has no date.",
+   "why": "Old scan evidence misses advisories and rules published since; nothing is rescanned at promotion.",
+   "fix": "Build again (or let the daily deployed scan rescan this digest) and promote the fresh evidence.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.PROMOTION_REFUSED_EXCEPTION_INVALID": {
+   "what": "An exception this build relied on has expired, has no expiry, or was revoked.",
+   "why": "The exception was the only reason the build was allowed; without it the build is not allowed either.",
+   "fix": "Fix the excepted issue, or have the exception renewed by its approver, then promote again.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.PROMOTION_REFUSED_APPROVAL_STATE": {
+   "what": "The deployment being promoted was rejected by its approver, or its uat approval was never given.",
+   "why": "A promotion cannot skip the approval its predecessor needed.",
+   "fix": "Get the uat deployment approved (or redeploy it), then promote that run.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "promotion_gate.PROMOTION_REFUSED_TARGET_POLICY": {
+   "what": "The target environment's promotion policy does not accept how this build's security gate ended (its route or an advisory cause), or the policy file could not be read.",
+   "why": "Each environment decides what it accepts; an unreadable policy is not the default.",
+   "fix": "Fix the cause the policy refuses (for example a scanner that did not run) and rebuild, or fix .security/promotion-policy.json on the default branch.",
+   "link": "docs/adoption/USAGE.md"
+  },
+  "ticket_completion.RESCAN_PROVIDER_RETIRED_NO_EQUIVALENCE": {
+   "same_as": "ticket_completion.RESCAN_NOT_VERIFIED"
+  },
+  "scanner_obligation_state.UNAVAILABLE": {
+   "what": "A scanner your organisation adopted did not run on this repository, and nobody recorded retiring it (often its token was removed).",
+   "why": "Removing a token must not silently remove a security check. At crawl this is reported; above crawl the run is refused.",
+   "fix": "Restore the scanner's token or connection, or record its retirement in scanner-obligations.json (one line: date and who).",
+   "link": "docs/operations/SCANNER_OBLIGATIONS.md"
+  },
+  "scanner_obligation_state.COVERAGE_GAP": {
+   "what": "This repository needs a kind of scan (found by discovery) that no adopted scanner provides.",
+   "why": "A required control with nothing covering it is a gap, not a pass.",
+   "fix": "Adopt a scanner for it, or have the risk owner record a time-bound acceptance (or a control retirement) in scanner-obligations.json.",
+   "link": "docs/operations/SCANNER_OBLIGATIONS.md"
+  },
+  "scanner_obligation_state.PARTIAL": {
+   "what": "The scanners that ran cover only part of what this repository needs; the missing part is named.",
+   "why": "A replacement that covers less than the tool it replaced leaves a gap.",
+   "fix": "Adopt a scanner for the missing part, or have the risk owner record a time-bound acceptance of that part.",
+   "link": "docs/operations/SCANNER_OBLIGATIONS.md"
+  },
+  "scanner_obligation_state.GAP_ACCEPTED": {
+   "what": "A coverage gap is accepted by its risk owner until the date shown.",
+   "why": "An accepted gap is still a gap: the run says so and never claims full coverage.",
+   "fix": "Nothing until the acceptance expires; before then, adopt a scanner or renew the acceptance.",
+   "link": "docs/operations/SCANNER_OBLIGATIONS.md"
+  },
+  "scanner_obligation_state.DECLARATION_REFUSED": {
+   "what": "This repository's .kit/obligations.json tried to remove a required scan without a recorded exception.",
+   "why": "A repository can add checks for itself but never remove one by its own word.",
+   "fix": "Remove the entry, or ask security to record an exception for this repository in the kit's scanner-obligations.json.",
+   "link": "docs/operations/SCANNER_OBLIGATIONS.md"
+  },
+  "scanner_obligation_state.NOT_EVALUATED": {
+   "what": "The kit could not work out which scans this repository needs on this run.",
+   "why": "If what is required is unknown, no result can be read as complete.",
+   "fix": "Re-run; if it persists, the kit copy may be broken or out of date: update the pinned kit SHA or tell the platform team.",
+   "link": "docs/operations/FAILURE_MODES.md"
   }
  }
 }

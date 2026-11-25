@@ -72,7 +72,12 @@ and probes the authorization boundary), `.github/workflows/reusable-ticket-recon
 
 ## 2 · Identities outside the kit that its evidence meets
 
-The kit holds no evidence-store identity. The evidence harness (a separate repository) writes cases
+The kit holds **one** evidence-store identity, and only in one job (KDEC-068, owner ruling 2026-11-23: one
+writer per tool): `id-kit-evidence-writer-<class>`, federated to the scheduled copy-out's environment
+(`.github/workflows/evidence-copyout.yml`). It can only create (put-once) in `cicd-kit-scans` and
+`cicd-kit-gates`; it cannot seal, delete or overwrite, and **application repositories hold no storage
+identity** -- the copy-out reads their finished runs with a read-only GitHub App token. The evidence
+harness (a separate repository) writes cases
 to an immutable evidence store with a **writer** identity and seals and verifies them with a separate
 **sealer** identity, each federated to its own environment of the evidence repository; tenant
 **readers** (one per tenant, read-only) collect the cloud evidence. The kit's side of that flow is
@@ -87,7 +92,7 @@ flowchart LR
 ```
 
 These three belong to the harness and the landing zone, not to this repository; they are drawn so a
-reviewer can see that no kit identity can write or seal evidence. The tenant reader is the one
+reviewer can see that no kit identity can seal evidence or write outside the kit's two containers. The tenant reader is the one
 read-only service principal per tenant (the identity rulings, 07_IDENTITY_AND_ACCESS.md section 1);
 the kit's deployed scan does not use it.
 

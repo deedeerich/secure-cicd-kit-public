@@ -213,7 +213,8 @@ sections below.
 
 - **What crosses:** `evidence.export` and the kit's artifacts, into a per-app bundle.
 - **Controls:** read-only; one repository; allowlist copy, no free text, pseudonymous authors; the same reads
-  give the same bytes, bound by `export_sha256`; the kit holds no evidence-store identity.
+  give the same bytes, bound by `export_sha256`; the kit's only evidence-store identity is the copy-out's
+  create-only writer for `cicd-kit-scans` and `cicd-kit-gates` (KDEC-068).
 - **Proof:** `tests/prove_evidence_export.py`.
 - **State:** PROVEN-LOCAL; not yet fed from a real repository into a real case.
 

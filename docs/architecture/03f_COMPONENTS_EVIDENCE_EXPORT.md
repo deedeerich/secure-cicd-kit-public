@@ -74,7 +74,8 @@ deployment id), or NOT ESTABLISHED with the reason. Never an empty list standing
 
 ## 4 · Trust and threat notes
 
-- TB-11: the kit holds **no** evidence-store identity. It cannot write or seal evidence; the harness's
+- TB-11: the kit holds **one** evidence-store identity, in the scheduled copy-out only (KDEC-068): create-only
+  in `cicd-kit-scans` and `cicd-kit-gates`. It cannot seal or write the harness's containers; the harness's
   writer and sealer are separate identities in the harness's own environments (ARCH-02 section 2).
 - Information disclosure is the main threat: the allowlist copy and pseudonyms hold it.
 - Tampering between export and harness: the export's `export_sha256` lets the harness detect a changed

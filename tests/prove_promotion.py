@@ -98,7 +98,10 @@ def now():
 def meta(digest=W.NEW):
     return json.dumps({'schema': 'deploy-provenance/3', 'image_digest': digest, 'sbom_sha256': SBOM_SHA,
                        'artifact_identity': 'REGISTRY_IDENTITY_PROVEN', 'git_sha': 'f' * 40,
-                       'git_ref': 'refs/heads/main', 'run_id': BUILD_RUN})
+                       'git_ref': 'refs/heads/main', 'run_id': BUILD_RUN,
+                       # As .github/actions/render-version-metadata writes it: the evidence's production time
+                       # (KDEC-070 re-evaluates its freshness at promotion).
+                       'built_at': (now() - datetime.timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%SZ')})
 
 
 def ca(envname, tier, **over):

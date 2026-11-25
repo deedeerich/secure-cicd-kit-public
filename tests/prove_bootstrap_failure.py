@@ -129,6 +129,13 @@ def ctx(scanner='success', kit='success', report='success', advisory='false',
          # is forced by tests/prove_capability_floor.py F6.
          'steps.floor.outputs.floor_state': 'HELD',
          'steps.floor.outputs.floor_missing': '',
+         # The scanner obligations (KDEC-069), satisfied in every scenario here: their own states are
+         # forced by tests/prove_scanner_obligations.py G.
+         'steps.obligations.outputs.obligation_state': 'SATISFIED',
+         'steps.obligations.outputs.obligation_unavailable': '',
+         'steps.obligations.outputs.obligation_gaps': '',
+         'steps.obligations.outputs.obligation_accepted': '',
+         'steps.obligations.outputs.obligation_retired_providers': '',
          'inputs.advisory_mode': advisory,
          'needs.plan.outputs.state': discovery,
          'needs.plan.outputs.coverage_gaps': '',

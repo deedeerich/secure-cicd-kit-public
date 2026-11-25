@@ -8,7 +8,7 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "~> 4.20"
+      version = "~> 5.14"
     }
   }
 }
@@ -20,4 +20,9 @@ provider "azurerm" {
   # data-plane path (a private-network runner, like every other job here) and is the one the platform
   # team already uses for its applies.
   storage_use_azuread = true
+  # 5.x registers NO resource providers by default (4.x registered ~60). Say so explicitly, so a
+  # later default change cannot silently widen what the applying identity attempts. The
+  # subscription must already have these registered: Microsoft.Storage, Microsoft.Network,
+  # Microsoft.ContainerRegistry, Microsoft.ManagedIdentity, Microsoft.Insights.
+  resource_provider_registrations = "none"
 }

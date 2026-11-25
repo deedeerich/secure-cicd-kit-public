@@ -45,7 +45,7 @@ CHANGE_LOG = 'docs/assurance/PROTECTED_CHANGE_LOG.md'
 # The floor, the registry, the policy register, the workflows and actions, the validators, and the
 # owners file itself. A directory entry is checked on every tracked file under it plus a probe.
 PROTECTED = ('CODEOWNERS', '.github/CODEOWNERS', 'docs/CODEOWNERS', 'capability-floor.json',
-             'scanner-registry.yaml', 'assurance-taxonomy.yaml', 'rollback-resource-classes.yaml',
+             'scanner-registry.yaml', 'scanner-obligations.json', 'assurance-taxonomy.yaml', 'rollback-resource-classes.yaml',
              'id-mappings.json', 'policy/policy-registration.json', 'governance-profile.json', '.github/', 'scripts/', 'tests/',
              'profiles/', 'policy/', 'schemas/', 'templates/', 'api/')
 # Deliberately security-approvers only (the separation of duties CODEOWNERS states): exceptions.
@@ -58,7 +58,10 @@ CHANGE_GUARDED = ('.github/workflows/self-test.yml', 'scripts/selftest_required.
                   'tests/prove_capability_floor.py', 'tests/prove_scanner_floor_shrink.py',
                   # The governance gate (KDEC-059): the merge decision, its profile and its workflow.
                   'scripts/governance_gate.py', 'governance-profile.json', '.github/workflows/governance-gate.yml',
-                  'tests/prove_governance_profiles.py')
+                  'tests/prove_governance_profiles.py',
+                  # The scanner obligations (KDEC-069): what a repository owes and who may provide it.
+                  'scanner-obligations.json', 'scripts/scanner_obligations.py', '.github/actions/scanner-obligations/',
+                  'tests/prove_scanner_obligations.py')
 
 
 def codeowners_file(root):
