@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kit-release-record/1",
+  "title": "Kit release record (review-signals.json)",
+  "type": "object",
+  "required": [
+    "schema",
+    "repository",
+    "run_id"
+  ],
+  "properties": {
+    "schema": {
+      "const": "kit-release-record/1"
+    }
+  }
+}

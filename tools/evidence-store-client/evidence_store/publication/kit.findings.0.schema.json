@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kit.findings/0",
+  "title": "Kit findings.json inside an evidence export (a JSON array)",
+  "type": "array",
+  "items": {
+    "type": "object"
+  }
+}

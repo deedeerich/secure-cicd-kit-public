@@ -143,6 +143,21 @@ def main():
             fails.append('R-2 offline: the human note is not on the ticket after the joined run')
         transcripts += r2_transcripts
 
+        # R-3 (KDEC-024): the lifecycle on one ticket -- NEW, escalation, clearance close,
+        # RECURRED, close again -- ends with exactly one ticket, CLOSED.
+        r = P.install(P.Replay())
+        t = P.JiraTracker(r)
+        d3 = tempfile.mkdtemp(dir=tmp)
+        rc = L.main(['--backend', 'jira', '--env-file', write_env(
+            d3, dict(ENV, JIRA_TRANSITION_REOPEN='Reopen')), '--confirm-live', '--phase', 'r3',
+                     '--run-dir', d3])
+        stories = [i for i in t.issues.values() if i['type'] == 'Story']
+        if rc != 0 or len(stories) != 1 or (stories[0]['fields']['status'].get(
+                'statusCategory') or {}).get('key') != 'done':
+            fails.append('R-3 offline: exit %d with %d ticket(s); expected 0 and exactly one, '
+                         'closed' % (rc, len(stories)))
+        transcripts += [os.path.join(d3, f) for f in os.listdir(d3) if f.startswith('transcript')]
+
         # REDACTION: no credential, in any transcript.
         if not transcripts:
             fails.append('no transcript was written')

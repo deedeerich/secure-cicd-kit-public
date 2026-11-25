@@ -16,7 +16,21 @@ HOW
     --porcelain` must be empty. Anything else -- modified, deleted or new untracked files -- is named.
     The real working tree is never touched.
 
-EXIT  0 every test left the tree as it found it   1 one or more did not   2 could not be checked
+    A TEST THAT RAN AND FAILED FAILS THE SWEEP TOO (lane L-R3F, 2026-10-22). This sweep is the local
+    battery's one place that runs every test, and it read only the tree: an exit of 1 printed as
+    `exit=1` under a PASS. The Release 3 candidate went red hosted on a stage-register negative
+    control that no local gate saw fail. Exit 1 (refused) and a timeout now fail the sweep; exit 2
+    stays a report, because 2 is UNKNOWN -- a tool or credential this host lacks -- not a refusal.
+
+    AN EXIT 2 IS NEVER A PASS, AND NEITHER IS AN EXIT NOBODY DEFINED (kit revision 2026-11-25). The sweep
+    printed "PASS ... none failed" over tests that exited 2, and read 3, 5 or a signal as passing. Now
+    each test that exited 2 is NAMED as UNKNOWN in the summary, whose first word is then not PASS, and
+    an exit that is neither 0, 1 nor 2 fails the sweep. Its own exit stays 0 when only UNKNOWNs remain:
+    its verdict is the tree's, and each test's own job (under "Self-test required") enforces the test.
+    tests/prove_unknown_never_passes.py U4.
+
+EXIT  0 every test left the tree as it found it and none failed   1 one or more did not, or one
+      failed (exit 1) or timed out   2 could not be checked
 """
 import os
 import shutil
@@ -32,6 +46,26 @@ SKIP = {'verify_expected_signals.py': 'needs --fixture and --sarif-dir (a runtim
         'make_fixture.py': 'a generator invoked by other tests',
         SELF: 'this file'}
 TIMEOUT = 600
+
+
+def verdict_of(rc):
+    """-> PASS (0), UNKNOWN (2: a tool or credential this host lacks), FAIL (anything else)."""
+    if rc == 0:
+        return 'PASS'
+    if rc == 2:
+        return 'UNKNOWN'
+    return 'FAIL'
+
+
+def summary(dirty, failed, unknown):
+    """-> (the summary line, the sweep's exit). Never PASS-first while a test is UNKNOWN."""
+    if dirty or failed:
+        return 'FAIL: %d test(s) changed the tree, %d failed or exited outside 0/1/2' % (len(dirty), len(failed)), 1
+    if unknown:
+        return ('TREE CLEAN, %d test(s) UNKNOWN (exit 2: a tool or credential this host lacks; not a pass): %s'
+                % (len(unknown), ', '.join(unknown))), 0
+    return ('PASS: every test left the tracked tree exactly as it found it, and none failed '
+            '(exit 2 is UNKNOWN on this host and is reported, not failed).'), 0
 
 
 def git(args, cwd, check=True):
@@ -70,7 +104,7 @@ def main():
     try:
         tests = sorted(f for f in os.listdir(os.path.join(repo, 'tests'))
                        if f.endswith('.py') and not f.startswith('_'))
-        dirty = []
+        dirty, failed, unknown = [], [], []
         for t in tests:
             if t in SKIP:
                 print('  skip  %-40s %s' % (t, SKIP[t]))
@@ -85,19 +119,30 @@ def main():
             status = git(['status', '--porcelain'], cwd=repo).stdout.strip()
             mark = 'DIRTY' if status else 'clean'
             print('  %-5s %-40s exit=%s' % (mark, t, rc))
+            v = verdict_of(rc)
+            if v == 'FAIL':
+                failed.append((t, rc, (p.stdout + p.stderr) if rc != 'timeout' else ''))
+            elif v == 'UNKNOWN':
+                unknown.append(t)
             if status:
                 dirty.append((t, status.splitlines()))
                 git(['checkout', '--', '.'], cwd=repo, check=False)
                 git(['clean', '-fdq'], cwd=repo, check=False)
-        if dirty:
+        if dirty or failed:
             print('')
             for t, lines in dirty:
                 print('FAIL: %s changed the tree:' % t)
                 for line in lines[:12]:
                     print('        %s' % line)
-            return 1
-        print('PASS: every test left the tracked tree exactly as it found it.')
-        return 0
+            for t, rc, out in failed:
+                print('FAIL: %s %s:' % (t, 'timed out' if rc == 'timeout' else
+                                        'exited 1 (refused)' if rc == 1 else
+                                        'exited %s (neither a verdict nor UNKNOWN)' % rc))
+                for line in out.strip().splitlines()[-12:]:
+                    print('        %s' % line)
+        line, code = summary(dirty, failed, unknown)
+        print(line)
+        return code
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

@@ -1,0 +1,12 @@
+# CODEOWNERS snippet -- the zone readiness attestation (KDEC-036 G1, owner ruling 2026-11-03).
+# Add these lines to the application repository's .github/CODEOWNERS, and in the default branch's
+# protection (or ruleset) require a pull request, require code-owner review, and do not let
+# administrators bypass. Then the only way the attestation changes is a pull request an AppSec
+# reviewer approved -- which is what the deploy checks before login at uat and prod.
+#
+# Replace @your-org/appsec with the AppSec team. Its members are the people the central policy
+# register's AppSec approver list (approver_lists.appsec, GitHub logins) names: the deploy matches the
+# approving reviewer's login against that list, because the job's token cannot read team membership.
+
+/.kit/zone-readiness.json       @your-org/appsec
+/.github/CODEOWNERS             @your-org/appsec @your-org/platform

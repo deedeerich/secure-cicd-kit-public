@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "lz.vend-record/v1",
+  "title": "Landing zone vend record (envelope)",
+  "type": "object",
+  "required": [
+    "schema",
+    "request_id",
+    "result",
+    "resources"
+  ],
+  "properties": {
+    "schema": {
+      "const": "lz.vend-record/v1"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "result": {
+      "type": "string",
+      "minLength": 1
+    },
+    "resources": {
+      "type": "array"
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "api_version": "v1",
+  "client": {
+    "name": "tines-3b-step",
+    "version": "1.0.0"
+  },
+  "correlation_id": "kapi-20261103T101500Z-000000000011",
+  "operation": "tickets.search",
+  "params": {
+    "findings_run_id": "latest",
+    "tracker_query": {
+      "labels": [
+        "security"
+      ],
+      "max_results": 100
+    }
+  }
+}

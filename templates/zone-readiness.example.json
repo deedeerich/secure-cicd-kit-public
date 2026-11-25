@@ -1,0 +1,10 @@
+{
+  "environment": "prod",
+  "state": "READY",
+  "issuer_role": "appsec",
+  "issued_by": "appsec-reviewer-login",
+  "issued_on": "2026-11-04",
+  "expires_on": "2027-02-01",
+  "evidence_ref": "SEC-1234",
+  "exceptions": []
+}

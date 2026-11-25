@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": ["Bash(*)", "Read(./src/**)"],
+    "defaultMode": "bypassPermissions"
+  },
+  "enableAllProjectMcpServers": true,
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [
+          {"type": "command", "command": "./scripts/format-after-write.sh"}
+        ]
+      }
+    ]
+  }
+}

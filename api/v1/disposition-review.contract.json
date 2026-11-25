@@ -1,0 +1,95 @@
+{
+ "schema": "kit-disposition-review/1",
+ "title": "The review-time evaluation of a kit disposition decision: one contract for the kit export and the evidence harness",
+ "status": "Reviewer requirement adopted by the coordinator (2026-11-11, KDEC-051); every default here is PROPOSED for the owner.",
+ "applies_to": "kit-disposition-decision/1",
+ "original_record": {
+  "rule": "The decision object a kit run exported is the ORIGINAL record. A reader never changes its dates and never re-decides it: effective_decision stays what the kit evaluated on evaluated_on. A review adds a SEPARATE evaluation with its own date; both are kept.",
+  "fields": [
+   "schema",
+   "basis",
+   "recorded_decision",
+   "effective_decision",
+   "finding_cleared",
+   "scope",
+   "expires",
+   "separation_of_duties",
+   "source_register",
+   "evaluated_on",
+   "reason"
+  ],
+  "evaluation_date_field": "evaluated_on"
+ },
+ "review_evaluation": {
+  "fields": [
+   "review_state",
+   "review_evaluated_on",
+   "checks",
+   "key_basis_label",
+   "staleness",
+   "staleness_policy_days"
+  ],
+  "evaluation_date_field": "review_evaluated_on",
+  "applies_when": "effective_decision is APPROVED_EFFECTIVE; any other decision is NOT_AN_EFFECTIVE_APPROVAL at review (nothing to re-check, nothing upgraded)",
+  "check_order": [
+   "expiry",
+   "revocation",
+   "scope",
+   "approver_authority",
+   "separation_of_duties"
+  ],
+  "checks": {
+   "expiry": {
+    "pass": "IN_DATE_AT_REVIEW",
+    "fail": "EXPIRED_AT_REVIEW",
+    "not_established": "EXPIRY_NOT_ESTABLISHED",
+    "rule": "expires is a real date on or after the review date; a missing or unreadable date is EXPIRY_NOT_ESTABLISHED, never unexpired"
+   },
+   "revocation": {
+    "pass": "NOT_REVOKED_AT_REVIEW",
+    "fail": "REVOKED_AT_REVIEW",
+    "not_established": "REVOCATION_NOT_ESTABLISHED",
+    "rule": "a revocation on or before the review date fails; with no revocation source the check is not established"
+   },
+   "scope": {
+    "pass": "IN_SCOPE_AT_REVIEW",
+    "fail": "OUT_OF_SCOPE_AT_REVIEW",
+    "not_established": "SCOPE_NOT_ESTABLISHED",
+    "rule": "the decision's scanner and rule equal the finding's, and its scope_path equals or matches (glob) the finding's path"
+   },
+   "approver_authority": {
+    "pass": "APPROVER_AUTHORISED",
+    "fail": "APPROVER_NOT_AUTHORISED",
+    "not_established": "APPROVER_AUTHORITY_NOT_ESTABLISHED",
+    "rule": "the approver held the authority the review policy names; the kit export carries no approver, so not established unless a review source says"
+   },
+   "separation_of_duties": {
+    "pass": "DUTIES_SEPARATED",
+    "fail": "SOD_CONFLICT_APPROVER_IS_REQUESTER",
+    "not_established": "SOD_NOT_ESTABLISHED",
+    "rule": "the approver is not the requester or the author; the kit writes NOT_ESTABLISHED, so not established unless a review source names both"
+   }
+  },
+  "review_states": {
+   "effective": "EFFECTIVE_AT_REVIEW",
+   "not_established": "REVIEW_NOT_ESTABLISHED",
+   "not_applicable": "NOT_AN_EFFECTIVE_APPROVAL",
+   "rule": "the first failing check in check_order names the state; else any check not established gives REVIEW_NOT_ESTABLISHED with the checks named; EFFECTIVE_AT_REVIEW only when every check passes"
+  },
+  "staleness": {
+   "policy_days_default": 30,
+   "policy_default_status": "PROPOSED",
+   "current": "EVALUATION_CURRENT",
+   "stale": "DECISION_EVALUATION_STALE",
+   "not_established": "EVALUATION_DATE_NOT_ESTABLISHED",
+   "rule": "a REVIEW POLICY, never an expiry: an evaluation older than the policy's days before the review date is flagged; it never changes the decision or the review state"
+  },
+  "key_basis": {
+   "durable": "DURABLE_KEYED",
+   "legacy": "LEGACY_KEYED_COMPATIBILITY",
+   "legacy-closed": "LEGACY_KEY_CLOSED",
+   "other": "LINEAGE_OR_OTHER_BASIS",
+   "rule": "a legacy-keyed record is always labelled and never gains approval authority through compatibility parsing: its review state is never EFFECTIVE_AT_REVIEW (re-key it to the durable identity). The legacy window's closing date lives in ONE kit constant, scripts/scan_report.py legacy_key_window_days (closes derived); this contract does not restate it."
+  }
+ }
+}

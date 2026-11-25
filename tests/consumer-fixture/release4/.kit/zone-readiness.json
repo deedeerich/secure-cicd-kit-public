@@ -1,0 +1,12 @@
+{
+  "environment": ["uat", "prod"],
+  "state": "READY_WITH_EXCEPTIONS",
+  "issuer_role": "appsec",
+  "issued_by": "appsec-reviewer",
+  "issued_on": "2026-11-06",
+  "expires_on": "2027-02-04",
+  "evidence_ref": "SEC-2026-0001",
+  "exceptions": [
+    {"control": "dast", "reason": "no staging endpoint yet", "expires_on": "2026-12-31"}
+  ]
+}

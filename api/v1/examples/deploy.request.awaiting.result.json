@@ -1,0 +1,24 @@
+{
+  "api_state": "API_AWAITING_APPROVAL",
+  "api_version": "v1",
+  "correlation_id": "kapi-20261103T101500Z-000000000007",
+  "data": {
+    "awaiting_environments": [
+      "prod"
+    ]
+  },
+  "notes": [
+    "a person must approve the deployment to prod; the API never approves"
+  ],
+  "operation": "deploy.request",
+  "refusal": null,
+  "repository": "example-org/payments-api",
+  "run": {
+    "attempt": 1,
+    "conclusion": null,
+    "id": 40890000007,
+    "status": "waiting",
+    "url": "https://example.ghe.com/example-org/payments-api/actions/runs/40890000007"
+  },
+  "transport": "client"
+}

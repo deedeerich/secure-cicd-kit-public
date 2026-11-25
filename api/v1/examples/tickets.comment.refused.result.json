@@ -1,0 +1,15 @@
+{
+  "api_state": "API_REFUSED",
+  "api_version": "v1",
+  "correlation_id": "kapi-20261103T101500Z-000000000002",
+  "data": {},
+  "notes": [],
+  "operation": "tickets.comment",
+  "refusal": {
+    "code": "API_TICKET_NOT_KIT_STAMPED",
+    "detail": "SEC-77 does not carry the kit's cluster stamp in this tracker"
+  },
+  "repository": "example-org/payments-api",
+  "routing_result": "",
+  "transport": "workflow_dispatch"
+}

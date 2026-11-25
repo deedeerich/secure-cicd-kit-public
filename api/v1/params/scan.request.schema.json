@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/params/scan.request.schema.json",
+  "title": "params of scan.request",
+  "description": "Run the kit's security scan on a branch or tag: the request is dispatched AT that ref, and the scan reads the ref's head commit.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "ref": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._/-]{1,200}$"
+    },
+    "reason": {
+      "type": "string",
+      "maxLength": 200
+    }
+  },
+  "required": [
+    "ref"
+  ]
+}

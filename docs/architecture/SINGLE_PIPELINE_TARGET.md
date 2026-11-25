@@ -450,10 +450,10 @@ means implemented but reachable only from a self-test. A dash means absent.
 Two of the kit's own inputs currently default to not blocking, and after consolidation those
 defaults become estate policy by accident unless somebody chooses them on purpose.
 
-- **`soft_fail_sast` defaults to true** in `reusable-security.yml`. Every consumer that does not
-  set it gets advisory SAST.
-- **`fail_on_cvss` defaults to 11** in `reusable-nvd-cve.yml`, and the maximum CVSS score is 10.
-  The default therefore never blocks, and the `trivy_fail_severities` default is empty.
+- **`soft_fail_sast`** in `reusable-security.yml` defaulted to true when this was written; it now
+  defaults to **false** (KDEC-008 OD-7), so a consumer that changes nothing gets enforced SAST.
+- **`fail_on_cvss`** in `reusable-nvd-cve.yml` had an unreachable default above the maximum CVSS score
+  of 10; it now **ships at 9.0** (owner ruling O-12). The `trivy_fail_severities` default is still empty.
 
 Neither is wrong as a shipping default for an opt-in add-on — an add-on that blocks on first
 install gets uninstalled. Both are wrong as the default for the only pipeline in the estate, and

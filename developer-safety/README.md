@@ -14,7 +14,7 @@ Securing only CI misses four earlier, cheaper chances to stop a mistake. This di
 | `hooks/` | `pre-commit` config — early feedback on the developer's machine |
 | `pr-templates/` | PR body requiring evidence, risk, rollback, and independence disclosure |
 | `codeowners/` | CODEOWNERS example — routes review and documents the consequential surface |
-| `branch-protection/` | Profiles for solo / small-team / critical-service, plus applier JSON |
+| `branch-protection/` | Profiles for solo / small-team / critical-service, plus applier JSON; the push ruleset refusing secret files (`push-ruleset-secret-files.json`, `apply-push-ruleset.sh`) |
 
 ## Two rules
 
@@ -29,7 +29,7 @@ at the developer's desk.
 ## Setup
 
 ```bash
-cp developer-safety/gitignore/baseline.gitignore .gitignore     # or append
+bash developer-safety/gitignore/merge-baseline.sh .                 # merges; never replaces your .gitignore
 cp developer-safety/hooks/.pre-commit-config.yaml .
 cp developer-safety/pr-templates/PULL_REQUEST_TEMPLATE.md .github/
 
@@ -38,6 +38,10 @@ detect-secrets scan > .secrets.baseline
 pre-commit install && pre-commit install --hook-type pre-push
 pre-commit run --all-files      # expect noise on first run; triage, don't blanket-ignore
 ```
+
+Then apply the push ruleset that refuses secret files server-side, where no local hook runs (Tines
+GitSync, the web editor, bots): `bash developer-safety/branch-protection/apply-push-ruleset.sh
+<owner>/<repo>`, and enable push protection where it is licensed. See `docs/adoption/LEAK_GATES.md`.
 
 Then pick a branch-protection profile — see `branch-protection/PROFILES.md`. **The invariant is the
 same at every team size; only the mechanism for achieving independence changes.**

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "live-target-authorisation.schema.json",
+  "title": "Live-target authorisation record (KREQ-558)",
+  "description": "Read from .kit/live-target-authorisation.json on the default branch before any DAST run or deployed scan (scripts/live_target_authorisation.py). An entry is in force for (scan, environment, target) when all three are named exactly, authorised_on <= today <= expires_on, and the window is at most 366 days. Absent, malformed, expired or out of scope is PREREQUISITE_UNAVAILABLE: the scan is not run.",
+  "type": "object",
+  "required": ["schema_version", "authorisations"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "authorisations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "environment", "targets", "scans", "authorised_by", "authorised_on", "expires_on", "reference"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "environment": {"type": "string", "minLength": 1, "description": "The GitHub environment, exactly."},
+          "targets": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "description": "Target names, exactly; no wildcard."},
+          "scans": {"type": "array", "minItems": 1, "items": {"enum": ["dast", "deployed-scan"]}},
+          "authorised_by": {"type": "string", "minLength": 1, "description": "A role, never a person's name."},
+          "authorised_on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+          "expires_on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+          "reference": {"type": "string", "minLength": 1, "description": "The change or ticket that records the target owner's agreement."}
+        }
+      }
+    }
+  }
+}

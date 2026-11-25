@@ -9,6 +9,9 @@ directory in three shapes:
     not_run      the same SARIF, but the job did not run                        -> 0, no job
                  (a row that established nothing contributes nothing; it is not a clean zero)
     two_jobs     findings in two jobs                                           -> 2, both jobs
+    secret       a gitleaks finding in secret-scan -> 1, and secret_findings names its
+                 fingerprint (scan_report.fingerprint) -- the key a policy-register secret
+                 exception names (owner ruling 2026-10-22, lane L-S); no other row adds to it
 
 EXIT  0 counts are right   1 wrong   2 could not be checked
 """
@@ -45,11 +48,27 @@ def state(scanner, job, execution, sarif):
             'gate': 'PASS', 'job': job}
 
 
+GITLEAKS = {
+    'version': '2.1.0',
+    'runs': [{
+        'tool': {'driver': {'name': 'gitleaks', 'rules': [{'id': 'generic-api-key'}]}},
+        'results': [{
+            'ruleId': 'generic-api-key', 'level': 'error',
+            'message': {'text': 'generic-api-key has detected secret for file app/settings.py.'},
+            'locations': [{'physicalLocation': {
+                'artifactLocation': {'uri': 'app/settings.py'},
+                'region': {'startLine': 3}}}],
+        }],
+    }],
+}
+
+
 def run_case(states):
     work = tempfile.mkdtemp(prefix='report-counts-')
     try:
         for name, st in states:
-            io.open(os.path.join(work, st['sarif']), 'w', encoding='utf-8').write(json.dumps(SARIF))
+            doc = GITLEAKS if st['scanner'] == 'gitleaks' else SARIF
+            io.open(os.path.join(work, st['sarif']), 'w', encoding='utf-8').write(json.dumps(doc))
             io.open(os.path.join(work, 'state-%s.json' % name), 'w', encoding='utf-8').write(
                 json.dumps(st))
         out = os.path.join(work, 'gh_output')
@@ -77,6 +96,9 @@ CASES = [
     ('two_jobs', [('bandit', state('bandit', 'sast-bandit', 'COMPLETE', 'bandit.sarif')),
                   ('semgrep', state('semgrep', 'sast-semgrep', 'COMPLETE', 'semgrep.sarif'))],
      '2', 'sast-bandit sast-semgrep'),
+    ('secret', [('gitleaks', state('gitleaks', 'secret-scan', 'COMPLETE', 'gitleaks.sarif')),
+                ('bandit', state('bandit', 'sast-bandit', 'COMPLETE', 'bandit.sarif'))],
+     '2', 'sast-bandit secret-scan'),
 ]
 
 
@@ -97,6 +119,16 @@ def main():
         # would be "the reporter never got this far". Both are facts a consumer needs apart.
         if not got.get('findings_written'):
             bad.append('%s: no findings file was published beside the counts' % name)
+        # THE SECRET FINDINGS BY FINGERPRINT (lane L-S): exactly the secret scan's, one per finding.
+        sys.path.insert(0, os.path.join(ROOT, 'scripts'))
+        import scan_report
+        r0 = GITLEAKS['runs'][0]['results'][0]
+        want_fp = scan_report.fingerprint('gitleaks', r0['ruleId'], 'app/settings.py',
+                                          r0['message']['text']) if name == 'secret' else ''
+        if 'secret_findings' not in got:
+            bad.append('%s: no secret_findings written to GITHUB_OUTPUT' % name)
+        elif got['secret_findings'] != want_fp:
+            bad.append('%s: secret_findings=%r, expected %r' % (name, got['secret_findings'], want_fp))
     if bad:
         for b in bad:
             print('FAIL: %s' % b)

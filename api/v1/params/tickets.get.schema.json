@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/params/tickets.get.schema.json",
+  "title": "params of tickets.get",
+  "description": "Read one kit ticket: by tracker reference or by cluster key. Exactly one of the two.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "ref": {
+      "description": "A tracker reference: a Jira numeric id or key (KEY-123), an Azure DevOps or GitHub number.",
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}-[0-9]{1,12}$|^[0-9]{1,12}$"
+    },
+    "cluster_key": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16,128}$"
+    }
+  }
+}

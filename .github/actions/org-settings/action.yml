@@ -1,0 +1,49 @@
+name: org-settings
+description: >-
+  The organisation's governed kit settings, read from the org overlay inside the kit copy delivered by $/
+  (the org's kit-org-settings.json in the kit copy's overlay folder, at the kit commit the caller pinned), never from the calling
+  repository (owner rulings 2026-11-07; GitHub resolves a variable at its lowest level, so a repository can
+  shadow an organisation value). Outputs the overlay resolved for this repository and environment (approver
+  pools, app team, small-team self-approval, environment classes) for the protection step, and the Azure
+  cloud of this environment. With azure 'true' it refuses before login an environment whose cloud the
+  overlay leaves unset while it declares more than one Azure cloud, or a call or KIT_CLOUD that disagrees
+  with the overlay, and writes the cloud the sign-in uses to CLOUD. scripts/org_settings.py;
+  tests/prove_org_settings.py.
+inputs:
+  environment: {description: "the GitHub environment the job runs in", required: true}
+  cloud: {description: "the call's cloud input (commercial | gov | auto | empty)", required: false, default: ''}
+  bound-cloud: {description: "this environment's KIT_CLOUD, as the job reads it", required: false, default: ''}
+  azure: {description: "'true' when an Azure sign-in follows (the cloud is then decided, or refused)", required: false, default: 'true'}
+outputs:
+  org_settings: {description: "the resolved overlay, compact JSON (kit-org-settings-resolved/1)", value: "${{ steps.r.outputs.org_settings }}"}
+  org_settings_state: {description: "ORG_OVERLAY_APPLIED | ORG_OVERLAY_ABSENT | ORG_OVERLAY_INVALID | ORG_OVERLAY_AMBIGUOUS", value: "${{ steps.r.outputs.org_settings_state }}"}
+  azure_cloud: {description: "commercial | gov: the cloud the sign-in uses", value: "${{ steps.r.outputs.azure_cloud }}"}
+  azure_cloud_state: {description: "azure_cloud in assurance-taxonomy.yaml", value: "${{ steps.r.outputs.azure_cloud_state }}"}
+  small_team_self_approval: {description: "the overlay's small_team_self_approval state for this repository", value: "${{ steps.r.outputs.small_team_self_approval }}"}
+runs:
+  using: composite
+  steps:
+    - name: Resolve the org overlay for this repository and environment
+      id: r
+      shell: bash
+      env:
+        # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
+        OS_ENVIRONMENT: ${{ inputs.environment }}
+        OS_CLOUD: ${{ inputs.cloud }}
+        OS_BOUND_CLOUD: ${{ inputs.bound-cloud }}
+        OS_AZURE: ${{ inputs.azure }}
+      run: |
+        set -u
+        kit_root="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)"
+        if [ ! -s "$kit_root/scripts/org_settings.py" ]; then
+          # A kit copy without the reader cannot have an overlay the reader would apply; say so, decide nothing.
+          echo "::error title=Org settings reader absent::scripts/org_settings.py is not in the kit delivered by \$/; nothing was deployed."
+          echo "org_settings_state=ORG_OVERLAY_INVALID" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi
+        azure=()
+        [ "${OS_AZURE:-true}" = "true" ] && azure=(--azure)
+        python3 "$kit_root/scripts/org_settings.py" resolve --kit-root "$kit_root" \
+          --repository "${GITHUB_REPOSITORY:-}" --environment "${OS_ENVIRONMENT:-}" \
+          --cloud "${OS_CLOUD:-}" --bound-cloud "${OS_BOUND_CLOUD:-}" "${azure[@]}" \
+          --github-output "$GITHUB_OUTPUT" --github-env "$GITHUB_ENV"

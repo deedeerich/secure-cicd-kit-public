@@ -304,15 +304,29 @@ def invoked_by_a_workflow(root, rel):
     return False
 
 
+def _without_comments(text):
+    """The text with comment lines and trailing ` # ...` comments removed. A comment that NAMES a
+    file does not run it: lane L-A's gate cites wiring/gate-rung.patch.md in three comments of
+    reusable-security.yml, and with comments counted that design note became "reached" -- the
+    self-test's own unreached fixture -- so the BUILT-needs-reach control passed when it had to
+    fail (Release 3 candidate, public job 119903702614)."""
+    out = []
+    for ln in text.splitlines():
+        if ln.lstrip().startswith('#'):
+            continue
+        out.append(re.sub(r'\s#\s.*$', '', ln))
+    return '\n'.join(out)
+
+
 def reachable(root, rel):
     """BUILT means reachable from something that runs: the code path IS a workflow or composite, or
-    a workflow or composite names it."""
+    a workflow or composite names it on a line that is not a comment."""
     if rel.startswith('.github/'):
         return True
     base = os.path.basename(rel)
     for p in (glob.glob(os.path.join(root, '.github', 'workflows', '*.yml'))
               + glob.glob(os.path.join(root, '.github', 'actions', '*', 'action.yml'))):
-        if base in io.open(p, encoding='utf-8', errors='replace').read():
+        if base in _without_comments(io.open(p, encoding='utf-8', errors='replace').read()):
             return True
     return False
 
@@ -467,6 +481,9 @@ def self_test():
     if not any('stage 9' in x and 'reached by no workflow' in x for x in f):
         fails.append('a BUILT claim on code no workflow reaches was accepted')
     STAGES[9].update(saved)
+    # ...and a comment naming the file is not reach (how the control above went green-when-red).
+    if 'gate-rung' in _without_comments('  # wiring/gate-rung.patch.md\n  run: x  # gate-rung.md'):
+        fails.append('a comment naming a file was counted as reaching it')
 
     # G-07: a guardrail's test must exist and be run by a workflow; UNTESTED needs a reason.
     saved_g = dict(GUARDRAIL_TESTS)
@@ -506,6 +523,14 @@ def main():
     a = ap.parse_args()
     if a.self_test:
         return self_test()
+    # The negative controls run on EVERY invocation, not only under --self-test: the local sweep
+    # (tests/prove_tests_leave_tree_clean.py) runs this file with no arguments, and on the Release 3
+    # candidate it reported exit=0 while the hosted --self-test failed. A checker whose controls
+    # no longer fail cannot pass anything.
+    if self_test() != 0:
+        sys.stderr.write('FAIL: the stage-phase checker\'s own negative controls did not hold (above); '
+                         'its verdict on the register cannot be trusted.\n')
+        return 1
 
     fails, rows = check()
 

@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "_about": "Governed configuration for scripts/governance_gate.py (KDEC-059). The gate reads this file from the BASE branch only, so a pull request can never select its own profile or loosen its own classification. Any change to this file is itself a protected change (governance machinery) and holds for the authorizer of the profile the BASE names. docs/operations/GOVERNANCE_PROFILES.md.",
+  "profile": "personal",
+  "decision": "KDEC-059",
+  "profiles": {
+    "personal": {
+      "_about": "Genuinely solo: the owner is the authorizer and no second human is ever required. A protected change merges only with the owner's recorded authorization, a PR comment by owner_login reading `/kit-authorize <40-hex head sha>`, plus independent technical validation (the trusted checks and the base-side checks). A placeholder login authorizes nothing.",
+      "owner_login": "replace-me-owner-login"
+    },
+    "employer": {
+      "_about": "Development may be solo, but pull requests to the default branch deploy to production: a protected change needs approvals on the CURRENT head commit from the organization's assigned reviewers, never by the author or by anyone who pushed a commit to the pull request. Team membership is read with the optional org-read secret named in governance-gate.yml (read:org); without it, only reviewer_logins count, and with neither the change holds.",
+      "reviewer_teams": ["YOUR_ORG/replace-me-kit-control-owners"],
+      "reviewer_logins": [],
+      "required_approvals": 1
+    }
+  },
+  "trusted_checks": [
+    {
+      "name": "Self-test required",
+      "workflow": ".github/workflows/self-test.yml",
+      "defined_by": [".github/workflows/self-test.yml", "scripts/selftest_required.py"]
+    }
+  ],
+  "classes": [
+    {"class": "merge_logic", "why": "decides whether a change may merge", "paths": [".github/workflows/dependabot-triage.yml", ".github/workflows/reusable-dependabot-triage.yml", ".github/workflows/reusable-dependabot-keep-current.yml"]},
+    {"class": "scanner_floor", "why": "decides which scanners must run", "paths": ["capability-floor.json", "scanner-registry.yaml", "scripts/capability_floor.py", ".github/actions/capability-floor/", "scanner-obligations.json", "scripts/scanner_obligations.py", ".github/actions/scanner-obligations/"]},
+    {"class": "validator", "why": "decides what the self-test and the policy gate prove", "paths": ["tests/", "scripts/selftest_required.py", "scripts/protected_paths.py"]},
+    {"class": "policy", "why": "decides how hard the controls enforce and who owns them", "paths": ["policy/", "profiles/", "CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS", "dispositions/", "assurance-taxonomy.yaml", "id-mappings.json", "docs/assurance/"]},
+    {"class": "security_control", "why": "the kit's workflows, actions, scripts, schemas, templates and API", "paths": [".github/", "scripts/", "schemas/", "templates/", "api/", "developer-safety/", "wiring/", "skills/", "tools/"]},
+    {"class": "operational_boundary", "why": "infrastructure, rollback classes and deploy targets", "paths": ["infra/", "rollback-resource-classes.yaml", "overlays/"]}
+  ]
+}

@@ -14,6 +14,16 @@ NOT live (stub-proven only, tests/prove_deploy_outcome.py): EMPTY and UNKNOWN pr
 PARTIAL_APPLY / STATUS_UNTRUSTED (matrix B and D), a capability refusal at a production tier,
 provenance tags written, a post-swap production failure. `requires-integration-environment` is
 empty: the three surfaces left it on the runs above.
+SEQUENTIAL ROLLBACK (2026-10-22, lane L-RB, KDEC-019 item 4): several deployments reversed newest
+first with the application's end-to-end tests between steps -- built and proven against the stub
+cloud only (tests/prove_rollback_sequence.py); never run live. Section "Sequential rollback" below.
+KDEC-021 (2026-10-23, lane L-RB2): a TEST PERIOD after every step, App Service slots restored to the
+requested version, deploys frozen per target during a rollback and a kit deploy that lands anyway
+rolled back first -- stub-proven (S13..S19), never run live.
+KDEC-023 (2026-10-23, lane L-RB3): resource classes (SHARED_MULTI_CONFIG entries rolled back alone,
+every other entry read back byte-identical; STABLE resources changed by another actor -> dependency
+review, partial or no rollback, the graph), ROLLBACK_REQUIRES_HUMAN_DECISION emitted, and the
+dependency check of an incoming deploy after a rollback -- stub-proven (D1..D8), never run live.
 ```
 
 ## The rule
@@ -174,6 +184,222 @@ genuinely different semantics:
 capture → mutate → validate → restore-on-failure → verify-restoration
 ```
 
+## Sequential rollback — several deployments, tested end to end between steps
+
+KDEC-019 item 4 (owner, 2026-10-22, relaying a colleague): when more than one deployment must be
+rolled back, *"and can be done because nothing else touched the resource and/or because the
+resource was shared but still able to be rolled back for that particular application or deployment
+… intelligently then we should do end to end tests to make sure that between each rollback things
+still work."* Built by lane L-RB: `scripts/rollback_sequence.py`, `.github/workflows/reusable-rollback-sequence.yml`,
+`templates/rollback-sequence.yml`, record schema `schemas/rollback-sequence.schema.json`.
+
+Everything above is about **one run** reversing **its own** change. A sequence reverses **several
+standing deployments** — several runs' manifests, or several resources of one release — and adds
+nothing to the per-run rules: each step is the same manifest-scoped, precondition-checked,
+live-verified reversal the deploys already perform (`deploy_contract.py reverse`, the same code).
+What the sequence adds is **order**, **eligibility before each step**, and **tests between steps**.
+
+**Order.** Steps are listed oldest first and executed **newest first**, because a later release may
+stand on an earlier one (DCR §8.1 P6). A sequence listed in the wrong order does not reverse out of
+order: the first step it reaches has later releases standing on it, and it stops before touching
+anything.
+
+**Eligibility, from a fresh live read just before each step.** Two bases, the two the owner named:
+
+| basis | means | adapters |
+|---|---|---|
+| `ELIGIBLE_UNTOUCHED` | every object the run's manifest names holds what the run left (P1 stamp, P2 version), no later release stands on it (P6), nothing labels it (P5), and nothing else on the resource moved | both |
+| `ELIGIBLE_OWNED_PART_SEPARABLE` | the resource is shared and something else on it moved (another actor's inactive revision, a newer latest revision that takes no traffic), but **this deployment's part** — its revision and its traffic — is intact and is reversed on its own (DCR §8.1, "the unit of conflict is the mutation") | Container Apps |
+
+Anything else stops the sequence **before** the step, and nothing of that step or any later one is
+touched: `ROLLBACK_REQUIRES_HUMAN_DECISION` (touched by someone else, unreadable, a later release
+outside the sequence standing on it, no valid mechanism, a deployment that is not standing), or
+`ROLLBACK_PROHIBITED` for a step the caller declares forward-fix only (`forward_fix_only`, with the
+reason: the emergency mitigation and RBAC rows of the table above). Revisions created by steps this
+sequence has already reversed are its own, not another actor's. **App Service is eligible only
+untouched:** its reversal is verified by comparing every slot it captured, so a slot another actor
+moved would make the reversal unverifiable; the step stops before it rather than run to a certain
+`ROLLBACK_PARTIAL`.
+
+**A step is complete only when all four hold, in order:**
+
+1. eligible (above);
+2. reversed and **`ROLLBACK_VERIFIED`** by the deploy contract — `ROLLBACK_PARTIAL` or
+   `STATUS_UNTRUSTED` halts the sequence (`ROLLBACK_SEQUENCE_HALTED_ROLLBACK_UNVERIFIED`); a partial
+   rollback is never verified;
+3. **healthy**: the deploy's own health probe answers 200 on the consumer-facing name
+   (`ROLLBACK_SEQUENCE_HALTED_HEALTH_FAILED` otherwise; the tests are not run on an unhealthy state);
+4. **the application's end-to-end tests pass, over a test period**: the caller's `e2e_test_command`,
+   run in the caller's checkout by `/bin/sh` at the **start** and the **end** of a test period after
+   **each** step (and every `e2e_check_interval_minutes` inside it, when set), with the step named in
+   its environment (`$ROLLBACK_STEP`, `$ROLLBACK_STEPS_TOTAL`, `$ROLLBACK_DEPLOYMENT`,
+   `$ROLLBACK_ADAPTER`, `$ROLLBACK_APP_URL`, `$ROLLBACK_SEQUENCE_ID`, `$ROLLBACK_CHECK_PHASE`),
+   **without** the deploy identity's Azure session (its Azure configuration directory is a fresh
+   empty one), and bounded by `e2e_timeout_minutes`. The health probe runs before the tests at every
+   check. A failure **or a timeout** at **any** check halts the sequence,
+   `ROLLBACK_SEQUENCE_HALTED_E2E_FAILED` (or `_HEALTH_FAILED`), for a human decision, on the state it
+   reached. It never continues on a broken intermediate state, and the final step gets its period
+   too: nothing is reported verified before it ends.
+
+### The test period, the requested version, and deploys mid-rollback (KDEC-021, owner, 2026-10-23)
+
+The owner's three rulings, as built by lane L-RB2:
+
+- *"There needs to be an end to end test period."* — `e2e_test_period_minutes` on the reusable and
+  the template, **default 15**, bounded **0 < m ≤ 240**. **0 is refused**,
+  `ROLLBACK_SEQUENCE_REFUSED_NO_TEST_PERIOD`, the same family as `ROLLBACK_SEQUENCE_REFUSED_NO_E2E`
+  (one instant is not a period); past 240 is `ROLLBACK_SEQUENCE_REFUSED_INPUT`. A period shorter than
+  the baseline 15 is recorded as a reduced control (`e2e-test-period`, `CONTROL_RECONFIGURED`) in the
+  control posture and needs an attributed weakening. Each check's phase (`start` | `interval` |
+  `end`), time, offset from the start of the period and results are in the step's `test_period`.
+- App Service slots *"should rollback to the previous code that is being requested."* — the sequence
+  names `target_version` (the image `registry/repo@sha256:…` or digest production ran before the
+  oldest deployment being reversed; **required** when any step is App Service). It is checked
+  **before anything is touched** against what the oldest deployment's snapshot recorded — a version
+  the target never held is refused, because returning to it would be a deploy, not a rollback. After
+  every verified reversal each slot the step affected (production, the deploy slot, and the slot a
+  swap moved images through) is **read back live** against the version it held before that
+  deployment (`restored`), and after the last step production is read back against
+  `target_version` (`final_version`). Stacked slot+swap deployments now reverse cleanly: each
+  reversal hands the slot's ownership stamp back to the release that held it before
+  (`deploy_contract.py` records the slot's `prior_stamp` on `MODIFIED` and restores it, as it
+  already did for production on a swap). A slot changed by an actor **other than the kit** (no kit
+  stamp, or a kit-stamped slot holding an image the kit did not leave) still stops the sequence for a
+  human, and the reason says so.
+- *"A deployment rolling mid rollback means the deployment has to be rolled back."* — (a) **Frozen**:
+  the deploy reusables and the rollback reusable share **one concurrency group per target**,
+  `kit-target-<environment>-<resource group>-<name>` (the adapter prefix was dropped from the deploy
+  groups so the rollback can name the same lock from `target_resource_group` + `target_name`),
+  never cancelled in progress; a deploy queues behind a rollback of its target. A sequence holds one
+  target's lock, and a step on any other target is refused (`--locked-target`); a release over
+  several targets is rolled back as one sequence per target. (b) **Backstop**: the target's kit
+  releases are recorded when the sequence starts (`baseline`) and re-read before **every** step; a
+  kit-stamped release that is new and not in the sequence landed mid-rollback. It is fetched
+  (`gh run download` of its `deploy-evidence-<run>-<attempt>`), put at the **front** of what remains,
+  rolled back **first** with its own eligibility, reversal and test period, and listed in `inserted`
+  (its step carries `inserted: true` and why). Evidence that cannot be fetched, more than five
+  landings, or a change with no kit stamp stops the sequence for a human.
+
+**No end-to-end tests is a refusal, not a pass.** An empty `e2e_test_command` is
+`ROLLBACK_SEQUENCE_REFUSED_NO_E2E` before login and before the first step; nothing is touched. The
+alternatives were weighed: *run the reversals and record the gap* leaves exactly the untested
+intermediate states the rule forbids, and a record after the fact cannot un-break a user path;
+*treat the health probe as the test* collapses one request into functional validation, which this
+kit refuses for promotion for the same reason. Refusing is the non-destructive branch: each deploy's
+own single-run reversal is unaffected, and a caller with no tests can still reverse one deployment at
+a time.
+
+**The record** (`rollback-sequence.json`, validated against its schema before it is written; the job
+summary and an artifact): the sequence result; each step's deployment, position and execution order,
+eligibility basis or disposition with the checks that decided it, rollback result and residue,
+health, e2e result and exit code, the test period's checks, the live read-back of what it restored,
+whether it was inserted mid-sequence, timestamps; the lock held, the requested and final version,
+the baseline of kit releases; and, for anything but a verified sequence, an
+escalation contract (owner, next action, artefacts, what an automated actor may and may not do — the
+same lists as the deploy outcome). **`ROLLBACK_SEQUENCE_VERIFIED` only when every step is
+`ROLLBACK_STEP_VERIFIED`.** Vocabulary: `rollback_sequence`, `rollback_sequence_step`,
+`rollback_step_eligibility` in `assurance-taxonomy.yaml`.
+
+**Proven locally, not live.** `tests/prove_rollback_sequence.py` deploys with the shipped deploy
+reusables against the stub cloud (three stacked Container App releases; one App Service + Container
+App release) and runs the sequence: all good; step 2 of 3 failing its tests (halts, step 3
+untouched); an ineligible step (stops before it); a shared app with the app-owned part intact
+(eligible); no tests (refused, zero mutating calls); a partial rollback (never verified); forward-fix
+only; wrong order; a failed probe; a hung test; evidence of another run; and, for KDEC-021, a test
+period with an interval, a failure at the end of a period, a 0-minute and an over-bound period, two
+stacked App Service slot+swap releases returned to the requested version (and a never-held or
+missing version refused), a slot changed outside the kit (image, and a foreign stamp), a kit deploy
+landing mid-sequence (rolled back first; and with no evidence, a human decision), and the shared
+concurrency group (S13..S19). **Limits:** never executed against Azure (risks R-04); the concurrency
+group is proven by resolving the expressions, not by a hosted queue; GitHub keeps one pending run per
+group and discards an older pending one (it mutated nothing, and is re-run by hand); a sequence holds
+one target's lock; P5 dependents beyond traffic labels are not readable (DCR §8.7); the e2e command is
+the caller's own code and is trusted as such.
+
+### Cross-edited resources and the incoming deploy (KDEC-023, owner, 2026-10-23)
+
+Owner: *"if someone else or a different service edited something then we need to follow the same
+cross edited rollback rules"* — shared, multi-configurable resources where *"only the product's
+configs were changed … can be rolled back but if a solid stable resource … is changed by something
+else the dependency review and refusal to rollback fully and the partial or no rollback with reasons
+and dependency graph is provided to the user."* Built by lane L-RB3.
+
+**Resource classes** (`rollback-resource-classes.yaml`, Azure types → class; vocabulary
+`rollback_resource_class`). The longest registered type that prefixes a resource id decides; a type
+registered nowhere is never guessed (a human decision, and so is everything tied to it).
+
+| class | means | examples |
+|---|---|---|
+| `SHARED_MULTI_CONFIG` | many products keep their own **entries** in one resource; only the product's entries are reversed | Front Door routes / origin groups / rule sets; NSG rules; firewall policy rule collections; Application Gateway listeners, rules, WAF custom rules; route-table routes; DNS record sets; API Management APIs |
+| `STABLE` | one product's whole resource | App Service / Function app; Container App, AKS; Container Instance; SQL, PostgreSQL, Cosmos DB; storage; Key Vault; VM |
+
+**The evidence.** A step with `adapter: arm` reads `resources.json` from the deploying run's evidence:
+every node the release CREATED or MODIFIED with its body before (`prior`) and as left (`post`),
+optional `depends_on`, and optionally the other products' entries as they stood
+(`others_at_deploy`) and baselines of what it depends on (`observed`). The product's own entries are
+the ones the evidence names. **The kit's own deploy adapters do not write it yet** — they change one
+App Service or Container App; another deployer that writes it is exercised, a kit one is owed.
+
+**The dependency review** (`scripts/rollback_dependencies.py`), from a fresh read of every node
+through `az rest`:
+
+1. **Mark** each node: `changed-by-this-release` (holds exactly what the release left),
+   `changed-by-other` (does not, carries another release's stamp, or is gone), `unknown` (unreadable),
+   or for something the release depends on but did not change, `unchanged` / `not-judged` (judged
+   only against a recorded baseline).
+2. **Edges** (who depends on what): `depends_on`; every ARM resource id in a node's body (app
+   settings, connection strings by resource id, subnets, private endpoints, role-assignment scopes);
+   every host a node uses that another provides (a Key Vault reference by vault URI); entry → its
+   shared parent; and entries **evaluated together** (NSG and route-table rules by priority or
+   prefix, firewall, WAF and gateway routing rules by priority) coupled to each other.
+3. **Decide.** Blocked: a node changed by another actor or unreadable, a node no machine may reverse
+   (unregistered type; `reversal: human` — RBAC; a data-bearing resource the release *created*), and
+   every release node that depends on one, that one depends on, or that is evaluated together with
+   one.
+
+| outcome (`rollback_dependency_outcome`) | when | what happens |
+|---|---|---|
+| `ROLLBACK_DEPENDENCY_CLEAR` | nothing blocked, stable only | full rollback, verified |
+| `ROLLBACK_SCOPED_TO_PRODUCT_CONFIG` | nothing blocked, shared entries involved | only the product's entries reversed; every other entry and each parent read back byte-identical before and after (basis `ELIGIBLE_OWNED_PART_SEPARABLE` when other products moved their own entries since) |
+| `ROLLBACK_PARTIAL_DEPENDENCY_CONFLICT` | some blocked, some free | **full rollback refused**; the free nodes reversed (dependents first), verified, the test period run; step `ROLLBACK_STEP_PARTIAL`; the sequence stops (`ROLLBACK_SEQUENCE_STOPPED_DEPENDENCY_CONFLICT`) |
+| `ROLLBACK_REFUSED_DEPENDENCY_CONFLICT` | nothing free | nothing touched; step ineligible; the sequence stops |
+
+Partial and refused are **`ROLLBACK_REQUIRES_HUMAN_DECISION`**, now emitted as the record's
+`rollback_state` and the rollback reusable's `rollback_state` output (the box below). Every node's
+mark, decision and reason, the edges, and a **Mermaid** graph are in the step's `dependency_review`,
+in `dependency-graph.json` / `.mmd` in the step's evidence, and in the run summary. An App Service or
+Container App step changed outside the kit carries a one-node graph, refused, the same way. Reversal:
+a MODIFIED node's prior body is PUT back (read-only fields stripped), a CREATED node is deleted, an
+inline entry (a gateway listener) is changed inside one PUT of its parent that touches only the
+product's elements.
+
+**The incoming deploy** — the owner's *"different situation"*: a deploy that arrives during a
+rollback waits on the shared per-target lock (KDEC-021). Her decision: *"We need to do a dependency
+check on the incoming deployment to ensure that it isn't reliant on things that were just rolled back
+… If there are no dependencies on rolled back items then deploy it."* When a sequence reverses
+anything, the rollback reusable uploads a **marker** for the target (`kit-rollback-marker-<target
+key>`, 90 days): its run, the releases it rolled back (run, commit, images), and every node it
+changed (gone, or restored old → new). Both deploy reusables run `scripts/rollback_hold.py check`
+**before login** (they now need `actions: read`):
+
+| `rollback_dependency_check` | when | the deploy |
+|---|---|---|
+| `ROLLBACK_CHECK_NOT_REQUIRED` | no marker, or its base commit is newer than the rollback | proceeds |
+| `DEPLOY_NO_ROLLBACK_DEPENDENCY` | built before the rollback finished; no dependency found | proceeds, with the note |
+| `DEPLOY_REFUSED_ROLLBACK_DEPENDENCY` | built on a rolled-back commit (compare API), ships a rolled-back image, or a `declared_dependencies` entry names a node the rollback removed or changed | refused, routing `BLOCKED`, with the report (summary, annotation, `rollback-check.json`): the rollback, and each dependency old → new or "no longer exists". **No override**: correct the deploy and deploy again |
+| `ROLLBACK_DEPENDENCY_CHECK_INCOMPLETE` | the marker, the commit or the comparison unreadable | refused with the reason; never blind |
+
+**Proven locally, not live** (`tests/prove_rollback_dependencies.py` D1..D8, test first): NSG, Front
+Door and gateway entries rolled back alone with other products' entries byte-identical; a foreign
+edit of the product's own NSG rule (partial: that rule and its priority-coupled sibling left); an App
+Service changed by another actor (full refused, storage and NSG rule reversed, the App Service and the
+Key Vault it references left, the graph emitted); a database changed by another actor (no rollback);
+the marker; the check's every outcome; both deploy reusables as shipped refusing before login (zero
+Azure calls) and deploying when not dependent. **Limits:** never run against Azure — whether ARM
+accepts each PUT of a prior body per type, whether `az rest` answers a missing resource as modelled,
+and whether the artifact, commit and compare APIs answer as recorded are a live run; ticket / PR
+comment posting of the refusal is not wired; the marker expires after 90 days.
+
 ## Integration-test harness — separate, and safe for a different reason
 
 Full destroy is permitted in the personal-tenant test **because absence is proven first**, not
@@ -217,10 +443,11 @@ to know it exists.
 Until then, treat every deploy workflow in this kit as a **candidate implementation**, not a
 recommendation.
 
-> **Status of gate 2 (2026-10-16).** `DEPLOYMENT_CONTRACT_RECONCILIATION.md` did the
-> difference-by-difference comparison (2026-09-18) and says it closes this gate; whether that claim
-> stands is an open owner decision (completion ledger O-09, recommended: yes for the comparison,
-> with promotion — DCR gap 11 — still open). Gate 1 is implemented and proven live (header).
+> **Status of gate 2 (2026-11-13): CLOSED for the comparison.** `DEPLOYMENT_CONTRACT_RECONCILIATION.md`
+> did the difference-by-difference comparison (2026-09-18); the owner accepted that it closes this gate
+> on 2026-11-13 (completion ledger O-09, KDEC-052). Promotion (DCR gap 11) is decided by KDEC-029 and
+> stays under gate 1 for its proof; a live promotion and rollback are still owed (release notes).
+> Gate 1 is implemented and proven live (header).
 
 ## Promotion gate
 
@@ -250,7 +477,11 @@ PARTIAL_APPLY / STATUS_UNTRUSTED are stub-only (DCR §7.8 matrix B and D).
 - [ ] `ROLLBACK_REQUIRES_HUMAN_DECISION` emitted when pre-state is unknown — NOT ticked. Unknown
       pre-state now refuses BEFORE any mutation (`previous_state` UNKNOWN -> `DEPLOY_REFUSED`), and
       a mutation that loses visibility reports `STATUS_UNTRUSTED` with an escalation contract; the
-      `rollback_state` value itself is not emitted anywhere.
+      `rollback_state` value itself is not emitted by the deploy reusables. **KDEC-023 (lane
+      L-RB3):** the sequential rollback now emits it, as the record's `rollback_state` and the
+      rollback reusable's output, wherever a person must decide (a dependency conflict, a halt, an
+      ineligible step); the single-run deploy reversal still substitutes as above, so the box stays
+      unticked for the deploy reusables.
 - [x] Live-state verification after rollback, not command exit status — gap7, including an
       apply-then-error case decided by live state. An entry the reversal did not act on (refused,
       withheld, deferred, mechanism not valid) makes the run `ROLLBACK_PARTIAL` whatever live
@@ -294,3 +525,96 @@ an unbounded job, because it manufactures the exact condition this contract exis
 
 Cost still has to be bounded somewhere. The answer for mutating work is a bound on the **change
 window** with a manifest written before mutation begins — not a wall-clock kill on the job.
+
+**Answered 2026-11-13 (KREQ-717, KDEC-061 PROPOSED, under the owner's KDEC-052 direction).** The deploy jobs of
+the three deploy reusables are now bounded -- `deploy_timeout_minutes`, 30..360, default 90, clamped to 90 outside the
+range and refused before login outside it or below the job's own configured work -- because the question above now
+has an answer:
+
+| kill lands | change manifest at the kill | outcome (DCR-8) | owed to the next run |
+|---|---|---|---|
+| before login / before the first mutation | no entry | nothing changed | nothing (no state recorded) |
+| inside the mutating call | `planned`, issued, unconfirmed | `PARTIAL_APPLY` | `INTERRUPTED_DEPLOY_RECONCILIATION_REQUIRED` |
+| after it, before the run ends (health, traffic, reversal, test period, DAST) | entries, no completed reversal | `STATUS_UNTRUSTED` | `INTERRUPTED_DEPLOY_RECONCILIATION_REQUIRED` |
+| after a verified reversal | entries, reversal verified | `ROLLBACK_VERIFIED` | nothing |
+
+The always() steps run on the cancelled job: the outcome report, then `deploy-interruption` `record`, which writes
+`deploy-state.json` into the evidence and uploads `kit-deploy-state-<target key>`. The next deploy of the target runs
+`deploy-interruption` `check` before login and is refused, naming the run, until a person who reconciled it by hand
+names it in `reconciled_interrupted_run`. Nothing is silently "done" or "clean". `scripts/deploy_interruption.py`;
+`tests/prove_deploy_interruption.py`.
+
+**The other three jobs that change live targets (KDEC-061 M2, lane deploy-bounds, 2026-11-13).** Each was designed kill
+first, then bounded; the same script and composite (`scripts/deploy_interruption.py`, `deploy-interruption`) carry all
+of them. Built and proven with fixture proofs; no hosted run has yet observed a timeout (KDEC-061 M1).
+
+*The sequential rollback* (`reusable-rollback-sequence.yml`): `rollback_timeout_minutes`, 30..360, default 180,
+clamped to 180 outside the range, and refused before login (`DEPLOY_REFUSED_TIME_BOUND`, naming the input) below
+30 + steps x the test period. The sequence record (`rollback-sequence.json`) is written only when the sequence reaches
+its verdict, so what is on disk at the kill decides:
+
+| kill lands | on disk at the kill | outcome | owed to the next run |
+|---|---|---|---|
+| before any step (checkout, protection, fetch, the check, login, lease) | no step work directory | nothing changed | nothing (no state recorded; the previous state stands) |
+| inside a step's reversal (eligibility read, or the deploy contract's reverse) | the newest step's work directory, no `reversal.json` | `PARTIAL_APPLY` (a reversal may have been issued, never confirmed) | `INTERRUPTED_DEPLOY_RECONCILIATION_REQUIRED` |
+| after a reversal, before the verdict (read-back, test period, a later step) | the newest step has `reversal.json`; no sequence record | `STATUS_UNTRUSTED` (an untrusted mixed state: some steps reversed, the last untested) | `INTERRUPTED_DEPLOY_RECONCILIATION_REQUIRED` |
+| after the verdict (marker, upload, posture) | the sequence record | its own result | nothing more (a halt is already `ROLLBACK_REQUIRES_HUMAN_DECISION`, with its record, marker and held lease) |
+
+The always() record step writes the state under the TARGET's `kit-deploy-state-<target key>`, the same name the
+deploy reusables write and read, so the next deploy and the next sequence of that target are both refused, naming the
+run, until a person names it in `reconciled_interrupted_run` (now an input of the sequence too). The lease release
+step is `!cancelled()`, so a killed sequence also leaves the lease marked `mutating` (KDEC-030), as a halt does.
+
+*The registry push* (`reusable-build-docker.yml`, build job): `build_timeout_minutes`, 30..360, default 90, clamped to
+90 outside the range, and refused by the composite's `bound` operation as the job's first step. The build-evidence
+manifest is `planned` before the push and `applied` only once the registry's digest is known:
+
+| kill lands | build evidence at the kill | outcome | recorded |
+|---|---|---|---|
+| before the capability step (build, scan, SBOM) | no snapshot | registry untouched | nothing |
+| capability refused | snapshot, no manifest | registry untouched | nothing |
+| inside the push | manifest `planned` | `PARTIAL_APPLY` (the tag may hold a partial or unproven image) | `INTERRUPTED_PUSH_UNPROMOTABLE` |
+| after the push, before the identity round trip | manifest `applied`, identity not proven | `STATUS_UNTRUSTED` | `INTERRUPTED_PUSH_UNPROMOTABLE` |
+| after the identity round trip (classify, uploads, posture) | `applied`, `REGISTRY_IDENTITY_PROVEN` | proven, but the attest job never runs on a cancelled build job | `INTERRUPTED_PUSH_UNPROMOTABLE` |
+
+Nothing a kill leaves is promoted, and that already held before this bound; the proof shows it rather than adding a
+next-run refusal. The attest job's `if:` has no status function, so GitHub applies `success()`: a cancelled or failed
+build job is never attested, and it signs only `REGISTRY_IDENTITY_PROVEN`. The `image_digest` output is set only by a
+completed push. The promotion gate refuses anything V1 did not verify (`PROMOTION_REFUSED_SIGNATURE`), and break-glass
+does not lift that refusal. The build reusable holds no `actions: read`, and adding it would break every caller, so it
+is not given a next-run reader. Limit: the next push of the same tag reads whatever the tag now names as its rollback
+point; a reversal of the tag is not a promotion, and a tag pulled outside the kit is a person's to re-point against
+the build evidence.
+
+*Live deploy acceptance* (`live-deploy-acceptance.yml`, the harness): a `uses:` job takes no `timeout-minutes`, so the
+dispatch input `timeout_minutes` (default 90) is handed to each reusable's own bound (`deploy_timeout_minutes`,
+`build_timeout_minutes`), whose clamp and refusal apply; its one non-reusable job is bounded at 5 minutes. A kill in a
+deploy cell is the deploy table above (the next dispatch at that target is refused until the run is named); in the
+build cell it is the registry-push table, and its tag is run-unique (`run-<id>-<attempt>`), so no later run builds
+over it. The workflow creates no Azure resource; the sandbox targets are the caller's, so a kill leaves no test
+resource to tear down (the teardown harness of the section below is separate).
+
+`tests/prove_deploy_interruption.py` S2, R (the real sequence engine killed as a process tree mid-test-period after a
+live reversal), P (the shipped push steps with docker shimmed, and the promotion gate), and eight more named mutants.
+
+## Deploy concurrency
+
+Moved here from the comments of `.github/workflows/reusable-deploy-staticwebapp.yml` on 2026-11-13 (integration of the round-5 lanes) to keep that file under the `tests/check_workflow_size.py` fail threshold; the workflow keeps a one-line pointer. The same text still sits in the comments of the App Service and Container App deploy reusables (and, for the concurrency note, of `reusable-build-docker.yml`).
+
+```text
+Concurrency for a CHANGE workflow is the opposite of concurrency for a validation
+workflow. Validation cancels the superseded run — the answer is stale, killing it costs
+nothing. A deployment must NEVER be cancelled mid-mutation: the run dies between the
+change and its verification, leaving a half-applied state with no rollback and no record
+of what it owned. See docs/architecture/ROLLBACK_CONTRACT.md — a cancelled run cannot honour a
+contract that depends on completing its own change manifest.
+
+So: serialize per target, never cancel in flight. GitHub keeps at most one run PENDING
+per group and discards older pending ones, which is safe — a pending run has mutated
+nothing.
+
+KDEC-021 (owner, 2026-10-23): "A deployment rolling mid rollback means the deployment has to be
+rolled back." The group is the TARGET's, shared with reusable-rollback-sequence.yml
+(kit-target-<environment>-<resource group>-<name>, no adapter prefix), so a deploy queues behind a
+rollback of the same target instead of racing it. Proven by tests/prove_rollback_sequence.py S19.
+```

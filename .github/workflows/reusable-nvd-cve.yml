@@ -109,16 +109,46 @@ on:
         # credential is not proving the client can still speak the current API -- the same
         # tool-is-not-workflow distinction this kit exists to enforce, one layer down.
         #
-        # So the version is a live dependency of the scan working at all, not a preference. Upstream
-        # latest at time of change: v12.1.0.
-        default: "12.1.0"
+        # So the version is a live dependency of the scan working at all, not a preference.
+        #
+        # 12.2.2 (lane L-NV, 2026-10-21), from 12.1.0 -- which was "upstream latest" only because the
+        # download URL named jeremylong/DependencyCheck, a separate repository whose releases stop at
+        # 12.1.0; the project lives at dependency-check/DependencyCheck. 12.1.1 gave the NVD client a
+        # read timeout (12.1.0 could wait forever on a dead response, upstream #7418/#7437); 12.2.2
+        # widened the reference-URL column (12.1.0 drops CVE-2026-6785/6786, "Value too long", run
+        # 32382255986) and parses NVD's 9-digit timestamps (#8427). 13.0.0 is not taken: its keyless
+        # update is broken (#8715). validate-scanners.yml probes THIS version and digest
+        # (tests/prove_validate_scanners_matrix.py M9 fails if they drift).
+        default: "12.2.2"
       dependency_check_sha256:
         description: >-
           SHA-256 of dependency-check-<version>-release.zip. The download is refused unless it
           matches. The default is the digest of the default version; change both together.
         type: string
         required: false
-        default: "0e5ba6ae58e753d5841048c6c8e495dbc4c7a4ea921a2b14daeac65195700532"
+        # Maven Central's published .sha256 for dependency-check-cli-12.2.2-release.zip, equal to
+        # the GitHub release asset; the asset's PGP signature verifies against key
+        # 259A55407DD6C00299E6607EFFDE55BE73A2D1ED (Jeremy Long).
+        default: "bf07fefd81af3094c5f6850423b014df44db62ce2dbad0f79079a90df675e44a"
+      nvd_datafeed_url:
+        description: >-
+          Where Dependency-Check builds and refreshes its NVD database. Default: the Dependency-Check
+          project's public datafeed, which builds the full database in about 1.5 minutes. It is a
+          third-party host the runner needs egress to -- unless the organisation's Release 4 mirror is
+          configured (vars.KIT_FEED_MIRROR_URL, KDEC-032): then the mirror's current generation is read
+          instead, or the update is refused by name. NVD_API_KEY is unused while this is set.
+          Empty: the NVD API directly, with NVD_API_KEY -- which, at the NVD API's 2026-10
+          throughput, cannot finish a cold build inside this job's limit.
+        type: string
+        required: false
+        # WHY NOT THE NVD API (lane L-NV, 2026-10-21, measured): it now delivers ~10-40 kB/s per
+        # response (one 2000-record page: 203 s from a 30 MB/s host), and its own 2.0 data feeds are
+        # as slow; ~413k records is 207 such pages. Keyed cold builds in validate-scanners.yml (runs
+        # 39688249062, 39701225219) sat at 10,000-20,000 records for 35+ minutes. This mirror built
+        # the same database in 91-95 s. With a datafeed set, Dependency-Check reads it alone and the
+        # key is unused. TRUST: published by the project whose code this job runs, on the origin of
+        # the hosted suppressions Dependency-Check already fetches by default.
+        default: "https://dependency-check.github.io/DependencyCheck_Builder/nvd_cache/"
       python_version:
         description: "Python version used for the scan runner environment."
         type: string
@@ -255,6 +285,9 @@ jobs:
       nvd_database_state: ${{ steps.summary.outputs.nvd_database_state }}
       cache_state: ${{ steps.summary.outputs.cache_state }}
       routing_result: ${{ steps.posture.outputs.routing_result }}
+      # KDEC-022 item 3: AVAILABLE or UNAVAILABLE, and the check's verdict over this run's SARIF.
+      kev_state: ${{ steps.posture.outputs.kev_state }}
+      kev_verdict: ${{ steps.kev.outputs.kev_verdict }}
       controls_required: ${{ steps.posture.outputs.controls_required }}
       controls_executed: ${{ steps.posture.outputs.controls_executed }}
       controls_unavailable: ${{ steps.posture.outputs.controls_unavailable }}
@@ -265,17 +298,25 @@ jobs:
       weakening_record: ${{ steps.posture.outputs.weakening_record }}
     # The environment is what makes NVD_API_KEY resolvable at all -- see the input's note.
     environment: ${{ inputs.github_environment }}
-    runs-on: ubuntu-latest
+    # THE FEED MIRRORS ARE PRIVATE (Release 4, KDEC-032; R8): a job that reads them runs where the
+    # private endpoint is reachable -- the caller's private-network runner, when one is named.
+    runs-on: ${{ vars.KIT_FEED_MIRROR_RUNNER || 'ubuntu-latest' }}
     # Bounded so a stalled dependency cannot bill six hours (LM-001: unbounded execution
     # converts a dependency failure into uncontrolled cost).
     # NOT YET: a timeout still surfaces as a plain job failure. It SHOULD classify as
     # UNAVAILABLE / EXECUTION_TIMEOUT — cost is bounded here, semantics are not. See
     # docs/roadmap/FUTURE_WORK.md. Do not let this comment imply the mapping exists.
-    # 60, NOT the 20 the other scanners get. This workflow has NEVER RUN, so there are no
-    # observed durations to size from -- and its own docs say a cold-cache update takes 20-40
-    # minutes without an NVD_API_KEY, with 30+ min documented as expected. A limit derived from
-    # sibling jobs would have killed every legitimate cold run. Sized from DOCUMENTATION, not
-    # evidence; re-size once a real run produces a number.
+    # 60, NOT the 20 the other scanners get. First sized from documentation (a cold update of
+    # 20-40 min without an NVD_API_KEY, 30+ expected).
+    # MEASURED 2026-10-21 (correcting "this workflow has NEVER RUN", which was false). Two keyed
+    # COLD updates on hosted runners, Dependency-Check 12.1.0, no cache restored, ~380k records:
+    #   run 32382255986 (2026-08-20, main at 665028b): update 9 min 17 s, cache save 116 MB in
+    #     4 s, scan 8 s, whole job 11.5 min -- SUCCESS
+    #   run 32190300370 (2026-08-18): update 32 min 03 s (the NVD API's pace varies ~3.5x), after
+    #     an install step that hung 23 min on apt -- since removed (the preinstalled-JRE path)
+    # 60 fits the slower cold update with ~25 min to spare. Keyless runs remain unmeasured. The
+    # depcheck leg of validate-scanners.yml now prints its own cold and warm update times;
+    # re-size from those if they disagree.
     timeout-minutes: 60
     env:
       # Every step writes its evidence here, and "Upload scan artifacts" collects exactly this
@@ -283,10 +324,10 @@ jobs:
       OUTDIR: nvd-scan-results
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ inputs.python_version }}
 
@@ -295,17 +336,59 @@ jobs:
 
       # ---------------------------------------------------------------- Trivy
 
+      # TRIVY IS INSTALLED, NOT SET UP BY AN ACTION (KDEC-027): aquasecurity/trivy-action's
+      # setup-trivy checks out `aquasecurity/trivy` against github.server_url, which on a GHE.com
+      # tenant does not have it. Release binary from github.com, pinned by version and sha256.
+      - name: Install Trivy (pinned release binary)
+        id: trivy_install
+        if: inputs.enable_trivy
+        shell: bash
+        run: |
+          set -euo pipefail
+          v=0.71.2
+          if [ "$(trivy --version 2>/dev/null | sed -n 's/^Version: //p' | head -n 1)" != "$v" ]; then
+            t="trivy_${v}_Linux-64bit.tar.gz"
+            d="$(mktemp -d)"
+            curl -sSfL --retry 3 --connect-timeout 20 -o "$d/$t" \
+              "https://github.com/aquasecurity/trivy/releases/download/v${v}/$t"
+            echo "0510e71e2fd39bf863856d499c8dc19feb4e7336546394c502a8f5cc7ab27460  $d/$t" | sha256sum -c -
+            tar -xzf "$d/$t" -C "$d" trivy
+            sudo install -m 0755 "$d/trivy" /usr/local/bin/trivy
+            rm -rf "$d"
+          fi
+          trivy --version | head -n 1
+          echo "TRIVY_CACHE_DIR=$RUNNER_TEMP/trivy-cache" >> "$GITHUB_ENV"
+          echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+      - name: Trivy database cache
+        if: inputs.enable_trivy
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/trivy-cache
+          key: trivy-db-${{ runner.os }}-${{ steps.trivy_install.outputs.day }}
+          restore-keys: trivy-db-${{ runner.os }}-
+      # AFTER the cache restore, so a restored public copy can never stand in for a refused mirror.
+      - name: Trivy database from the organisation mirror (KDEC-032)
+        id: trivy_mirror
+        if: inputs.enable_trivy
+        uses: $/.github/actions/feed-mirror
+        with:
+          feed: trivy
+          mirror-url: ${{ vars.KIT_FEED_MIRROR_URL }}
+          max-age-hours: ${{ vars.KIT_FEED_MIRROR_MAX_AGE_HOURS }}
+          fallback: ${{ vars.KIT_FEED_MIRROR_FALLBACK }}
       - name: Trivy filesystem scan (SARIF)
         id: trivy_fs
         if: inputs.enable_trivy
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: "."
-          format: sarif
-          output: nvd-scan-results/trivy-nvd.sarif
-          severity: ${{ inputs.trivy_severities }}
-          exit-code: "0"          # reporting pass; gating happens below
+        shell: bash
+        env:
+          # Each TRIVY_* is the option trivy-action@v0.36.0 passed for the `with:` key it replaced.
+          # Its `severity:` was dropped for a SARIF (entrypoint.sh), so this reporting pass carries
+          # none: every severity is reported, as it always was; the gate below applies them.
+          SCAN_REF: "."
+          TRIVY_FORMAT: sarif
+          TRIVY_OUTPUT: nvd-scan-results/trivy-nvd.sarif
+          TRIVY_EXIT_CODE: "0"          # reporting pass; gating happens below
+        run: trivy fs --quiet "$SCAN_REF"
 
       # PUBLICATION IS NOT DETECTION. Code scanning is free on public repos and otherwise
       # Advanced Security; on a private repo without it, upload-sarif returns "Resource not
@@ -328,20 +411,20 @@ jobs:
       - name: Upload Trivy SARIF
         if: always() && inputs.enable_trivy && steps.pub_trivy.outputs.publish == 'true'
         continue-on-error: true          # PUBLICATION=DEGRADED, never ANALYSIS=FAILED
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: nvd-scan-results/trivy-nvd.sarif
           category: trivy-nvd
 
       - name: Trivy gate
         if: inputs.enable_trivy && inputs.trivy_fail_severities != ''
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: "."
-          format: table
-          severity: ${{ inputs.trivy_fail_severities }}
-          exit-code: "1"          # this one is the gate, and it is explicit
+        shell: bash
+        env:
+          SCAN_REF: "."
+          TRIVY_FORMAT: table
+          TRIVY_SEVERITY: ${{ inputs.trivy_fail_severities }}
+          TRIVY_EXIT_CODE: "1"          # this one is the gate, and it is explicit
+        run: trivy fs --quiet "$SCAN_REF"
 
       # ------------------------------------------------- OWASP Dependency-Check
 
@@ -354,7 +437,7 @@ jobs:
       - name: Restore NVD data cache
         if: inputs.enable_dependency_check
         id: nvd_cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/nvd-data
           # NOTE: keyed on run_id, so the PRIMARY key never hits by design -- every restore comes
@@ -448,7 +531,9 @@ jobs:
           # here, before the download below, so on every fresh runner it ran a binary that was not
           # there yet and refused acquisition every time. It now runs after the unzip.
           VER="$DC_VERSION"
-          URL="https://github.com/jeremylong/DependencyCheck/releases/download/v${VER}/dependency-check-${VER}-release.zip"
+          # The canonical repository. jeremylong/DependencyCheck is a separate one whose releases
+          # stop at 12.1.0 (404 for 12.2.2).
+          URL="https://github.com/dependency-check/DependencyCheck/releases/download/v${VER}/dependency-check-${VER}-release.zip"
           # Bound each attempt AND the total. A 429/5xx from the release host is transient; an
           # unreachable host is a classification to report, never a reason to wait out the job bound.
           ok=false
@@ -488,19 +573,62 @@ jobs:
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         run: |
-          echo "::warning title=No NVD API key::NVD_API_KEY is not set. Database updates will be \
-          heavily rate limited and this job may take 30+ minutes or fail to complete the update. \
+          echo "::warning title=No NVD API key::NVD_API_KEY is not set. With nvd_datafeed_url empty, \
+          database updates will be heavily rate limited and may not complete within this job. \
           Request a free key at https://nvd.nist.gov/developers/request-an-api-key"
+
+      # THE ORGANISATION MIRROR (Release 4, KDEC-032). Current: its generation is the datafeed below.
+      # Refused (stale, unreachable, tampered): the update is not attempted and the run says so --
+      # Dependency-Check against a database nobody can vouch for would report nothing, and nothing
+      # reads as clean.
+      - name: NVD datafeed from the organisation mirror (KDEC-032)
+        id: nvd_mirror
+        if: inputs.enable_dependency_check
+        uses: $/.github/actions/feed-mirror
+        with:
+          feed: nvd
+          mirror-url: ${{ vars.KIT_FEED_MIRROR_URL }}
+          max-age-hours: ${{ vars.KIT_FEED_MIRROR_MAX_AGE_HOURS }}
+          fallback: ${{ vars.KIT_FEED_MIRROR_FALLBACK }}
 
       - name: Update NVD database
         if: inputs.enable_dependency_check
         id: nvd_update
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+          W_NVD_DATAFEED: ${{ inputs.nvd_datafeed_url }}   # caller input: data, not script text
+          M_STATE: ${{ steps.nvd_mirror.outputs.mirror_state }}
+          M_USABLE: ${{ steps.nvd_mirror.outputs.mirror_usable }}
+          M_URL: ${{ steps.nvd_mirror.outputs.mirror_url }}
+          M_WHY: ${{ steps.nvd_mirror.outputs.mirror_why }}
+          M_CONFIGURED: ${{ vars.KIT_FEED_MIRROR_URL }}
         run: |
           set -euo pipefail
+          # AN ABSENT MIRROR STATE IS NOT A CURRENT ONE. With a mirror configured, a step that reported
+          # nothing is refused like an unreachable mirror; with none configured it is NOT_CONFIGURED.
+          if [ -z "${M_STATE:-}" ]; then
+            if [ -n "${M_CONFIGURED:-}" ]; then
+              M_STATE=MIRROR_UNREACHABLE; M_USABLE=false; M_WHY="the mirror step reported no state"
+            else
+              M_STATE=NOT_CONFIGURED; M_USABLE=true
+            fi
+          fi
+          if [ -z "${M_WHY:-}" ]; then M_WHY="no reason recorded"; fi
+          # A state without its usable flag is not usable: only an explicit `true` proceeds.
+          if [ -z "${M_USABLE:-}" ]; then M_USABLE=false; fi
+          if [ "$M_USABLE" != true ]; then
+            echo "::error title=${M_STATE:-MIRROR_UNREACHABLE}::The NVD mirror was refused (${M_WHY:-}). The database           is NOT updated and Dependency-Check does not run: nvd-dependency-check is unavailable, not clean."
+            { echo "NVD_UPDATE_FAILED=true"; echo "NVD_MIRROR_REFUSED=true"; } >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if [ "${M_STATE:-}" = MIRROR_CURRENT ]; then W_NVD_DATAFEED="$M_URL"; fi
           mkdir -p /tmp/nvd-data
           ARGS=(--updateonly --data /tmp/nvd-data)
+          # The same source the scan step below names, so its own update check reads it too.
+          if [ -n "${W_NVD_DATAFEED:-}" ]; then
+            ARGS+=(--nvdDatafeed "$W_NVD_DATAFEED")
+            echo "Updating NVD database from the datafeed $W_NVD_DATAFEED (the API key is unused)."
+          fi
           if [ -n "${NVD_API_KEY:-}" ]; then
             ARGS+=(--nvdApiKey "$NVD_API_KEY")
             echo "Updating NVD database with API key."
@@ -528,7 +656,7 @@ jobs:
       # the same contagion shape as a publication failure cancelling detection, one layer over.
       - name: Save NVD data cache (complete)
         if: always() && inputs.enable_dependency_check && steps.nvd_update.outputs.complete == 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/nvd-data
           key: nvd-data-good-${{ runner.os }}-${{ github.run_id }}
@@ -545,22 +673,28 @@ jobs:
       # can never produce a "no known vulnerabilities" verdict.
       - name: Save NVD data cache (partial — resume base only)
         if: always() && inputs.enable_dependency_check && steps.nvd_update.outputs.complete != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/nvd-data
           key: nvd-data-partial-${{ runner.os }}-${{ github.run_id }}
 
       - name: Run OWASP Dependency-Check
         id: dc_run
-        if: inputs.enable_dependency_check
+        # A refused mirror (KDEC-032) means no database anybody can vouch for: no run, no clean report.
+        if: inputs.enable_dependency_check && env.NVD_MIRROR_REFUSED != 'true'
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
           # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
           W_PROJECT_NAME: ${{ inputs.project_name }}
           W_FAIL_ON_CVSS: ${{ inputs.fail_on_cvss }}
           W_SCAN_PATHS: ${{ inputs.scan_paths }}
+          W_NVD_DATAFEED: ${{ inputs.nvd_datafeed_url }}
+          M_STATE: ${{ steps.nvd_mirror.outputs.mirror_state }}
+          M_URL: ${{ steps.nvd_mirror.outputs.mirror_url }}
         run: |
           set -euo pipefail
+          # Only a CURRENT mirror replaces the datafeed; an absent state was refused by the update step.
+          if [ -n "${M_STATE:-}" ] && [ "$M_STATE" = MIRROR_CURRENT ]; then W_NVD_DATAFEED="$M_URL"; fi
           ARGS=(
             --project "$W_PROJECT_NAME"
             --format JSON --format HTML --format SARIF
@@ -574,6 +708,9 @@ jobs:
           # (and globbed) as before -- but a quote or `$( )` in it is now data, not shell.
           # shellcheck disable=SC2086
           for p in $W_SCAN_PATHS; do ARGS+=(--scan "$p"); done
+          # This call checks for updates too: name the update step's source, or it would go back
+          # to the slow NVD API for the delta (lane L-NV).
+          if [ -n "${W_NVD_DATAFEED:-}" ]; then ARGS+=(--nvdDatafeed "$W_NVD_DATAFEED"); fi
           if [ -n "${NVD_API_KEY:-}" ]; then ARGS+=(--nvdApiKey "$NVD_API_KEY"); fi
           /opt/dependency-check/bin/dependency-check.sh "${ARGS[@]}"
 
@@ -597,7 +734,7 @@ jobs:
       - name: Upload Dependency-Check SARIF
         if: always() && inputs.enable_dependency_check && steps.pub_dc.outputs.publish == 'true'
         continue-on-error: true          # PUBLICATION=DEGRADED, never ANALYSIS=FAILED
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: nvd-scan-results/dependency-check/dependency-check-report.sarif
           category: owasp-dependency-check
@@ -688,6 +825,16 @@ jobs:
                echo "result cannot be matched against a deployment record later. Prefer a digest." ;;
           esac
 
+      # Trivy's checks bundle from the organisation mirror (KDEC-032); refused, `trivy config` is fatal.
+      - name: Trivy checks bundle from the organisation mirror (KDEC-032)
+        id: checks_mirror
+        if: always() && inputs.scan_dockerfiles
+        uses: $/.github/actions/feed-mirror
+        with:
+          feed: trivy-checks
+          mirror-url: ${{ vars.KIT_FEED_MIRROR_URL }}
+          max-age-hours: ${{ vars.KIT_FEED_MIRROR_MAX_AGE_HOURS }}
+          fallback: ${{ vars.KIT_FEED_MIRROR_FALLBACK }}
       - name: Scan Dockerfiles for misconfiguration
         id: dockerfile
         if: always() && inputs.scan_dockerfiles
@@ -721,11 +868,28 @@ jobs:
           tar -xzf "$t" trivy && sudo mv trivy /usr/local/bin/ && rm -f "$t"
           trivy config --format table --exit-code 0 . | tee nvd-scan-results/trivy-dockerfile.txt
 
+      # KNOWN EXPLOITED IN THE WILD BLOCKS HERE TOO (KDEC-022 item 3). This path has no report job
+      # and no policy step, so the check reads the CVEs straight from its own SARIF and honours no
+      # exception: a CVE on the CISA KEV catalog routes this run BLOCKED (the posture step below).
+      # An unreadable catalog is kev_state UNAVAILABLE -- visible, never a pass.
+      - name: Check every CVE found against the CISA KEV catalog
+        id: kev
+        if: always()
+        uses: $/.github/actions/known-exploited
+        with:
+          sarif: >-
+            nvd-scan-results/trivy-nvd.sarif nvd-scan-results/dependency-check/dependency-check-report.sarif
+            nvd-scan-results/trivy-sbom-revalidation.sarif nvd-scan-results/trivy-image-revalidation.sarif
+          sarif-job: nvd-cve-scan
+          mirror-url: ${{ vars.KIT_FEED_MIRROR_URL }}
+          mirror-max-age-hours: ${{ vars.KIT_FEED_MIRROR_MAX_AGE_HOURS }}
+          mirror-fallback: ${{ vars.KIT_FEED_MIRROR_FALLBACK }}
+
       # --------------------------------------------------------------- Results
 
       - name: Upload scan artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nvd-scan-results
           path: nvd-scan-results/
@@ -917,6 +1081,10 @@ jobs:
           JOB_STATUS: ${{ job.status }}
           SUM_UNAVAILABLE: ${{ steps.summary.outputs.unavailable }}
           SUM_STATE: ${{ steps.summary.outputs.assurance_state }}
+          # KDEC-022 item 3: the known-exploited check over this run's SARIF.
+          K_STATE: ${{ steps.kev.outputs.kev_state }}
+          K_VERDICT: ${{ steps.kev.outputs.kev_verdict }}
+          K_BLOCKING: ${{ steps.kev.outputs.kev_blocking }}
         run: |
           set -u
           req=""; exe=""; skp=""; red=""; wk=""; dead=""; inforce=0; badclass=0
@@ -991,7 +1159,12 @@ jobs:
           # An integrity pin on the download, not a strength setting: a wrong value REFUSES the
           # install (controls_unavailable), it never softens a control.
           posture dependency_check_sha256   NOT_A_CONTROL_SURFACE - -
-          posture sbom_path                 TARGET_NOT_SUPPLIED  NONEMPTY               nvd-sbom-revalidation   "$W_SBOM_PATH"
+          # The database's SOURCE, not a strength setting: an unreachable or failing source fails
+          # the update (NVD_UPDATE_FAILED -> controls_unavailable). Freshness is established only for
+          # the organisation mirror (KDEC-032: a mirror older than the 48 h policy is refused, the same
+          # NVD_UPDATE_FAILED); a public datafeed's freshness is still not checked here (lane L-NV).
+          posture nvd_datafeed_url          NOT_A_CONTROL_SURFACE - -
+          posture sbom_path                TARGET_NOT_SUPPLIED  NONEMPTY               nvd-sbom-revalidation   "$W_SBOM_PATH"
           posture image_ref                 TARGET_NOT_SUPPLIED  NONEMPTY               nvd-image-revalidation  "$W_IMAGE_REF"
           posture scan_paths                SCOPE_NARROWED       "."                    nvd-trivy               "$W_SCAN_PATHS"
           posture fail_on_cvss              GATE_SOFTENED        max:9.0                nvd-dependency-check    "$W_FAIL_ON_CVSS"
@@ -1073,9 +1246,23 @@ jobs:
           elif [ "$inforce" -gt 0 ]; then
             route=PROCEED_WITH_ADVISORY
           fi
+          # FINDING_KNOWN_EXPLOITED (KDEC-022 item 3): a CVE on the CISA KEV catalog is an observed
+          # refusal at every rung -- BLOCKED, ahead of everything else. An unreadable catalog, or a
+          # check that did not report, is never a pass: at least PROCEED_WITH_ADVISORY.
+          # An absent output is a check that did not report: UNAVAILABLE, said so, never CLEAR.
+          if [ -z "${K_STATE:-}" ]; then kev_state=UNAVAILABLE; else kev_state="$K_STATE"; fi
+          if [ -z "${K_VERDICT:-}" ]; then kev_verdict=UNAVAILABLE; else kev_verdict="$K_VERDICT"; fi
+          if [ "$kev_verdict" = "BLOCKED" ]; then
+            route=BLOCKED
+            echo "::error title=GATE=FAIL (FINDING_KNOWN_EXPLOITED)::on the CISA KEV catalog: ${K_BLOCKING:-unnamed}. Exploited in the wild blocks at every rung."
+          elif [ "$route" = "PROCEED" ] && [ "$kev_state" != "AVAILABLE" ]; then
+            route=PROCEED_WITH_ADVISORY
+            echo "::warning title=kev_state UNAVAILABLE::the CISA KEV catalog could not be read; no CVE here has been shown not to be exploited in the wild."
+          fi
 
           emit() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
           emit routing_result "$route"
+          emit kev_state "$kev_state"
           emit controls_required "$REQ"
           emit controls_executed "$EXE"
           emit controls_unavailable "$UNAV"
@@ -1101,6 +1288,7 @@ jobs:
             echo "| expiry | ${W_WEAKENING_EXPIRES:-_(no expiry set)_} |"
             echo "| attribution | \`$auth\` |"
             echo "| **routing result** | **\`$route\`** |"
+            echo "| kev_state (CISA known exploited) | \`${kev_state}\` — verdict \`${kev_verdict}\`${K_BLOCKING:+ — FINDING_KNOWN_EXPLOITED: ${K_BLOCKING}} |"
             echo ""
             # THE SAME FACT THE TOP OF THE SUMMARY STATES, RESTATED WHERE THE RECORD IS.
             #

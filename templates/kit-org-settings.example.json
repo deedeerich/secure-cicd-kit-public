@@ -1,0 +1,16 @@
+{
+  "schema": "kit-org-settings/1",
+  "note": "Copy to overlays/<your org>/kit-org-settings.json in YOUR ORGANISATION'S copy of the kit, replace every <...>, and validate: python3 scripts/org_settings.py validate overlays/<org>/kit-org-settings.json. The deploys read it from the kit copy they run from; a repository cannot change it. docs/adoption/SETTINGS_PRECEDENCE.md. Delete keys you do not use. Never put a secret here.",
+  "github_orgs": ["<your-github-organisation>"],
+  "host": "<github.com or your-tenant.ghe.com>",
+  "approver_pools": {"platform": ["@<org>/<platform-approvers-team>"], "security": ["@<org>/<security-approvers-team>"]},
+  "codeowners": {"governed_paths": ["/.github/workflows/", "/.kit/", "/id-mappings.json"],
+                 "owners": ["@<org>/<platform-approvers-team>", "@<org>/<security-approvers-team>"]},
+  "adoption": {"default_level": "crawl", "crawl_weeks_optimal": 4, "crawl_weeks_advisory": 8, "crawl_weeks_maximum": 26},
+  "environment_classes": {"<an environment name the kit cannot class>": "<dev|test|uat|prod>"},
+  "azure_clouds": {"declared": ["commercial", "gov"],
+                   "environments": {"<env>": "<commercial|gov>", "<org>/<repo>:<env>": "<commercial|gov>"}},
+  "ticket_routing": {"tracker": "jira", "project": "<PROJECT KEY>", "tags": ["secure-cicd-kit"]},
+  "app_teams": {"<org>/<repo>": {"team": "@<org>/<app-team>", "size": 0}},
+  "repositories": {"<org>/<repo>": {"adoption_level": "crawl"}}
+}

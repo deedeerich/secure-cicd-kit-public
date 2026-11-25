@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kit.reversal/0",
+  "title": "Kit reversal.json (no in-document id; declared by name)",
+  "type": "object"
+}

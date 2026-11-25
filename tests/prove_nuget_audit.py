@@ -18,7 +18,8 @@ WHY THIS EXISTS (ledger L08: "NuGet false pass")
     under bash with the real dotnet SDK against throwaway projects. Restore needs nuget.org.
 
 SCENARIOS
-    vulnerable_nested  src/App/App.csproj -> Newtonsoft.Json 12.0.1 (High)  -> FINDINGS 1, FAILS
+    vulnerable_nested  src/App/App.csproj -> Newtonsoft.Json 12.0.1 (High)  -> FINDINGS 1, handed to
+                       the gate (findings_state=FINDINGS; the step succeeds -- lane L-S, O-24)
     vulnerable_soft    the same, soft_fail_sast on                           -> counted, passes
     clean              Newtonsoft.Json 13.0.3                                -> 0, passes
     no_projects        no .csproj / .sln                                     -> NOT_APPLICABLE, passes
@@ -116,14 +117,16 @@ def main():
             print('UNKNOWN: dotnet is required to RUN the steps.')
             return 2
         scenarios = [
-            # name, files, soft, expected collection, count, enforce passes?
-            ('vulnerable_nested', project('12.0.1'), 'false', 'COMPLETE', '1', False),
-            ('vulnerable_soft', project('12.0.1'), 'true', 'COMPLETE', '1', True),
-            ('clean', project('13.0.3'), 'false', 'COMPLETE', '0', True),
+            # name, files, soft, expected collection, count, enforce:
+            #   HANDED (exit 0, findings_state=FINDINGS: the gate enforces, lane L-S / O-24)
+            #   | PASS (exit 0, nothing handed) | FAIL (could not audit)
+            ('vulnerable_nested', project('12.0.1'), 'false', 'COMPLETE', '1', 'HANDED'),
+            ('vulnerable_soft', project('12.0.1'), 'true', 'COMPLETE', '1', 'PASS'),
+            ('clean', project('13.0.3'), 'false', 'COMPLETE', '0', 'PASS'),
             ('no_projects', {'README.md': 'no dotnet here\n'}, 'false', 'NOT_APPLICABLE', '0',
-             True),
+             'PASS'),
             ('restore_fails', project('999.0.0-does-not-exist'), 'false', 'COLLECTION_FAILED',
-             None, False),
+             None, 'FAIL'),
         ]
         for name, files, soft, want_coll, want_n, enforce_ok in scenarios:
             ws = sb.workspace(name, files)
@@ -143,7 +146,7 @@ def main():
                 bad.append('%s: count step reads unmodelled %s' % (name, unk))
             evals = dict(vals, **{'steps.nuget_count.outputs.%s' % k: cout.get(k, '')
                                   for k in ('count', 'collection')})
-            erc, elog, _o, unk = sb.run(bash, steps[ENFORCE], evals, ws)
+            erc, elog, eout, unk = sb.run(bash, steps[ENFORCE], evals, ws)
             if unk:
                 bad.append('%s: enforce step reads unmodelled %s' % (name, unk))
             coll, n = cout.get('collection', ''), cout.get('count')
@@ -155,12 +158,17 @@ def main():
             if want_n is not None and n != want_n:
                 bad.append('%s: count=%r, expected %s\n%s' % (name, n, want_n, clog[-500:]))
             bad.extend(sarif_problems(name, ws, want_coll, want_n, cout))
-            if enforce_ok and erc != 0:
-                bad.append('%s: enforce failed (exit %d)\n%s' % (name, erc, elog[-300:]))
-            if not enforce_ok and erc == 0:
-                bad.append('%s: enforce PASSED -- %s' % (name, (
-                    'a High advisory with soft_fail_sast off must block'
-                    if want_coll == 'COMPLETE' else 'no audit result is not a clean audit')))
+            handed = eout.get('findings_state', '')
+            if enforce_ok in ('PASS', 'HANDED') and erc != 0:
+                bad.append('%s: enforce failed (exit %d) -- findings go to the gate, never a failed '
+                           'job\n%s' % (name, erc, elog[-300:]))
+            if enforce_ok == 'HANDED' and handed != 'FINDINGS':
+                bad.append('%s: findings_state=%r -- a High advisory with soft_fail_sast off must be '
+                           'handed to the gate, which enforces it' % (name, handed))
+            if enforce_ok == 'PASS' and handed:
+                bad.append('%s: findings_state=%r where nothing is enforced' % (name, handed))
+            if enforce_ok == 'FAIL' and erc == 0:
+                bad.append('%s: enforce PASSED -- no audit result is not a clean audit' % name)
     finally:
         sb.close()
     if bad:
@@ -168,7 +176,7 @@ def main():
             print('FAIL: %s' % b)
         return 1
     print('PASS: the shipped NuGet audit lists each discovered project in JSON, counts Critical/'
-          'High advisories, blocks on them unless softened, and reads a failed restore as '
+          'High advisories, hands them to the gate unless softened, and reads a failed restore as '
           'COLLECTION_FAILED.')
     return 0
 

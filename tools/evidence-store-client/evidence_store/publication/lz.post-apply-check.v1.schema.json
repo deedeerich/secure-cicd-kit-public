@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "lz.post-apply-check/v1",
+  "title": "Landing zone post-apply check (envelope)",
+  "type": "object",
+  "required": [
+    "schema",
+    "request_id",
+    "result",
+    "checks"
+  ],
+  "properties": {
+    "schema": {
+      "const": "lz.post-apply-check/v1"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "result": {
+      "type": "string",
+      "minLength": 1
+    },
+    "checks": {
+      "type": "array"
+    }
+  }
+}

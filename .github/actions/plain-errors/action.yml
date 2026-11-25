@@ -1,0 +1,31 @@
+name: plain-errors
+description: >-
+  The plain-English error layer (owner, 2026-11-06). Given the states a job ended in (`ns:STATE` tokens,
+  comma lists allowed), it writes, for every refusal or failure among them, an annotation whose TITLE is
+  the plain sentence (annotations sit at the top of the run page, so a developer reads it first) and a
+  "What happened, in plain words" section in the job summary: what happened, why it matters, the exact
+  fix, a link, and the state's name in brackets. From docs/errors/errors.json at the kit commit the
+  caller pinned. It never fails the job: explaining a failure must never become one.
+  scripts/plain_errors.py; tests/prove_plain_errors.py.
+inputs:
+  states: {description: "space-separated ns:STATE tokens (ns:A,B for a list); empty values are skipped", required: true}
+  source: {description: "gate | deploy | ticketing | triage | api | preflight | kit-init", required: false, default: ''}
+runs:
+  using: composite
+  steps:
+    - name: Say it in plain words
+      # Every path: the job may already have failed, which is exactly when this has something to say.
+      if: always()
+      shell: bash
+      env:
+        # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
+        PE_STATES: ${{ inputs.states }}
+        PE_SOURCE: ${{ inputs.source }}
+        KIT_DOCS_BASE: ${{ github.server_url }}/${{ github.action_repository }}/blob/${{ github.action_ref }}
+      run: |
+        kit_root="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)"
+        if [ -f "$kit_root/scripts/plain_errors.py" ]; then
+          python3 "$kit_root/scripts/plain_errors.py" summary --states "$PE_STATES" --source "$PE_SOURCE"
+        else
+          echo "::warning title=Plain-English explanation unavailable::this kit copy carries no scripts/plain_errors.py"
+        fi

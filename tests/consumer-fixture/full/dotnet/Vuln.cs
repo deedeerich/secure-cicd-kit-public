@@ -8,3 +8,7 @@ public class Vuln {
         cmd.ExecuteNonQuery();
     }
 }
+// An entry point: CodeQL's buildless C# extraction compiles this project as an executable.
+public static class Program {
+    public static void Main() { }
+}

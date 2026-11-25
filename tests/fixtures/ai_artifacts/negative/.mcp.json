@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@2025.8.21", "./"]
+    },
+    "git": {
+      "command": "uvx",
+      "args": ["mcp-server-git==0.6.2"]
+    },
+    "tickets": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "example/tickets-mcp@sha256:0000000000000000000000000000000000000000000000000000000000000000"],
+      "env": {"TICKETS_TOKEN": "${TICKETS_TOKEN}"}
+    }
+  }
+}

@@ -1,0 +1,211 @@
+# The governance gate (KDEC-052 item 11, KE-02; KDEC-059): a risk-based merge decision made from the
+# BASE side, like the Dependabot merger. Routine changes with every trusted check green may merge on
+# their own; a failed, missing or inconclusive check holds; a change to security controls, critical
+# operational boundaries, protected code, or the classifier, validator, floor, policies or this merge
+# logic holds for the profile's authorizer (personal: the owner; employer: the assigned reviewers).
+#
+# TRUST. Every trigger here runs the DEFAULT branch's copy of this file and of scripts/: under
+# pull_request_target, workflow_run and issue_comment GitHub reads the workflow from the default
+# branch. Nothing checks out the pull request. Its commits are fetched as git OBJECTS
+# (refs/pull/N/head) and read by `git diff` / `git show` in the base checker; its checks, reviews and
+# comments come from the API as JSON. No step runs, installs or sources a file from the pull request,
+# and the step that runs the checker holds no token. GitHub's warning about pull_request_target is
+# against checking out and running PR code in this context; this workflow never does
+# (tests/prove_governance_profiles.py W-1..W-7).
+#
+# THE RESULT is the commit status `kit/governance-gate` on the PR's head commit, and auto-merge
+# (`gh pr merge --auto --match-head-commit`) armed only for merge_eligible or authorized; any other
+# decision disarms it. GitHub still merges only when the ruleset allows. The ruleset settings per
+# profile, and what stays a residual risk, are in docs/operations/GOVERNANCE_PROFILES.md.
+name: Governance gate
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  # Re-decide when the trusted check finishes, on the head it ran for.
+  workflow_run:
+    workflows: ["Self-test"]
+    types: [completed]
+  # The personal profile's authorization (`/kit-authorize <head sha>`) and a re-check (`/kit-recheck`)
+  # after an employer review.
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "The pull request to decide (a number). Re-decides it from the default branch."
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  gate:
+    name: Governance gate (base-side, reads the PR as data)
+    if: >-
+      github.event_name != 'issue_comment' ||
+      (github.event.issue.pull_request && startsWith(github.event.comment.body, '/kit-'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      checks: read
+      actions: read
+      statuses: write
+    outputs:
+      decision: ${{ steps.decide.outputs.decision }}
+      pr_number: ${{ steps.read.outputs.pr_number }}
+      head_sha: ${{ steps.read.outputs.head_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The trusted checker: the default branch, never the pull request.
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Read the pull request as data (objects and API JSON, nothing executed)
+        id: read
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          PR_TARGET: ${{ github.event.pull_request.number }}
+          PR_COMMENT: ${{ github.event.issue.number }}
+          PR_DISPATCH: ${{ inputs.pr_number }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_HEAD: ${{ github.event.workflow_run.head_sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GOVERNANCE_READ_ORG_TOKEN: ${{ secrets.GOVERNANCE_READ_ORG_TOKEN }}
+        run: |
+          set -euo pipefail
+          # KDEC-027: gh's token goes to this run's host only (gh api / -R default to github.com).
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
+          d="$RUNNER_TEMP/gov"; mkdir -p "$d"
+          case "$EVENT" in
+            pull_request_target) pr="$PR_TARGET" ;;
+            issue_comment) pr="$PR_COMMENT" ;;
+            workflow_dispatch) pr="$PR_DISPATCH" ;;
+            workflow_run)
+              pr=""
+              if [ "$RUN_EVENT" = "pull_request" ] && printf '%s' "$RUN_HEAD" | grep -Eq '^[0-9a-f]{40}$'; then
+                pr="$(gh api "repos/${REPO}/commits/${RUN_HEAD}/pulls" --jq '[.[] | select(.state == "open")][0].number // empty')"
+              fi ;;
+            *) pr="" ;;
+          esac
+          if ! [[ "$pr" =~ ^[0-9]+$ ]]; then
+            echo "No pull request to decide for this event; nothing is published."
+            exit 0
+          fi
+          gh api "repos/${REPO}/pulls/${pr}" > "$d/pr.json"
+          head="$(jq -r '.head.sha' "$d/pr.json")"
+          base_ref="$(jq -r '.base.ref' "$d/pr.json")"
+          [[ "$head" =~ ^[0-9a-f]+$ ]] && [ "${#head}" -eq 40 ] || { echo "::error title=Governance gate::unreadable head"; exit 1; }
+          if [ "$base_ref" != "$DEFAULT_BRANCH" ] || [ "$(jq -r '.state' "$d/pr.json")" != "open" ]; then
+            echo "Pull request #$pr is not an open change to the default branch; nothing is published."
+            exit 0
+          fi
+          # The PR head as OBJECTS only: no checkout, no worktree, nothing executed.
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          git -c "http.extraheader=AUTHORIZATION: basic ${auth}" fetch --no-tags --quiet origin "+refs/pull/${pr}/head:refs/kit-pr/head"
+          [ "$(git rev-parse refs/kit-pr/head)" = "$head" ] || { echo "::error title=Governance gate::the fetched head moved; re-run"; exit 1; }
+          gh api --paginate "repos/${REPO}/commits/${head}/check-runs?per_page=100" --jq '.check_runs[]' > "$d/check-runs.json"
+          gh api --paginate "repos/${REPO}/actions/runs?head_sha=${head}&per_page=100" --jq '.workflow_runs[]' > "$d/workflow-runs.json"
+          gh api --paginate "repos/${REPO}/pulls/${pr}/reviews?per_page=100" --jq '.[]' > "$d/reviews.json"
+          gh api --paginate "repos/${REPO}/issues/${pr}/comments?per_page=100" --jq '.[]' > "$d/comments.json"
+          gh api --paginate "repos/${REPO}/pulls/${pr}/commits?per_page=100" --jq '.[]' > "$d/commits.json"
+          # Employer reviewers by team: read:org is not in the run's token, so only with the optional
+          # secret. Without it only reviewer_logins count, and with neither a protected change holds.
+          if [ -n "$GOVERNANCE_READ_ORG_TOKEN" ]; then
+            echo '{}' > "$d/members.json"
+            for team in $(git show "HEAD:governance-profile.json" | jq -r '.profiles.employer.reviewer_teams[]? // empty'); do
+              printf '%s' "$team" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' || continue
+              logins="$(GH_TOKEN="$GOVERNANCE_READ_ORG_TOKEN" gh api --paginate "orgs/${team%%/*}/teams/${team#*/}/members?per_page=100" --jq '.[].login' | jq -R . | jq -s .)" || continue
+              jq --arg t "$team" --argjson l "$logins" '.[$t] = $l' "$d/members.json" > "$d/m.tmp" && mv "$d/m.tmp" "$d/members.json"
+            done
+          fi
+          echo "pr_number=$pr" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head" >> "$GITHUB_OUTPUT"
+      - name: Decide with the base checker (the PR is data; this step holds no token)
+        id: decide
+        if: steps.read.outputs.head_sha != ''
+        env:
+          HEAD_SHA: ${{ steps.read.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet PyYAML
+          d="$RUNNER_TEMP/gov"
+          python3 scripts/governance_gate.py --repo . --base "$(git rev-parse HEAD)" --head "$HEAD_SHA" \
+            --data-dir "$d" --out "$d/decision.json" --github-output "$GITHUB_OUTPUT"
+      - name: Publish the decision on the head commit
+        if: always() && steps.read.outputs.head_sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.read.outputs.head_sha }}
+          DECISION: ${{ steps.decide.outputs.decision }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
+          case "$DECISION" in
+            merge_eligible) state=success; what="routine and green: may merge on its own" ;;
+            authorized) state=success; what="protected, authorized on this head, green" ;;
+            delegated) state=success; what="Dependabot: the Dependabot triage decides" ;;
+            hold) state=failure; what="HELD: see the run for each rule" ;;
+            *) state=error; what="could not decide: held" ;;
+          esac
+          gh api -X POST "repos/${REPO}/statuses/${HEAD_SHA}" -f state="$state" -f context="kit/governance-gate" \
+            -f description="$what" -f target_url="$RUN_URL" > /dev/null
+          {
+            echo "### Governance gate: ${DECISION:-could not decide}"
+            echo '```json'
+            cat "$RUNNER_TEMP/gov/decision.json" 2>/dev/null || echo '{}'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  auto-merge:
+    name: Arm auto-merge (the ruleset still decides)
+    needs: gate
+    if: needs.gate.outputs.decision == 'merge_eligible' || needs.gate.outputs.decision == 'authorized'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Arm auto-merge on exactly the decided head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ needs.gate.outputs.pr_number }}
+          HEAD_SHA: ${{ needs.gate.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
+          # --match-head-commit: a push after the decision makes GitHub refuse this merge.
+          gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_NUMBER" --repo "${GH_HOST}/${REPO}"
+
+  disarm:
+    name: Disarm auto-merge on a hold
+    needs: gate
+    if: always() && needs.gate.outputs.pr_number != '' && needs.gate.outputs.decision != 'merge_eligible' && needs.gate.outputs.decision != 'authorized' && needs.gate.outputs.decision != 'delegated'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Turn auto-merge off if anything armed it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ needs.gate.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
+          if [ "$(gh pr view "$PR_NUMBER" --repo "${GH_HOST}/${REPO}" --json autoMergeRequest --jq '.autoMergeRequest != null')" = "true" ]; then
+            gh pr merge --disable-auto "$PR_NUMBER" --repo "${GH_HOST}/${REPO}"
+            echo "auto-merge was armed on a held pull request and has been turned off" >> "$GITHUB_STEP_SUMMARY"
+          fi

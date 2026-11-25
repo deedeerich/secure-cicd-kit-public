@@ -1,0 +1,53 @@
+name: live-target-authorisation
+description: >-
+  KREQ-558: read the live-target authorisation record (.kit/live-target-authorisation.json on the
+  default branch, through the contents API) BEFORE a DAST run or a deployed scan. LIVE_TARGET_AUTHORISED
+  when an entry naming this scan, environment and target is in force; PREREQUISITE_UNAVAILABLE (exit 1,
+  the scan is not run) when the record is absent, unreadable, malformed, expired, not yet valid or out
+  of scope. For DAST the deploy evidence's dast.json then records PREREQUISITE_UNAVAILABLE, so the
+  release is not verified for promotion. scripts/live_target_authorisation.py;
+  schemas/live-target-authorisation.schema.json; tests/prove_live_target_authorisation.py.
+inputs:
+  scan:
+    description: dast or deployed-scan.
+    required: true
+  environment:
+    description: The GitHub environment the scan targets.
+    required: true
+  target:
+    description: The target's name (the app, web app or site).
+    required: true
+  dast-evidence:
+    description: dast only -- the deploy evidence directory, where dast.json records a refusal.
+    required: false
+    default: ''
+  github-token:
+    description: The job's token (contents read).
+    required: false
+    default: ''
+outputs:
+  live_target_authorisation: {description: "assurance-taxonomy.yaml live_target_authorisation", value: "${{ steps.a.outputs.live_target_authorisation }}"}
+runs:
+  using: composite
+  steps:
+    - name: Live-target authorisation
+      id: a
+      shell: bash
+      env:
+        # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
+        I_SCAN: ${{ inputs.scan }}
+        I_ENVIRONMENT: ${{ inputs.environment }}
+        I_TARGET: ${{ inputs.target }}
+        I_DAST_EVIDENCE: ${{ inputs.dast-evidence }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -uo pipefail
+        script="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)/scripts/live_target_authorisation.py"
+        if [ ! -s "$script" ]; then
+          echo "::error title=live_target_authorisation PREREQUISITE_UNAVAILABLE::scripts/live_target_authorisation.py is not in the kit delivered with this action."
+          echo "live_target_authorisation=PREREQUISITE_UNAVAILABLE" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi
+        python3 "$script" --scan "$I_SCAN" --environment "$I_ENVIRONMENT" --target "$I_TARGET" \
+          --dast-evidence "$I_DAST_EVIDENCE" --out "$RUNNER_TEMP/live-target-authorisation-$I_SCAN.json" \
+          --github-output "$GITHUB_OUTPUT" --summary "${GITHUB_STEP_SUMMARY:-}"

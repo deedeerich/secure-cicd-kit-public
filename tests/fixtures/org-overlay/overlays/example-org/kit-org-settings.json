@@ -1,0 +1,17 @@
+{
+  "schema": "kit-org-settings/1",
+  "note": "A NEUTRAL fixture for tests/prove_org_settings.py, tests/prove_uat_prod_gating.py and tests/prove_kit_init.py. A real overlay lives only in an organisation's own kit copy (overlays/<org>/kit-org-settings.json).",
+  "github_orgs": ["example-org"],
+  "host": "example.ghe.com",
+  "approver_pools": {"platform": ["@example-org/platform-approvers"], "security": ["@example-org/security-approvers"]},
+  "codeowners": {"governed_paths": ["/.github/workflows/", "/.kit/", "/id-mappings.json"],
+                 "owners": ["@example-org/platform-approvers", "@example-org/security-approvers"]},
+  "adoption": {"default_level": "crawl", "crawl_weeks_optimal": 4, "crawl_weeks_advisory": 8, "crawl_weeks_maximum": 26},
+  "environment_classes": {"qa": "test", "preview": "dev", "perf": "uat"},
+  "azure_clouds": {"declared": ["commercial", "gov"],
+                   "environments": {"dev": "commercial", "test": "commercial", "uat": "commercial", "prod": "commercial", "build": "commercial",
+                                    "example-org/gov-app:uat": "gov", "example-org/gov-app:prod": "gov"}},
+  "ticket_routing": {"tracker": "jira", "project": "SEC", "tags": ["secure-cicd-kit", "example-org"]},
+  "app_teams": {"example-org/app": {"team": "@example-org/app-devs", "size": 5}},
+  "repositories": {"example-org/strict-app": {"adoption_level": "walk"}}
+}

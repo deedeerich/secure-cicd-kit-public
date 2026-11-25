@@ -231,7 +231,10 @@ CONTENT_NOT_APPLICABLE = 'CONTENT_NOT_APPLICABLE_FOR_SUBJECT'
 # defended in a review, which is the only thing that stops the set being quietly widened later.
 SPEC = {
     'SOURCE': {
-        'where': ['?purl', '?dependency_scope', '?manifest_role', 'canonical_path', '?symbol_path'],
+        # `?code_anchor` (KDEC-038, scripts/code_finding_key.py): the normalised source line and its
+        # ordinal in its symbol, read from the checked-out commit. Never the line number.
+        'where': ['?purl', '?dependency_scope', '?manifest_role', 'canonical_path', '?symbol_path',
+                  '?code_anchor'],
         'content': 'construct',
         'content_policy': LITERALS_PLACEHOLDERED,
         'scope': DURABLE,
@@ -596,6 +599,19 @@ def _derive_what(record):
     )
 
 
+def identity_for_advisory_aliases(subject, aliases, where, content):
+    """-> the identity a finding of `subject` at locus `where` with construct `content` WOULD have
+    if its advisory alias set were `aliases`. The same composition `identify` uses (WHAT/ADVISORY
+    over the sorted, upper-cased set; IDENTITY over what/where/content), so a caller can check
+    that two records differ ONLY in their alias set (review round 2 F17,
+    finding_lineage.alias_continuity). Returns '' when any part is missing."""
+    subject = str(subject or '').strip()
+    vals = sorted(set(str(a).strip().upper() for a in aliases or [] if str(a or '').strip()))
+    if not subject or not vals or not where or not content:
+        return ''
+    return _h('IDENTITY/' + subject, [_h('WHAT/ADVISORY', vals), str(where), str(content)])
+
+
 def _what_is_coarse(described):
     """CWE-only WHAT is coarse enough to collide across genuinely different findings (section 5.6, last
     row), so it requires a symbol-level WHERE. An advisory id or PURL does not."""
@@ -747,13 +763,16 @@ def identify(record):
     # purl ahead of cwe+family -- so a record that satisfies its WHERE has already answered its
     # WHAT with an externally anchored id. Requiring a symbol here would refuse every dependency
     # finding on a field no dependency finding has.
-    if subject == 'SOURCE' and _what_is_coarse(what_described) and not _get(record, 'symbol_path'):
+    # KDEC-038: a CODE ANCHOR (the normalised line and its ordinal in its scope) separates two findings
+    # at least as well as a symbol does -- it is finer -- so either one satisfies this rule.
+    if subject == 'SOURCE' and _what_is_coarse(what_described) and not (
+            _get(record, 'symbol_path') or _get(record, 'code_anchor')):
         return _refuse(
             subject,
             R_SYMBOL_REQUIRED,
             'WHAT is CWE-only (no advisory id, no purl), which is coarse enough that two '
             'different findings can share it. A symbol-level WHERE is what separates them, so '
-            '`symbol_path` is required here. Without it two findings could share one identity, '
+            '`symbol_path` (or a `code_anchor`) is required here. Without it two findings could share one identity, '
             'and the second would silently inherit the first\'s risk acceptance',
         )
 

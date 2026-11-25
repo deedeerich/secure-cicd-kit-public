@@ -1,0 +1,5 @@
+kind,team,repository,date,stack,deploy_shape,rung,step,error_state,minutes,fix,fixed_by,satisfaction,note
+first_green,team-example,example-app,2026-11-10,python,container,crawl,,,55,,,,"kit init PR merged at 09:05, first green security run at 10:00"
+stuck,team-example,example-app,2026-11-10,python,container,crawl,environments,environment_protection.ENVIRONMENT_REVIEWERS_ABSENT,20,"ran the gh api command from the kit-init checklist with the platform team id",platform,,"needed an admin; the developer had no rights"
+stuck,team-example,example-app,2026-11-10,python,container,crawl,first crawl run,api_token_preflight.JOB_TOKEN_REJECTED,15,"updated the pinned kit SHA (KDEC-027)",self,,"the plain sentence named the fix"
+satisfaction,team-example,example-app,2026-11-10,python,container,crawl,,,,,,4,"the checklist was clear; the reviewer team id step was the slowest"

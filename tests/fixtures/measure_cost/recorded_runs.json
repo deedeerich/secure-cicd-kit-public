@@ -1,0 +1,2709 @@
+{
+ "_comment": "RECORDED FIXTURE for scripts/measure_cost.py --self-test. Synthetic job and state records shaped as the GitHub jobs API and the security report's state-*.json files return them. Durations are chosen so per-job ceilings, a skipped job, a class with fewer than five runs and two invariant differences (a changed count and an absent scanner) are each exercised.",
+ "manifest": {
+  "runs": [
+   {
+    "class": "small",
+    "phase": "before",
+    "repo": "<test-owner>/hello-world",
+    "run_id": 1001
+   },
+   {
+    "class": "small",
+    "phase": "after",
+    "repo": "<test-owner>/hello-world",
+    "run_id": 1002
+   },
+   {
+    "class": "small",
+    "phase": "before",
+    "repo": "<test-owner>/hello-world",
+    "run_id": 1003
+   },
+   {
+    "class": "small",
+    "phase": "after",
+    "repo": "<test-owner>/hello-world",
+    "run_id": 1004
+   },
+   {
+    "class": "small",
+    "phase": "before",
+    "repo": "<test-owner>/hello-world",
+    "run_id": 1005
+   },
+   {
+    "class": "small",
+    "phase": "after",
+    "repo": "<test-owner>/hello-world",
+    "run_id": 1006
+   },
+   {
+    "class": "small",
+    "phase": "before",
+    "repo": "<test-owner>/hello-world",
+    "run_id": 1007
+   },
+   {
+    "class": "small",
+    "phase": "after",
+    "repo": "<test-owner>/hello-world",
+    "run_id": 1008
+   },
+   {
+    "class": "small",
+    "phase": "before",
+    "repo": "<test-owner>/hello-world",
+    "run_id": 1009
+   },
+   {
+    "class": "small",
+    "phase": "after",
+    "repo": "<test-owner>/hello-world",
+    "run_id": 1010
+   },
+   {
+    "class": "iac-heavy",
+    "phase": "before",
+    "repo": "<test-owner>/hello-world",
+    "run_id": 1011
+   },
+   {
+    "class": "iac-heavy",
+    "phase": "before",
+    "repo": "<test-owner>/hello-world",
+    "run_id": 1012
+   },
+   {
+    "class": "iac-heavy",
+    "phase": "before",
+    "repo": "<test-owner>/hello-world",
+    "run_id": 1013
+   },
+   {
+    "class": "iac-heavy",
+    "phase": "before",
+    "repo": "<test-owner>/hello-world",
+    "run_id": 1014
+   },
+   {
+    "class": "iac-heavy",
+    "phase": "before",
+    "repo": "<test-owner>/hello-world",
+    "run_id": 1015
+   },
+   {
+    "class": "iac-heavy",
+    "phase": "after",
+    "repo": "<test-owner>/hello-world",
+    "run_id": 1016
+   },
+   {
+    "class": "iac-heavy",
+    "phase": "after",
+    "repo": "<test-owner>/hello-world",
+    "run_id": 1017
+   },
+   {
+    "class": "iac-heavy",
+    "phase": "after",
+    "repo": "<test-owner>/hello-world",
+    "run_id": 1018
+   },
+   {
+    "class": "iac-heavy",
+    "phase": "after",
+    "repo": "<test-owner>/hello-world",
+    "run_id": 1019
+   }
+  ]
+ },
+ "recorded": {
+  "1001": {
+   "run": {
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "jobs": [
+    {
+     "name": "Materialise the kit's own scripts",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:05Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Discover what is actually here",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:08Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Resolve versions, capability and plan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:10Z",
+     "completed_at": "2026-10-23T10:00:17Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "SAST (CodeQL) (python)",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:20Z",
+     "completed_at": "2026-10-23T10:01:13Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "SAST (CodeQL) (go)",
+     "conclusion": "skipped",
+     "started_at": "2026-10-23T10:00:20Z",
+     "completed_at": "2026-10-23T10:00:20Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "IaC scan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:20Z",
+     "completed_at": "2026-10-23T10:01:21Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security scan report",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:01:30Z",
+     "completed_at": "2026-10-23T10:01:40Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security gate",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:01:41Z",
+     "completed_at": "2026-10-23T10:01:47Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    }
+   ],
+   "states": {
+    "gitleaks": {
+     "scanner": "gitleaks",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "gitleaks.sarif",
+     "job": "x"
+    },
+    "codeql-python": {
+     "scanner": "codeql-python",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "python.sarif",
+     "job": "x"
+    },
+    "checkov": {
+     "scanner": "checkov",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "checkov.sarif",
+     "job": "x"
+    },
+    "codeql-go": {
+     "scanner": "codeql-go",
+     "applicability": "NOT_APPLICABLE",
+     "execution": "NOT_RUN",
+     "gate": "UNDETERMINED",
+     "sarif": "",
+     "job": "x"
+    }
+   },
+   "sarifs": {
+    "gitleaks.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": []
+      }
+     ]
+    },
+    "python.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        }
+       ]
+      }
+     ]
+    },
+    "checkov.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "1002": {
+   "run": {
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "jobs": [
+    {
+     "name": "Plan: kit scripts, discovery, resolution",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:20Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "SAST (CodeQL) (python)",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:21Z",
+     "completed_at": "2026-10-23T10:01:14Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "IaC scan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:21Z",
+     "completed_at": "2026-10-23T10:01:22Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security gate",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:01:30Z",
+     "completed_at": "2026-10-23T10:01:46Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    }
+   ],
+   "states": {
+    "gitleaks": {
+     "scanner": "gitleaks",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "gitleaks.sarif",
+     "job": "x"
+    },
+    "codeql-python": {
+     "scanner": "codeql-python",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "python.sarif",
+     "job": "x"
+    },
+    "checkov": {
+     "scanner": "checkov",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "checkov.sarif",
+     "job": "x"
+    },
+    "codeql-go": {
+     "scanner": "codeql-go",
+     "applicability": "NOT_APPLICABLE",
+     "execution": "NOT_RUN",
+     "gate": "UNDETERMINED",
+     "sarif": "",
+     "job": "x"
+    }
+   },
+   "sarifs": {
+    "gitleaks.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": []
+      }
+     ]
+    },
+    "python.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        }
+       ]
+      }
+     ]
+    },
+    "checkov.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "1003": {
+   "run": {
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "jobs": [
+    {
+     "name": "Materialise the kit's own scripts",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:06Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Discover what is actually here",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:08Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Resolve versions, capability and plan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:10Z",
+     "completed_at": "2026-10-23T10:00:17Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "SAST (CodeQL) (python)",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:20Z",
+     "completed_at": "2026-10-23T10:01:13Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "SAST (CodeQL) (go)",
+     "conclusion": "skipped",
+     "started_at": "2026-10-23T10:00:20Z",
+     "completed_at": "2026-10-23T10:00:20Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "IaC scan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:20Z",
+     "completed_at": "2026-10-23T10:01:22Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security scan report",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:01:30Z",
+     "completed_at": "2026-10-23T10:01:40Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security gate",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:01:41Z",
+     "completed_at": "2026-10-23T10:01:47Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    }
+   ],
+   "states": {
+    "gitleaks": {
+     "scanner": "gitleaks",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "gitleaks.sarif",
+     "job": "x"
+    },
+    "codeql-python": {
+     "scanner": "codeql-python",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "python.sarif",
+     "job": "x"
+    },
+    "checkov": {
+     "scanner": "checkov",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "checkov.sarif",
+     "job": "x"
+    },
+    "codeql-go": {
+     "scanner": "codeql-go",
+     "applicability": "NOT_APPLICABLE",
+     "execution": "NOT_RUN",
+     "gate": "UNDETERMINED",
+     "sarif": "",
+     "job": "x"
+    }
+   },
+   "sarifs": {
+    "gitleaks.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": []
+      }
+     ]
+    },
+    "python.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        }
+       ]
+      }
+     ]
+    },
+    "checkov.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "1004": {
+   "run": {
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "jobs": [
+    {
+     "name": "Plan: kit scripts, discovery, resolution",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:21Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "SAST (CodeQL) (python)",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:21Z",
+     "completed_at": "2026-10-23T10:01:14Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "IaC scan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:21Z",
+     "completed_at": "2026-10-23T10:01:23Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security gate",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:01:30Z",
+     "completed_at": "2026-10-23T10:01:46Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    }
+   ],
+   "states": {
+    "gitleaks": {
+     "scanner": "gitleaks",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "gitleaks.sarif",
+     "job": "x"
+    },
+    "codeql-python": {
+     "scanner": "codeql-python",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "python.sarif",
+     "job": "x"
+    },
+    "checkov": {
+     "scanner": "checkov",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "checkov.sarif",
+     "job": "x"
+    },
+    "codeql-go": {
+     "scanner": "codeql-go",
+     "applicability": "NOT_APPLICABLE",
+     "execution": "NOT_RUN",
+     "gate": "UNDETERMINED",
+     "sarif": "",
+     "job": "x"
+    }
+   },
+   "sarifs": {
+    "gitleaks.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": []
+      }
+     ]
+    },
+    "python.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        }
+       ]
+      }
+     ]
+    },
+    "checkov.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "1005": {
+   "run": {
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "jobs": [
+    {
+     "name": "Materialise the kit's own scripts",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:07Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Discover what is actually here",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:08Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Resolve versions, capability and plan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:10Z",
+     "completed_at": "2026-10-23T10:00:17Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "SAST (CodeQL) (python)",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:20Z",
+     "completed_at": "2026-10-23T10:01:13Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "SAST (CodeQL) (go)",
+     "conclusion": "skipped",
+     "started_at": "2026-10-23T10:00:20Z",
+     "completed_at": "2026-10-23T10:00:20Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "IaC scan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:20Z",
+     "completed_at": "2026-10-23T10:01:23Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security scan report",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:01:30Z",
+     "completed_at": "2026-10-23T10:01:40Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security gate",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:01:41Z",
+     "completed_at": "2026-10-23T10:01:47Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    }
+   ],
+   "states": {
+    "gitleaks": {
+     "scanner": "gitleaks",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "gitleaks.sarif",
+     "job": "x"
+    },
+    "codeql-python": {
+     "scanner": "codeql-python",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "python.sarif",
+     "job": "x"
+    },
+    "checkov": {
+     "scanner": "checkov",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "checkov.sarif",
+     "job": "x"
+    },
+    "codeql-go": {
+     "scanner": "codeql-go",
+     "applicability": "NOT_APPLICABLE",
+     "execution": "NOT_RUN",
+     "gate": "UNDETERMINED",
+     "sarif": "",
+     "job": "x"
+    }
+   },
+   "sarifs": {
+    "gitleaks.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": []
+      }
+     ]
+    },
+    "python.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        }
+       ]
+      }
+     ]
+    },
+    "checkov.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "1006": {
+   "run": {
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "jobs": [
+    {
+     "name": "Plan: kit scripts, discovery, resolution",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:22Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "SAST (CodeQL) (python)",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:21Z",
+     "completed_at": "2026-10-23T10:01:14Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "IaC scan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:21Z",
+     "completed_at": "2026-10-23T10:01:24Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security gate",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:01:30Z",
+     "completed_at": "2026-10-23T10:01:46Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    }
+   ],
+   "states": {
+    "gitleaks": {
+     "scanner": "gitleaks",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "gitleaks.sarif",
+     "job": "x"
+    },
+    "codeql-python": {
+     "scanner": "codeql-python",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "python.sarif",
+     "job": "x"
+    },
+    "checkov": {
+     "scanner": "checkov",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "checkov.sarif",
+     "job": "x"
+    },
+    "codeql-go": {
+     "scanner": "codeql-go",
+     "applicability": "NOT_APPLICABLE",
+     "execution": "NOT_RUN",
+     "gate": "UNDETERMINED",
+     "sarif": "",
+     "job": "x"
+    }
+   },
+   "sarifs": {
+    "gitleaks.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": []
+      }
+     ]
+    },
+    "python.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        }
+       ]
+      }
+     ]
+    },
+    "checkov.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "1007": {
+   "run": {
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "jobs": [
+    {
+     "name": "Materialise the kit's own scripts",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:08Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Discover what is actually here",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:08Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Resolve versions, capability and plan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:10Z",
+     "completed_at": "2026-10-23T10:00:17Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "SAST (CodeQL) (python)",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:20Z",
+     "completed_at": "2026-10-23T10:01:13Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "SAST (CodeQL) (go)",
+     "conclusion": "skipped",
+     "started_at": "2026-10-23T10:00:20Z",
+     "completed_at": "2026-10-23T10:00:20Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "IaC scan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:20Z",
+     "completed_at": "2026-10-23T10:01:24Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security scan report",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:01:30Z",
+     "completed_at": "2026-10-23T10:01:40Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security gate",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:01:41Z",
+     "completed_at": "2026-10-23T10:01:47Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    }
+   ],
+   "states": {
+    "gitleaks": {
+     "scanner": "gitleaks",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "gitleaks.sarif",
+     "job": "x"
+    },
+    "codeql-python": {
+     "scanner": "codeql-python",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "python.sarif",
+     "job": "x"
+    },
+    "checkov": {
+     "scanner": "checkov",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "checkov.sarif",
+     "job": "x"
+    },
+    "codeql-go": {
+     "scanner": "codeql-go",
+     "applicability": "NOT_APPLICABLE",
+     "execution": "NOT_RUN",
+     "gate": "UNDETERMINED",
+     "sarif": "",
+     "job": "x"
+    }
+   },
+   "sarifs": {
+    "gitleaks.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": []
+      }
+     ]
+    },
+    "python.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        }
+       ]
+      }
+     ]
+    },
+    "checkov.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "1008": {
+   "run": {
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "jobs": [
+    {
+     "name": "Plan: kit scripts, discovery, resolution",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:23Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "SAST (CodeQL) (python)",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:21Z",
+     "completed_at": "2026-10-23T10:01:14Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "IaC scan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:21Z",
+     "completed_at": "2026-10-23T10:01:25Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security gate",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:01:30Z",
+     "completed_at": "2026-10-23T10:01:46Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    }
+   ],
+   "states": {
+    "gitleaks": {
+     "scanner": "gitleaks",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "gitleaks.sarif",
+     "job": "x"
+    },
+    "codeql-python": {
+     "scanner": "codeql-python",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "python.sarif",
+     "job": "x"
+    },
+    "checkov": {
+     "scanner": "checkov",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "checkov.sarif",
+     "job": "x"
+    },
+    "codeql-go": {
+     "scanner": "codeql-go",
+     "applicability": "NOT_APPLICABLE",
+     "execution": "NOT_RUN",
+     "gate": "UNDETERMINED",
+     "sarif": "",
+     "job": "x"
+    }
+   },
+   "sarifs": {
+    "gitleaks.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": []
+      }
+     ]
+    },
+    "python.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        }
+       ]
+      }
+     ]
+    },
+    "checkov.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "1009": {
+   "run": {
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "jobs": [
+    {
+     "name": "Materialise the kit's own scripts",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:09Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Discover what is actually here",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:08Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Resolve versions, capability and plan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:10Z",
+     "completed_at": "2026-10-23T10:00:17Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "SAST (CodeQL) (python)",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:20Z",
+     "completed_at": "2026-10-23T10:01:13Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "SAST (CodeQL) (go)",
+     "conclusion": "skipped",
+     "started_at": "2026-10-23T10:00:20Z",
+     "completed_at": "2026-10-23T10:00:20Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "IaC scan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:20Z",
+     "completed_at": "2026-10-23T10:01:25Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security scan report",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:01:30Z",
+     "completed_at": "2026-10-23T10:01:40Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security gate",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:01:41Z",
+     "completed_at": "2026-10-23T10:01:47Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    }
+   ],
+   "states": {
+    "gitleaks": {
+     "scanner": "gitleaks",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "gitleaks.sarif",
+     "job": "x"
+    },
+    "codeql-python": {
+     "scanner": "codeql-python",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "python.sarif",
+     "job": "x"
+    },
+    "checkov": {
+     "scanner": "checkov",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "checkov.sarif",
+     "job": "x"
+    },
+    "codeql-go": {
+     "scanner": "codeql-go",
+     "applicability": "NOT_APPLICABLE",
+     "execution": "NOT_RUN",
+     "gate": "UNDETERMINED",
+     "sarif": "",
+     "job": "x"
+    }
+   },
+   "sarifs": {
+    "gitleaks.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": []
+      }
+     ]
+    },
+    "python.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        }
+       ]
+      }
+     ]
+    },
+    "checkov.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "1010": {
+   "run": {
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "jobs": [
+    {
+     "name": "Plan: kit scripts, discovery, resolution",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:24Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "SAST (CodeQL) (python)",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:21Z",
+     "completed_at": "2026-10-23T10:01:14Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "IaC scan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:21Z",
+     "completed_at": "2026-10-23T10:01:26Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security gate",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:01:30Z",
+     "completed_at": "2026-10-23T10:01:46Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    }
+   ],
+   "states": {
+    "gitleaks": {
+     "scanner": "gitleaks",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "gitleaks.sarif",
+     "job": "x"
+    },
+    "codeql-python": {
+     "scanner": "codeql-python",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "python.sarif",
+     "job": "x"
+    },
+    "checkov": {
+     "scanner": "checkov",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "checkov.sarif",
+     "job": "x"
+    },
+    "codeql-go": {
+     "scanner": "codeql-go",
+     "applicability": "NOT_APPLICABLE",
+     "execution": "NOT_RUN",
+     "gate": "UNDETERMINED",
+     "sarif": "",
+     "job": "x"
+    }
+   },
+   "sarifs": {
+    "gitleaks.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": []
+      }
+     ]
+    },
+    "python.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        }
+       ]
+      }
+     ]
+    },
+    "checkov.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "1011": {
+   "run": {
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+   },
+   "jobs": [
+    {
+     "name": "Plan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:25Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "IaC scan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:30Z",
+     "completed_at": "2026-10-23T10:02:50Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security gate",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:02:55Z",
+     "completed_at": "2026-10-23T10:03:11Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    }
+   ],
+   "states": {
+    "checkov": {
+     "scanner": "checkov",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "checkov.sarif",
+     "job": "x"
+    },
+    "trivy-iac": {
+     "scanner": "trivy-iac",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "trivy-iac.sarif",
+     "job": "x"
+    }
+   },
+   "sarifs": {
+    "checkov.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        },
+        {
+         "ruleId": "r3"
+        },
+        {
+         "ruleId": "r4"
+        },
+        {
+         "ruleId": "r5"
+        },
+        {
+         "ruleId": "r6"
+        },
+        {
+         "ruleId": "r7"
+        },
+        {
+         "ruleId": "r8"
+        },
+        {
+         "ruleId": "r9"
+        }
+       ]
+      }
+     ]
+    },
+    "trivy-iac.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        },
+        {
+         "ruleId": "r3"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "1012": {
+   "run": {
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+   },
+   "jobs": [
+    {
+     "name": "Plan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:25Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "IaC scan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:30Z",
+     "completed_at": "2026-10-23T10:02:50Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security gate",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:02:55Z",
+     "completed_at": "2026-10-23T10:03:11Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    }
+   ],
+   "states": {
+    "checkov": {
+     "scanner": "checkov",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "checkov.sarif",
+     "job": "x"
+    },
+    "trivy-iac": {
+     "scanner": "trivy-iac",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "trivy-iac.sarif",
+     "job": "x"
+    }
+   },
+   "sarifs": {
+    "checkov.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        },
+        {
+         "ruleId": "r3"
+        },
+        {
+         "ruleId": "r4"
+        },
+        {
+         "ruleId": "r5"
+        },
+        {
+         "ruleId": "r6"
+        },
+        {
+         "ruleId": "r7"
+        },
+        {
+         "ruleId": "r8"
+        },
+        {
+         "ruleId": "r9"
+        }
+       ]
+      }
+     ]
+    },
+    "trivy-iac.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        },
+        {
+         "ruleId": "r3"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "1013": {
+   "run": {
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+   },
+   "jobs": [
+    {
+     "name": "Plan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:25Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "IaC scan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:30Z",
+     "completed_at": "2026-10-23T10:02:50Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security gate",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:02:55Z",
+     "completed_at": "2026-10-23T10:03:11Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    }
+   ],
+   "states": {
+    "checkov": {
+     "scanner": "checkov",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "checkov.sarif",
+     "job": "x"
+    },
+    "trivy-iac": {
+     "scanner": "trivy-iac",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "trivy-iac.sarif",
+     "job": "x"
+    }
+   },
+   "sarifs": {
+    "checkov.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        },
+        {
+         "ruleId": "r3"
+        },
+        {
+         "ruleId": "r4"
+        },
+        {
+         "ruleId": "r5"
+        },
+        {
+         "ruleId": "r6"
+        },
+        {
+         "ruleId": "r7"
+        },
+        {
+         "ruleId": "r8"
+        },
+        {
+         "ruleId": "r9"
+        }
+       ]
+      }
+     ]
+    },
+    "trivy-iac.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        },
+        {
+         "ruleId": "r3"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "1014": {
+   "run": {
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+   },
+   "jobs": [
+    {
+     "name": "Plan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:25Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "IaC scan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:30Z",
+     "completed_at": "2026-10-23T10:02:50Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security gate",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:02:55Z",
+     "completed_at": "2026-10-23T10:03:11Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    }
+   ],
+   "states": {
+    "checkov": {
+     "scanner": "checkov",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "checkov.sarif",
+     "job": "x"
+    },
+    "trivy-iac": {
+     "scanner": "trivy-iac",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "trivy-iac.sarif",
+     "job": "x"
+    }
+   },
+   "sarifs": {
+    "checkov.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        },
+        {
+         "ruleId": "r3"
+        },
+        {
+         "ruleId": "r4"
+        },
+        {
+         "ruleId": "r5"
+        },
+        {
+         "ruleId": "r6"
+        },
+        {
+         "ruleId": "r7"
+        },
+        {
+         "ruleId": "r8"
+        },
+        {
+         "ruleId": "r9"
+        }
+       ]
+      }
+     ]
+    },
+    "trivy-iac.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        },
+        {
+         "ruleId": "r3"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "1015": {
+   "run": {
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+   },
+   "jobs": [
+    {
+     "name": "Plan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:25Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "IaC scan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:30Z",
+     "completed_at": "2026-10-23T10:02:50Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security gate",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:02:55Z",
+     "completed_at": "2026-10-23T10:03:11Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    }
+   ],
+   "states": {
+    "checkov": {
+     "scanner": "checkov",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "checkov.sarif",
+     "job": "x"
+    },
+    "trivy-iac": {
+     "scanner": "trivy-iac",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "trivy-iac.sarif",
+     "job": "x"
+    }
+   },
+   "sarifs": {
+    "checkov.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        },
+        {
+         "ruleId": "r3"
+        },
+        {
+         "ruleId": "r4"
+        },
+        {
+         "ruleId": "r5"
+        },
+        {
+         "ruleId": "r6"
+        },
+        {
+         "ruleId": "r7"
+        },
+        {
+         "ruleId": "r8"
+        },
+        {
+         "ruleId": "r9"
+        }
+       ]
+      }
+     ]
+    },
+    "trivy-iac.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        },
+        {
+         "ruleId": "r3"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "1016": {
+   "run": {
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+   },
+   "jobs": [
+    {
+     "name": "Plan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:25Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "IaC scan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:30Z",
+     "completed_at": "2026-10-23T10:02:50Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security gate",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:02:55Z",
+     "completed_at": "2026-10-23T10:03:11Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    }
+   ],
+   "states": {
+    "checkov": {
+     "scanner": "checkov",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "checkov.sarif",
+     "job": "x"
+    }
+   },
+   "sarifs": {
+    "checkov.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        },
+        {
+         "ruleId": "r3"
+        },
+        {
+         "ruleId": "r4"
+        },
+        {
+         "ruleId": "r5"
+        },
+        {
+         "ruleId": "r6"
+        },
+        {
+         "ruleId": "r7"
+        },
+        {
+         "ruleId": "r8"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "1017": {
+   "run": {
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+   },
+   "jobs": [
+    {
+     "name": "Plan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:25Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "IaC scan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:30Z",
+     "completed_at": "2026-10-23T10:02:50Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security gate",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:02:55Z",
+     "completed_at": "2026-10-23T10:03:11Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    }
+   ],
+   "states": {
+    "checkov": {
+     "scanner": "checkov",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "checkov.sarif",
+     "job": "x"
+    }
+   },
+   "sarifs": {
+    "checkov.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        },
+        {
+         "ruleId": "r3"
+        },
+        {
+         "ruleId": "r4"
+        },
+        {
+         "ruleId": "r5"
+        },
+        {
+         "ruleId": "r6"
+        },
+        {
+         "ruleId": "r7"
+        },
+        {
+         "ruleId": "r8"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "1018": {
+   "run": {
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+   },
+   "jobs": [
+    {
+     "name": "Plan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:25Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "IaC scan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:30Z",
+     "completed_at": "2026-10-23T10:02:50Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security gate",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:02:55Z",
+     "completed_at": "2026-10-23T10:03:11Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    }
+   ],
+   "states": {
+    "checkov": {
+     "scanner": "checkov",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "checkov.sarif",
+     "job": "x"
+    }
+   },
+   "sarifs": {
+    "checkov.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        },
+        {
+         "ruleId": "r3"
+        },
+        {
+         "ruleId": "r4"
+        },
+        {
+         "ruleId": "r5"
+        },
+        {
+         "ruleId": "r6"
+        },
+        {
+         "ruleId": "r7"
+        },
+        {
+         "ruleId": "r8"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "1019": {
+   "run": {
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+   },
+   "jobs": [
+    {
+     "name": "Plan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:00Z",
+     "completed_at": "2026-10-23T10:00:25Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "IaC scan",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:00:30Z",
+     "completed_at": "2026-10-23T10:02:50Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    },
+    {
+     "name": "Security gate",
+     "conclusion": "success",
+     "started_at": "2026-10-23T10:02:55Z",
+     "completed_at": "2026-10-23T10:03:11Z",
+     "labels": [
+      "ubuntu-latest"
+     ]
+    }
+   ],
+   "states": {
+    "checkov": {
+     "scanner": "checkov",
+     "applicability": "APPLICABLE",
+     "execution": "COMPLETE",
+     "gate": "PASS",
+     "sarif": "checkov.sarif",
+     "job": "x"
+    }
+   },
+   "sarifs": {
+    "checkov.sarif": {
+     "version": "2.1.0",
+     "runs": [
+      {
+       "tool": {
+        "driver": {
+         "name": "x"
+        }
+       },
+       "results": [
+        {
+         "ruleId": "r0"
+        },
+        {
+         "ruleId": "r1"
+        },
+        {
+         "ruleId": "r2"
+        },
+        {
+         "ruleId": "r3"
+        },
+        {
+         "ruleId": "r4"
+        },
+        {
+         "ruleId": "r5"
+        },
+        {
+         "ruleId": "r6"
+        },
+        {
+         "ruleId": "r7"
+        },
+        {
+         "ruleId": "r8"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  }
+ },
+ "expect": {
+  "run_billed": {
+   "1001": 8,
+   "1002": 5
+  },
+  "run_jobs": {
+   "1001": 7,
+   "1002": 4
+  },
+  "savings_state": {
+   "small": "MEASURED",
+   "iac-heavy": "INSUFFICIENT_RUNS"
+  },
+  "median_billed": {
+   "small": {
+    "before": 8,
+    "after": 5
+   },
+   "iac-heavy": {
+    "before": 5,
+    "after": 5
+   }
+  },
+  "invariant_diff_scanners": {
+   "small": [],
+   "iac-heavy": [
+    "checkov",
+    "trivy-iac"
+   ]
+  }
+ }
+}

@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kit.test-period/0",
+  "title": "Kit test-period.json (no in-document id; declared by name)",
+  "type": "object"
+}

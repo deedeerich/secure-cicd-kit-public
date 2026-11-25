@@ -14,7 +14,7 @@ WHY THIS EXISTS (ledger L15, L84)
     osv-scanner against a throwaway workspace. The scan step's outputs feed the count step, whose
     outputs feed the enforce step, exactly as the runner chains them.
 
-MEASURED, NOT ASSUMED (osv-scanner v2.6.0, 2026-10-14)
+MEASURED, NOT ASSUMED (osv-scanner v2.6.0, 2026-10-14; re-run green on v2.7.0, the one pin, 2026-11-07)
     * A malicious crate (rustdecimal 1.23.1) is reported THREE times -- MAL-2022-1, its RUSTSEC id
       and its GHSA id -- and the MAL- id appears as an ALIAS on the other two. Counting `id` alone
       counts it once by luck; counting every record counts it three times. The count must look at
@@ -82,9 +82,20 @@ NPM_CLEAN = json.dumps({
                  'node_modules/left-pad': {'version': '1.3.0'}}})
 
 
+def _expand(doc):
+    """The workflow with every `$/` composite step expanded into its job, as the runner sees it.
+
+    Scanner job bodies live in `.github/actions/<scanner>/` (ledger L64); this reads the steps a
+    job actually runs. One rule, tests/_composite_expand.py, for every reader.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.expanded_doc(doc)
+
+
 def job_steps():
     import yaml
-    doc = yaml.safe_load(io.open(pbf.WF, encoding='utf-8'))
+    doc = _expand(yaml.safe_load(io.open(pbf.WF, encoding='utf-8')))
     return {s.get('name'): s for s in (doc['jobs'][JOB].get('steps') or [])}, doc['jobs'][JOB]
 
 

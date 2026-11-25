@@ -26,10 +26,21 @@ application: the vending gives it its own empty target and its own per-tool depl
 kit releases it. Everywhere below, "application" means application or tool. No identity deploys more
 than one tool, and being internal never moves a tool's release out of the kit.
 
-**Hosting types the kit can release today: Azure App Service (Linux container) and Azure Container
-Apps** — the two deploy adapters it has (VERIFIED: `reusable-deploy-appservice.yml`,
-`reusable-deploy-containerapp.yml`). A tool on any other hosting type (Functions, AKS, a VM, static
-hosting) has no kit adapter; that is a named gap, not implied coverage.
+**Hosting types the kit can release today: Azure App Service (Linux container), Azure Container
+Apps and Azure Static Web Apps** — the three deploy adapters it has (VERIFIED: `reusable-deploy-appservice.yml`,
+`reusable-deploy-containerapp.yml`; and, since OF-5 K-8 (KDEC-034 PROPOSED, 2026-10-28),
+`reusable-deploy-staticwebapp.yml`, observed against the stub cloud by tests/prove_deploy_staticwebapp.py,
+its run on a real site the dated deferral deploy-staticwebapp-live). The landing
+zone's no-kit-adapter report for `static_web_app` therefore no longer applies: it hands a Static Web App
+off like the other two (`KIT_APP_NAME` is the site's name; `KIT_ACR_*` do not apply), and the deploy
+identity needs, at the one site's scope, the right to read its deployment token and environments, delete
+a preview environment and write tags. The site must not be linked to a repository (its generated workflow
+would deploy around the kit; the posture check fails it). A tool on any other hosting type (Functions,
+AKS, a VM) has no kit adapter; that is a named gap, not implied coverage. **Since KDEC-036 (PROPOSED,
+2026-11-03) a Functions app hosted as a Linux custom container on a Premium or Dedicated plan is released
+by the App Service reusable with `site_kind: functionapp`** (`KIT_APP_NAME` is the function app; the
+deploy identity needs the same roles as for a web app); a code-packaged Functions app, AKS and VMs stay
+outside the kit, named `NO_KIT_ADAPTER:<kind>` on every security run (KNOWN_DEFECTS D-13 sizes them).
 
 ## What the vending emits, per application and environment
 
@@ -48,16 +59,83 @@ secret, because the identity is federated (OIDC) and holds no key.
 | `KIT_IMAGE_REPOSITORY` | variable | input `image_repository` | |
 | `KIT_ENVIRONMENT_TIER` | variable | input `environment_tier` | `dev` / `test` / `uat` / `prod`. At uat and prod the kit refuses an irreversible deploy |
 | `KIT_CLOUD` | variable | input `cloud` | `commercial` or `gov` |
-| environment protection rules | GitHub setting | — | **REQUIRED on uat/prod:** required reviewers and a branch policy (the protected default branch only). The reviewers are the approval half of a version-gap exception (KDEC-014); the kit cannot set or read them, so the vending must, and the deploy records which environment it ran in |
+| environment protection rules | GitHub setting | — | **REQUIRED on uat/prod:** required reviewers and a branch policy (the protected default branch only). The reviewers are the approval half of a version-gap exception (KDEC-014) and, at uat/prod, a control in their own right: **prevent self-review ON**. The kit cannot set them, so the vending must; the deploy reads them back before login and refuses at uat/prod when they are absent, allow self-review, or (when the policy names approver groups) include anyone outside the groups (lane L-A, `environment_protection`) |
 | the federated credential subject | Entra setting | — | `repo:<owner>/<repo>:environment:<env>` — so only a job running in **that** environment of **that** repository can mint the token |
 
+
+### The extended hand-off set (OF-5, 2026-10-28; KDEC-034 PROPOSED)
+
+The LZ-vs-kit deployment review (the landing zone's `LZ-VS-KIT-DEPLOYMENT-REVIEW.md`, P4-P7, P17)
+took the landing zone's stop, its zone readiness and its one approver list into the kit's releases,
+and gave the kit the durable record and the edge purge the landing zone reads and grants. The vending
+(its hand-off write) writes these beside the nine identifiers, read back the same way; each is a
+**variable**, never a secret, and the deploy records which of the environment ones it found
+(`handoff_vended`, names only, in the posture record).
+
+| Item | Where | Value | The kit's use (refused before login unless stated) |
+|---|---|---|---|
+| `KIT_RELEASE_BLOCK` | each environment | `none` \| `platform_halted` \| `ttl_expired` \| `budget_cap_reached`; rewritten on every halt and `apply_block` change, and when a halt clears (while halted, the halt runbook's platform admin sets `platform_halted`) | anything but `none` refuses at **every** tier: `RELEASE_BLOCKED_BY_PLATFORM` (K-3). Unset: recorded `RELEASE_BLOCK_NOT_VENDED`, proceeds |
+| `KIT_ZONE_READINESS` | each environment | `READY` \| `READY_WITH_EXCEPTIONS` \| `NOT_READY` \| `UNKNOWN`, from the zone's readiness register | at `uat`/`prod` only `READY` or `READY_WITH_EXCEPTIONS` releases; `NOT_READY`, `UNKNOWN` or **unset** refuses: `RELEASE_REFUSED_ZONE_NOT_READY` (K-2). Below `uat` it is recorded. **A repository outside a landing zone setting `KIT_ZONE_READINESS: READY` on its own uat/prod environments is a TEST FIXTURE ONLY** -- in production that lets the deploy side certify the platform's readiness to itself, so the value must be issued by the landing zone when the app is in a connected one, and otherwise by AppSec, manually, as a recorded attestation (owner ruling 2026-11-03, refining O-34a); the app or deploy team never sets it for itself, and the kit records where it came from (`readiness_source`, KDEC-036). Outside a landing zone AppSec issues it through `.kit/zone-readiness.json` (`docs/adoption/ZONE_READINESS_ATTESTATION.md`); a value the repository set for itself is refused at uat/prod unless labelled `KIT_ZONE_READINESS_TEST_FIXTURE: true`. The kit cannot know a zone is ready, and unknown is never a pass |
+| `KIT_SETTING_KEYS` | each environment | the app-setting / env keys assigned to the kit, comma- or space-separated; **empty by default** (every key is the landing zone's) | with the seam on: a key the deploy would write outside these and `release_ownership_stamp`, or one of these the landing zone also claims (slot-sticky, secret-backed -- on a static site, a Key Vault reference), refuses before the first mutation: `SEAM_SETTING_OWNERSHIP_CONFLICT`; an App Service swap that would carry a non-sticky landing-zone setting into production: `SEAM_SWAP_MOVES_LZ_SETTING` (K-6) |
+| `KIT_EDGE_ENDPOINT` | each environment of a user-facing app | the app's **own** Front Door endpoint, as its resource id (`.../Microsoft.Cdn/profiles/<profile>/afdEndpoints/<endpoint>`); one endpoint per user-facing app | after a verified release the kit purges that endpoint's cache, and no other (D-4; all three deploy adapters, the static site's since integrate/r8): `EDGE_PURGED`; unset: `EDGE_PURGE_NOT_APPLICABLE` (recorded, never a pass); a value that is not an endpoint id: `EDGE_PURGE_REFUSED`; a failed purge: `EDGE_PURGE_FAILED`, an advisory -- never a failed release |
+| `KIT_TARGET_LEASE_ACCOUNT` | each environment | the lease store's storage account (the container is derived from the target's resource id) | **only after the owner rules on KDEC-030 (the landing zone's G09)**; until then unset, and every lease and seam step on both sides stays off. On: the lease (KDEC-030), the `seam` step (K-6), the rollback's entry ownership (K-5) and the durable release record (K-4) |
+| `KIT_ACR_LOGIN_SERVER`, `KIT_IMAGE_REPOSITORY` | **also as repository variables** | as the environment values | the build reusable binds no environment, so the starter template reads them from the repository |
+| `KIT_HANDOFF_ISSUER` | each environment | `landing-zone`, or `landing-zone:<the vend's reference>` | KDEC-036 G1/G4: the landing zone's DECLARED marker that it wrote this environment's hand-off values. With it the deploy records `tier_source` `TIER_VENDED` and `readiness_source` `READINESS_SOURCE_LZ_HANDOFF`; without it `TIER_SELF_DECLARED`, and at uat/prod readiness must come from AppSec's attestation (`docs/adoption/ZONE_READINESS_ATTESTATION.md`) or is refused as self-set (owner ruling 2026-11-03). Who wrote it is in the audit log |
+| `KIT_HOSTING_KIND` | each environment | `app_service` \| `function_app` \| `container_app` \| `static_web_app` \| `aks` \| `vm` \| ... | KDEC-036 G10: a deploy whose adapter does not release this kind refuses before login at every tier (`NO_KIT_ADAPTER:<kind>`). Unset: not checked |
+| `KIT_EVIDENCE_RETENTION_DAYS` | repository or organisation variable | days, at least 90 | KDEC-036 G6: how long the evidence artifacts are kept; a lower or unreadable value is raised to 90, above 400 is 400 |
+| `KIT_PROMOTION_PREDECESSOR` | repository variable | `test` (default) or `uat`, per product | the predecessor whose verified record a `prod` promotion requires (KDEC-029) |
+| the approver groups in the `uat`/`prod` protection rules | GitHub setting | the kit policy register's `deploy_approval.approver_groups` -- or the named list it points at (`approver_groups_from` in `approver_lists`, optionally kept in the shared file `approver_lists_source`); the landing zone **reads** that list and never keeps a second one (its `HANDOFF_APPROVER_LIST_MISMATCH` refuses a worksheet that disagrees) | the deploy checks the environment's reviewers against the same list (`environment_protection`); one list, so the two cannot drift (K-9) |
+
+**Release approval at uat/prod (K-1).** On top of the protection rules above, the deploy reads its
+own run's approvals before login: an approval of this environment must exist (an administrator
+bypass leaves none: `RELEASE_APPROVAL_ABSENT`), no approver may be the requester or the released
+commit's author (`SELF_DEPLOYMENT_APPROVAL`, the landing zone's own name), and an independent
+approval's **comment must quote the digest** being released -- the full `sha256:` value or at least its
+first 12 hex characters (`RELEASE_APPROVAL_NOT_BOUND_TO_DIGEST`). The reviewer who quotes it is the
+confirmer: approver/confirmer, requester and author are distinct people. The vending need write
+nothing for this; reviewers need to know to quote the digest the run summary shows.
+
+**The durable release record (K-4).** With the lease on, every deploy that took the lease writes its
+release record, create-only, as `releases/<environment>/<UTC>-<run>-<attempt>.json` in the target's
+lease container: digest, `now_serving`, run, `routing_result`, validity, target, and the full
+promotion record -- what the landing zone's seam detector, destroy evidence and `status.json` read.
+The kit never overwrites or deletes one. **Retention is the landing zone's, and it is NOT an
+immutability policy on the lease container** (corrected 2026-11-10, risk R-47; this paragraph used to
+ask for "a time-based immutability policy on the lease container"). The lease blob lives in that same
+container and the lease protocol keeps its state in the blob's metadata, rewritten with Set Blob
+Metadata on every acquire, heartbeat, begin, end, release and break (`scripts/target_lease.py`
+`AzureBlobLeaseStore.write`). Azure Blob Storage refuses Set Blob Metadata on every blob of a container
+under a time-based retention policy or a legal hold, while the policy is active and after it expires,
+and under version-level immutability as well (Microsoft's documentation of immutable storage; read, not
+yet run against real Azure Storage). A policy on the lease container would therefore stop the lease:
+no acquire, no heartbeat, no release. So:
+
+- **the lease container carries no immutability policy and no legal hold**;
+- **a release record that needs retention is copied to an immutable evidence store**: a separate
+  container or account that holds no lease blob, with the time-based retention at least as long as the
+  landing zone's Git evidence (SOC 2). The copy in `releases/` stays create-only and is the working
+  copy the seam detector, destroy evidence and `status.json` read;
+- **where that store is, who copies, and when is an OPEN OWNER DECISION** (the storage architecture
+  decision on release-record retention). Nothing copies the records today: until the decision is made
+  and built, a release record's retention is only the create-only write and the storage account's own
+  protections, and it is not established as immutable.
+
+The kit still reads the container's properties and records `retention_policy` (`present` | `absent` |
+`unreadable`) and still warns when it reads `absent`. Under this correction `absent` is the EXPECTED
+reading for a lease container and `present` is the one to act on (the lease will be refused); the
+warning's wording and the meaning of the field change with the owner decision, not before (R-47).
+
+The deploy identity additionally receives, from the vend: `Storage Blob Data Contributor` on **its
+target's lease container only** (only after G09), and a custom role holding only
+`Microsoft.Cdn/profiles/afdendpoints/Purge/action` at **its own** `afdEndpoints/<name>` scope
+(D-4; whether the purge's status poll needs a read action is the seam contract's U8).
 The vending also records, in its own output for the platform team (not in the repository): the
 application's owner role, its cost centre, and the guardrails in force.
 
-## The deploy identity — least privilege, per application
+## The deploy identity — least privilege, per tool
 
-One identity per application per environment (or per application with one federated credential per
-environment). Scoped to **that application's resources only**:
+One identity per tool (an application or an internal tool, KDEC-015) per environment. Scoped to **that
+tool's resources only**:
 
 | target | role at the application's scope | why |
 |---|---|---|
@@ -104,11 +182,35 @@ REFUSED.
 
 ## Open items for the owner
 
-1. One identity per application per environment, or one per application with several federated
-   credentials? (Recommended: one per environment; a test identity can never reach prod.)
-2. Does the vending also create the **build** identity and its registry scope, or is that a second,
-   one-time onboarding step?
-3. Role names to verify on the first live deploy (the table above is read, not run).
-4. Where application-level configuration that is infrastructure (scale, plan size, app settings that
-   are not secrets) lives: in the vending (plan → apply), or as kit-managed settings. Recommended: the
-   vending, so the kit never changes what the platform team approved.
+Items 1, 2 and 4 were answered on 2026-11-13 (the owner accepted the recommended directions, KDEC-052);
+item 3 is live acceptance, not a decision.
+
+1. **Answered:** one identity per tool per environment (`gh-secure-cicd-kit-<env>` in the reference
+   sandbox); a test identity can never reach prod.
+2. **Answered:** the vending creates the **build** identity and its registry scope (AcrPush on that
+   repository path) only when the customer chose the kit deployment path. On the native path and on the
+   customer's own deployment process, that process owns the build identity (the kit is optional for the
+   landing zone).
+3. **Still owed (live acceptance, not a decision):** the role names in the table above are read, not run.
+   They are verified by one live deploy under exactly these roles plus the boundary probe
+   (`verify-azure-oidc.yml`), on the owner's personal sandbox.
+4. **Answered:** infrastructure-like application configuration (scale, plan size, app settings that are
+   not secrets) lives in the vending (plan → apply), so the kit never changes what the platform team
+   approved (`KIT_SETTING_KEYS` is empty by default). Whether KDEC-030's field-ownership half leaves DRAFT
+   is recorded in KDEC-030 itself, not here.
+
+## Tier and target binding
+
+Moved here from the comments of `.github/workflows/reusable-deploy-staticwebapp.yml` on 2026-11-13 (integration of the round-5 lanes) to keep that file under the `tests/check_workflow_size.py` fail threshold; the workflow keeps a one-line pointer. The same text still sits in the comments of the App Service and Container App deploy reusables (and, for the concurrency note, of `reusable-build-docker.yml`).
+
+```text
+B-13 / LZ-1 (ledger P-01). The landing zone vends the tier and the target as VARIABLES of
+this job's GitHub environment (docs/architecture/LZ_KIT_HANDOFF_CONTRACT.md). A caller job
+cannot read them, so the tier was whatever string the caller typed -- `prod` in the
+starter template, for every target -- and the tier decides the production rules. This job
+runs IN the environment: an empty input is filled from the vended value (GITHUB_ENV, read
+by every later step), an input that disagrees with it is refused here, before the verdict
+is weighed and before login, and an environment that vends nothing leaves the inputs as
+given (UNBOUND, recorded). The body is identical in both deploy reusables.
+tests/prove_deploy_environment_binding.py.
+```

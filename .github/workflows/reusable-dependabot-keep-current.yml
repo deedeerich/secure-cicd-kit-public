@@ -1,0 +1,309 @@
+# Dependabot triage, part two: keep every open Dependabot pull request current, so no one babysits it.
+#
+# THE OWNER'S PROBLEM (2026-11-06). The base branch requires branches to be up to date before merging.
+# When main moves, an open Dependabot PR that does not conflict is merely BEHIND: Dependabot rebases
+# on its own only when a PR CONFLICTS (rebase-strategy auto), so a behind PR waits -- auto-merge
+# armed, every check green -- until somebody types `@dependabot rebase`. This job types it.
+#
+# WHAT IT DOES, PER OPEN PULL REQUEST AGAINST THE BASE BRANCH (rule ids in brackets)
+#   not authored by dependabot[bot], or its branch is not dependabot/*  -> nothing, ever [not_dependabot]
+#   touches an excluded path (the deliberately vulnerable fixture)      -> closed with the reason
+#                                                                          (never a rebase) [excluded_path]
+#   mergeable_state `behind` (out of date, not conflicting)             -> one `@dependabot rebase`
+#                                                                          comment PER BASE COMMIT [behind]
+#   mergeable_state `dirty` (conflicts)                                 -> one `@dependabot recreate`
+#                                                                          comment, ONCE per PR [conflicting]
+#   already asked at this base commit / already recreated once          -> nothing, said why
+#                                                                          [already_asked, recreate_already_asked]
+#   anything else (clean, blocked, unstable, draft, unknown)            -> nothing [up_to_date, ...]
+# Idempotency is a marker in the comment the job wrote; the comment list is read first. A list that
+# cannot be read posts NOTHING for that PR (an unread fact is never read as "not asked yet").
+#
+# LEAST PRIVILEGE. One job: contents read (the base branch head, on a private repository) and
+# pull-requests write (read the PRs, comment, close). No checkout, no code from any PR runs: every PR
+# value is data, reaching the decision through files and env:, never an expression in a run: block.
+#
+# WHEN IT RUNS (the caller decides): a push to the default branch (main moved: PRs may now be
+# behind), a schedule (the backstop: a merge made by the GITHUB_TOKEN -- an auto-merge the triage job
+# armed -- may not start a push run; GitHub "Triggering a workflow from a workflow"), and dispatch.
+# Never on a pull_request or pull_request_target event: it refuses those by its job condition.
+#
+# WHO DEPENDABOT LISTENS TO (UNVERIFIED on a hosted run, 2026-11-06). Dependabot acts on commands
+# from people with write access. Whether it honours one posted by github-actions[bot] with the run's
+# token is not confirmed by GitHub's documentation; if it does not, set the optional
+# COMMAND_TOKEN secret (a maintainer's fine-grained token, pull requests read/write on this repo
+# only) and the comment is posted with it. docs/adoption/DEPENDABOT_TRIAGE.md section 3b.
+#
+# PROOF: tests/prove_dependabot_keep_current.py runs these steps as shipped against a gh shim.
+name: "Kit: Dependabot keep current (reusable)"
+
+on:
+  workflow_call:
+    inputs:
+      base_branch:
+        description: "The protected branch Dependabot's pull requests target (usually main)."
+        type: string
+        default: "main"
+      excluded_paths:
+        description: >-
+          Glob patterns, comma or newline separated. An open Dependabot PR touching any of them is
+          CLOSED with an explanation and never asked to rebase. Added to the default, never replacing it.
+        type: string
+        default: "tests/consumer-fixture/**"
+      max_pull_requests:
+        description: "The most open Dependabot pull requests one run examines (1-100). The rest wait for the next run."
+        type: string
+        default: "50"
+    secrets:
+      COMMAND_TOKEN:
+        description: >-
+          Optional. A token that Dependabot accepts commands from (a maintainer's fine-grained token,
+          pull requests read/write, this repository only). Unset, the run's own token posts the
+          comment. Used only for the comment and the close, never for reading.
+        required: false
+    outputs:
+      asked_rebase:
+        description: "How many pull requests were asked to rebase in this run."
+        value: ${{ jobs.keep-current.outputs.asked_rebase }}
+      asked_recreate:
+        description: "How many pull requests were asked to recreate in this run."
+        value: ${{ jobs.keep-current.outputs.asked_recreate }}
+      closed:
+        description: "How many pull requests touching an excluded path were closed in this run."
+        value: ${{ jobs.keep-current.outputs.closed }}
+
+permissions: {}
+
+jobs:
+  keep-current:
+    name: Keep Dependabot pull requests current
+    # Never from a pull request event: those carry a PR's context, and this job acts on all of them.
+    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      asked_rebase: ${{ steps.act.outputs.asked_rebase }}
+      asked_recreate: ${{ steps.act.outputs.asked_recreate }}
+      closed: ${{ steps.act.outputs.closed }}
+    steps:
+      - name: Read the open Dependabot pull requests and the base branch head
+        id: evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE_REF: ${{ inputs.base_branch }}
+          MAX_PRS: ${{ inputs.max_pull_requests }}
+        run: |
+          set -uo pipefail   # not -e: each read records its outcome; a failed read is evidence
+          # KDEC-027: gh's token goes to this run's host only (gh api / -R default to github.com).
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
+          dir="$RUNNER_TEMP/dependabot-keep-current"
+          mkdir -p "$dir/pr"
+          case "$MAX_PRS" in ''|*[!0-9]*) MAX_PRS=50 ;; esac
+          [ "$MAX_PRS" -ge 1 ] && [ "$MAX_PRS" -le 100 ] || MAX_PRS=50
+          rc=0
+          gh api "repos/${REPO}/branches/${BASE_REF}" --jq '.commit.sha' > "$dir/base_sha.txt" 2> "$dir/base.err" || rc=$?
+          echo "$rc" > "$dir/base.rc"
+          rc=0
+          gh api --paginate "repos/${REPO}/pulls?state=open&base=${BASE_REF}&per_page=100" \
+            --jq '.[] | {number, login: .user.login, head_ref: .head.ref, draft}' \
+            > "$dir/open.jsonl" 2> "$dir/open.err" || rc=$?
+          echo "$rc" > "$dir/open.rc"
+          # Only Dependabot's PRs are read further; a number is digits or it is not used at all.
+          n=0
+          jq -r 'select(.login == "dependabot[bot]") | .number' "$dir/open.jsonl" 2>/dev/null | tr -d '\r' | while read -r num; do
+            case "$num" in ''|*[!0-9]*) continue ;; esac
+            n=$((n + 1)); [ "$n" -le "$MAX_PRS" ] || break
+            d="$dir/pr/$num"; mkdir -p "$d"
+            rc=0; gh api "repos/${REPO}/pulls/${num}" > "$d/pr.json" 2> "$d/pr.err" || rc=$?; echo "$rc" > "$d/pr.rc"
+            rc=0; gh api --paginate "repos/${REPO}/pulls/${num}/files?per_page=100" --jq '.[].filename' \
+              > "$d/files.txt" 2> "$d/files.err" || rc=$?; echo "$rc" > "$d/files.rc"
+            rc=0; gh api --paginate "repos/${REPO}/issues/${num}/comments?per_page=100" \
+              --jq '.[] | {login: .user.login, body: .body}' > "$d/comments.jsonl" 2> "$d/comments.err" || rc=$?
+            echo "$rc" > "$d/comments.rc"
+          done
+          echo "read=done" >> "$GITHUB_OUTPUT"
+
+      - name: Decide, per pull request
+        id: decide
+        shell: bash
+        env:
+          IN_EXCLUDED_PATHS: ${{ inputs.excluded_paths }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          dir="$RUNNER_TEMP/dependabot-keep-current"
+          python3 - "$dir" <<'KEEP_PY'
+          import fnmatch, json, os, re, sys
+          d = sys.argv[1]
+          BASELINE_EXCLUDED = ['tests/consumer-fixture/**']
+          MARK = '<!-- kit-dependabot-keep-current:%s -->'
+
+          def read(p, default=''):
+              try:
+                  with open(p, encoding='utf-8') as fh:
+                      return fh.read()
+              except OSError:
+                  return default
+
+          def ok(p):
+              return read(p + '.rc', '1').strip() == '0'
+
+          def jsonl(p):
+              out = []
+              for line in read(p).splitlines():
+                  line = line.strip()
+                  if line:
+                      try:
+                          out.append(json.loads(line))
+                      except ValueError:
+                          return None
+              return out
+
+          def glob_match(path, pat):
+              if pat.endswith('/**'):
+                  return path == pat[:-3] or path.startswith(pat[:-2])
+              return fnmatch.fnmatchcase(path, pat)
+
+          excluded = BASELINE_EXCLUDED + [x.strip() for x in re.split(r'[,\n]', os.environ.get('IN_EXCLUDED_PATHS', '')) if x.strip()]
+          base_sha = read(os.path.join(d, 'base_sha.txt')).strip()
+          base_ok = ok(os.path.join(d, 'base')) and re.fullmatch(r'[0-9a-f]{40}', base_sha) is not None
+          decisions, fatal = [], []
+          if not ok(os.path.join(d, 'open')):
+              fatal.append('the open pull requests could not be listed: %s' % read(os.path.join(d, 'open.err'))[:300])
+          opened = jsonl(os.path.join(d, 'open.jsonl')) or []
+          for pr in opened:
+              num = str(pr.get('number', ''))
+              if not num.isdigit():
+                  continue
+              if pr.get('login') != 'dependabot[bot]':
+                  decisions.append({'number': int(num), 'action': 'none', 'rule': 'not_dependabot'})
+                  continue
+              p = os.path.join(d, 'pr', num)
+              rec = {'number': int(num), 'action': 'none'}
+              if not os.path.isdir(p):
+                  rec['rule'] = 'over_run_limit'
+                  decisions.append(rec); continue
+              detail = {}
+              if ok(os.path.join(p, 'pr')):
+                  try:
+                      detail = json.loads(read(os.path.join(p, 'pr.json')) or '{}')
+                  except ValueError:
+                      detail = {}
+              head_ref = str((detail.get('head') or {}).get('ref') or pr.get('head_ref') or '')
+              author = str((detail.get('user') or {}).get('login') or pr.get('login') or '')
+              # Both the list and the PR itself must say Dependabot, and the branch must be its own.
+              if author != 'dependabot[bot]' or not head_ref.startswith('dependabot/'):
+                  rec['rule'] = 'not_dependabot'
+                  decisions.append(rec); continue
+              if not detail:
+                  rec['rule'] = 'pr_unreadable'
+                  decisions.append(rec); continue
+              rec['url'] = detail.get('html_url', '')
+              if not ok(os.path.join(p, 'files')):
+                  rec['rule'] = 'files_unreadable'
+                  decisions.append(rec); continue
+              files = [f for f in read(os.path.join(p, 'files.txt')).splitlines() if f.strip()]
+              hit = [f for f in files if any(glob_match(f, g) for g in excluded)]
+              if hit:
+                  rec.update(action='close', rule='excluded_path', paths=hit[:5])
+                  decisions.append(rec); continue
+              if detail.get('draft'):
+                  rec['rule'] = 'draft'
+                  decisions.append(rec); continue
+              comments = jsonl(os.path.join(p, 'comments.jsonl')) if ok(os.path.join(p, 'comments')) else None
+              state = str(detail.get('mergeable_state') or 'unknown')
+              rec['mergeable_state'] = state
+              if state == 'behind':
+                  if not base_ok:
+                      rec['rule'] = 'base_unreadable'
+                  elif comments is None:
+                      rec['rule'] = 'comments_unreadable'
+                  elif any((MARK % ('rebase:' + base_sha)) in str(c.get('body', '')) for c in comments):
+                      rec['rule'] = 'already_asked'
+                  else:
+                      rec.update(action='rebase', rule='behind', marker=MARK % ('rebase:' + base_sha))
+              elif state == 'dirty':
+                  if comments is None:
+                      rec['rule'] = 'comments_unreadable'
+                  elif any((MARK % 'recreate') in str(c.get('body', '')) for c in comments):
+                      rec['rule'] = 'recreate_already_asked'
+                  else:
+                      rec.update(action='recreate', rule='conflicting', marker=MARK % 'recreate')
+              else:
+                  rec['rule'] = 'up_to_date' if state in ('clean', 'unstable', 'has_hooks') else 'not_actionable_' + re.sub(r'[^a-z_]', '', state)[:20]
+              decisions.append(rec)
+
+          with open(os.path.join(d, 'decision.json'), 'w', encoding='utf-8') as fh:
+              json.dump({'base_sha': base_sha, 'decisions': decisions, 'errors': fatal}, fh, indent=1)
+          with open(os.path.join(d, 'plan.tsv'), 'w', encoding='utf-8') as fh:
+              for r in decisions:
+                  if r['action'] in ('rebase', 'recreate', 'close'):
+                      body = os.path.join(d, 'body-%d.md' % r['number'])
+                      with open(body, 'w', encoding='utf-8') as b:
+                          if r['action'] == 'rebase':
+                              b.write('@dependabot rebase\n\n%s\nKit triage: this update is behind the base branch and does '
+                                      'not conflict; the branch must be up to date to merge, so Dependabot is asked to '
+                                      'rebase it. Asked once per base commit.\n' % r['marker'])
+                          elif r['action'] == 'recreate':
+                              b.write('@dependabot recreate\n\n%s\nKit triage: this update conflicts with the base branch. '
+                                      'Dependabot is asked to recreate it, once; if it still conflicts, a human resolves it.\n'
+                                      % r['marker'])
+                          else:
+                              b.write('Kit triage: closed. This update changes an excluded path (%s): those packages are '
+                                      'deliberately vulnerable test fixtures and are never updated. Nothing was merged.\n'
+                                      % ', '.join(r['paths']))
+                      fh.write('%d\t%s\t%s\n' % (r['number'], r['action'], body))
+          summ = os.environ.get('GITHUB_STEP_SUMMARY')
+          if summ:
+              with open(summ, 'a', encoding='utf-8') as fh:
+                  fh.write('### Dependabot keep current\n\n| PR | state | action | rule |\n|---|---|---|---|\n')
+                  for r in decisions:
+                      fh.write('| #%s | %s | %s | %s |\n' % (r['number'], r.get('mergeable_state', '-'), r['action'], r['rule']))
+                  for e in fatal:
+                      fh.write('\n**UNKNOWN:** %s\n' % e)
+          for e in fatal:
+              print('::error title=Dependabot keep current could not read::%s' % e.replace('\n', ' '))
+          sys.exit(1 if fatal else 0)
+          KEEP_PY
+
+      - name: Act
+        id: act
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.COMMAND_TOKEN || github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          # KDEC-027: gh's token goes to this run's host only (gh api / -R default to github.com).
+          GH_HOST="${GITHUB_SERVER_URL:-https://github.com}"; export GH_HOST="${GH_HOST#*://}"
+          dir="$RUNNER_TEMP/dependabot-keep-current"
+          rebase=0; recreate=0; closed=0; fail=0
+          if [ -f "$dir/plan.tsv" ]; then
+            while IFS=$'\t' read -r num action body; do
+              case "$num" in ''|*[!0-9]*) continue ;; esac
+              case "$action" in
+                rebase|recreate)
+                  if gh pr comment "$num" --repo "${GH_HOST}/${REPO}" --body-file "$body"; then
+                    if [ "$action" = rebase ]; then rebase=$((rebase + 1)); else recreate=$((recreate + 1)); fi
+                  else
+                    fail=1; echo "::error title=Could not ask Dependabot::#$num ($action)"
+                  fi ;;
+                close)
+                  if gh pr close "$num" --repo "${GH_HOST}/${REPO}" --comment "$(cat "$body")"; then
+                    closed=$((closed + 1))
+                  else
+                    fail=1; echo "::error title=Could not close::#$num"
+                  fi ;;
+              esac
+            done < "$dir/plan.tsv"
+          fi
+          echo "asked_rebase=$rebase" >> "$GITHUB_OUTPUT"
+          echo "asked_recreate=$recreate" >> "$GITHUB_OUTPUT"
+          echo "closed=$closed" >> "$GITHUB_OUTPUT"
+          echo "- asked to rebase: $rebase; asked to recreate: $recreate; closed: $closed" >> "$GITHUB_STEP_SUMMARY"
+          exit "$fail"

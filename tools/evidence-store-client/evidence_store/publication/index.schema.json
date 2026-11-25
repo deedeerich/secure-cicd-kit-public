@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evidence-store.index/v1",
+  "title": "Nightly index (container index, blob nightly/<container>.json, rewritten by the sealer)",
+  "description": "Derived and regenerable: counts, pointers and hashes. A search and dashboard aid, never the provenance record.",
+  "type": "object",
+  "required": ["schema", "container", "generated_at_utc", "latest_seal", "seal_count", "seals", "totals", "objects_by_layer", "note"],
+  "properties": {
+    "schema": {"const": "evidence-store.index/v1"},
+    "container": {"type": "string"},
+    "generated_at_utc": {"type": "string"},
+    "latest_seal": {"type": "object", "required": ["name", "sha256", "seal_number"]},
+    "seal_count": {"type": "integer"},
+    "seals": {"type": "array", "items": {"type": "object", "required": ["name", "seal_number", "sha256", "entries"]}},
+    "totals": {"type": "object", "required": ["objects", "receipts", "rehash_mismatch", "no_receipt"]},
+    "objects_by_layer": {"type": "object", "additionalProperties": {"type": "integer"}},
+    "note": {"type": "string"}
+  }
+}

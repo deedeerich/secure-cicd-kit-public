@@ -1,0 +1,94 @@
+# The kit's evidence copy-out (KDEC-068; owner ruling 2026-11-23: one writer per tool). ONE scheduled job owned
+# by the kit copies completed runs' evidence artifacts into the governed evidence store: SARIF, SBOMs and
+# findings to cicd-kit-scans reported/, gate, deploy, rollback and export records to cicd-kit-gates
+# evaluated/, promotion (approval) records to cicd-kit-gates approved/ (scripts/evidence_copyout.py).
+#
+# APPLICATION REPOSITORIES HOLD NO STORAGE IDENTITY. This job reads their runs with a READ-ONLY GitHub App
+# installation token (Contents, Actions, Metadata: read) and writes as tool `kit` with the kit's evidence
+# writer, federated to this job's environment (OIDC: no client secret, no storage key, no SAS).
+#
+# NEVER BESIDE PULL-REQUEST CODE: no pull_request or push trigger; the environment admits only the default
+# branch; scripts/evidence_copyout.py plan refuses any other event or ref before the token is minted. The
+# runner must reach the store's private endpoint (vars.KIT_EVIDENCE_RUNNER, a self-hosted label). Host-
+# agnostic (KDEC-027): the token is minted at github.api_url and the script reads GITHUB_API_URL.
+# The vendored client (tools/evidence-store-client) is checked against its pinned tree hash before use.
+# TRANSPORT (owner decisions 2026-11-24): the push goes through the kit's own evidence API app
+# (vars.EVIDENCE_KIT_API_URL + vars.EVIDENCE_KIT_API_AUDIENCE, the landing-zone root output
+# evidence_api.tool_endpoints.kit); the client takes the API token from the azure/login session. The direct
+# library write is the fallback only (vars.EVIDENCE_DIRECT_WRITE = true while the API is off); objects over
+# 32 MiB go direct automatically. Every cicd-kit-gates file must pass the client's publication gate first.
+# Artifact retention is unchanged here: SARIF 30 days, the other evidence the 90-day floor (KDEC-036 G6).
+name: Evidence copy-out
+
+on:
+  schedule:
+    - cron: '41 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  copyout:
+    name: Copy completed runs' evidence artifacts into the store (read-only App token, kit writer via OIDC)
+    runs-on: ${{ vars.KIT_EVIDENCE_RUNNER || 'self-hosted' }}
+    timeout-minutes: 60
+    environment: kit-evidence-copyout
+    env:
+      EVENT: ${{ github.event_name }}
+      REF: ${{ github.ref }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      HAS_APP_KEY: ${{ secrets.KIT_COPYOUT_APP_PRIVATE_KEY != '' }}
+      APP_CLIENT_ID: ${{ vars.KIT_COPYOUT_APP_CLIENT_ID }}
+      COPYOUT_REPOSITORIES: ${{ vars.KIT_COPYOUT_REPOSITORIES }}
+      EVIDENCE_STORE_CONTRACT: .github/evidence-store/store_contract.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Decide whether the copy-out may run (trusted event, default branch, App, repositories, client pin)
+        id: plan
+        run: python3 scripts/evidence_copyout.py plan
+      - name: Mint a read-only installation token (Contents, Actions, Metadata read)
+        id: token
+        if: steps.plan.outputs.run == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.KIT_COPYOUT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.KIT_COPYOUT_APP_PRIVATE_KEY }}
+          owner: ${{ steps.plan.outputs.owner }}
+          repositories: ${{ steps.plan.outputs.repos }}
+          permission-contents: read
+          permission-actions: read
+          permission-metadata: read
+      - name: List completed runs and stage their evidence artifacts
+        if: steps.plan.outputs.run == 'true'
+        env:
+          COPYOUT_GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: python3 scripts/evidence_copyout.py collect --out "$RUNNER_TEMP/copyout" --since-hours 36
+      - name: Sign in as the kit evidence writer (OIDC, no secret)
+        if: steps.plan.outputs.run == 'true'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.KIT_EVIDENCE_WRITER_CLIENT_ID }}
+          tenant-id: ${{ vars.KIT_EVIDENCE_TENANT_ID }}
+          allow-no-subscriptions: true
+      - name: Push put-once through the kit API app (0 and 3 pass; anything else fails the job)
+        if: steps.plan.outputs.run == 'true'
+        env:
+          EVIDENCE_API_URL: ${{ vars.EVIDENCE_KIT_API_URL }}
+          EVIDENCE_API_AUDIENCE: ${{ vars.EVIDENCE_KIT_API_AUDIENCE }}
+          EVIDENCE_DIRECT_WRITE: ${{ vars.EVIDENCE_DIRECT_WRITE }}
+        run: python3 scripts/evidence_copyout.py push --staged "$RUNNER_TEMP/copyout"
+      - name: Name why the copy-out did not run (COPYOUT_NOT_RUN is never a pass)
+        if: steps.plan.outputs.run != 'true'
+        env:
+          REASON: ${{ steps.plan.outputs.reason }}
+        run: |
+          echo "::error::$REASON"
+          exit 1

@@ -1,0 +1,125 @@
+name: deploy-interruption
+description: >-
+  KREQ-717: the governed time bound of a mutating deploy job, and the interrupted deploy the next run
+  of the same target must reconcile. op=check (before login): DEPLOY_REFUSED_TIME_BOUND when the bound
+  is outside 30..360 minutes or below the deploy's own work; INTERRUPTED_DEPLOY_RECONCILIATION_REQUIRED
+  when the newest state of the target is a run that changed something and did not establish its result
+  (PARTIAL_APPLY, STATUS_UNTRUSTED, or cancelled / timed out mid-change), until a person names that run
+  in reconciled-run; INTERRUPTION_CHECK_INCOMPLETE when the state cannot be read. op=record (always,
+  after the outcome report): writes deploy-state.json into the deploy evidence and uploads it as
+  kit-deploy-state-<target key>. op=bound: the time bound alone (the registry push: no state to read).
+  kind=registry-push (record): the push's state into the build evidence, INTERRUPTED_PUSH_UNPROMOTABLE
+  when a kill or failure left an unproven or unattested image; not uploaded (nothing reads it next run).
+  scripts/deploy_interruption.py; tests/prove_deploy_interruption.py; docs/architecture/ROLLBACK_CONTRACT.md.
+inputs:
+  op:
+    description: check, bound or record.
+    required: true
+  bound-name:
+    description: check/bound -- the job's own time-bound input, named in a refusal.
+    required: false
+    default: deploy_timeout_minutes
+  kind:
+    description: record -- deploy (the deploy evidence, uploaded) or registry-push (the build evidence, kept there).
+    required: false
+    default: deploy
+  identity:
+    description: record, registry-push -- the build's artifact_identity class.
+    required: false
+    default: ''
+  target:
+    description: The target's name (the app, web app or site); the environment and resource group come from the job's DEPLOY_ENVIRONMENT and RESOURCE_GROUP.
+    required: true
+  timeout-minutes:
+    description: check -- the job's deploy_timeout_minutes input.
+    required: false
+    default: '90'
+  test-period-minutes:
+    description: check -- the e2e test period in minutes, 0 when no e2e command is configured.
+    required: false
+    default: '0'
+  dast:
+    description: check -- true when a DAST command is configured.
+    required: false
+    default: 'false'
+  reconciled-run:
+    description: check -- the run id of the interrupted deploy a person reconciled by hand.
+    required: false
+    default: ''
+  cancelled:
+    description: record -- the job's status is cancelled (a person cancelled it, or its time bound fired).
+    required: false
+    default: 'false'
+  github-token:
+    description: The job's token (actions read) for the state artifact.
+    required: false
+    default: ''
+outputs:
+  deploy_interruption: {description: "check: assurance-taxonomy.yaml deploy_interruption", value: "${{ steps.c.outputs.deploy_interruption }}"}
+  reconciliation: {description: "record: INTERRUPTED_DEPLOY_RECONCILIATION_REQUIRED or none", value: "${{ steps.r.outputs.reconciliation }}"}
+runs:
+  using: composite
+  steps:
+    - name: Deploy interruption check
+      id: c
+      if: inputs.op == 'check' || inputs.op == 'bound'
+      shell: bash
+      env:
+        # CALLER INPUT ARRIVES AS DATA, NEVER AS SCRIPT TEXT (tests/lint_injection.py).
+        I_OP: ${{ inputs.op }}
+        I_BOUND_NAME: ${{ inputs.bound-name }}
+        I_TARGET: ${{ inputs.target }}
+        I_TIMEOUT: ${{ inputs.timeout-minutes }}
+        I_PERIOD: ${{ inputs.test-period-minutes }}
+        I_DAST: ${{ inputs.dast }}
+        I_RECONCILED: ${{ inputs.reconciled-run }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -uo pipefail
+        script="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)/scripts/deploy_interruption.py"
+        if [ ! -s "$script" ]; then
+          echo "::error title=deploy_interruption INTERRUPTION_CHECK_INCOMPLETE::scripts/deploy_interruption.py is not in the kit delivered with this action."
+          echo "deploy_interruption=INTERRUPTION_CHECK_INCOMPLETE" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi
+        only=()
+        [ "${I_OP:-}" = bound ] && only=(--bound-only)
+        mkdir -p "$RUNNER_TEMP/deploy-evidence"
+        python3 "$script" check --environment "${DEPLOY_ENVIRONMENT:-}" --resource-group "${RESOURCE_GROUP:-}" \
+          --name "$I_TARGET" --timeout "$I_TIMEOUT" --test-period "$I_PERIOD" --dast "$I_DAST" \
+          --reconciled-run "$I_RECONCILED" --out "$RUNNER_TEMP/deploy-evidence/interruption-check.json" \
+          --bound-name "${I_BOUND_NAME:-deploy_timeout_minutes}" ${only[@]+"${only[@]}"} \
+          --github-output "$GITHUB_OUTPUT" --summary "${GITHUB_STEP_SUMMARY:-}"
+    - name: Deploy state for the next run
+      id: r
+      if: always() && inputs.op == 'record'   # a cancelled or timed-out job still records
+      shell: bash
+      env:
+        I_TARGET: ${{ inputs.target }}
+        I_CANCELLED: ${{ inputs.cancelled }}
+        I_KIND: ${{ inputs.kind }}
+        I_IDENTITY: ${{ inputs.identity }}
+      run: |
+        set -uo pipefail
+        script="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)/scripts/deploy_interruption.py"
+        evid="$RUNNER_TEMP/deploy-evidence"
+        [ "${I_KIND:-deploy}" = registry-push ] && evid="$RUNNER_TEMP/build-evidence"
+        # An absent identity is recorded as absent: a registry push without REGISTRY_IDENTITY_PROVEN is
+        # STATUS_UNTRUSTED and never promoted (scripts/deploy_interruption.py build_registry_state).
+        if [ -z "${I_IDENTITY:-}" ] && [ "${I_KIND:-deploy}" = registry-push ]; then
+          echo "::warning title=Artifact identity absent::the push is recorded without an asserted identity; it is never promoted"
+        fi
+        python3 "$script" record --environment "${DEPLOY_ENVIRONMENT:-}" --resource-group "${RESOURCE_GROUP:-}" \
+          --name "$I_TARGET" --evidence-dir "$evid" --out-dir "$RUNNER_TEMP/kit-deploy-state" \
+          --kind "${I_KIND:-deploy}" --identity "${I_IDENTITY:-}" \
+          --cancelled "$I_CANCELLED" --run-id "${GITHUB_RUN_ID:-}" --run-attempt "${GITHUB_RUN_ATTEMPT:-1}" \
+          --github-output "$GITHUB_OUTPUT" --summary "${GITHUB_STEP_SUMMARY:-}"
+    - name: Keep the target's deploy state
+      if: always() && inputs.op == 'record' && inputs.kind != 'registry-push' && steps.r.outputs.state_written == 'true'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ steps.r.outputs.state_name }}
+        path: ${{ runner.temp }}/kit-deploy-state/deploy-state.json
+        if-no-files-found: error
+        overwrite: true
+        retention-days: 90

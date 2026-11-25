@@ -1,0 +1,120 @@
+{
+  "_what": "THE SCANNER OBLIGATIONS POLICY (owner 2026-11-18, approved 2026-11-24, KDEC-069). What a repository must be scanned for is decided by discovery (what it contains; what it pushes or deploys) and this versioned policy; a scanner token decides only whether a provider can run. Kit-owned and protected (governance-profile.json scanner_floor class). Read by scripts/scanner_obligations.py through .github/actions/scanner-obligations, from the kit at the caller's pinned commit, never from the checkout.",
+  "_providers": "Each provider lists the coverage aspects it gives and the issue types it detects (closure equivalence). Core providers are ADOPTED by default and their identities are capability-floor identities. External providers (ext-<name>, the KDEC-028 row name) are options until a provider_lifecycle record ADOPTS them in an organisation's copy. An ADOPTED provider that did not run, with no RETIRED record, is UNAVAILABLE whatever its token says.",
+  "_lifecycle": "provider_lifecycle is append-only history, the last record per provider wins. Retiring a provider is ONE line: {\"provider\": \"ext-x\", \"state\": \"RETIRED\", \"on\": \"YYYY-MM-DD\", \"by\": \"<login>\", \"reason\": \"...\", \"replaced_by\": \"<provider>\"}. Retiring a provider never retires the control: the obligation stays, and what no provider covers is a visible COVERAGE_GAP.",
+  "_decisions": "coverage_gap_acceptances: {obligation, aspects?, accepted_by, risk_owner, decided_on, expires, reference}; accepted_by must be the risk owner and it lives at most acceptance_max_days. control_retirements: {obligation, decided_by (security), risk_owner, residual_risk_accepted_by (= risk_owner), decided_on, reference}. obligation_exceptions: {obligation, repository, exception_ref, requested_by, approved_by (not the requester, not a bot), expires}; a repository's .kit/obligations.json `remove` is honoured only when it names one of these. The change that adds any of these records needs main-branch approval; the residual risk is accepted by the risk owner named in it.",
+  "schema": "kit-scanner-obligations/1",
+  "policy_version": "2026-11-25.1",
+  "decision": "KDEC-069",
+  "acceptance_max_days": 90,
+  "obligations": [
+    {
+      "obligation": "secret-scan",
+      "phase": "security-gate",
+      "why": "Every repository can hold a committed credential.",
+      "required_when": ["always"],
+      "coverage": ["repository-secrets"],
+      "providers": [
+        {"provider": "gitleaks", "kind": "core", "coverage": ["repository-secrets"], "detects": ["secret"]},
+        {"provider": "detect-secrets", "kind": "core", "coverage": ["repository-secrets"], "detects": ["secret"]}
+      ]
+    },
+    {
+      "obligation": "dependency-scan",
+      "phase": "security-gate",
+      "why": "Every repository can declare a dependency with a known vulnerability.",
+      "required_when": ["always"],
+      "coverage": ["known-vulnerable-dependencies"],
+      "providers": [
+        {"provider": "trivy", "kind": "core", "coverage": ["known-vulnerable-dependencies"], "detects": ["dependency-vulnerability"]},
+        {"provider": "dotnet-vuln", "kind": "core", "coverage": ["known-vulnerable-dependencies"], "detects": ["dependency-vulnerability"]}
+      ]
+    },
+    {
+      "obligation": "source-sast",
+      "phase": "security-gate",
+      "why": "Source code the repository contains is read for flaws.",
+      "required_when": ["discover.python", "discover.node", "discover.go", "discover.java", "discover.dotnet", "discover.cpp", "discover.php", "discover.kotlin", "discover.swift", "discover.mobile"],
+      "coverage": ["source-flaws"],
+      "providers": [
+        {"provider": "semgrep", "kind": "core", "coverage": ["source-flaws"], "detects": ["sast"]},
+        {"provider": "codeql", "kind": "core", "identities": ["codeql-python", "codeql-javascript-typescript", "codeql-go", "codeql-csharp", "codeql-java-kotlin", "codeql-c-cpp"], "coverage": ["source-flaws"], "detects": ["sast"]},
+        {"provider": "bandit", "kind": "core", "coverage": ["source-flaws"], "detects": ["sast"]},
+        {"provider": "gosec", "kind": "core", "coverage": ["source-flaws"], "detects": ["sast"]},
+        {"provider": "java-sast", "kind": "core", "coverage": ["source-flaws"], "detects": ["sast"]},
+        {"provider": "semgrep-csharp", "kind": "core", "coverage": ["source-flaws"], "detects": ["sast"]},
+        {"provider": "cppcheck", "kind": "core", "coverage": ["source-flaws"], "detects": ["sast"]},
+        {"provider": "flawfinder", "kind": "core", "coverage": ["source-flaws"], "detects": ["sast"]},
+        {"provider": "mobsfscan", "kind": "core", "coverage": ["source-flaws"], "detects": ["sast"]},
+        {"provider": "ext-sonar", "kind": "external", "coverage": ["source-flaws"], "detects": ["sast", "code-quality"]}
+      ]
+    },
+    {
+      "obligation": "iac-scan",
+      "phase": "security-gate",
+      "why": "Infrastructure as code the repository contains is read for misconfiguration.",
+      "required_when": ["discover.iac"],
+      "coverage": ["iac-misconfiguration"],
+      "providers": [
+        {"provider": "checkov", "kind": "core", "coverage": ["iac-misconfiguration"], "detects": ["iac-misconfiguration"]},
+        {"provider": "trivy-iac", "kind": "core", "coverage": ["iac-misconfiguration"], "detects": ["iac-misconfiguration"]}
+      ]
+    },
+    {
+      "obligation": "dockerfile-lint",
+      "phase": "security-gate",
+      "why": "A Dockerfile the repository contains is read for unsafe build practice.",
+      "required_when": ["discover.dockerfile"],
+      "coverage": ["dockerfile-practice"],
+      "providers": [
+        {"provider": "hadolint", "kind": "core", "coverage": ["dockerfile-practice"], "detects": ["dockerfile-practice"]}
+      ]
+    },
+    {
+      "obligation": "pipeline-lint",
+      "phase": "security-gate",
+      "why": "Workflows the repository contains are read for syntax and for injection and permission flaws.",
+      "required_when": ["discover.workflows"],
+      "coverage": ["workflow-syntax", "workflow-security"],
+      "providers": [
+        {"provider": "actionlint", "kind": "core", "coverage": ["workflow-syntax"], "detects": ["workflow-syntax"]},
+        {"provider": "zizmor", "kind": "core", "coverage": ["workflow-security"], "detects": ["workflow-security"]}
+      ]
+    },
+    {
+      "obligation": "image-scan",
+      "phase": "security-gate",
+      "why": "An image the run builds or pushes is read for vulnerable packages and embedded secrets.",
+      "required_when": ["pushes.image"],
+      "coverage": ["image-vulnerabilities", "image-secrets"],
+      "providers": [
+        {"provider": "trivy-image", "kind": "core", "coverage": ["image-vulnerabilities"], "detects": ["image-vulnerability"]},
+        {"provider": "trivy-image-secret", "kind": "core", "coverage": ["image-secrets"], "detects": ["secret"]}
+      ]
+    },
+    {
+      "obligation": "wordpress-components",
+      "phase": "security-gate",
+      "why": "A WordPress site's core, plugins and themes carry their own advisories, which a manifest scan does not see.",
+      "required_when": ["discover.wordpress"],
+      "coverage": ["wordpress-core", "wordpress-plugins", "wordpress-themes"],
+      "providers": [
+        {"provider": "ext-wp-vulns", "kind": "external", "coverage": ["wordpress-core", "wordpress-plugins", "wordpress-themes"], "detects": ["wordpress-vulnerability"]}
+      ]
+    },
+    {
+      "obligation": "dast",
+      "phase": "promotion",
+      "why": "A deployed web application is exercised running, in its predecessor environment (never prod).",
+      "required_when": ["deploys.any"],
+      "coverage": ["running-application"],
+      "providers": [
+        {"provider": "ext-zap", "kind": "external", "coverage": ["running-application"], "detects": ["dast"]}
+      ]
+    }
+  ],
+  "provider_lifecycle": [],
+  "coverage_gap_acceptances": [],
+  "control_retirements": [],
+  "obligation_exceptions": []
+}

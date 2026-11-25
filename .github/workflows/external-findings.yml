@@ -1,0 +1,60 @@
+# The kit's OWN caller of the external findings intake (owner, 2026-11-06), DISPATCH ONLY: this
+# repository holds no SonarQube or Aikido secret, so a schedule here would only add red. Where the secrets
+# live (the organisation's kit host), templates/external-findings.yml adds the weekday schedule.
+# Without its secret a run ends SOURCE_NOT_CONFIGURED, named, never "no findings".
+name: External findings (SonarQube, Aikido)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "sonar or aikido"
+        type: choice
+        options: [sonar, aikido]
+        default: sonar
+      sonar_projects:
+        description: "Sonar project keys, comma separated"
+        type: string
+        default: ""
+      sonar_organization:
+        description: "SonarQube Cloud organization (empty for a server)"
+        type: string
+        default: ""
+      repo_map:
+        description: 'JSON: project key or repo name -> "org/repo" ({"*": "org/{}"} maps every name)'
+        type: string
+        default: "{}"
+      review_id:
+        description: "pull: cut batches for this review; submit: the finalized review"
+        type: string
+        default: ""
+      submit:
+        description: "true: send the batches of from_run_id through the kit API, behind the review environment"
+        type: boolean
+        default: false
+      from_run_id:
+        description: "submit: the pull's run id"
+        type: string
+        default: ""
+
+permissions: {}
+
+jobs:
+  intake:
+    permissions:
+      contents: read
+      actions: write
+    uses: ./.github/workflows/reusable-external-findings.yml
+    with:
+      source: ${{ inputs.source }}
+      sonar_projects: ${{ inputs.sonar_projects }}
+      sonar_organization: ${{ inputs.sonar_organization }}
+      repo_map: ${{ inputs.repo_map }}
+      review_id: ${{ inputs.review_id }}
+      submit: ${{ inputs.submit }}
+      from_run_id: ${{ inputs.from_run_id }}
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+      AIKIDO_CLIENT_ID: ${{ secrets.AIKIDO_CLIENT_ID }}
+      AIKIDO_CLIENT_SECRET: ${{ secrets.AIKIDO_CLIENT_SECRET }}

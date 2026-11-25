@@ -83,6 +83,14 @@ def run_script(bash_path, script, env_extra, cwd=None, path_prepend=None):
         summ = os.path.join(tmp, 'gh_summary')
         io.open(out, 'w').close()
         io.open(summ, 'w').close()
+        if path_prepend:
+            # The stand-ins must stay FIRST inside the step, not only in the environment handed to bash.
+            # Launched from PowerShell or cmd, usable_bash() picks Git's `bin\bash.exe` wrapper, which puts
+            # its own /ucrt64/bin and /usr/bin ahead of everything: the step's probe then ran the REAL curl
+            # against the fixture host (HTTP 000) and prove_reviewer_signals R8 rolled back (integration
+            # round 3, VERIFIED). One line, re-asserted inside the shell, whatever the wrapper did.
+            script = ('if command -v cygpath >/dev/null 2>&1; then PATH="$(cygpath -u -p "$KIT_TEST_PATH_PREPEND")'
+                      ':$PATH"; else PATH="$KIT_TEST_PATH_PREPEND:$PATH"; fi; export PATH\n') + script
         f = os.path.join(tmp, 'step.sh')
         io.open(f, 'w', encoding='utf-8', newline='\n').write(script)
         env = dict(os.environ)
@@ -92,6 +100,7 @@ def run_script(bash_path, script, env_extra, cwd=None, path_prepend=None):
         env.setdefault('RUNNER_TEMP', tmp)
         if path_prepend:
             env['PATH'] = path_prepend + os.pathsep + env.get('PATH', '')
+            env['KIT_TEST_PATH_PREPEND'] = path_prepend
         p = subprocess.run([bash_path, f], capture_output=True, text=True, env=env,
                            cwd=cwd or tmp, encoding='utf-8', errors='replace')
         emitted = {}

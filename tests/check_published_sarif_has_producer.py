@@ -46,6 +46,17 @@ ROOT = os.path.dirname(HERE)
 OUT_FLAG = r'(?:-o|--out|--output|--output-file|-out|--sarif-output|--sarif-output-file)'
 
 
+def _expand(doc):
+    """The workflow with every `$/` composite step expanded into its job, as the runner sees it.
+
+    Scanner job bodies live in `.github/actions/<scanner>/` (ledger L64); this reads the steps a
+    job actually runs. One rule, tests/_composite_expand.py, for every reader.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _composite_expand
+    return _composite_expand.expanded_doc(doc)
+
+
 def writes(step, name):
     """True when `step` writes the file `name` (a basename or relative path)."""
     base = re.escape(name)
@@ -60,6 +71,9 @@ def writes(step, name):
         r'normalize_sarif\.py\s+\S+\s+' + pre + base + r'\b',
     ]
     if any(re.search(p, run) for p in pats):
+        return True
+    # A Trivy step configured by environment (KDEC-027: trivy-action is gone) writes TRIVY_OUTPUT.
+    if run and str((step.get('env') or {}).get('TRIVY_OUTPUT', '')).strip() == name:
         return True
     uses = str(step.get('uses') or '')
     if uses and 'upload-sarif' not in uses and 'upload-artifact' not in uses:
@@ -84,6 +98,8 @@ def writes_any_sarif(step):
     run = str(step.get('run') or '')
     if re.search(OUT_FLAG + r'(?:\s+|=)\S*\.sarif|>\s*\S*\.sarif|open\(\s*["\'][^"\']*\.sarif["\']\s*,'
                  r'\s*["\'][wa]', run):
+        return True
+    if run and str((step.get('env') or {}).get('TRIVY_OUTPUT', '')).endswith('.sarif'):
         return True
     w = step.get('with') or {}
     uses = str(step.get('uses') or '')
@@ -156,7 +172,7 @@ def main():
         return 2
     bad, n = [], 0
     for f in files:
-        doc = yaml.safe_load(io.open(f, encoding='utf-8'))
+        doc = _expand(yaml.safe_load(io.open(f, encoding='utf-8')))
         for job in ((doc or {}).get('jobs') or {}).values():
             for s in (job or {}).get('steps') or []:
                 n += len(published(s))

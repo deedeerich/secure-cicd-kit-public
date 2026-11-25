@@ -1,0 +1,32 @@
+name: Capability floor
+description: >-
+  The protected capability floor (owner ruling 4, 2026-10-27, KDEC-033), checked over this run's
+  evidence. Reads capability-floor.json FROM THE KIT (delivered by `$/` at the caller's pinned
+  commit), never from the caller's checkout, and never from scanner-registry.yaml: a pull request
+  that deletes a scanner row everywhere a contributor can still leaves that scanner required here.
+  Every floor identity must have a state file in the report's states directory, or the floor is
+  BREACHED and the gate fails. Reports through outputs and always exits 0: the verdict is the
+  gate's, and a crash leaves floor_state unset, which the gate reads as BREACHED.
+inputs:
+  states-dir:
+    description: The report part's per-scanner state directory (state-<identity>.json files).
+    required: true
+outputs:
+  floor_state:
+    description: HELD | GAP_DECIDED | BREACHED (assurance-taxonomy.yaml capability_floor_state).
+    value: ${{ steps.f.outputs.floor_state }}
+  floor_missing:
+    description: Space-separated floor identities with no state file this run. Empty when HELD.
+    value: ${{ steps.f.outputs.floor_missing }}
+runs:
+  using: composite
+  steps:
+    - id: f
+      shell: bash
+      env:
+        F_STATES: ${{ inputs.states-dir }}
+      run: |
+        set -uo pipefail
+        kit_root="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)"
+        python3 "${kit_root}/scripts/capability_floor.py" --floor "${kit_root}/capability-floor.json" \
+          --states "$F_STATES" --github-output "$GITHUB_OUTPUT"

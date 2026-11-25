@@ -79,6 +79,31 @@ def triggers(doc):
     return set(on) if isinstance(on, dict) else set()
 
 
+# A SCHEDULE THAT STARTS NOTHING UNLESS OPTED IN IS NOT A SCHEDULE (2026-11-03). consumer-path-test
+# keeps its weekly cron, but every job is conditioned on `github.event_name != 'schedule' ||
+# vars.<NAME> == 'true'`: with the variable unset (the default, and every recipient's copy) a
+# scheduled run starts no job. Counting it as EXERCISED_ON_SCHEDULE would claim a weekly exercise
+# that does not happen; it is dispatch-only unless a repository opts in.
+OPT_IN_RX = re.compile(r"github\.event_name\s*!=\s*'schedule'\s*\|\|\s*vars\.[A-Z0-9_]+\s*==\s*'true'")
+# THE SAME FOR A PUSH (2026-11-04): consumer-path-test runs on a push to main only where
+# vars.KIT_CONSUMER_PATH_ON_PUSH is 'true'. Unset (every recipient's copy) a push starts no job, so
+# its push trigger is not EXERCISED_ON_PUSH; it stays dispatch-only unless a repository opts in.
+PUSH_OPT_IN_RX = re.compile(r"github\.event_name\s*!=\s*'push'\s*\|\|\s*vars\.[A-Z0-9_]+\s*==\s*'true'")
+
+
+def schedule_opt_in(doc, rx=None):
+    rx = rx or OPT_IN_RX
+    jobs = (doc or {}).get('jobs') or {}
+    gated = [j for j in jobs.values() if isinstance(j, dict) and rx.search(str(j.get('if') or ''))]
+    # Every job is either gated itself or runs only after a gated job (needs, no status function).
+    for j in jobs.values():
+        if not isinstance(j, dict) or j in gated:
+            continue
+        if not j.get('needs') or 'always()' in str(j.get('if') or ''):
+            return False
+    return bool(gated)
+
+
 def deferral_problem(d, today):
     """-> None when `d` is a complete deferral that has not expired on `today`, else why not."""
     if d is None:
@@ -113,26 +138,35 @@ RUNTIME_TOOLS = {
                              '(KDEC-004); never on CI by design. Its offline half is '
                              'prove_live_runner_offline.py, which self-test runs',
     # In the kit, consumer-path-test.yml runs it and the census counts it as run. A neutral export
-    # withholds that workflow, so in a public copy it is a tool a consumer runs against their own
-    # consumer-path results; its behaviour is proven by prove_expected_signals_honest.py.
+    # withholds that workflow (a kit host's profile, consumer-am, ships it), so in a public copy it
+    # is a tool a consumer runs against their own consumer-path results; its behaviour is proven by
+    # prove_expected_signals_honest.py and prove_consumer_path_preflight.py C3.
     'verify_expected_signals.py': 'checks a consumer-path run\'s signals against an expected list; '
-                                  'run by the kit\'s internal consumer-path workflow (withheld from '
-                                  'exports) or by a consumer. prove_expected_signals_honest.py, '
-                                  'which self-test runs, proves its behaviour',
+                                  'run by the consumer-path workflow (withheld from neutral exports, '
+                                  'shipped to a kit host) or by a consumer. '
+                                  'prove_expected_signals_honest.py and prove_consumer_path_preflight.py, '
+                                  'which self-test runs, prove its behaviour',
 }
 UNWIRED = {
-    'check_context_current.py': {
-        'reason': 'fails on the trunk today: the .context record was reconciled against 9b18e49 and '
-                  'HEAD is further ahead than its limit. Wiring it now turns self-test red on a '
-                  'documentation lag, not a code defect; .context belongs to lane L-G',
-        'owner': 'documentation lane (L-G)',
-        'closes': 'L-G restates the context against the trunk; then wire it in self-test',
-        'expires': '2026-11-15'},
-    'prove_gate_reads_rung.py': {
-        'reason': 'EXPECTED TO FAIL until the rung patch is applied (ledger S-01, wiring/'
-                  'gate-rung.patch.md); a proof of an unbuilt wiring cannot be green',
-        'owner': 'gate and policy lane (L-A)',
-        'closes': 'L-A applies the rung patch; prove_gate_reads_rung reports 0 failures; wire it',
+    'prove_kit_harness_pair.py': {
+        'reason': 'needs a checkout of the evidence harness (a separate repository) beside the kit. The '
+                  'hosted job is BUILT (.github/workflows/kit-harness-pair.yml, KDEC-058) but reports '
+                  'HARNESS_LEG_NOT_RUN until the owner creates its read-only credential, so no workflow '
+                  'runs this proof yet (the job calls it through scripts/harness_pair_gate.py, which the '
+                  'census rightly does not count). Run locally with --harness-root (passed rc=0, 4/4 '
+                  'mutants, integ/r5-fixes-2026-11-11; via the gate rc=0, actionlint-pair 2026-11-13)',
+        'owner': 'kit-maintainer',
+        'closes': 'the owner, on the SAME host as the kit run (KDEC-027): (1) creates a GitHub App with '
+                  'repository permission Contents: Read-only and nothing else (Metadata: Read is implied; '
+                  'no webhook), installed on the evidence-harness repository ONLY (Only select '
+                  'repositories); (2) creates the kit repository environment kit-harness-pair with '
+                  'deployment branches limited to the default branch, and in it the secret '
+                  'KIT_HARNESS_APP_PRIVATE_KEY (the App private key) and the variable '
+                  'KIT_HARNESS_APP_CLIENT_ID (the App client id); (3) sets the repository variable '
+                  'KIT_HARNESS_REPOSITORY to OWNER/REPO of the harness (no host); (4) a reviewed PR sets '
+                  '.github/harness-pair.json commit to the merged harness commit (40-hex). When a '
+                  'kit-harness-pair run on the default branch shows the pair PASS, delete this entry and '
+                  'add a census line for the hosted run. Steps: docs/operations/HARNESS_PAIR_HOSTED.md',
         'expires': '2026-12-31'},
 }
 # A line that RUNS it: not a comment (the lookahead anchors at the line start, so leading blanks
@@ -226,8 +260,10 @@ def main():
             doc = {}
         parsed[rel] = doc
         tg = triggers(doc)
-        auto[rel] = bool(tg & set(PUSH_TRIGGERS))
-        sched[rel] = bool(tg & set(SCHEDULE_TRIGGERS))
+        # A push trigger every job of which is opted in by a variable is not a push exercise;
+        # another automatic trigger (pull_request, merge_group) still is.
+        auto[rel] = bool(tg & set(PUSH_TRIGGERS) - {'push'}) or             ('push' in tg and not schedule_opt_in(doc, PUSH_OPT_IN_RX))
+        sched[rel] = bool(tg & set(SCHEDULE_TRIGGERS)) and not schedule_opt_in(doc)
         disp[rel] = bool(tg & set(DISPATCH_TRIGGERS))
 
     # who calls whom

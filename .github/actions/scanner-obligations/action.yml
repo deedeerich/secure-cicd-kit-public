@@ -1,0 +1,74 @@
+name: Scanner obligations
+description: >-
+  What this repository must be scanned for, decided by discovery and the kit's versioned policy, never by
+  which tokens are set (owner 2026-11-18, KDEC-069). Reads scanner-obligations.json and runs
+  scripts/scanner_obligations.py FROM THE KIT (delivered by `$/` at the caller's pinned commit), over the
+  plan's discovery, the report part's per-scanner state files and the checkout's optional
+  .kit/obligations.json (a repository may add an obligation there; it removes one only with an exception
+  the governed policy records). Reports through outputs and always exits 0: the verdict is the gate's, and
+  a crash or a refused policy leaves obligation_state unset, which the gate reads as NOT EVALUATED and
+  refuses.
+inputs:
+  states-dir:
+    description: The report part's per-scanner state directory (state-<identity>.json files).
+    required: true
+  discovery:
+    description: JSON object of the plan's discovery outputs, plus image_ref (what the run pushes).
+    required: true
+  image-ref:
+    description: The image the run scans or pushes ('' = none). An image pushed owes an image scan.
+    required: false
+    default: ''
+  source-root:
+    description: The checkout, read for discovery the plan does not compute (WordPress) and for .kit/obligations.json.
+    required: false
+    default: '.'
+  repository:
+    description: owner/name, matched against the governed obligation exceptions.
+    required: false
+    default: ''
+outputs:
+  obligation_state:
+    description: >-
+      SATISFIED | GAP_ACCEPTED | UNAVAILABLE | PARTIAL | COVERAGE_GAP | DECLARATION_REFUSED (the worst
+      obligation; assurance-taxonomy.yaml scanner_obligation_state). Unset = not evaluated.
+    value: ${{ steps.o.outputs.obligation_state }}
+  obligation_unavailable:
+    description: Adopted external providers that did not run and have no retirement record, as name(UNAVAILABLE).
+    value: ${{ steps.o.outputs.obligation_unavailable }}
+  obligation_gaps:
+    description: Required obligations no adopted provider covers, as obligation(COVERAGE_GAP|PARTIAL:aspects).
+    value: ${{ steps.o.outputs.obligation_gaps }}
+  obligation_accepted:
+    description: Gaps under a valid, time-bound acceptance by the risk owner, named (never clean).
+    value: ${{ steps.o.outputs.obligation_accepted }}
+  obligation_retired_providers:
+    description: Providers retired by a one-line lifecycle record (blocking nothing themselves).
+    value: ${{ steps.o.outputs.obligation_retired_providers }}
+runs:
+  using: composite
+  steps:
+    - id: o
+      shell: bash
+      env:
+        O_STATES: ${{ inputs.states-dir }}
+        O_DISCOVERY: ${{ inputs.discovery }}
+        O_SOURCE: ${{ inputs.source-root }}
+        O_REPO: ${{ inputs.repository }}
+        O_IMAGE: ${{ inputs.image-ref }}
+      run: |
+        set -uo pipefail
+        kit_root="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)"
+        decl=""
+        [ -f "${O_SOURCE}/.kit/obligations.json" ] && decl="${O_SOURCE}/.kit/obligations.json"
+        # The plan's discovery, plus what the run pushes. Never a token or a secret: none is passed in.
+        disc="${RUNNER_TEMP}/obligations-discovery.json"
+        printf '%s' "$O_DISCOVERY" | jq -c --arg img "$O_IMAGE" \
+          '(if type == "object" then . else {} end) + {image_ref: $img}' > "$disc" || printf '{}' > "$disc"
+        python3 "${kit_root}/scripts/scanner_obligations.py" evaluate \
+          --policy "${kit_root}/scanner-obligations.json" \
+          --discovery "@${disc}" \
+          --states "$O_STATES" --declaration "$decl" --source-root "$O_SOURCE" --repository "$O_REPO" \
+          --json-out "${RUNNER_TEMP}/scanner-obligations.json" --github-output "$GITHUB_OUTPUT" \
+          || echo "::error title=Scanner obligations not evaluated::the kit's scanner-obligations policy could not be evaluated; the gate refuses (never an empty obligation list)."
+        exit 0

@@ -115,36 +115,74 @@ USAGE
         --resolve-deferral <task-id> --resolution extend --until 2027-01-31 \
         --deferral-reason '<why>' --approved-by <role> --approval-reason '<why>'
     python3 scripts/reconcile_tickets.py --self-test
+    python3 scripts/reconcile_tickets.py --findings <findings.json> --apply --today <date> \
+        [--coverage <findings-coverage.json>] [--registration <repo register>] \
+        [--central-registration <central register>] [--run-url <url>] [--commit <sha>]
+                                                    KDEC-024: closure on verified clearance,
+                                                    RECURRED, merges, disagreement, SLA, links
+    python3 scripts/reconcile_tickets.py --resurface --ledger <l.json> --today <date> --apply
+                                                    the scheduled clock with writes: lapses
+                                                    reopen (REOPENED_BY_LAPSE), SLA breaches
+                                                    escalate -- no findings, no scan
+
+THE LIFECYCLE (KDEC-024) is in its own section below `carry_owed`: what each piece adds, and why.
 
 ENVIRONMENT (read, never written, never logged)
-    TICKET_BACKEND      `github` or `jira`. Absent means the control is off.
+    TICKET_BACKEND      `jira`, `azdo`, `github` or `freshservice`. Absent means the control is off.
+    FRESHSERVICE_HOST, FRESHSERVICE_API_KEY, FRESHSERVICE_STAMP_FIELD (cf_<name>, single-line text),
+    FRESHSERVICE_REQUESTER_ID, FRESHSERVICE_CALIBRATION_TICKET, FRESHSERVICE_WORKSPACE_ID,
+    FRESHSERVICE_MARK_MODE (notes|tags), FRESHSERVICE_TAG_RETRIES, FRESHSERVICE_LOCK_DIR
+                        Freshservice (KDEC-043); scripts/tracker_freshservice.py says what each is and why.
+    TICKET_CALL_BUDGET  most API calls one run may make (kit default 1000). Every run is bounded.
+    TICKET_RETRY_CEILING  retries of a throttled request (kit default 3), no wait over 120 s.
+    JIRA_TRANSITION_DONE  the transition that closes (unset: the one into a done status).
+    JIRA_PRIORITY_LADDER  priorities lowest to highest, for SLA escalation.
     TICKET_STAMP_LABEL  the umbrella stamp. Provisioned once by a human.
     GH_TOKEN            GitHub: credential. Also accepted as GITHUB_TOKEN.
+    GITHUB_API_URL      GitHub: the API host that issued the token (set on runners; unset means
+                        github.com's API). The token is sent there and nowhere else, so a
+                        GHE.com data-residency run talks to api.<tenant>.ghe.com (KDEC-027).
     TICKET_REPO         GitHub: `owner/repo`, one repository, not an organisation.
     JIRA_HOST           Jira: `https://<site>.atlassian.net`
-    JIRA_EMAIL          Jira: basic auth is email:token; the token alone is a 401.
+    JIRA_EMAIL          Jira: basic auth is email:token; the token alone is a 401. When set, basic is
+                        used whatever JIRA_AUTH_MODE says (KDEC-028).
     JIRA_TOKEN          Jira: credential.
+    JIRA_AUTH_MODE      Jira: `basic` (default) or `bearer` -- JIRA_TOKEN alone, as a Bearer token,
+                        through Atlassian's gateway https://api.atlassian.com/ex/jira/<cloudId>
+                        (a service account's token: no person's email binds the pipeline).
+    JIRA_CLOUD_ID       Jira: the site's cloud id. Unset under bearer, it is looked up (no
+                        credential) at https://<host>/_edge/tenant_info. Set under basic, requests
+                        go through the gateway too (a scoped API token needs it).
+    TICKETING_MODE      `real` or `test`, DERIVED by the reusable workflow from the ref (the default
+                        branch is real, anything else test) -- never a variable anyone swaps. Test
+                        tickets carry the label kit-test and a [TEST] summary prefix, go only to the
+                        sandbox JIRA_PROJECT, and a test run whose project is a real one is refused
+                        TICKETING_TEST_TARGETS_REAL_PROJECT (KDEC-028).
+    JIRA_REAL_PROJECTS  the real project keys (comma-separated), an org/repository variable a test
+                        run checks itself against. Required in test mode.
     JIRA_PROJECT        Jira: project key.
     JIRA_STAMP_FIELD    Jira: `customfield_<id>` holding the cluster stamp. Per-site.
 
 EXIT
     0  the run completed and reported what it did
     1  a decision is owed to a person: an ambiguity, a dangling reference, a disposition nobody
-       approved, or a deferral whose term has run out
+       approved, a deferral whose term has run out, or a new disagreement between scanners
     2  self-test failed, or the invocation was misuse
     3  the ticketing claim is EVIDENCE_UNTRUSTED: the control is off or misconfigured, two
-       backends are configured, a lookup did not complete, or every finding was withheld. The
-       obligations are carried with their cause. Outranks 1.
+       backends are configured, a lookup did not complete, the call budget ran out, or every
+       finding was withheld. The obligations are carried with their cause. Outranks 1. When the
+       tracker could not be read or written the run says TICKETING_UNAVAILABLE -- never a silent
+       pass, and never an input to the security gate.
 """
 import argparse
 import base64
 import datetime
 import email.utils
-import hashlib
 import io
 import json
 import os
 import random
+import re
 import sys
 import time
 
@@ -156,6 +194,10 @@ sys.path.insert(0, HERE)
 # deterministic confidence labels. Carried from a prior engagement's ticket engine and re-expressed
 # there; this file is the orchestrator and that one is the model.
 import ticket_model as tm  # noqa: E402 - after the sys.path insert that makes it importable
+import ticket_governance as tg  # noqa: E402 - KDEC-043: key verification, provenance, area, children
+import finding_lineage as fl    # noqa: E402 - R03: the one lineage resolver, read, never re-implemented
+import ticket_settings          # noqa: E402 - KDEC-052 item 7: the ticketing numbers and their source levels
+import ticket_completion as tc  # noqa: E402 - KDEC-062: the two completion levels, the qualifying rescan, recurrence
 
 # ── THE LOOKUP OUTCOMES (assurance-taxonomy.yaml : ticket_lookup_outcome) ─────────────
 #
@@ -185,6 +227,10 @@ FALSE_POSITIVE_REQUEST = 'FALSE_POSITIVE_REQUEST'
 ACCEPTED_RISK_REQUEST = 'ACCEPTED_RISK_REQUEST'
 MITIGATED_REQUEST = 'MITIGATED_REQUEST'
 GRANDFATHER_TRACK_ITEM = 'GRANDFATHER_TRACK_ITEM'
+# KDEC-037 (owner, 2026-11-04): each its own request type, with its own schema and rules.
+EXCEPTION_REQUEST = 'EXCEPTION_REQUEST'
+EXEMPTION_REQUEST = 'EXEMPTION_REQUEST'
+COMPLIANCE_EXCEPTION_REQUEST = 'COMPLIANCE_EXCEPTION_REQUEST'
 
 # A finding observed by a scanner, with nobody asking for anything, is work. It is the only class
 # this program opens UNATTENDED: the other four are REQUESTS, and a request is a disposition
@@ -211,7 +257,11 @@ DEFAULT_CLASS = REMEDIATION_WORK_ITEM
 # downgraded to ordinary remediation work: that would turn "we are asking you to accept this
 # risk" into "somebody please fix this", and the asking would disappear.
 DISPOSITION_REQUESTS = {
-    'exception': ('disposition.exception', FALSE_POSITIVE_REQUEST),
+    # FIXED 2026-11-04 (owner): an exception is NOT a false positive. It was mapped to
+    # FALSE_POSITIVE_REQUEST, which read 'the scanner is wrong' for 'we accept it, scoped, for a time'.
+    'exception': ('disposition.exception', EXCEPTION_REQUEST),
+    'exemption': ('disposition.exemption', EXEMPTION_REQUEST),
+    'compliance_exception': ('disposition.compliance_exception', COMPLIANCE_EXCEPTION_REQUEST),
     'exclusion': ('disposition.exclusion', GRANDFATHER_TRACK_ITEM),
     'false_positive': ('disposition.false_positive', FALSE_POSITIVE_REQUEST),
     'risk_acceptance': ('disposition.risk_acceptance', ACCEPTED_RISK_REQUEST),
@@ -297,10 +347,14 @@ def _cluster_key(subject, locus, anchor):
     part of the anchor" -- and the key did not carry it. One advisory in two manifests made two
     clusters under ONE stamp: the first got the ticket, the second read as a dangling reference
     to it, and one ticket stood for two obligations with two fixes.
+
+    ONE KEY FUNCTION FOR THE KIT (L48; KDEC-024). This used to compute its own hash beside
+    finding_correlation's, so the report and the ticket stamp disagreed for the same finding. It
+    now IS finding_correlation.cluster_key, whose byte format is the one already stamped on live
+    tickets -- so nothing already ticketed is orphaned.
     """
-    h = hashlib.sha256()
-    h.update(('CLUSTER/%s/%s/%s' % (subject or '', locus or '', anchor or '')).encode('utf-8'))
-    return h.hexdigest()[:32]
+    import finding_correlation as fc
+    return fc.cluster_key(subject, locus, anchor)
 
 
 def _aliases(rec):
@@ -310,10 +364,69 @@ def _aliases(rec):
     return frozenset(str(v).strip().lower() for v in vals if str(v).strip())
 
 
+# KDEC-038: A SECRET IS URGENT. The mutation switch for tests/prove_sast_secret_tickets.py M6; True is correct.
+secret_urgent = True
+SECRET_IDENTITY_PREFIX = 'secret:'
+
+
+def _secret_keyed(rec):
+    """A secret finding the secret-scan job fingerprinted BEFORE redaction (scripts/code_finding_key.py).
+    It has no baseline identity -- the baseline has no authority over secrets -- but it has a TICKET key."""
+    return (str(rec.get('is_secret_finding') or '').strip().lower() in ('1', 'true', 'yes')
+            and rec.get('ticket_key_state') == 'SECRET_KEYED' and bool(str(rec.get('secret_key') or '').strip()))
+
+
+def _secret_view(rec):
+    """The view the correlation and the ticket ledger see: keyed on detector family + path + the
+    non-reversible fingerprint. The member identity is `secret:<key>` -- a hash of a hash, never the value."""
+    key = str(rec['secret_key']).strip()
+    path = rec.get('uri') or rec.get('canonical_path') or ''
+    return dict(rec, identity=SECRET_IDENTITY_PREFIX + key, identity_state='FINGERPRINTED', state='FINGERPRINTED',
+                where='secret:%s' % path, ticket_anchor=key)
+
+
+def secret_absence_gap(entry):
+    """-> the reason a secret ticket never closes on absence, or ''. Removal is not remediation."""
+    if any(str(i).startswith(SECRET_IDENTITY_PREFIX) for i in (entry or {}).get('member_identities') or []):
+        return ('an exposed credential is never closed by the scanner no longer seeing it: removing it does not '
+                'un-leak it. A person closes this ticket on confirming the credential was ROTATED (KDEC-038)')
+    return ''
+
+
+def urgent_labels(backend, cluster):
+    """The cluster's extra labels, with the kit's `<stamp>-urgent` label when the cluster is urgent."""
+    labels = set(cluster.get('extra_labels') or [])
+    if cluster.get('urgent'):
+        labels.add(_label(backend, 'urgent'))
+    return sorted(labels)
+
+
 class ClusterList(list):
     """The acting clusters, carrying the PROPOSALS correlation recorded beside them (a chain, or
     CWE-plus-path agreement). Proposals change no count and get no ticket; they are reported."""
     proposals = ()
+
+
+def normalise_record(rec):
+    """-> the record in the names this file reads, from EITHER shape it is handed. (T-19)
+
+    THE HANDOFF DEFECT, NAMED. scripts/scan_report.py writes findings.json in the names
+    identify() uses -- `state`, `reason`, `rule_id`, `canonical_path` -- and this file read
+    `identity_state`, `identity_reason`, `rule` and `uri`. Every finding the report handed over
+    was therefore withheld IDENTITY_NOT_ESTABLISHED, and the reconciler, proven on hand-built
+    records, had never once read a real report. Both spellings are accepted; where both are
+    present the reconciler's own wins, so a record built for it is read exactly as before.
+    Nothing is invented: a field neither spelling carries stays absent.
+    """
+    if not isinstance(rec, dict):
+        return {'identity_state': 'UNFINGERPRINTABLE', 'identity': '',
+                'identity_reason': 'the record is %s, not an object' % type(rec).__name__}
+    out = dict(rec)
+    for mine, theirs in (('identity_state', 'state'), ('identity_reason', 'reason'),
+                         ('rule', 'rule_id'), ('uri', 'canonical_path')):
+        if not out.get(mine) and out.get(theirs):
+            out[mine] = out[theirs]
+    return out
 
 
 def build_clusters(records):
@@ -324,6 +437,7 @@ def build_clusters(records):
 
     A withheld finding is never silently dropped. It is returned, counted separately, and printed.
     """
+    records = [normalise_record(r) for r in (records or [])]
     withheld, fingerprinted = [], []
 
     for i, rec in enumerate(records, 1):
@@ -334,8 +448,12 @@ def build_clusters(records):
         # stage dropped the field, and trusting the label over the value is how an inference
         # overwrites an observation.
         if not ident or state != 'FINGERPRINTED':
-            withheld.append((rec, IDENTITY_NOT_ESTABLISHED,
-                             rec.get('identity_reason') or state or 'no identity on the record'))
+            if _secret_keyed(rec):
+                # KDEC-038: a secret is ticketed on its secret key; the baseline refusal stands.
+                fingerprinted.append(_secret_view(rec))
+            else:
+                withheld.append((rec, IDENTITY_NOT_ESTABLISHED,
+                                 rec.get('identity_reason') or state or 'no identity on the record'))
         else:
             fingerprinted.append(rec)
         # Heartbeat, per iteration. A long record set that dies halfway must not look like a short
@@ -372,8 +490,11 @@ def build_clusters(records):
         # anchored; neither is a heuristic.
         anchor = str(cl.get('anchor') or rec0['identity']).lower()
         scanners = sorted(set(str(m.get('scanner') or '') for m in members))
+        secret = any(_secret_keyed(m) or str(m.get('kit_class') or '').lower() == 'secret' for m in members)
         clusters.append({
-            # Every member shares this locus: correlation buckets by (subject, locus).
+            # Every member shares this locus: correlation buckets by (subject, locus). The key is
+            # computed by correlation's own function -- one function for the report and the stamp
+            # (L48) -- from the same subject, locus and anchor, so the two always agree.
             'cluster_key': _cluster_key(subject, rec0.get('where') or rec0.get('uri') or '',
                                         anchor),
             'subject': subject,
@@ -382,10 +503,19 @@ def build_clusters(records):
             'members': members,
             'member_identities': sorted(set(m['identity'] for m in members)),
             'scanners': scanners,
-            'severity': _worst(members),
+            'severity': 'critical' if (secret and secret_urgent) else _worst(members),
+            # KDEC-038: an exposed credential is URGENT (Jira: the top of JIRA_PRIORITY_LADDER; Azure
+            # DevOps: priority 1; every tracker: the `<stamp>-urgent` label) and its ticket says ROTATE.
+            'urgent': bool(secret and secret_urgent),
             # What a PERSON has asked for on these findings, if anything. Carried through to
             # `reconcile`, which gates it as a disposition.
             'requested_dispositions': _requested(members),
+            # KDEC-037: a template's own rows for the machine-owned block, and its tagging labels
+            # (scripts/ticket_templates.py). Absent for the kit's own scan findings.
+            'template_facts': _template_facts(members),
+            'template_labels': sorted(set(x for m in members for x in m.get('template_labels') or [])),
+            # KDEC-043 rule 4: a multicloud finding's child obligations (scripts/ticket_templates.py).
+            'obligations': list(members[0].get('obligations') or []),
         })
         print('  ... built cluster %d/%d (%d member(s), %d scanner(s))'
               % (n, len(acting), len(members), len(scanners)), file=sys.stderr)
@@ -393,7 +523,21 @@ def build_clusters(records):
     return clusters, withheld
 
 
-_SEV_ORDER = ('critical', 'high', 'medium', 'moderate', 'low', 'info', 'note', 'none', '')
+_SEV_ORDER = ('critical', 'high', 'medium', 'moderate', 'low', 'info', 'informational', 'note',
+              'none', '')
+
+
+def _template_facts(members):
+    """The first member's template rows, then every OTHER source's line, so one ticket for a finding
+    two tools reported names both (KDEC-037)."""
+    rows = [tuple(r) for r in (members[0].get('template_facts') or [])] if members else []
+    seen = set(v for k, v in rows if k == 'source')
+    for m in members[1:]:
+        for k, v in m.get('template_facts') or []:
+            if k == 'source' and v not in seen:
+                rows.append(('also reported by', v))
+                seen.add(v)
+    return rows
 
 
 def _worst(members):
@@ -511,10 +655,51 @@ class TicketBackend(object):
         are found through their parent, never by a sweep of their own."""
         return None, '%s does not itemise instances' % self.name
 
+    # ── KDEC-024 (lane L-TKT): the two lifecycle writes the contract had no backend for. ──
+
+    def close(self, ref):
+        """-> (ok, detail). Move a ticket to its done/closed state. Called from exactly two
+        places, both RECORDED consequences of evidence rather than judgement: a verified
+        clearance (every member re-scanned, covered and not reproduced -- T-09), and the
+        superseded half of a cross-scanner merge (D4). Never to clear a finding: the scanner
+        clears findings; this only keeps the tracker in step with what the scanner established."""
+        return False, '%s cannot close a ticket' % self.name
+
+    # ── KDEC-043 rule 2: PROVENANCE. The identity this credential authenticated as, and the tracker's own
+    # record of who made a write. Either may be unknown, and unknown is said (PROVENANCE_NOT_ESTABLISHED). ──
+    identity = None
+
+    def authenticated_identity(self):
+        return self.identity
+
+    def write_event(self, ref):
+        """-> (actor or None, detail): who the TRACKER records as having made ticket `ref`."""
+        return None, '%s reads no write event' % self.name
+
+    def mark(self, ref, labels=(), bump_priority=False):
+        """-> (ok, detail, applied). Add kit-owned labels and, for an SLA breach, raise the
+        priority ONE step -- never lower it, and never touch a due date: the deadline is derived
+        and the bridge may announce a breach, never move it (TC 5.1, 5.2)."""
+        return False, '%s cannot label or escalate a ticket' % self.name, {}
+
+    def set_status(self, ref, status):
+        """KDEC-062: move a ticket to the tracker status a completion LEVEL is mapped to in configuration
+        (ticket_taxonomy.completion_statuses). -> (ok, detail). A tracker without a named status says so; the
+        caller then projects the level the way the kit always did and names it."""
+        return False, '%s cannot set a named status' % self.name
+
 
 # Replaced by the proofs so a Retry-After of minutes is observed without being slept.
 _sleep = time.sleep
 THROTTLE_STATUSES = (429, 503)
+# KDEC-024 kit defaults, each overridable by the owner's setting of the same name. A run must be
+# bounded even when nobody set a number (the owner: "bounded API calls per run, with backoff"),
+# so these are DEFAULTS rather than absences -- the same shape as max_exception_renewals' kit
+# default of 2. DEFAULT_CALL_BUDGET is the Actions token's documented primary allowance per hour
+# per repository (TC 6.4), so one run cannot spend more than an hour's worth.
+DEFAULT_RETRY_CEILING = 3
+DEFAULT_CALL_BUDGET = 1000
+MAX_SINGLE_WAIT = 120
 
 
 def parse_retry_after(value, now=None):
@@ -564,11 +749,17 @@ class HttpBackend(TicketBackend):
     """
 
     retry_ceiling = 0
+    # KDEC-024: the per-run CALL budget (TICKET_CALL_BUDGET). None only for a backend built
+    # directly by a proof; choose_backend always sets one, so a configured run is always bounded.
+    call_budget = None
+    budget_exhausted = False
 
-    def _init_http(self, retry_ceiling=0):
+    def _init_http(self, retry_ceiling=0, call_budget=None):
         self.calls = 0
         self.throttles = []
         self.retry_ceiling = int(retry_ceiling or 0)
+        self.call_budget = call_budget
+        self.budget_exhausted = False
 
     def _headers(self):
         raise NotImplementedError
@@ -580,6 +771,13 @@ class HttpBackend(TicketBackend):
         data = json.dumps(payload).encode('utf-8') if payload is not None else None
         attempt = 0
         while True:
+            if self.call_budget is not None and self.calls >= int(self.call_budget):
+                # THE BUDGET IS SPENT. Nothing more leaves the machine this run. The caller reads
+                # the error like any failed request -- BINDING_UNESTABLISHED, never a create --
+                # and the run says the budget ended it (TC 6; KDEC-024).
+                self.budget_exhausted = True
+                return None, None, ('TICKET_CALL_BUDGET of %d call(s) is spent; nothing more is '
+                                    'sent this run' % int(self.call_budget))
             r = urllib.request.Request(url, data=data, method=method)
             for k, v in self._headers():
                 r.add_header(k, v)
@@ -598,7 +796,11 @@ class HttpBackend(TicketBackend):
                     ra = parse_retry_after(hdrs.get('Retry-After'))
                     self.throttles.append({'status': exc.code, 'method': method,
                                            'retry_after': ra, 'attempt': attempt + 1})
-                    if attempt < self.retry_ceiling:
+                    if attempt < self.retry_ceiling and (ra is None or ra <= MAX_SINGLE_WAIT):
+                        # BOUNDED BACKOFF: Retry-After when given, else exponential with jitter.
+                        # A Retry-After longer than MAX_SINGLE_WAIT is not slept through -- a
+                        # tracker asking for minutes is an outage, and waiting it out converts
+                        # one into billed minutes (TC 4.1 step 5).
                         _sleep(ra if ra is not None else (2 ** attempt) + random.uniform(0.1, 1))
                         attempt += 1
                         continue
@@ -635,9 +837,13 @@ class GitHubIssues(HttpBackend):
 
     name = 'github'
 
-    def __init__(self, repo, token, stamp_label, calibration='', retry_ceiling=0):
+    def __init__(self, repo, token, stamp_label, calibration='', retry_ceiling=0, api_url=''):
         self.repo = repo
         self._token = token            # read once, never printed, never written anywhere
+        # The token goes to the API host that issued it and nowhere else (KDEC-027): on GitHub
+        # Enterprise Cloud with data residency the run's token is `api.<tenant>.ghe.com`'s, and
+        # api.github.com must never see it. GITHUB_API_URL is set on every runner; unset is github.com.
+        self.api_url = (api_url or 'https://api.github.com').rstrip('/')
         self.stamp_label = stamp_label
         # A known-present issue this credential did NOT create, provisioned once by a human.
         self.calibration = (calibration or '').strip()
@@ -649,7 +855,7 @@ class GitHubIssues(HttpBackend):
                 ('Authorization', 'Bearer %s' % self._token)]
 
     def _req(self, method, path, payload=None):
-        return self._http(method, 'https://api.github.com' + path, payload)
+        return self._http(method, self.api_url + path, payload)
 
     def probe(self):
         # Reading the repository proves REACH, not visibility of tickets this credential did not
@@ -689,9 +895,12 @@ class GitHubIssues(HttpBackend):
                 if stamp:
                     out.setdefault(stamp, []).append({
                         'ref': str(issue.get('number')),
+                        'key': '#%s' % issue.get('number'),
                         'url': issue.get('url') or '',
                         'node': issue.get('node_id') or '',
                         'state': issue.get('state') or '',
+                        'labels': [(lb.get('name') if isinstance(lb, dict) else lb)
+                                   for lb in issue.get('labels') or []],
                         'body': issue.get('body') or '',
                     })
             print('  ... swept page %d (%d issue(s))' % (page, len(doc)), file=sys.stderr)
@@ -715,15 +924,59 @@ class GitHubIssues(HttpBackend):
         # primary limit everybody quotes.
         doc, status, err = self._req('POST', '/repos/%s/issues' % self.repo,
                                      {'title': title, 'body': body,
-                                      'labels': [self.stamp_label]})
+                                      'labels': [self.stamp_label]
+                                      + [fit_label(x) for x in cluster.get('extra_labels') or []]})
         if err or not doc:
             return None, 'create failed (status %s)' % status
         return str(doc.get('number')), 'created issue %s' % doc.get('number')
+
+    def create_instance(self, parent_ref, member, body, title):
+        # KDEC-037: a duplicate record (or an instance) -- a plain issue that names its parent and carries
+        # NO stamp line and no umbrella label, so the sweep never reads it as a second stamped ticket.
+        doc, status, err = self._req('POST', '/repos/%s/issues' % self.repo, {'title': title, 'body': body})
+        if err or not doc:
+            return None, 'instance create failed (status %s)' % status
+        return str(doc.get('number')), 'created issue %s under #%s' % (doc.get('number'), parent_ref)
 
     def comment(self, ref, text):
         doc, status, err = self._req('POST', '/repos/%s/issues/%s/comments' % (self.repo, ref),
                                      {'body': text})
         return (doc is not None), 'comment status %s' % status
+
+    def authenticated_identity(self):
+        # GET /user names a personal token's user; an installation token is refused there (UNVERIFIED for
+        # every token kind), and then the identity is unknown -- said so, never guessed. Read once.
+        if self.identity is None and not getattr(self, '_identity_read', False):
+            self._identity_read = True
+            doc, _status, err = self._req('GET', '/user')
+            if not err and isinstance(doc, dict) and doc.get('login'):
+                self.identity = str(doc['login'])
+        return self.identity
+
+    def write_event(self, ref):
+        doc, status, err = self._req('GET', '/repos/%s/issues/%s' % (self.repo, ref))
+        login = ((doc or {}).get('user') or {}).get('login') if isinstance(doc, dict) else None
+        if err or not login:
+            return None, 'the author of issue %s could not be read (status %s)' % (ref, status)
+        return str(login), 'the issue author'
+
+    def labels_of(self, ref):
+        doc, status, err = self._req('GET', '/repos/%s/issues/%s' % (self.repo, ref))
+        if err or not isinstance(doc, dict):
+            return [], False, 'the labels of %s could not be read (status %s)' % (ref, status)
+        return [(lb.get('name') if isinstance(lb, dict) else lb) for lb in doc.get('labels') or []], True, 'read'
+
+    def comment_texts(self, ref):
+        """-> (texts, ok, detail): every comment on the issue (KDEC-049 R4/R5 read-back). Short is not ok."""
+        out = []
+        for page in range(1, 51):
+            doc, status, err = self._req('GET', '/repos/%s/issues/%s/comments?per_page=100&page=%d' % (self.repo, ref, page))
+            if err or not isinstance(doc, list):
+                return out, False, 'the comments of %s could not be read (status %s)' % (ref, status)
+            out += [str(c.get('body') or '') for c in doc if isinstance(c, dict)]
+            if len(doc) < 100:
+                return out, True, 'read'
+        return out, False, 'the comments of %s did not end within 50 pages' % ref
 
     def read_description(self, ref):
         doc, status, err = self._req('GET', '/repos/%s/issues/%s' % (self.repo, ref))
@@ -743,6 +996,26 @@ class GitHubIssues(HttpBackend):
             return False, 'reopen refused (status %s)' % status
         return True, 'reopened'
 
+    def close(self, ref):
+        # `completed` is the documented reason for work that is done; `duplicate` exists and is
+        # never applied by automation (TC 5.2) -- a superseded ticket says so in its comment.
+        doc, status, err = self._req('PATCH', '/repos/%s/issues/%s' % (self.repo, ref),
+                                     {'state': 'closed', 'state_reason': 'completed'})
+        if err or doc is None:
+            return False, 'close refused (status %s)' % status
+        return True, 'closed (state_reason completed)'
+
+    def mark(self, ref, labels=(), bump_priority=False):
+        applied = {'labels': list(labels)}
+        if bump_priority:
+            applied['priority_note'] = ('GitHub Issues has no priority field; the label is the '
+                                        'escalation')
+        if not labels:
+            return True, 'nothing to change', applied
+        doc, status, err = self._req('POST', '/repos/%s/issues/%s/labels' % (self.repo, ref),
+                                     {'labels': [fit_label(x) for x in labels]})
+        return (doc is not None and err is None), 'label status %s' % status, applied
+
 
 DEFAULT_STAMP_LABEL = 'secure-cicd-kit'
 
@@ -751,6 +1024,70 @@ DEFAULT_STAMP_LABEL = 'secure-cicd-kit'
 # registered finding_subject. A subject with no row gets NO family label rather than a guess.
 FAMILY_BY_SUBJECT = {'SOURCE_DEPENDENCY': 'sca', 'DEPENDENCY': 'sca', 'SOURCE': 'sast',
                      'IAC_PLAN': 'iac', 'RESOURCE': 'iac', 'POLICY': 'iac', 'IMAGE': 'container'}
+
+
+GITHUB_LABEL_MAX = 50
+
+
+def fit_label(name, limit=GITHUB_LABEL_MAX):
+    """A GitHub label is at most 50 characters (the API answers 422 past it). A longer kit label -- the
+    correlation key's `<stamp>-ck-<32 hex>` is 51 with the default stamp -- is written in a DETERMINISTIC SHORT
+    FORM (ticket_governance.search_label: the head, a dash, 8 hex of its sha256), and every comparison fits both
+    sides the same way. THE SHORT FORM IS A SEARCH AID, NEVER AN IDENTITY (KDEC-043 rule 1): the full key lives
+    in the body's stamp line (or a link line), and ticket_intake.match verifies every label hit against it.
+    Jira (255) and Azure DevOps tags are never shortened."""
+    import ticket_governance as tg
+    return tg.search_label(name, limit)
+
+
+def _project_of_key(key):
+    """'AZSEC-123' -> 'AZSEC'; anything else -> ''."""
+    head, _sep, tail = str(key or '').rpartition('-')
+    return head if head and tail.isdigit() else ''
+
+
+# The finding classes a routing rule may match (scripts/ticket_routing.py). The floor classes are
+# the ones the gate blocks at every rung; routing may send them anywhere but never to "none".
+
+
+def routing_facts(cluster, repository=''):
+    """-> the facts ticket_routing.route matches on, from the cluster's own evidence."""
+    members = cluster.get('members') or []
+    jobs = [str(m.get('job') or '') for m in members]
+    cls = 'finding'
+    if family_of(cluster) == 'secrets' or 'secret-scan' in jobs:
+        cls = 'secret'
+    elif 'malicious-deps' in jobs or any(str(m.get('rule') or m.get('rule_id') or '')
+                                         .upper().startswith('MAL-') for m in members):
+        cls = 'malicious'
+    elif 'external-floor' in jobs or any(
+            str(m.get('kev') or '').strip().lower() in ('1', 'true', 'yes') or
+            str(m.get('kit_class') or '').lower() == 'kev' for m in members):
+        cls = 'kev'
+    for m in members:
+        kc = str(m.get('kit_class') or '').lower()
+        if kc in ('secret', 'malicious') and cls == 'kev':
+            cls = kc
+    fam = family_of(cluster)
+    if not fam:
+        for j in jobs:
+            if FAMILY_BY_JOB.get(j):
+                fam = FAMILY_BY_JOB[j]
+                break
+    if not fam and cluster.get('subject') == 'RUNTIME_OBSERVATION':
+        fam = 'dast'
+    # KDEC-037: an external finding's template, source type and environment route it too.
+    m0 = members[0] if members else {}
+    return {'class': cls, 'floor': cls != 'finding', 'scanner_family': fam,
+            'scanners': list(cluster.get('scanners') or []),
+            'category': cluster.get('subject') or '', 'severity': cluster.get('severity') or '',
+            'repository': repository or '', 'template': m0.get('template') or '',
+            'source_type': m0.get('source_type') or '', 'environment': m0.get('environment') or '',
+            # KDEC-038: the SAST rule families and secret detector families, and the CWEs, of the members.
+            'rule_families': sorted(set(str(m.get('rule_family') or m.get('secret_family') or '')
+                                        for m in members) - {''}),
+            'cwes': sorted(set(str(m.get('cwe') or '').upper() for m in members) - {''}),
+            'urgent': bool(cluster.get('urgent'))}
 
 
 def family_of(cluster):
@@ -854,6 +1191,25 @@ class Jira(HttpBackend):
                  retry_ceiling=0, **opts):
         self.host = (host or '').rstrip('/')
         self.project = project
+        # KDEC-028: HOW the credential is presented. `basic` is email:token (a person's or a service
+        # account's address); `bearer` is the token alone through the gateway. The gateway base is
+        # resolved once, on the first request, from JIRA_CLOUD_ID or the site's tenant_info.
+        self.auth_mode = (opts.get('auth_mode') or 'basic').strip().lower()
+        self.cloud_id = (opts.get('cloud_id') or '').strip()
+        self._api_base = None if (self.auth_mode == 'bearer' or self.cloud_id) else self.host
+        self._api_base_error = ''
+        # The credential the refusals name: never JIRA_EMAIL when no email is in use.
+        self.cred_var = 'JIRA_TOKEN' if self.auth_mode == 'bearer' else 'JIRA_EMAIL/JIRA_TOKEN'
+        # KDEC-028 ROUTING: set by reconcile() from the policy register (set_routing). None means
+        # every ticket is created in JIRA_PROJECT, exactly as before.
+        self.routing = None
+        self.repository = ''
+        self.ledger_projects = []
+        self._ref_project = {}
+        # KDEC-028 TEST MODE: a non-default-branch run writes only to the sandbox project.
+        self.test_mode = bool(opts.get('test_mode'))
+        self.real_projects = [x for x in (opts.get('real_projects') or []) if x]
+        self.test_guard_error = ''
         self.stamp_field = stamp_field
         # TICKETING_BACKENDS.md 3.1. Values with a documented default carry it here; values
         # without one are required by choose_backend and validated at run start.
@@ -862,18 +1218,116 @@ class Jira(HttpBackend):
         self.type_instance = opts.get('type_instance') or 'Subtask'
         self.epic_id = str(opts.get('epic_id') or '').strip()
         self.transition_reopen = (opts.get('transition_reopen') or '').strip()
+        # KDEC-024. The transition that CLOSES (JIRA_TRANSITION_DONE, by name: ids are
+        # workflow-specific). Unset, the one transition leading to a `done` status category is
+        # used -- and two or none is a refusal, never a guess.
+        self.transition_done = (opts.get('transition_done') or '').strip()
+        # The priority ladder, lowest to highest (JIRA_PRIORITY_LADDER). Jira Cloud's default
+        # scheme; a site that renamed its priorities sets its own.
+        ladder = opts.get('priority_ladder') or 'Lowest,Low,Medium,High,Highest'
+        self.priority_ladder = [x.strip() for x in str(ladder).split(',') if x.strip()]
+        self.last_key = None
         # JIRA_CALIBRATION_ISSUE: the numeric id of a known-present ticket this credential did
         # NOT create, made once by a human (TICKETING_BACKENDS.md 3.4).
         self.calibration = (calibration or '').strip()
-        self._auth = base64.b64encode(
-            ('%s:%s' % (email or '', token or '')).encode('utf-8')).decode('ascii')
+        if self.auth_mode == 'bearer':
+            self._auth = 'Bearer %s' % (token or '')
+        else:
+            self._auth = 'Basic %s' % base64.b64encode(
+                ('%s:%s' % (email or '', token or '')).encode('utf-8')).decode('ascii')
         self._init_http(retry_ceiling)
 
     def _headers(self):
-        return [('Accept', 'application/json'), ('Authorization', 'Basic %s' % self._auth)]
+        return [('Accept', 'application/json'), ('Authorization', self._auth)]
+
+    def _resolve_api_base(self):
+        """-> (base or None, why). The site for basic; the gateway for bearer (or basic with a
+        cloud id). The cloud id lookup carries NO credential: tenant_info is public, and a token sent
+        where none is needed is a token sent somewhere it did not have to go."""
+        if self._api_base:
+            return self._api_base, ''
+        if self._api_base_error:
+            return None, self._api_base_error
+        cid = self.cloud_id
+        if not cid:
+            import urllib.request
+            url = self.host + '/_edge/tenant_info'
+            if self.call_budget is not None and self.calls >= int(self.call_budget):
+                self.budget_exhausted = True
+                self._api_base_error = ('JIRA_CLOUD_ID could not be looked up: TICKET_CALL_BUDGET '
+                                        'is spent')
+                return None, self._api_base_error
+            self.calls += 1
+            try:
+                req = urllib.request.Request(url, method='GET')
+                req.add_header('Accept', 'application/json')
+                req.add_header('User-Agent', 'secure-cicd-kit')
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    doc = json.loads(resp.read().decode('utf-8') or '{}')
+                cid = str((doc or {}).get('cloudId') or '').strip() if isinstance(doc, dict) else ''
+            except Exception as exc:                  # noqa: BLE001 - reported, never swallowed
+                self._api_base_error = _no_credential_in(
+                    'JIRA_CLOUD_ID is unset and the lookup at JIRA_HOST/_edge/tenant_info failed (%s); '
+                    'set JIRA_CLOUD_ID' % type(exc).__name__)
+                return None, self._api_base_error
+            if not CLOUD_ID_RE.match(cid):
+                # The host is named, never its value: it may be held as a secret (KDEC-037 e2e,
+                # owner 2026-11-04) and this text reaches logs and results.
+                self._api_base_error = ('JIRA_CLOUD_ID is unset and JIRA_HOST/_edge/tenant_info gave no '
+                                        'usable cloud id (%r); set JIRA_CLOUD_ID' % cid[:40])
+                return None, self._api_base_error
+        elif not CLOUD_ID_RE.match(cid):
+            self._api_base_error = 'JIRA_CLOUD_ID %r is not a cloud id' % cid[:40]
+            return None, self._api_base_error
+        self._api_base = '%s/%s' % (JIRA_GATEWAY, cid)
+        return self._api_base, ''
 
     def _req(self, method, path, payload=None):
-        return self._http(method, self.host + path, payload)
+        base, why = self._resolve_api_base()
+        if base is None:
+            return None, None, why
+        return self._http(method, base + path, payload)
+
+    # -- KDEC-028: ROUTING -----------------------------------------------------------------
+    def set_routing(self, routing, repository='', ledger_projects=()):
+        """The register's resolved ticket_routing, the repository, and the projects the ledger
+        records tickets in. IN TEST MODE the register's routing names REAL projects: it is not
+        followed (every test ticket goes to the sandbox JIRA_PROJECT), and the sandbox may be none
+        of them -- TICKETING_TEST_TARGETS_REAL_PROJECT."""
+        import ticket_routing as troute
+        self.repository = repository or ''
+        self.ledger_projects = [p for p in ledger_projects if p]
+        routing = routing if isinstance(routing, dict) else None
+        if self.test_mode:
+            real = set(self.real_projects) | set(troute.projects_named(routing))
+            if self.project in real:
+                self.test_guard_error = (
+                    '%s: this is a TEST run (not the default branch) and JIRA_PROJECT %s is a real '
+                    'project (JIRA_REAL_PROJECTS or the register\'s ticket_routing names it). The '
+                    'ticketing-test environment must point at a sandbox project; nothing was sent.'
+                    % (TICKETING_TEST_TARGETS_REAL_PROJECT, self.project))
+            self.routing = None
+            self.ledger_projects = [p for p in self.ledger_projects if p not in real]
+        else:
+            self.routing = routing
+
+    def projects(self):
+        """JIRA_PROJECT, every project the routing names, every project the ledger records a
+        ticket in -- the set run-start validates (the routed ones) and the sweep covers (all)."""
+        import ticket_routing as troute
+        out = [self.project]
+        for p in troute.projects_named(self.routing) + list(self.ledger_projects):
+            if p and p not in out:
+                out.append(p)
+        return out
+
+    def target_for(self, cluster):
+        """-> the routing target for a cluster to be CREATED (ticket_routing.route), cached on it."""
+        import ticket_routing as troute
+        if not isinstance(cluster.get('route'), dict):
+            cluster['route'] = troute.route(routing_facts(cluster, self.repository), self.routing,
+                                            self.project)
+        return cluster['route']
 
     def probe(self):
         if not self.stamp_field:
@@ -911,61 +1365,130 @@ class Jira(HttpBackend):
         # THE CREDENTIAL FIRST. Jira Cloud answers a bad token as an ANONYMOUS caller, so a
         # project read alone is a 404 and would name JIRA_PROJECT for a broken JIRA_TOKEN (found
         # by the live R-1 run, 2026-10-15). /myself answers 401 for exactly that case.
+        if self.test_guard_error:
+            return False, self.test_guard_error
+        base, why = self._resolve_api_base()
+        if base is None:
+            # THE GATEWAY COULD NOT BE ADDRESSED: nothing was sent to it, nothing may be written.
+            return False, why
         me, status, err = self._req('GET', '/rest/api/3/myself')
+        if isinstance(me, dict) and me.get('accountId'):
+            self.identity = str(me['accountId'])          # KDEC-043 rule 2: who this credential is
         if err or not me:
             if status is None or status in (401, 403):
-                return False, first_read_refusal(status, 'JIRA_HOST', 'JIRA_EMAIL/JIRA_TOKEN',
+                return False, first_read_refusal(status, 'JIRA_HOST', self.cred_var,
                                                  'JIRA_PROJECT', self.project)
-            return False, ('JIRA_EMAIL/JIRA_TOKEN could not be established: /myself answered '
-                           'HTTP %s' % status)
-        doc, status, err = self._req('GET', '/rest/api/3/project/%s' % self.project)
+            return False, ('%s could not be established: /myself answered HTTP %s'
+                           % (self.cred_var, status))
+        ok, detail = self._validate_project(self.project, self.type_cluster, self.epic_id,
+                                            'JIRA_PROJECT', 'JIRA_EPIC_ID', instance=True)
+        if not ok:
+            return False, detail
+        # KDEC-028: EVERY PROJECT A TICKET MAY BE CREATED IN is established before anything is
+        # written -- the project, the issue type a rule names, the stamp field, the rule's epic.
+        routed = []
+        for t in self._routed_targets():
+            ok, detail = self._validate_project(
+                t['project'], t.get('issue_type') or self.type_cluster, t.get('epic') or '',
+                'ticket_routing %s project' % t.get('rule'), 'ticket_routing %s epic' % t.get('rule'))
+            if not ok:
+                return False, detail
+            routed.append(t['project'])
+        return True, ('project, issue types (%s, %s), stamp field and epic established%s'
+                      % (self.type_cluster, self.type_instance,
+                         ('; routed project(s) %s established' % ', '.join(sorted(set(routed))))
+                         if routed else ''))
+
+    def _routed_targets(self):
+        """Each distinct (project, issue type, epic) the routing names, other than JIRA_PROJECT
+        with the default type and epic, which validate() has already established."""
+        import ticket_routing as troute
+        out, seen = [], set()
+        r = self.routing or {}
+        targets = list(r.get('rules') or []) + ([r['default']] if r.get('default') else [])
+        for i, t in enumerate(targets):
+            p = t.get('project')
+            if not p or p == troute.NONE:
+                continue
+            key = (p, t.get('issue_type') or self.type_cluster, str(t.get('epic') or ''))
+            if key in seen or key == (self.project, self.type_cluster, ''):
+                continue
+            seen.add(key)
+            out.append({'project': p, 'issue_type': t.get('issue_type'), 'epic': t.get('epic'),
+                        'rule': t.get('id') or ('default' if t is r.get('default') else
+                                                'rules[%d]' % i)})
+        return out
+
+    def _validate_project(self, project, type_cluster, epic_id, project_var, epic_var,
+                          instance=False):
+        doc, status, err = self._req('GET', '/rest/api/3/project/%s' % project)
         if err or not doc:
-            return False, first_read_refusal(status, 'JIRA_HOST', 'JIRA_EMAIL/JIRA_TOKEN',
-                                             'JIRA_PROJECT', self.project)
+            return False, first_read_refusal(status, 'JIRA_HOST', self.cred_var, project_var,
+                                             project)
         types, status, err = self._req('GET', '/rest/api/3/issue/createmeta/%s/issuetypes'
-                                       % self.project)
+                                       % project)
         if err or not types:
             return False, ('createmeta for %s could not be read (status %s), so whether the stamp '
-                           'field can be set is not established' % (self.project, status))
+                           'field can be set is not established' % (project, status))
         listed = types.get('issueTypes') or types.get('values') or []
         by_name = dict((t.get('name'), t) for t in listed if isinstance(t, dict))
-        for var, name in (('JIRA_TYPE_CLUSTER', self.type_cluster),
-                          ('JIRA_TYPE_INSTANCE', self.type_instance)):
+        wanted = [('JIRA_TYPE_CLUSTER' if project_var == 'JIRA_PROJECT'
+                   else project_var.replace(' project', ' issue_type'), type_cluster)]
+        if instance or getattr(self, 'instance_threshold', 0):
+            wanted.append(('JIRA_TYPE_INSTANCE', self.type_instance))
+        for var, name in wanted:
             if name not in by_name:
                 return False, ('%s %r is not an issue type in %s (have: %s)'
-                               % (var, name, self.project, ', '.join(sorted(
+                               % (var, name, project, ', '.join(sorted(
                                    n for n in by_name if n)) or 'none'))
-        self.type_ids = dict((n, str(t.get('id'))) for n, t in by_name.items())
+        ids = dict((n, str(t.get('id'))) for n, t in by_name.items())
+        if project == self.project:
+            self.type_ids = ids
         meta, status, err = self._req('GET', '/rest/api/3/issue/createmeta/%s/issuetypes/%s'
-                                      % (self.project, self.type_ids[self.type_cluster]))
+                                      % (project, ids[type_cluster]))
         if err or not meta:
-            return False, 'createmeta for %s could not be read (status %s)' % (self.type_cluster,
+            return False, 'createmeta for %s could not be read (status %s)' % (type_cluster,
                                                                               status)
         fields = meta.get('fields') or meta.get('values') or []
         stamp = [f for f in fields if isinstance(f, dict) and
                  (f.get('fieldId') or f.get('key')) == self.stamp_field]
         if not stamp:
-            return False, ('JIRA_STAMP_FIELD %s is not settable on %s: not found by createmeta, '
-                           'which is could-not-establish (a field off-screen is omitted), never '
-                           'absence' % (self.stamp_field, self.type_cluster))
+            return False, ('JIRA_STAMP_FIELD %s is not settable on %s in %s: not found by '
+                           'createmeta, which is could-not-establish (a field off-screen is '
+                           'omitted), never absence' % (self.stamp_field, type_cluster, project))
         if ((stamp[0].get('schema') or {}).get('type')) != 'string':
             return False, ('JIRA_STAMP_FIELD %s is not a single-line text field (schema %r)'
                            % (self.stamp_field, (stamp[0].get('schema') or {}).get('type')))
+        if not epic_id:
+            return True, 'established'
         epic, status, err = self._req('GET', '/rest/api/3/issue/%s?fields=project,issuetype'
-                                      % self.epic_id)
+                                      % epic_id)
         if err or not epic:
-            return False, 'JIRA_EPIC_ID %s did not resolve (status %s)' % (self.epic_id, status)
-        if ((epic.get('fields') or {}).get('project') or {}).get('key') != self.project:
-            return False, 'JIRA_EPIC_ID %s is not in project %s' % (self.epic_id, self.project)
-        return True, ('project, issue types (%s, %s), stamp field and epic established'
-                      % (self.type_cluster, self.type_instance))
+            return False, '%s %s did not resolve (status %s)' % (epic_var, epic_id, status)
+        if ((epic.get('fields') or {}).get('project') or {}).get('key') != project:
+            return False, '%s %s is not in project %s' % (epic_var, epic_id, project)
+        return True, 'established'
 
     def jql(self):
         """The bounded sweep query (TICKETING_BACKENDS.md 3.3; J-1): this project, the umbrella
         label, the tier-0 type. Instances are found through their parent, never swept."""
-        return ('project = "%s" AND labels = "%s" AND issuetype = "%s" ORDER BY created DESC'
-                % (_jql_quote(self.project), _jql_quote(self.stamp_label),
-                   _jql_quote(self.type_cluster)))
+        projects = self.projects()
+        # KDEC-028: one project is the clause it always was; routing widens it to every project a
+        # ticket of this repository can be in, so a rule change never hides a ticket from the sweep.
+        if len(projects) == 1:
+            where = 'project = "%s"' % _jql_quote(projects[0])
+        else:
+            where = 'project in (%s)' % ', '.join('"%s"' % _jql_quote(p) for p in projects)
+        types = []
+        for t in [self.type_cluster] + [x.get('issue_type') for x in self._routed_targets()]:
+            if t and t not in types:
+                types.append(t)
+        if len(types) == 1:
+            itype = 'issuetype = "%s"' % _jql_quote(types[0])
+        else:
+            itype = 'issuetype in (%s)' % ', '.join('"%s"' % _jql_quote(t) for t in types)
+        return ('%s AND labels = "%s" AND %s ORDER BY created DESC'
+                % (where, _jql_quote(self.stamp_label), itype))
 
     def sweep(self, known_refs=()):
         out, token, pages, complete = {}, None, 0, True
@@ -995,13 +1518,15 @@ class Jira(HttpBackend):
                         # THE NUMERIC ID, not the key. The key is a human-facing label that moves.
                         'ref': str(issue.get('id')),
                         'key': issue.get('key') or '',
-                        'url': '%s/rest/api/3/issue/%s' % (self.host, issue.get('id')),
+                        'url': '%s/rest/api/3/issue/%s' % (self._api_base or self.host,
+                                                           issue.get('id')),
                         # Projected only where a decision needs it (TC 9.2): the status
                         # CATEGORY is Jira's stable open/closed axis; the name is recorded
                         # verbatim beside it because workflows rename statuses.
                         'state': ('closed' if (status.get('statusCategory') or {}).get('key')
                                   == 'done' else 'open') if status else '',
                         'status_name': status.get('name') or '',
+                        'labels': list(fields.get('labels') or []),
                         'body': '',
                     })
             pages += 1
@@ -1025,27 +1550,66 @@ class Jira(HttpBackend):
         # and family labels, the product epic as parent, the stamp, and the machine-owned block
         # as the ADF description. A second call to finish a ticket is a second chance to leave
         # one half-made, and it doubles the cost against the binding limit.
-        labels = [self.stamp_label] + ([family_of(cluster)] if family_of(cluster) else [])
+        # KDEC-028: WHERE is the routing's answer (JIRA_PROJECT, its type and epic when there is
+        # no routing). A project of None means routing said "none" -- reconcile() never calls
+        # create for that, and refusing here keeps it so for any future caller.
+        if self.test_guard_error:
+            return None, self.test_guard_error
+        tgt = self.target_for(cluster)
+        project = tgt.get('project')
+        if not project:
+            return None, 'create refused: ticket routing names no project for this cluster'
+        labels = [self.stamp_label] + ([family_of(cluster)] if family_of(cluster) else []) + \
+            list(cluster.get('extra_labels') or [])
+        for x in list(tgt.get('labels') or []) + ([TEST_LABEL] if self.test_mode else []):
+            if x not in labels:
+                labels.append(x)
         fields = {
-            'project': {'key': self.project},
-            'summary': title,
-            'issuetype': {'name': self.type_cluster},
+            'project': {'key': project},
+            'summary': self._summary(title),
+            'issuetype': {'name': tgt.get('issue_type') or self.type_cluster},
             'labels': labels,
             self.stamp_field: cluster['cluster_key'],
             'description': adf_from_text(body),
         }
-        if self.epic_id:
-            fields['parent'] = {'id': self.epic_id}
+        if tgt.get('components'):
+            fields['components'] = [{'name': c} for c in tgt['components']]
+        # The product epic belongs to JIRA_PROJECT; a routed project takes only the rule's epic.
+        epic = tgt.get('epic') or (self.epic_id if project == self.project else '')
+        if epic:
+            fields['parent'] = {'id': str(epic)}
+        # KDEC-038: an URGENT cluster (an exposed credential) is created at the top of the ladder.
+        if cluster.get('urgent') and self.priority_ladder:
+            fields['priority'] = {'name': self.priority_ladder[-1]}
         doc, status, err = self._req('POST', '/rest/api/3/issue', {'fields': fields})
+        if (err or not doc) and 'priority' in fields and status == 400:
+            # A create screen without the priority field: create without it, and say so -- the urgent
+            # label still marks it. Never a lost ticket for a missing field.
+            fields.pop('priority', None)
+            doc, status, err = self._req('POST', '/rest/api/3/issue', {'fields': fields})
+            self.priority_note = 'the create screen refused the priority field; the urgent label marks it'
         if err or not doc:
             return None, 'create failed (status %s)' % status
         # THE NUMERIC ID is the reference; the key is a label that moves. Never read after write.
+        # The key is kept beside it for people (the exception cross-reference names it).
+        self.last_key = doc.get('key') or None
+        self._ref_project[str(doc.get('id'))] = project
         return str(doc.get('id')), 'created %s' % doc.get('key')
 
+    def _summary(self, title):
+        """TEST MODE: every summary says so (KDEC-028), so a test ticket can never be mistaken for
+        real work, wherever it ends up."""
+        if self.test_mode and not str(title).startswith(TEST_PREFIX):
+            return bounded_title('%s %s' % (TEST_PREFIX, title))
+        return title
+
     def create_instance(self, parent_ref, member, body, title):
+        if self.test_guard_error:
+            return None, self.test_guard_error
         doc, status, err = self._req('POST', '/rest/api/3/issue', {'fields': {
-            'project': {'key': self.project},
-            'summary': title,
+            # An instance lives in its parent's project, wherever routing put the parent.
+            'project': {'key': self._ref_project.get(str(parent_ref)) or self.project},
+            'summary': self._summary(title),
             'issuetype': {'name': self.type_instance},
             'parent': {'id': str(parent_ref)},
             'description': adf_from_text(body),
@@ -1093,6 +1657,119 @@ class Jira(HttpBackend):
             return False, 'the transition was refused (status %s)' % status
         return True, 'reopened by transition %r' % self.transition_reopen
 
+    def close(self, ref):
+        """KDEC-024. The transition named JIRA_TRANSITION_DONE, or -- unset -- the ONE offered
+        transition whose target is in the `done` status category. None, or more than one, is a
+        refusal that names the setting: choosing between two would be a guess."""
+        doc, status, err = self._req('GET', '/rest/api/3/issue/%s/transitions' % ref)
+        if err or doc is None:
+            return False, ('JIRA_TRANSITION_DONE: the transitions could not be read (status %s)'
+                           % status)
+        offered = [t for t in (doc.get('transitions') or []) if isinstance(t, dict)]
+        if not offered:
+            return False, ('JIRA_TRANSITION_DONE: the transitions list is EMPTY: not permitted '
+                           'and not applicable arrive identically (%s)'
+                           % DISTINCTION_NOT_OBSERVABLE)
+        if self.transition_done:
+            match = [t for t in offered if (t.get('name') or '').strip().lower()
+                     == self.transition_done.lower()]
+            if not match:
+                return False, ('JIRA_TRANSITION_DONE %r is not offered (offered: %s)'
+                               % (self.transition_done,
+                                  ', '.join(t.get('name') or '?' for t in offered)))
+        else:
+            match = [t for t in offered if (((t.get('to') or {}).get('statusCategory') or {})
+                                            .get('key')) == 'done']
+            if len(match) != 1:
+                return False, ('JIRA_TRANSITION_DONE is not configured and %d offered '
+                               'transition(s) lead to a done status (%s); one cannot be chosen '
+                               'without guessing'
+                               % (len(match), ', '.join(t.get('name') or '?' for t in match)
+                                  or 'none'))
+        _d, status, err = self._req('POST', '/rest/api/3/issue/%s/transitions' % ref,
+                                    {'transition': {'id': str(match[0].get('id'))}})
+        if err:
+            return False, 'the done transition was refused (status %s)' % status
+        return True, 'closed by transition %r' % match[0].get('name')
+
+    def set_status(self, ref, status):
+        """KDEC-062: the ONE offered transition whose target status is named `status` (configuration, never a
+        word in code). None or more than one is a refusal naming it: choosing between two would be a guess."""
+        doc, code, err = self._req('GET', '/rest/api/3/issue/%s/transitions' % ref)
+        if err or doc is None:
+            return False, 'status %r: the transitions could not be read (status %s)' % (status, code)
+        offered = [t for t in (doc.get('transitions') or []) if isinstance(t, dict)]
+        match = [t for t in offered if str((t.get('to') or {}).get('name') or '').strip().lower()
+                 == str(status).strip().lower()]
+        if len(match) != 1:
+            return False, ('status %r: %d offered transition(s) lead to it (offered: %s)'
+                           % (status, len(match), ', '.join(t.get('name') or '?' for t in offered) or 'none'))
+        _d, code, err = self._req('POST', '/rest/api/3/issue/%s/transitions' % ref,
+                                  {'transition': {'id': str(match[0].get('id'))}})
+        if err:
+            return False, 'the transition to %r was refused (status %s)' % (status, code)
+        return True, 'moved to %r by transition %r' % (status, match[0].get('name'))
+
+    def mark(self, ref, labels=(), bump_priority=False):
+        """Labels added (never removed), and the priority raised one rung of JIRA_PRIORITY_LADDER
+        when asked. One read, one write."""
+        doc, status, err = self._req('GET', '/rest/api/3/issue/%s?fields=priority,labels' % ref)
+        if err or not isinstance(doc, dict):
+            return False, 'the priority and labels could not be read (status %s)' % status, {}
+        f = doc.get('fields') or {}
+        have = set(f.get('labels') or [])
+        add = [x for x in labels if x not in have]
+        payload, applied = {}, {'labels': add}
+        if add:
+            payload['update'] = {'labels': [{'add': x} for x in add]}
+        if bump_priority:
+            cur = (f.get('priority') or {}).get('name')
+            ladder = self.priority_ladder
+            if cur in ladder and ladder.index(cur) < len(ladder) - 1:
+                nxt = ladder[ladder.index(cur) + 1]
+                payload['fields'] = {'priority': {'name': nxt}}
+                applied['priority'] = [cur, nxt]
+            else:
+                applied['priority_note'] = (
+                    'priority %r is already the top of JIRA_PRIORITY_LADDER' % cur
+                    if cur in ladder else
+                    'priority %r is not on JIRA_PRIORITY_LADDER (%s), so no rung above it is '
+                    'known' % (cur, ', '.join(ladder)))
+        if not payload:
+            return True, 'nothing to change', applied
+        _d, status, err = self._req('PUT', '/rest/api/3/issue/%s' % ref, payload)
+        ok_w = err is None and status in (200, 204)
+        return ok_w, 'escalation write status %s' % status, applied
+
+    def write_event(self, ref):
+        doc, status, err = self._req('GET', '/rest/api/3/issue/%s?fields=creator' % ref)
+        acc = (((doc or {}).get('fields') or {}).get('creator') or {}).get('accountId') if isinstance(doc, dict) else None
+        if err or not acc:
+            return None, 'the creator of %s could not be read (status %s)' % (ref, status)
+        return str(acc), 'the issue creator'
+
+    def labels_of(self, ref):
+        """-> (labels, ok, detail). KDEC-037: a ticket's labels are its durable record (extensions,
+        links, the no-fix state), read before a template acts on it."""
+        doc, status, err = self._req('GET', '/rest/api/3/issue/%s?fields=priority,labels' % ref)
+        if err or not isinstance(doc, dict):
+            return [], False, 'the labels of %s could not be read (status %s)' % (ref, status)
+        return list((doc.get('fields') or {}).get('labels') or []), True, 'read'
+
+    def comment_texts(self, ref):
+        """-> (texts, ok, detail): EVERY comment on the issue, paged (KDEC-049 R4/R5: the read-back that proves an
+        evidence transfer, and the idempotency check before a comment is written). Short is not ok."""
+        out, start = [], 0
+        for _page in range(50):
+            doc, status, err = self._req('GET', '/rest/api/3/issue/%s/comment?startAt=%d&maxResults=100' % (ref, start))
+            if err or not isinstance(doc, dict) or not isinstance(doc.get('comments'), list):
+                return out, False, 'the comments of %s could not be read (status %s)' % (ref, status)
+            out += [adf_text_lines(c.get('body')) for c in doc['comments'] if isinstance(c, dict)]
+            start += len(doc['comments'])
+            if not doc['comments'] or start >= int(doc.get('total') or 0):
+                return out, True, 'read'
+        return out, False, 'the comments of %s did not end within 50 pages' % ref
+
     def read_description(self, ref):
         """The CURRENT description, as Jira holds it: an ADF document, or null when empty."""
         doc, status, err = self._req('GET', '/rest/api/3/issue/%s?fields=description' % ref)
@@ -1129,6 +1806,8 @@ AZDO_API = '7.1'
 WIQL_CAP = 20000
 # workitemsbatch accepts at most 200 ids per call (documented maximum, TICKETING_BACKENDS.md 4.2).
 AZDO_BATCH_MAX = 200
+# The priority field of the Basic process's Issue and Task (1 highest .. 4 lowest).
+AZDO_PRIORITY_FIELD = 'Microsoft.VSTS.Common.Priority'
 
 
 def _wiql_quote(value):
@@ -1329,7 +2008,7 @@ class AzureDevOps(HttpBackend):
                 out.setdefault(str(stamp).strip(), []).append({
                     'ref': str(item.get('id')), 'url': self._item_url(item.get('id')),
                     'state': 'closed' if state == self.state_done else 'open',
-                    'status_name': state, 'body': ''})
+                    'status_name': state, 'labels': self._tags(item), 'body': ''})
             print('  ... batch-read %d/%d work item(s)' % (min(n + AZDO_BATCH_MAX, len(ids)),
                                                            len(ids)), file=sys.stderr)
         return out, complete, 'WIQL %d page(s), %d id(s)%s' % (
@@ -1343,7 +2022,7 @@ class AzureDevOps(HttpBackend):
 
     # ── writes ──────────────────────────────────────────────────────────────────────────
 
-    def _create(self, type_name, title, tags, body, parent_id, stamp=None):
+    def _create(self, type_name, title, tags, body, parent_id, stamp=None, priority=None):
         import html
         import urllib.parse
         ops = [{'op': 'add', 'path': '/fields/System.Title', 'value': title},
@@ -1354,6 +2033,8 @@ class AzureDevOps(HttpBackend):
             ops.append({'op': 'add', 'path': '/fields/System.Tags', 'value': '; '.join(tags)})
         if stamp is not None:
             ops.append({'op': 'add', 'path': '/fields/%s' % self.stamp_field, 'value': stamp})
+        if priority is not None:
+            ops.append({'op': 'add', 'path': '/fields/%s' % AZDO_PRIORITY_FIELD, 'value': int(priority)})
         if parent_id:
             ops.append({'op': 'add', 'path': '/relations/-', 'value': {
                 'rel': 'System.LinkTypes.Hierarchy-Reverse', 'url': self._item_url(parent_id)}})
@@ -1364,9 +2045,10 @@ class AzureDevOps(HttpBackend):
         return str(doc.get('id')), 'created work item %s' % doc.get('id')
 
     def create(self, cluster, body, title):
-        tags = [self.stamp_label] + ([family_of(cluster)] if family_of(cluster) else [])
+        tags = [self.stamp_label] + ([family_of(cluster)] if family_of(cluster) else []) + \
+            list(cluster.get('extra_labels') or [])
         return self._create(self.type_cluster, title, tags, body, self.epic_id,
-                            stamp=cluster['cluster_key'])
+                            stamp=cluster['cluster_key'], priority=1 if cluster.get('urgent') else None)
 
     def create_instance(self, parent_ref, member, body, title):
         return self._create(self.type_instance, title, [], body, parent_ref)
@@ -1377,6 +2059,30 @@ class AzureDevOps(HttpBackend):
                                      {'text': '<pre>%s</pre>' % html.escape(text)},
                                      api='7.1-preview.4')
         return (doc is not None), 'comment status %s' % status
+
+    def authenticated_identity(self):
+        # connectionData's authenticatedUser (UNVERIFIED field shape); read once, unknown when it fails.
+        if self.identity is None and not getattr(self, '_identity_read', False):
+            self._identity_read = True
+            doc, _status, err = self._req('GET', '/_apis/connectionData', project=False, api='7.1-preview.1')
+            uid = ((doc or {}).get('authenticatedUser') or {}).get('id') if isinstance(doc, dict) else None
+            if not err and uid:
+                self.identity = str(uid)
+        return self.identity
+
+    def write_event(self, ref):
+        doc, status, err = self._req('GET', '/_apis/wit/workitems/%s?fields=System.CreatedBy' % ref)
+        who = ((doc or {}).get('fields') or {}).get('System.CreatedBy') if isinstance(doc, dict) else None
+        uid = who.get('id') if isinstance(who, dict) else None
+        if err or not uid:
+            return None, 'the creator of work item %s could not be read (status %s)' % (ref, status)
+        return str(uid), 'System.CreatedBy'
+
+    def labels_of(self, ref):
+        doc, status, err = self._req('GET', '/_apis/wit/workitems/%s?fields=System.Tags' % ref)
+        if err or not isinstance(doc, dict):
+            return [], False, 'the tags of %s could not be read (status %s)' % (ref, status)
+        return self._tags(doc), True, 'read'
 
     def read_description(self, ref):
         """The CURRENT System.Description (HTML) and the work item's revision."""
@@ -1409,6 +2115,53 @@ class AzureDevOps(HttpBackend):
         doc, status, err = self._req('PATCH', '/_apis/wit/workitems/%s' % ref, ops, patch=True)
         return (doc is not None), 'description update status %s' % status
 
+    def close(self, ref):
+        """KDEC-024: a state write to AZDO_STATE_DONE. A process rule refusing it is reported."""
+        doc, status, err = self._req('PATCH', '/_apis/wit/workitems/%s' % ref, [
+            {'op': 'add', 'path': '/fields/System.State', 'value': self.state_done}], patch=True)
+        if err or doc is None:
+            return False, 'the state write to %r was refused (status %s)' % (self.state_done,
+                                                                            status)
+        return True, 'closed to %r' % self.state_done
+
+    def set_status(self, ref, status):
+        """KDEC-062: a System.State write to the state a completion level is mapped to (configuration)."""
+        doc, code, err = self._req('PATCH', '/_apis/wit/workitems/%s' % ref, [
+            {'op': 'add', 'path': '/fields/System.State', 'value': str(status)}], patch=True)
+        if err or doc is None:
+            return False, 'the state write to %r was refused (status %s)' % (status, code)
+        return True, 'moved to %r' % status
+
+    def mark(self, ref, labels=(), bump_priority=False):
+        """Tags added (the whole tag string is written, so it is read first), and
+        Microsoft.VSTS.Common.Priority lowered by one (1 is the highest) -- under `test /rev`, so
+        a person's edit in between is never overwritten."""
+        doc, status, err = self._req('GET', '/_apis/wit/workitems/%s?fields=System.Tags,%s'
+                                     % (ref, AZDO_PRIORITY_FIELD))
+        if err or not isinstance(doc, dict):
+            return False, 'the tags and priority could not be read (status %s)' % status, {}
+        have = self._tags(doc)
+        add = [x for x in labels if x not in have]
+        ops, applied = [], {'labels': add}
+        if doc.get('rev') is not None:
+            ops.append({'op': 'test', 'path': '/rev', 'value': doc.get('rev')})
+        if add:
+            ops.append({'op': 'add', 'path': '/fields/System.Tags',
+                        'value': '; '.join(have + add)})
+        if bump_priority:
+            cur = (doc.get('fields') or {}).get(AZDO_PRIORITY_FIELD)
+            if isinstance(cur, int) and not isinstance(cur, bool) and cur > 1:
+                ops.append({'op': 'add', 'path': '/fields/%s' % AZDO_PRIORITY_FIELD,
+                            'value': cur - 1})
+                applied['priority'] = [cur, cur - 1]
+            else:
+                applied['priority_note'] = ('priority %r is already the highest (1) or not a '
+                                            'number' % (cur,))
+        if not [o for o in ops if o['op'] != 'test']:
+            return True, 'nothing to change', applied
+        d2, status, err = self._req('PATCH', '/_apis/wit/workitems/%s' % ref, ops, patch=True)
+        return (d2 is not None and err is None), 'escalation write status %s' % status, applied
+
     def reopen(self, ref):
         """A state write to AZDO_STATE_REOPEN. A refusal by a process rule is the successor path,
         as in Jira, and its reason is recorded."""
@@ -1437,6 +2190,8 @@ class RecordingBackend(TicketBackend):
         self.block_updates = []
         self.reopened = []
         self.instances = []
+        self.closed = []
+        self.marks = []
         self.refuse_reopen = False
         self.sweeps = 0
         self._observable = observable
@@ -1480,6 +2235,9 @@ class RecordingBackend(TicketBackend):
         self.comments.append((str(ref), text))
         return True, 'commented'
 
+    def comment_texts(self, ref):
+        return [t for r, t in self.comments if r == str(ref)], True, 'read'
+
     def create_instance(self, parent_ref, member, body, title):
         ref = str(self.next_ref)
         self.next_ref += 1
@@ -1516,12 +2274,60 @@ class RecordingBackend(TicketBackend):
                     return True, 'block rewritten'
         return False, 'no such ticket'
 
+    def close(self, ref):
+        for recs in self.store.values():
+            for r in recs:
+                if r['ref'] == str(ref):
+                    r['state'] = 'closed'
+                    self.closed.append(str(ref))
+                    return True, 'closed'
+        return False, 'no such ticket'
+
+    def set_status(self, ref, status):
+        for recs in self.store.values():
+            for r in recs:
+                if r['ref'] == str(ref):
+                    r['state'], r['status_name'] = 'closed', str(status)
+                    self.statuses = list(getattr(self, 'statuses', []) or []) + [(str(ref), str(status))]
+                    return True, 'moved to %r' % status
+        return False, 'no such ticket'
+
+    def labels_of(self, ref):
+        for recs in self.store.values():
+            for r in recs:
+                if r['ref'] == str(ref):
+                    return list(r.get('labels') or []), True, 'read'
+        return [], False, 'no such ticket'
+
+    writers = None          # {ref: actor} -- a proof sets who the stand-in tracker records
+
+    def write_event(self, ref):
+        w = (self.writers or {}).get(str(ref))
+        return (w, 'recorded writer') if w else (None, 'the in-memory tracker records no writer for %s' % ref)
+
+    def mark(self, ref, labels=(), bump_priority=False):
+        self.marks.append((str(ref), list(labels), bool(bump_priority)))
+        for recs in self.store.values():
+            for r in recs:
+                if r['ref'] == str(ref):
+                    r['labels'] = sorted(set(list(r.get('labels') or []) + list(labels)))
+        return True, 'marked', {'labels': list(labels)}
+
 
 # ═════════════════════════════════════════════════════════════════════════════════════
 # THE STAMP
 # ═════════════════════════════════════════════════════════════════════════════════════
 
 STAMP_PREFIX = 'secure-cicd-kit-cluster:'
+
+
+def duplicate_body(original, cluster_key, what_added):
+    """The body of a DUPLICATE record (owner, 2026-11-04: an exact match is linked as a duplicate and closed). It
+    names the original and what the duplicate added, and carries NO stamp line: a duplicate must never be found
+    as a second ticket for the original's key."""
+    return '\n'.join(['Duplicate of %s (secure-cicd-kit; correlation key `%s`).' % (original, cluster_key), '',
+                       'What this submission added to the original:', '', what_added, '',
+                       'Closed as a duplicate: the original tracks the finding. Nothing was deleted.'])
 
 
 def stamp_from_body(body):
@@ -1570,6 +2376,44 @@ def render_body(cluster, existing='', ticket=None, tasks=None):
         '| contributing scanners | %s |' % ', '.join(cluster['scanners'] or ['none named']),
         '| members | %d |' % len(cluster['members']),
     ]
+    for k, v in cluster.get('template_facts') or []:
+        lines.append('| %s | %s |' % (k, ' '.join(str(v).replace('|', '/').split())))
+    lines += code_finding_rows(cluster)
+    # KDEC-024. What raised it, where it came from, what it is linked to, when it is due, and
+    # whether the scanners agree -- all from evidence, all inside the machine-owned block.
+    if cluster.get('raised_as'):
+        lines.append('| raised as | %s |' % {
+            TRIGGER_NEW: 'NEW -- a fingerprint never seen before; nobody has decided about it yet',
+            REOPEN_RECURRED: 'RECURRED -- verified absent once and detected again',
+        }.get(cluster['raised_as'], cluster['raised_as']))
+    if cluster.get('raised_run'):
+        lines.append('| raised by run | %s |' % cluster['raised_run'])
+    if cluster.get('raised_commit'):
+        lines.append('| at commit | `%s` |' % cluster['raised_commit'])
+    for link in cluster.get('exception_links') or []:
+        lines.append('| exception | %s |' % link)
+    if cluster.get('sla'):
+        lines.append('| SLA due | %s |' % sla_text(cluster['sla']))
+    if isinstance(cluster.get('area'), dict):
+        # KDEC-043 rule 3: no owning area is a TRIAGE STATE with an owner role and a deadline.
+        lines.append('| area | %s -- owner role %s triages it by %s (routing names no area for it) |' % (
+            cluster['area']['state'], cluster['area']['owner_role'], cluster['area']['due']))
+    for ob in cluster.get('obligations') or []:
+        # KDEC-043 rule 4: one identity, one child obligation per cloud asset, each with its own owner.
+        lines.append('| child obligation %s | %s %s -- owner role %s; closes by a rescan or a second person |' % (
+            ob.get('id'), ob.get('cloud'), ob.get('display') or '', ob.get('owner_role')))
+    if ticket is None and cluster.get('confidence'):
+        lines.append('| confidence | %s -- %s |' % (cluster['confidence'],
+                                                    cluster.get('confidence_basis') or ''))
+    if cluster.get('contested_by'):
+        lines.append('| disagreement | %s: not reported by %s (same detection class, ran, '
+                     'established, covered the file) -- a person settles it; nothing is '
+                     'suppressed |' % (CONTESTED_ANCHORED, ', '.join(cluster['contested_by'])))
+    if cluster.get('severity_disagreement'):
+        lines.append('| severity disagreement | %s |' % cluster['severity_disagreement'])
+    if cluster.get('absorbed'):
+        lines.append('| merged from | %s (cross-scanner duplicates of this finding, closed as '
+                     'superseded; nothing deleted) |' % ', '.join(cluster['absorbed']))
     if cluster.get('scanners_stopped'):
         # TC 5.1: "a detector that stopped contributing is named as stopped, not omitted" -- a
         # dead detector must not hide behind a live one on the ticket (T-13).
@@ -1585,6 +2429,9 @@ def render_body(cluster, existing='', ticket=None, tasks=None):
         if cluster.get('reopen_classification'):
             # T-08: why the predecessor needed reopening, in TC 4.2's words.
             lines.append('| why it was reopened | %s |' % cluster['reopen_classification'])
+    if any(_secret_keyed(m) for m in cluster.get('members') or []):
+        import code_finding_key as cfk
+        lines += ['', '### URGENT: an exposed credential -- ROTATE it', '', cfk.secret_remedy]
     lines += [
         '',
         'Member identities:',
@@ -1686,7 +2533,9 @@ def block_facts(text):
     contributing scanners, scanners named as stopped, members listed POTENTIALLY_ABSENT. Read
     from text the run already holds; never asked of a text index (TC 3.3). Lists come back
     sorted; a fact the block does not state comes back empty, which reads as a change."""
-    facts = {'severity': None, 'scanners': [], 'stopped': [], 'absent': []}
+    facts = {'severity': None, 'scanners': [], 'stopped': [], 'absent': [], 'sla_due': None,
+             'confidence': None, 'exceptions': [], 'recheck_due': None, 'nofix_since': None,
+             'recheck_every': None, 'exempt_until': None}
     in_absent = False
 
     def cell(line):
@@ -1710,6 +2559,24 @@ def block_facts(text):
             facts['stopped'] = [x.strip() for x in cell(s).split('(')[0].split(',') if x.strip()]
         elif s.startswith(ABSENT_HEADER + ' -- members not observed'):
             in_absent = True
+        elif s.startswith('| SLA due |'):
+            first = (cell(s).split() or [None])[0]
+            facts['sla_due'] = first if tm.iso_date(first) else None
+        elif s.startswith('| confidence |'):
+            facts['confidence'] = (cell(s).replace('*', '').split() or [None])[0]
+        elif s.startswith('| exception |'):
+            facts['exceptions'].append(cell(s))
+        elif s.startswith('| no-fix since |'):
+            first = (cell(s).split() or [None])[0]
+            facts['nofix_since'] = first if tm.iso_date(first) else None
+        elif s.startswith('| exempt until |'):
+            first = (cell(s).split() or [None])[0]
+            facts['exempt_until'] = first if tm.iso_date(first) else None
+        elif s.startswith('| re-check due |'):
+            first = (cell(s).split() or [None])[0]
+            facts['recheck_due'] = first if tm.iso_date(first) else None
+            m = re.search(r'every (\d+) days', cell(s))
+            facts['recheck_every'] = int(m.group(1)) if m else None
     return dict((k, sorted(v) if isinstance(v, list) else v) for k, v in facts.items())
 
 
@@ -1717,7 +2584,17 @@ def rendered_facts(cluster):
     """The TC 5.1 facts a freshly rendered block states, in block_facts' shape."""
     return {'severity': cluster.get('severity'), 'scanners': sorted(cluster.get('scanners') or []),
             'stopped': sorted(cluster.get('scanners_stopped') or []),
-            'absent': sorted(cluster.get('members_absent') or [])}
+            'absent': sorted(cluster.get('members_absent') or []),
+            'sla_due': (cluster.get('sla') or {}).get('deadline'),
+            'confidence': cluster.get('confidence'),
+            'exceptions': sorted(cluster.get('exception_links') or [])}
+
+
+# The facts the delta compares. The first four predate KDEC-024; the last three are compared only
+# when the ledger recorded them, so a ticket written before them is not rewritten merely because
+# the kit learned a new fact -- it gains them the next time something else changes (TC 6.1).
+BASE_FACTS = ('severity', 'scanners', 'stopped', 'absent')
+LIFECYCLE_FACTS = ('sla_due', 'confidence', 'exceptions')
 
 
 def splice_text(existing, block):
@@ -1777,6 +2654,33 @@ def instance_body(parent_ref, member):
         BLOCK_CLOSE])
 
 
+def code_finding_rows(cluster):
+    """KDEC-038: the rule family, the CWE and the code location (path, symbol, the ticket anchor) of a code
+    finding; the detector family and the secret key of a secret. Hashes and names only -- no line text."""
+    rows, seen = [], set()
+    for m in cluster.get('members') or []:
+        if _secret_keyed(m):
+            row = ('| exposed credential | %s at `%s` (secret key `%s`: detector family + path + a non-reversible '
+                   'fingerprint; the value is never stored) |'
+                   % (m.get('secret_family') or 'unnamed detector', m.get('uri') or m.get('canonical_path') or '?',
+                      str(m.get('secret_key'))[:16]))
+        elif m.get('rule_family'):
+            row = ('| rule family | %s (%s%s) |' % (m['rule_family'], m.get('cwe') or 'no CWE',
+                                                   ('; the tool said %s' % m['cwe_reported'])
+                                                   if m.get('cwe_reported') else ''))
+            if m.get('ticket_anchor'):
+                row += '\n| code location | `%s` in %s (anchor `%s`: the normalised line and its ordinal, ' \
+                       'never the line number) |' % (m.get('uri') or m.get('canonical_path') or '?',
+                                                      m.get('symbol_path') or 'file scope',
+                                                      str(m['ticket_anchor'])[:16])
+        else:
+            continue
+        if row not in seen:
+            seen.add(row)
+            rows.extend(row.split('\n'))
+    return rows
+
+
 def render_title(cluster):
     """No finding message text in the title, and nothing the stamp is parsed out of.
 
@@ -1785,6 +2689,13 @@ def render_title(cluster):
     scanner-supplied partial fingerprint.
     """
     m = cluster['members'][0]
+    if _secret_keyed(m):
+        return bounded_title('[%s] exposed secret (%s) in %s -- rotate it' % (
+            cluster['severity'], m.get('secret_family') or 'credential', m.get('uri') or m.get('canonical_path')
+            or 'unknown location'))
+    if m.get('template') and m.get('title'):
+        # KDEC-037: an external finding's title is the submitter's, after its identifier.
+        return bounded_title('[%s] %s: %s' % (cluster['severity'], m.get('rule') or 'finding', m['title']))
     return bounded_title('[%s] %s in %s' % (cluster['severity'],
                                             m.get('rule') or 'finding',
                                             m.get('uri') or cluster['subject']
@@ -1871,6 +2782,8 @@ def reopen_comment(classification, today):
                           'finding, so that disposition is stale or wrong and must not suppress.',
         REOPEN_UNBACKED: 'This ticket was closed with no approved, unexpired disposition behind '
                          'it, and the scanner still reproduces the finding.',
+        REOPEN_RECURRED: 'RECURRED: it was verified absent and is detected again -- a fix did not '
+                         'hold. The earlier clearance is context, never a suppression.',
     }.get(classification, '')
     return '%s %s Closing a ticket does not clear a finding; only the scanner no longer ' \
            'reproducing it does.' % (lead, why)
@@ -1896,18 +2809,120 @@ def identities_from_body(body):
 def identity_bindings(ledger, sweep_map):
     """-> {member identity: set(cluster keys)} from the ledger and from the swept ticket blocks."""
     b = {}
-    for key, entry in (ledger or {}).items():
+    ledger = ledger or {}
+
+    def live(key):
+        # A merged-away obligation's members belong to the ticket that absorbed it (D4), so a
+        # merge is not re-detected every run and the absorbed ticket's body binds nothing new.
+        entry = ledger.get(key) if isinstance(ledger.get(key), dict) else {}
+        return entry.get('merged_into') or key
+    for key, entry in ledger.items():
         if isinstance(entry, dict):
             for ident in entry.get('member_identities') or []:
-                b.setdefault(ident, set()).add(key)
+                b.setdefault(ident, set()).add(live(key))
     for key, refs in (sweep_map or {}).items():
         for r in refs:
             for ident in identities_from_body(r.get('body') or ''):
-                b.setdefault(ident, set()).add(key)
+                b.setdefault(ident, set()).add(live(key))
     return b
 
 
-def rebind(clusters, bindings):
+def lineage_binding(ident, bindings, lineage):
+    """-> {key, carried_from, events, conflict} or None. R03: ticket continuity across a lineage.
+
+    An identity with no binding of its own, that the lineage ledger says DESCENDS from bound
+    identities, inherits their obligation -- so a renamed or moved finding keeps its ticket instead
+    of opening a second one beside it. Read through `finding_lineage` (no second ledger).
+
+    `conflict` is non-empty, and the caller makes the cluster BINDING_AMBIGUOUS (nothing created,
+    nothing bound, nothing merged), when the carry is one a person decides: a SPLIT among the
+    ancestry ('split: ...'), ancestors bound to more than one obligation ('merge: ...'), a cyclic
+    ancestry ('cycle: ...'), or a ledger that is not intact ('ledger <STATE>: ...'). None when the
+    ledger says nothing about a bound ancestor.
+    """
+    if not lineage or not ident:
+        return None
+    events = lineage.get('events') or []
+    integrity = lineage.get('integrity')
+    chain, cycle = fl.ancestors(events, ident)
+    bound_from = [a for a in chain if bindings.get(a)]
+    if not bound_from:
+        return None
+    keys = set()
+    for a in bound_from:
+        keys |= set(bindings.get(a) or ())
+    ids = [str(e.get('event_id') or '') for e in events
+           if any(x in chain for x in fl._as_list(e.get('from_identities')))
+           and any(x in set(chain) | set([ident]) for x in fl._as_list(e.get('to_identities')))]
+    out = {'key': None, 'keys': sorted(keys), 'identity': ident, 'carried_from': bound_from,
+           'events': ids, 'conflict': ''}
+    if integrity not in fl.RESOLVABLE:
+        out['conflict'] = ('ledger %s: the lineage ledger %s is %s, so the binding of %s to the '
+                           'obligation of %s is NOT carried -- a link nobody can verify extends no '
+                           'ticket' % (integrity, lineage.get('path'), integrity, ident[:12],
+                                       ', '.join(a[:12] for a in bound_from)))
+        return out
+    if cycle:
+        out['conflict'] = 'cycle: %s; no binding is carried from it' % cycle
+        return out
+    sib = fl.split_siblings(events, ident)
+    if sib:
+        out['conflict'] = ('split: %s was split (siblings %s); its ticket belongs to no single '
+                           'product, and a person decides which obligation each one is'
+                           % (', '.join(k[:12] for k in sorted(sib)),
+                              ', '.join(o[:12] for v in sib.values() for o in v) or 'none'))
+        return out
+    if len(keys) > 1:
+        out['conflict'] = ('merge: %s descends from %d separately ticketed obligations (%s); a '
+                           'lineage merge is never auto-merged' % (ident[:12], len(keys),
+                                                                    ', '.join(sorted(keys))))
+        return out
+    out['key'] = next(iter(keys))
+    return out
+
+
+def lineage_outstanding(c, bound, bindings, lineage):
+    """-> True when cluster `c`, whose members ARE directly bound (`bound`), also inherits a lineage
+    obligation its direct binding does not continue; the cluster is then marked BINDING_AMBIGUOUS.
+
+    Review 2026-11-09 finding 7. `rebind` evaluated the lineage only for clusters with no direct
+    binding, so a cluster bound to ticket TB that the ledger says a ticketed A was SPLIT into,
+    MERGED into, or SUPERSEDED by, bound to TB and A's obligation TA vanished -- no decision owed,
+    nothing naming it. The lineage is now evaluated for every cluster. The DIRECT BINDING STAYS
+    AUTHORITATIVE FOR ITS OWN IDENTITY: the cluster keeps its directly bound key, and when every
+    obligation the lineage carries is one the direct binding already continues (the steady state
+    after a carry, or a person who bound the product to the ancestor's ticket) nothing changes.
+    When an ancestor's obligation is NOT among the direct bindings, the cluster is held for a person:
+    nothing created, nothing updated, nothing merged (no `bound_keys`, so merge_plan absorbs
+    nothing), nothing closed, and both obligations are named.
+    """
+    carried = [x for x in (lineage_binding(i, bindings, lineage)
+                           for i in c['member_identities']) if x]
+    keys = set(k for x in carried for k in x['keys'])
+    outstanding = keys - set(bound)
+    if not outstanding:
+        return False
+    conflicts = [x['conflict'] for x in carried if x['conflict']]
+    if not conflicts:
+        conflicts = ['direct: the members are bound to %s, and the lineage ledger carries the '
+                     'separate obligation(s) %s from %s; a direct binding never absorbs a lineage '
+                     'obligation, and the obligation is never dropped'
+                     % (', '.join(sorted(bound)), ', '.join(sorted(outstanding)),
+                        ', '.join(sorted(set(a[:12] for x in carried for a in x['carried_from']))))]
+    else:
+        conflicts.append('direct: the members are also bound directly to %s, which does not '
+                         'continue %s' % (', '.join(sorted(bound)), ', '.join(sorted(outstanding))))
+    if len(bound) == 1:
+        key = next(iter(bound))
+        if key != c['cluster_key']:
+            c['computed_key'] = c['cluster_key']
+            c['cluster_key'] = key
+    c['binding_conflict'] = sorted(set(bound) | keys)
+    c['lineage_conflict'] = '; '.join(conflicts)
+    return True
+
+
+def rebind(clusters, bindings, lineage=None):
     """THE STAMP, ONCE SET, DOES NOT MOVE (TICKETING_CONTRACT.md 5.2; T2, L53).
 
     The computed key derives from the shared-alias anchor, and that anchor moves when a member
@@ -1924,6 +2939,30 @@ def rebind(clusters, bindings):
         bound = set()
         for ident in c['member_identities']:
             bound |= bindings.get(ident, set())
+        if bound and lineage and lineage_outstanding(c, bound, bindings, lineage):
+            continue
+        if not bound and lineage:
+            # R03: no member is bound directly; the lineage ledger may carry an ancestor's ticket.
+            carried = [x for x in (lineage_binding(i, bindings, lineage)
+                                   for i in c['member_identities']) if x]
+            conflicts = [x['conflict'] for x in carried if x['conflict']]
+            keys = set(k for x in carried for k in x['keys'])
+            if not conflicts and len(keys) > 1:
+                conflicts = ['merge: members descend from %d separately ticketed obligations'
+                             % len(keys)]
+            if conflicts:
+                # Not `bound_keys`: merge_plan must never absorb tickets on a lineage inference.
+                c['binding_conflict'] = sorted(keys) or [c['cluster_key']]
+                c['lineage_conflict'] = '; '.join(conflicts)
+            elif keys:
+                key = next(iter(keys))
+                c['carried_by_lineage'] = [dict((k, x[k]) for k in
+                                                ('identity', 'carried_from', 'events'))
+                                           for x in carried]
+                if key != c['cluster_key']:
+                    c['computed_key'] = c['cluster_key']
+                    c['cluster_key'] = key
+            continue
         if len(bound) == 1:
             key = next(iter(bound))
             if key != c['cluster_key']:
@@ -1931,6 +2970,9 @@ def rebind(clusters, bindings):
                 c['cluster_key'] = key
         elif len(bound) > 1:
             c['binding_conflict'] = sorted(bound)
+            # D4: kept beside the conflict so merge_plan can tell a one-finding-many-tickets
+            # merge (mergeable, by a stated rule) from a split (a person's call).
+            c['bound_keys'] = sorted(bound)
     counts = {}
     for c in clusters:
         counts[c['cluster_key']] = counts.get(c['cluster_key'], 0) + 1
@@ -1961,6 +3003,11 @@ def classify(cluster, ledger, sweep_map, sweep_complete, observable):
         cands = []
         for k in cluster['binding_conflict']:
             cands.extend(sweep_map.get(k) or [{'ref': (ledger.get(k) or {}).get('ref') or k}])
+        if cluster.get('lineage_conflict'):
+            return (BINDING_AMBIGUOUS, cands,
+                    'carried by the lineage ledger and NOT bound -- %s. A human decides; the '
+                    'link to %d existing obligation(s) is kept'
+                    % (cluster['lineage_conflict'], len(cluster['binding_conflict'])))
         return (BINDING_AMBIGUOUS, cands,
                 'this cluster\'s members are bound to %d existing obligation(s) shared with '
                 'another cluster or with each other -- a merge or a split, which a human decides'
@@ -2092,6 +3139,21 @@ def note_degraded(result, backend, key, owed):
             'first_degraded_at': owed.get('first_degraded_at'), 'cause': owed.get('cause')})
 
 
+def area_sweep(result, ledger, today):
+    """KDEC-043 rule 3, over the WHOLE ledger and unasked: an unresolved area past its deadline is a decision owed to
+    its owner role, in every run's output (the ordinary run and the scheduled clock), until the routing resolves it."""
+    result['area_unresolved'] = tg.area_overdue(ledger, today)
+    for a in result['area_unresolved']:
+        if a['overdue']:
+            result['outcomes'][tg.AREA_UNRESOLVED_OVERDUE] = result['outcomes'].get(tg.AREA_UNRESOLVED_OVERDUE, 0) + 1
+            result['needs_decision'].append({
+                'cluster_key': a['cluster_key'], 'outcome': tg.AREA_UNRESOLVED_OVERDUE,
+                'detail': 'ticket %s has had no owning area since its triage deadline %s (%d day(s) over): the %s '
+                          'role routes it (a ticket_routing rule) or records why it has none'
+                          % (a.get('key') or a.get('ref'), a['due'], a['overdue_days'], a['owner_role']),
+                'candidates': []})
+
+
 def finish_claim(result, backend_note='', backend=None):
     """THE RUN'S TICKETING CLAIM (TICKETING_CONTRACT.md 4.1; L55). Computed last, from what the run
     actually established, and stated in the summary and the exit code.
@@ -2106,6 +3168,7 @@ def finish_claim(result, backend_note='', backend=None):
     # The budget is a measurement (TC 6.4): calls spent and every throttle seen, per run.
     result['calls'] = getattr(backend, 'calls', None) if backend is not None else 0
     result['throttles'] = list(getattr(backend, 'throttles', None) or [])
+    result['call_budget'] = getattr(backend, 'call_budget', None) if backend is not None else None
     if result['backend'] is None:
         causes.append(backend_note or 'no ticket backend is configured')
     if result['outcomes'].get(BINDING_UNESTABLISHED):
@@ -2123,22 +3186,1312 @@ def finish_claim(result, backend_note='', backend=None):
     if result.get('update_failed'):
         causes.append('%d ticket update(s) failed, so those tickets do not show what changed'
                       % result['update_failed'])
+    if backend is not None and getattr(backend, 'budget_exhausted', False):
+        causes.append('the per-run call budget (TICKET_CALL_BUDGET = %s) was spent before the run '
+                      'finished, so what it did not reach is carried, not concluded'
+                      % getattr(backend, 'call_budget', None))
     if result['clusters'] == 0 and result['outcomes'].get(IDENTITY_NOT_ESTABLISHED):
         causes.append('every finding was withheld (%s): nothing could be keyed, so nothing could '
                       'be tracked' % IDENTITY_NOT_ESTABLISHED)
     if causes:
         claim = {'routing_result': EVIDENCE_UNTRUSTED, 'publication_state': PUBLICATION_DEGRADED,
                  'causes': causes}
-    elif result['needs_decision'] or result['refused_disposition'] or result['past_due']:
+    elif result['needs_decision'] or result['refused_disposition'] or result['past_due'] or \
+            result.get('disagreements'):
         claim = {'routing_result': DECISION_REQUIRED, 'causes': ['a decision is owed to a person']}
     else:
         claim = {'routing_result': PROCEED, 'causes': []}
     result['ticketing_claim'] = claim
+    result['ticketing_state'] = finish_state(result, backend)
     return result
 
 
+# ═════════════════════════════════════════════════════════════════════════════════════
+# THE LIFECYCLE (KDEC-024, lane L-TKT): clearance, recurrence, merge, disagreement, SLA, links
+# ═════════════════════════════════════════════════════════════════════════════════════
+#
+# The owner, 2026-10-23: "We need to finish and fully mature tickets and ticket handling." What
+# the cascade above could not do, and what each piece below adds:
+#
+#   T-09   close a ticket when its finding CLEARS -- on positive evidence only: the scanner that
+#          saw it ran, established its row, and covered the file. Anything less is
+#          POTENTIALLY_ABSENT and closes nothing (TC 4.3; finding_classification).
+#   D5     NEW (a fingerprint never seen), RECURRED (a cleared finding detected again: a fix did
+#          not hold) and REOPENED_BY_LAPSE (a disposition expired; from the calendar, `resurface`).
+#   D4     cross-scanner duplicates already ticketed separately are MERGED into the oldest ticket.
+#   FW-3a  a peer of the same detection class that covered the file and did not report contests
+#          the cluster (CONTESTED_ANCHORED); differing severities are recorded, the worst taken.
+#   SLA    the due date from the register's numbers (sla_period_days); an overdue ticket is
+#          escalated ONCE: a comment, a priority bump, a kit-owned label. The date never moves.
+#   LINK   the run, the commit, file:line and the exception, on the ticket.
+
+# Ticket triggers (FUTURE_WORK.md D5; assurance-taxonomy.yaml : ticket_trigger). REOPENED_BY_LAPSE
+# is finding_classification's registered value, defined above.
+TRIGGER_NEW = 'NEW'
+REOPEN_RECURRED = 'RECURRED'
+
+# The confidence a peer's silence produces (assurance-taxonomy.yaml : finding_confidence).
+CONTESTED_ANCHORED = 'CONTESTED_ANCHORED'
+
+# Ticketing availability, stated in every run record (assurance-taxonomy.yaml :
+# ticketing_availability). UNAVAILABLE is never a silent pass and never touches the gate.
+TICKETING_AVAILABLE = 'TICKETING_AVAILABLE'
+TICKETING_UNAVAILABLE = 'TICKETING_UNAVAILABLE'
+TICKETING_NOT_CONFIGURED = 'TICKETING_NOT_CONFIGURED'
+
+# Which scanner JOB belongs to which detection class. A finding is CONTESTED only by a silent peer
+# of the same class (FW-3a), so the class must be stated, not inferred from a scanner name.
+FAMILY_BY_JOB = {'deps-scan': 'sca', 'malicious-deps': 'sca', 'image-scan': 'container',
+                 'secret-scan': 'secrets', 'iac-scan': 'iac', 'codeql': 'sast',
+                 'sast-semgrep': 'sast', 'sast-bandit': 'sast', 'sast-dotnet': 'sast',
+                 'sast-java': 'sast', 'sast-go': 'sast', 'sast-cpp': 'sast'}
+# THE CLASSES WHOSE DETECTORS ANSWER THE SAME QUESTION. Dependency, container and secret scanners
+# match against shared identifiers (an advisory id, a credential pattern), so a peer that covered
+# the file and stayed silent made a NEGATIVE OBSERVATION about this finding. SAST and IaC tools
+# carry different rule sets: semgrep saying nothing about a bandit rule observes nothing about that
+# rule, and contesting on it would label every SAST finding. They are not compared, and say so.
+PEER_COMPARABLE_FAMILIES = ('sca', 'container', 'secrets')
+
+_SLA_SEVERITY = {'critical': 'CRITICAL', 'high': 'HIGH', 'medium': 'MEDIUM', 'moderate': 'MEDIUM',
+                 'low': 'LOW'}
+
+
+def _label(backend, suffix):
+    """A kit-owned label: the umbrella stamp plus a suffix, so a person sees whose it is."""
+    return '%s-%s' % (getattr(backend, 'stamp_label', '') or DEFAULT_STAMP_LABEL, suffix)
+
+
+def scope_covers(scope, path):
+    """-> True when a scanner's declared scope contains `path`. Empty or '.' is the repository."""
+    sc = str(scope or '').strip().replace('\\', '/').strip('/')
+    p = str(path or '').strip().replace('\\', '/').lstrip('./') if path else ''
+    if sc in ('', '.'):
+        return True
+    return p == sc or p.startswith(sc + '/')
+
+
+def load_coverage(path):
+    """-> (coverage {scanner: row} or None, note). The report's per-scanner record of what each
+    scanner ESTABLISHED this run (scripts/scan_report.py writes findings-coverage.json beside
+    findings.json). None is NOT "nothing was covered": it is "coverage was not supplied", and with
+    it no ticket may close on absence."""
+    if not path:
+        return None, 'no coverage record was supplied, so no absence can be shown to be a clearance'
+    if not os.path.exists(path):
+        return None, ('no coverage record at %s, so no absence can be shown to be a clearance'
+                      % path)
+    try:
+        doc = json.load(io.open(path, encoding='utf-8'))
+    except (IOError, ValueError) as exc:
+        return None, 'the coverage record %s could not be read (%s): nothing may close' % (path, exc)
+    rows = doc.get('rows') if isinstance(doc, dict) else None
+    if not isinstance(rows, list):
+        return None, 'the coverage record %s has no rows: nothing may close' % path
+    out = CoverageMap()
+    for row in rows:
+        if isinstance(row, dict) and row.get('scanner'):
+            out[str(row['scanner'])] = row
+    # KDEC-062: which files exist at the scanned commit (scan_report.py writes it from the checkout), so an
+    # absence in a DELETED file is never read as a fix.
+    out.path_inventory = doc.get('path_inventory') if isinstance(doc.get('path_inventory'), dict) else None
+    return out, 'coverage loaded for %d scanner row(s)' % len(out)
+
+
+class CoverageMap(dict):
+    """scanner -> coverage row, plus the rescan's `path_inventory` (KDEC-062), None when it was not recorded."""
+    path_inventory = None
+
+
+def row_established(row):
+    """A coverage row is positive evidence only when the scanner's row was ESTABLISHED and is not
+    PARTIAL: it ran, its report was read, and it did not cap its own claim."""
+    return (isinstance(row, dict) and row.get('established') is True
+            and str(row.get('gate') or '').upper() not in ('PARTIAL', 'FAILED', 'UNDETERMINED'))
+
+
+TICKET_CEILING_OVERFLOW = 'TICKET_CEILING_OVERFLOW'
+# KDEC-062: the rescan disqualifiers that mean the absence is NOT a fix, so the clearance closes nothing.
+# KDEC-069: a retired provider's finding with no replacement showing equivalence never auto-closes either.
+CLEARANCE_BLOCKING_RESCAN = (tc.RESCAN_PATH_REMOVED, tc.RESCAN_PATH_EXCLUDED, tc.RESCAN_PATH_OUT_OF_SCOPE,
+                             tc.RESCAN_SCOPE_CHANGED, tc.RESCAN_CONFIG_CHANGED,
+                             tc.RESCAN_PROVIDER_RETIRED_NO_EQUIVALENCE)
+
+
+def ceiling_overflow(result, setting, limit, cluster_key, count=1, escalate=True, identities=None, total=None):
+    """KDEC-052 item 7: a ceiling is never silently exceeded and nothing past it is dropped. The overflow is
+    NAMED (TICKET_CEILING_OVERFLOW, in the run record and the summary) and ESCALATED as a decision owed to a
+    person (needs_decision: raise the governed number in the central register, or accept the carry).
+
+    KDEC-062 (owner 2026-11-16): the INSTANCE threshold caps automatic child-ticket CREATION only. Every affected
+    instance and its evidence stays on the ledger; the instances not itemised are NAMED here (`identities`), and
+    the overflow is escalated for a reviewer like the creation ceiling's."""
+    rows = result.setdefault('ceiling_overflow', [])
+    row = {'state': TICKET_CEILING_OVERFLOW, 'setting': setting, 'limit': limit,
+           'cluster_key': cluster_key, 'over_by': count}
+    if identities is not None:
+        row.update(identities=list(identities), total=total, itemised=(total or 0) - len(identities))
+    rows.append(row)
+    if escalate and sum(1 for r in rows if r['setting'] == setting) == 1:
+        result['needs_decision'].append({
+            'cluster_key': cluster_key, 'outcome': TICKET_CEILING_OVERFLOW,
+            'detail': '%s: %s %s was reached this run; what is past it is carried (creation) or counted '
+                      '(instances), never dropped. A person decides: raise the governed number in the central '
+                      'register, or accept the carry' % (TICKET_CEILING_OVERFLOW, setting, limit)})
+
+
+def record_settings(result, settings):
+    """KREQ-674: the run record carries every ticketing value used, its level and source, and every refusal."""
+    result['ticket_settings'] = {'environment': settings.get('environment', ''), 'record': settings['record'],
+                                 'refused': settings['refused'], 'notes': settings.get('notes') or []}
+    for r in settings['refused']:
+        result['notes'].append('%s: %s at %s (%s) -- %s' % (r['state'], r['setting'], r['level'], r['source'], r['why']))
+
+
+def settings_from_registrations(central_path, repo_path, environment='', env=None):
+    """-> (ticket_settings.resolve() result, note). KREQ-674: every ticketing number the run uses, with the level
+    it came from (kit_default / org / repo / environment / variable) and every refusal. A register that is
+    absent or unreadable contributes nothing and the note says so; the kit defaults then stand, recorded."""
+    docs, notes = {}, []
+    for label, path in (('central', central_path), ('repository', repo_path)):
+        if not path:
+            continue
+        if not os.path.exists(path):
+            notes.append('no %s register at %s' % (label, path))
+            continue
+        try:
+            doc = json.load(io.open(path, encoding='utf-8'))
+        except (IOError, ValueError) as exc:
+            notes.append('the %s register %s could not be read (%s); its numbers are NOT applied' % (label, path, exc))
+            continue
+        docs[label] = doc if isinstance(doc, dict) else {}
+    env = os.environ if env is None else env
+    settings = ticket_settings.resolve(docs.get('central'), docs.get('repository'), environment, env)
+    settings['notes'] = notes
+    return settings, ('; '.join(notes) + '; ' if notes else '') + 'ticket numbers resolved (%d value(s), %d refused)' % (
+        len(settings['record']), len(settings['refused']))
+
+
+def numbers_from_registrations(central_path, repo_path):
+    """-> (numbers or None, note). The register's `numbers` block, merged as
+    scripts/policy_registration.resolve merges it (the repository's keys over the central ones).
+    None means NO register was read -- SLA is then not evaluated, and the run says so; {} means a
+    register was read and holds no numbers, which is POLICY_NUMBER_NOT_CONFIGURED."""
+    docs, notes = [], []
+    for label, path in (('central', central_path), ('repository', repo_path)):
+        if not path:
+            continue
+        if not os.path.exists(path):
+            notes.append('no %s register at %s' % (label, path))
+            continue
+        try:
+            doc = json.load(io.open(path, encoding='utf-8'))
+        except (IOError, ValueError) as exc:
+            notes.append('the %s register %s could not be read (%s)' % (label, path, exc))
+            continue
+        docs.append((label, doc if isinstance(doc, dict) else {}))
+    if not docs:
+        return None, '; '.join(notes) or 'no policy register was supplied'
+    merged = {}
+    for _label_, doc in docs:
+        merged.update(doc.get('numbers') or {})
+    return merged, 'numbers read from %s' % ', '.join(n for n, _d in docs)
+
+
+def routing_from_registrations(central_path, repo_path, repository):
+    """-> (resolved ticket_routing or None, note). KDEC-028. None means no register was read, or
+    none carries ticket_routing: every ticket goes to JIRA_PROJECT, as before."""
+    import ticket_routing as troute
+    docs = {}
+    for label, path in (('central', central_path), ('repository', repo_path)):
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            doc = json.load(io.open(path, encoding='utf-8'))
+        except (IOError, ValueError) as exc:
+            return None, ('the %s register %s could not be read (%s); routing falls back to '
+                          'JIRA_PROJECT' % (label, path, exc))
+        docs[label] = doc if isinstance(doc, dict) else {}
+    if not docs:
+        return None, 'no policy register: every ticket goes to JIRA_PROJECT'
+    r = troute.resolve_routing(docs.get('central'), docs.get('repository'), repository)
+    if not r['rules'] and not r['default']:
+        return None, 'the register carries no ticket_routing for %s: JIRA_PROJECT' % (
+            repository or 'this repository')
+    return r, 'ticket_routing from %s' % ', '.join(r['chain'])
+
+
+def exceptions_from_registrations(central_path, repo_path):
+    """-> {finding fp: ticket key} for every secret exception the registers hold (LINK)."""
+    out = {}
+    for path in (central_path, repo_path):
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            doc = json.load(io.open(path, encoding='utf-8'))
+        except (IOError, ValueError):
+            continue
+        for e in (doc.get('policies') or []) if isinstance(doc, dict) else []:
+            for x in (e.get('secret_exceptions') or []) if isinstance(e, dict) else []:
+                if isinstance(x, dict) and x.get('finding') and x.get('ticket'):
+                    out[str(x['finding']).strip()] = str(x['ticket']).strip()
+    return out
+
+
+def annotate(cluster, coverage, exceptions):
+    """Confidence, disagreement and exception links for one cluster, from evidence only (FW-3a).
+
+    CONTESTED: a scanner of a peer-comparable class that ran this run, ESTABLISHED its row, covered
+    the member's file and did not report it. That is a negative observation, and a contested
+    finding is still ticketed -- a peer's silence never suppresses a finding -- but its confidence
+    says so, its ticket says who disagreed, and a person is asked once (DECISION_REQUIRED).
+    SEVERITY: per-scanner values are recorded; the worst is the effective severity; never an
+    average (TC 5.1)."""
+    members = cluster.get('members') or []
+    names = set(cluster.get('scanners') or [])
+    sev = {}
+    for m in members:
+        s = str(m.get('severity') or '').strip().lower()
+        if s and m.get('scanner'):
+            sev[str(m['scanner'])] = s
+    distinct = sorted(set(sev.values()))
+    cluster['scanner_severities'] = sev
+    cluster['severity_disagreement'] = (
+        '%s -- the worst (%s) is the effective severity; never averaged'
+        % (', '.join('%s: %s' % (k, sev[k]) for k in sorted(sev)), cluster.get('severity'))
+        if len(distinct) > 1 else '')
+    contested = set()
+    if isinstance(coverage, dict):
+        for m in members:
+            fam = FAMILY_BY_JOB.get(str(m.get('job') or ''))
+            if fam not in PEER_COMPARABLE_FAMILIES:
+                continue
+            path = m.get('uri') or m.get('canonical_path') or ''
+            for row in coverage.values():
+                if FAMILY_BY_JOB.get(str(row.get('job') or '')) != fam:
+                    continue
+                if str(row.get('scanner')) in names or not row_established(row):
+                    continue
+                if scope_covers(row.get('scope'), path):
+                    contested.add(str(row.get('scanner')))
+    cluster['contested_by'] = sorted(contested)
+    if contested:
+        cluster['confidence'] = CONTESTED_ANCHORED
+        cluster['confidence_basis'] = (
+            'reported by %s; NOT reported by %s, which ran this run, established its row and '
+            'covered %s -- a scanner of the same detection class disagrees. The finding stays '
+            'ticketed (a peer\'s silence suppresses nothing) and a person is asked to settle it'
+            % (', '.join(sorted(names)) or 'unnamed', ', '.join(sorted(contested)),
+               ', '.join(sorted(set(str(m.get('uri') or '?') for m in members)))))
+    else:
+        label, basis = tm.derive_confidence(cluster.get('scanners') or [],
+                                            identity_established=bool(cluster.get('cluster_key')))
+        cluster['confidence'], cluster['confidence_basis'] = label, basis
+    links = []
+    for m in members:
+        fp = str(m.get('fp') or '').strip()
+        if fp and fp in (exceptions or {}):
+            links.append('%s (secret exception for finding %s)' % (exceptions[fp], fp))
+        d = m.get('disposition') if isinstance(m.get('disposition'), dict) else {}
+        for k in ('exception_ref', 'acceptance_ref'):
+            if d.get(k):
+                links.append('%s (%s of the %s disposition)' % (d[k], k, d.get('disposition_type')
+                                                                or 'recorded'))
+    cluster['exception_links'] = sorted(set(links))
+    return cluster
+
+
+def sla_for(severity, numbers, first_seen, existing, today):
+    """-> the ledger's `sla` record, or None when no register was read. Pure.
+
+    The deadline comes from numbers.sla_period_days.<SEVERITY> (scripts/remediation_sla.py, the
+    names the register already uses); the clock starts at the date the kit first observed the
+    finding, recorded as such ("first observed by us on <date>; the finding may be older"). A
+    re-score can only bring the deadline EARLIER: min(existing, re-score + period). No function
+    here extends one, and the tracker's own due-date field is never written (TC 5.2)."""
+    if numbers is None:
+        return None
+    import remediation_sla as rs
+    sev = _SLA_SEVERITY.get(str(severity or '').strip().lower())
+    if not sev:
+        return {'state': 'no_sla', 'deadline': None, 'severity': severity,
+                'why': 'no SLA applies to a %s finding' % (severity or 'severity-less')}
+    if isinstance(existing, dict) and existing.get('deadline'):
+        if existing.get('severity') == sev:
+            return existing
+        r = rs.rescore_deadline(existing['deadline'], today, sev, numbers)
+        if r.get('state') != 'computed':
+            return dict(existing, why='%s (re-score to %s not computed: %s)'
+                        % (existing.get('why'), sev, r.get('why')))
+        return dict(existing, deadline=r['deadline'], severity=sev,
+                    why='%s; re-scored %s on %s: %s' % (existing.get('why') or '', sev, today,
+                                                       r['why']))
+    r = rs.sla_deadline({'effective_severity': sev, 'age_established': False}, numbers,
+                        first_seen or today)
+    if r.get('state') != 'computed':
+        return {'state': r.get('state'), 'deadline': None, 'severity': sev,
+                'why': r.get('why') or 'not computed'}
+    return {'state': 'computed', 'deadline': r['deadline'], 'severity': sev,
+            'clock_start': r['clock_start'], 'why': r['why']}
+
+
+def sla_text(sla):
+    if not isinstance(sla, dict):
+        return ''
+    if sla.get('deadline'):
+        return '%s (%s; %s)' % (sla['deadline'], sla.get('severity'), sla.get('why') or '')
+    return 'not computed: %s -- %s' % (sla.get('state'), sla.get('why'))
+
+
+def sla_overdue(sla, today):
+    d, t = tm.iso_date((sla or {}).get('deadline')), tm.iso_date(today)
+    return bool(d and t and t > d)
+
+
+def escalate_overdue(result, backend, key, entry, ref, today, apply_changes, approval,
+                     hit_labels=()):
+    """ONE escalation per breach: a comment naming the due date, a priority bump, the kit's
+    overdue label. Recorded in the ledger against the deadline it escalated, so the next run is
+    free and a re-scored (earlier) deadline escalates again. Never moves the deadline.
+
+    THE TRACKER IS THE SECOND RECORD. The scheduled clock runs with no scan, so no propose-ledger
+    follows it and its ledger changes are not persisted; a ticket that already carries the overdue
+    label was escalated, and is not escalated again (the label is what the sweep returns)."""
+    sla = entry.get('sla') if isinstance(entry, dict) else None
+    if not sla_overdue(sla, today) or entry.get('sla_escalated') == sla.get('deadline'):
+        return
+    label = _label(backend, 'sla-overdue')
+    if label in (hit_labels or ()):
+        if apply_changes:
+            entry['sla_escalated'] = sla['deadline']
+        return
+    rec = {'cluster_key': key, 'ref': ref, 'deadline': sla['deadline'],
+           'severity': sla.get('severity'), 'label': label, 'planned': not apply_changes}
+    if apply_changes and not tm.authorise('ticket.sla_escalate', approval):
+        ok_m, d_m, applied = backend.mark(ref, labels=[label], bump_priority=True)
+        text = ('SLA OVERDUE (secure-cicd-kit, run date %s): this %s finding was due %s (%s). '
+                'Escalated: %s, labelled %s. The deadline is derived from the register\'s numbers '
+                'and was NOT moved; nothing here accepts the risk -- remediate it, or ask for a '
+                'disposition with a named approver and an expiry.'
+                % (today, sla.get('severity'), sla['deadline'], sla.get('why') or '',
+                   ('priority %s -> %s' % tuple(applied['priority'])) if applied.get('priority')
+                   else (applied.get('priority_note') or 'priority unchanged'), label))
+        ok_c, d_c = backend.comment(ref, text)
+        rec.update(marked=bool(ok_m), commented=bool(ok_c), applied=applied)
+        if ok_m and ok_c:
+            entry['sla_escalated'] = sla['deadline']
+        else:
+            result['update_failed'] = result.get('update_failed', 0) + 1
+            result['notes'].append('SLA escalation of ticket %s incomplete: %s; %s'
+                                   % (ref, d_m, d_c))
+    result.setdefault('escalations', []).append(rec)
+
+
+def ledger_members(entry, cluster, commit=None, coverage=None):
+    """Merge this run's observations into the ledger's per-identity record of WHO saw each member
+    and WHERE -- the evidence a later clearance must cover. Append-only per scanner.
+
+    KDEC-062: with this run's coverage, the scope (and any declared configuration digest) the scanner ran with
+    when it saw the member is recorded, so a later rescan can be shown COMPARABLE (ticket_completion)."""
+    members = dict(entry.get('members') or {})
+    for m in cluster.get('members') or []:
+        ident = m.get('identity')
+        if not ident:
+            continue
+        seen = [dict(x) for x in members.get(ident) or [] if isinstance(x, dict)]
+        rec = {'scanner': m.get('scanner') or '', 'path': m.get('uri') or '',
+               'line': m.get('line'), 'job': m.get('job') or '', 'fp': m.get('fp') or '',
+               'scanner_version': m.get('scanner_version') or '',
+               # Review 2026-11-09 finding 8: the rule, so that with the lineage ledger absent a
+               # clearance can tell whether a newcomer is the same weakness (lineage_clearance_hold).
+               # A ledger written before this has no `rule`; that is said, never read as "differs".
+               'rule': m.get('rule') or ''}
+        # Review round 2 (2026-11-09) F15: the stable identity evidence a later correlation tier
+        # needs (correlation_tier). A ledger written before this has none of them; that is read as
+        # NOT RECORDED, never as "differs" and never as "same".
+        for k, src in (('subject', 'finding_subject'), ('what', 'what'), ('where', 'where'),
+                       ('content', 'content'), ('cwe', 'cwe'), ('symbol', 'symbol_path')):
+            if m.get(src):
+                rec[k] = str(m.get(src))
+        if m.get('what_aliases'):
+            rec['aliases'] = sorted(set(str(a) for a in m.get('what_aliases') or [] if a))
+        if commit:
+            # The LAST commit at which this scanner saw the member: the left end of the range a
+            # clearance names as "last present at" (owner 2026-10-23).
+            rec['last_seen_commit'] = commit
+        row = (coverage or {}).get(rec['scanner']) if isinstance(coverage, dict) else None
+        if isinstance(row, dict):
+            rec['scan_scope'] = str(row.get('scope') or '')
+            if row.get('config_sha256'):
+                rec['config_sha256'] = str(row['config_sha256'])
+        seen = [x for x in seen if x.get('scanner') != rec['scanner']] + [rec]
+        members[ident] = sorted(seen, key=lambda x: x.get('scanner') or '')
+    entry['members'] = members
+    if commit:
+        entry['last_seen_commit'] = commit
+    entry['fps'] = sorted(set(x.get('fp') for v in members.values() for x in v if x.get('fp')))
+    return entry
+
+
+FIX_AVAILABLE = 'FIX_AVAILABLE'
+FIX_AVAILABILITY_NOT_ESTABLISHED = 'FIX_AVAILABILITY_NOT_ESTABLISHED'
+
+
+def write_fix_availability(entry, cluster, today):
+    """KREQ-590: fill the ledger's `fix_availability` from the scanners' own fixed-version data, dated by
+    `fix_availability_established_on` (scripts/remediation_sla.py reads both). A member whose scanner reported a
+    fixed-in version establishes FIX_AVAILABLE, with the basis (scanner and version). No reported version is
+    NOT "no fix" -- the entry says FIX_AVAILABILITY_NOT_ESTABLISHED (a gap that routes to DECISION_REQUIRED),
+    never NO_FIX_AVAILABLE, which only a person establishes. A value a person set (no scanner basis) is never
+    overwritten, and a scanner-established FIX_AVAILABLE is re-dated, never withdrawn by one silent run."""
+    fixed = sorted(set('%s %s' % (m.get('scanner') or 'scanner', str(m.get('fixed_version')).strip())
+                       for m in cluster.get('members') or []
+                       if isinstance(m, dict) and str(m.get('fixed_version') or '').strip()))
+    current = entry.get('fix_availability')
+    by_scanner = str(entry.get('fix_availability_basis') or '').startswith('scanner:')
+    if current and current != FIX_AVAILABILITY_NOT_ESTABLISHED and not by_scanner:
+        return entry
+    if fixed:
+        entry['fix_availability'] = FIX_AVAILABLE
+        if today:   # the run's date (--today); a run that did not establish its date writes none
+            entry['fix_availability_established_on'] = today
+        entry['fix_availability_basis'] = 'scanner: fixed in %s' % '; '.join(fixed)[:300]
+    elif not current:
+        entry['fix_availability'] = FIX_AVAILABILITY_NOT_ESTABLISHED
+        entry['fix_availability_basis'] = 'scanner: no fixed-in version reported (not "no fix exists")'
+    return entry
+
+
+def clearance_gaps(entry, coverage, withheld):
+    """-> (evidence [per scanner observation], gaps [why not]) for an obligation none of whose
+    members was reported this run. A gap means POTENTIALLY_ABSENT; only no gaps is a clearance."""
+    if coverage is None:
+        return [], ['no coverage record was supplied, so whether the scanners covered where the '
+                    'members lived is not established']
+    gaps, evidence = [], []
+    members = entry.get('members') or {}
+    for ident in entry.get('member_identities') or []:
+        seen = members.get(ident)
+        if not seen:
+            gaps.append('the ledger does not record which scanner saw %s or where, so coverage '
+                        'over it cannot be established' % ident)
+            continue
+        for obs in seen:
+            row = coverage.get(obs.get('scanner'))
+            if not row_established(row):
+                gaps.append('%s, which saw %s, did not establish its row this run (%s)'
+                            % (obs.get('scanner'), ident,
+                               'absent from the coverage record' if not row else
+                               'gate %s, execution %s' % (row.get('gate'), row.get('execution'))))
+            elif not scope_covers(row.get('scope'), obs.get('path')):
+                gaps.append('%s scanned %s this run, which does not cover %s'
+                            % (obs.get('scanner'), row.get('scope'), obs.get('path')))
+            elif any((w.get('scanner') == obs.get('scanner') and
+                      (w.get('uri') or '') == (obs.get('path') or '')) for w in withheld or []):
+                gaps.append('%s reported a finding at %s this run that has no durable identity; '
+                            'it may be this one, so its absence is not established'
+                            % (obs.get('scanner'), obs.get('path')))
+            else:
+                evidence.append(dict(obs, identity=ident,
+                                     verified_version=str(row.get('scanner_version') or '')))
+    return evidence, gaps
+
+
+# Review 2026-11-09 finding 8, ticket side (assurance-taxonomy.yaml : ticket_clearance_hold).
+CLEARANCE_HOLD_LINEAGE = 'LINEAGE_RECONCILIATION_UNRESOLVED'
+HOLD_SAME_RULE = 'SAME_SCANNER_AND_RULE'
+HOLD_RULE_NOT_RECORDED = 'LINEAGE_RULE_NOT_RECORDED'
+# Review round 3 (2026-11-10) F20, KDEC-047: the basis of a hold whose pair shares the finding
+# subject AND the locus while their advisory ids are disjoint -- contradictory evidence, a NAMED
+# conflict for a person, never read as unrelated.
+HOLD_ADVISORY_CONFLICT = 'ADVISORY_ID_CONFLICT'
+HOLD_CONFLICT = 'LINEAGE_CONFLICT_UNRESOLVED'
+
+
+def lineage_clearance_hold(entry, newcomers, lineage, created=None):
+    """-> None, or {state, basis, why, newcomers} when a clearance of `entry` must be HELD.
+
+    Review 2026-11-09 finding 8. With the lineage ledger LEDGER_ABSENT nothing can say A moved and
+    nothing can say it did not. Before this, A gone + coverage established closed A's ticket as a
+    VERIFIED CLEARANCE, while the same weakness reported this run as B opened a fresh ticket: if
+    B is A moved, a remediation claim was made on evidence that never showed it, and A's history
+    left the new obligation. The owner's rulings: closure only by rescan or a second person, and
+    dedupe never loses an obligation. So when the ledger is ABSENT and a cluster NEW this run
+    (BINDING_ABSENT) has a member on the same scanner and the same rule as one of A's members, the
+    clearance is held POTENTIALLY_ABSENT under LINEAGE_RECONCILIATION_UNRESOLVED, naming both.
+    Nothing is closed and nothing is merged; B keeps its own ticket. A person records the lineage
+    event, or a second person closes A after confirming it is fixed and not moved.
+
+    A ledger member with no recorded rule (a ticket ledger written before the rule was recorded)
+    cannot be compared, and that is said (basis LINEAGE_RULE_NOT_RECORDED) whenever the same
+    scanner reports a newcomer -- never a silent close and never read as "a different rule".
+    Any ledger state that is not intact or empty (LEDGER_ABSENT, LEDGER_TAMPERED,
+    LEDGER_LINE_UNPARSEABLE) holds: an intact ledger that records no move IS the answer. For a
+    non-intact ledger that is present the newcomer may be BINDING_AMBIGUOUS (the binding refused
+    the carry), and it counts. The basis is the ledger state; for LEDGER_ABSENT it stays as before.
+    """
+    # R03 acceptance (review 2026-11-09, r03d): any ledger that is not intact (absent, tampered,
+    # unparseable) holds; only an intact or empty ledger is an answer.
+    state = (lineage or {}).get('integrity')
+    if not lineage or not state or state in fl.RESOLVABLE or not newcomers:
+        return None
+    created = created or {}
+    # Review round 2 (2026-11-09) F15 + the F8 policy: scanner + rule ALONE is not a relationship.
+    # Each (A member, newcomer member) pair gets a correlation tier from stable identity evidence;
+    # only STRONG and PLAUSIBLE hold, and they hold differently.
+    pairs, gaps = [], []
+    members = entry.get('members') or {}
+    for ident in entry.get('member_identities') or []:
+        for seen in members.get(ident) or []:
+            if not isinstance(seen, dict):
+                continue
+            for c in newcomers:
+                for m in c.get('members') or []:
+                    tier, ev = correlation_tier(seen, m)
+                    if tier in (CORRELATION_STRONG, CORRELATION_CONFLICT, CORRELATION_PLAUSIBLE):
+                        pairs.append((ident, seen, c, m, tier, ev))
+                    elif tier == CORRELATION_INSUFFICIENT and ev:
+                        gaps.append('%s: %s (%s) and newcomer %s (%s): %s'
+                                    % (CORRELATION_INSUFFICIENT, ident[:12], seen.get('scanner'),
+                                       str(m.get('identity') or '')[:12], m.get('scanner'),
+                                       '; '.join(ev)))
+    if not pairs:
+        # UNRELATED or INSUFFICIENT: no continuity is invented. The evidence gap is kept (the
+        # caller records it on the run record) and the normal clearance policy applies.
+        return {'state': None, 'tier': CORRELATION_INSUFFICIENT if gaps else CORRELATION_UNRELATED,
+                'gaps': gaps[:10]} if gaps else None
+    strong = [p for p in pairs if p[4] == CORRELATION_STRONG]
+    # Review round 3 F20 (KDEC-047): a named advisory-id conflict outranks a merely plausible pair.
+    conflict = [p for p in pairs if p[4] == CORRELATION_CONFLICT]
+    tier = CORRELATION_STRONG if strong else CORRELATION_CONFLICT if conflict else CORRELATION_PLAUSIBLE
+    use = strong or conflict or pairs
+    basis = set(HOLD_SAME_RULE if seen.get('rule') else HOLD_RULE_NOT_RECORDED
+                for _i, seen, _c, _m, _t, _e in use)
+    why = []
+    for ident, seen, c, m, t, ev in use[:5]:
+        new_ref = created.get(c['cluster_key'])
+        why.append(
+            '%s (correlation %s): the lineage ledger `%s` is %s. This ticket\'s %s (%s, rule %s, at %s) '
+            'was not reported this run, and %s (%s, rule %s, at %s) is NEW this run (cluster %s%s). '
+            'Evidence: %s. %s'
+            % (RECONCILIATION_PRESERVED if t == CORRELATION_STRONG else CLEARANCE_HOLD_LINEAGE, t,
+               lineage.get('path'), state, ident[:12], seen.get('scanner'),
+               seen.get('rule') or '(not recorded)', seen.get('path') or '?',
+               str(m.get('identity') or '')[:12], m.get('scanner'), m.get('rule') or '?',
+               m.get('uri') or '?', c['cluster_key'][:12],
+               (', ticket %s' % new_ref) if new_ref else ', not yet ticketed', '; '.join(ev),
+               'Stable identity evidence relates them: the relationship is PRESERVED -- this ticket '
+               'stays open while the related obligation is open, and any approval it carried must be '
+               'reaffirmed on the new identity. NOT closed, NOT merged.' if t == CORRELATION_STRONG else
+               '%s: the same finding subject and locus carry DISJOINT advisory ids (another advisory '
+               'namespace, or a replaced advisory). Contradictory evidence is a named conflict, never '
+               'proof of unrelatedness: NOT closed, NOT merged, not an active finding. A person '
+               'resolves it (--resolve-reconciliation, a triager and a second person who approves), '
+               'or records the lineage event.' % HOLD_ADVISORY_CONFLICT if t == CORRELATION_CONFLICT else
+               'Plausibly the same finding moved, and that cannot be established without the ledger: '
+               'NOT closed, NOT merged. A person resolves it (--resolve-reconciliation, a triager and '
+               'a second person who approves), or records the lineage event.'))
+    return {'state': RECONCILIATION_PRESERVED if tier == CORRELATION_STRONG else CLEARANCE_HOLD_LINEAGE,
+            'tier': tier,
+            'reaffirmation_required': tier == CORRELATION_STRONG,
+            'basis': HOLD_ADVISORY_CONFLICT if tier == CORRELATION_CONFLICT else
+                     state if state != fl.LEDGER_ABSENT else
+                     (HOLD_RULE_NOT_RECORDED if HOLD_RULE_NOT_RECORDED in basis else HOLD_SAME_RULE),
+            'why': why, 'gaps': gaps[:10],
+            'related': sorted(set(c['cluster_key'] for _i, _s, c, _m, _t, _e in use)),
+            'newcomers': sorted(set('%s%s' % (c['cluster_key'],
+                                              (' (ticket %s)' % created[c['cluster_key']])
+                                              if created.get(c['cluster_key']) else '')
+                                    for _i, _s, c, _m, _t, _e in use))}
+
+
+# Review round 2 (2026-11-09) F15 + the F8 policy (assurance-taxonomy.yaml : reconciliation_correlation).
+CORRELATION_STRONG = 'CORRELATION_STRONG'
+CORRELATION_PLAUSIBLE = 'CORRELATION_PLAUSIBLE'
+CORRELATION_UNRELATED = 'CORRELATION_UNRELATED'
+CORRELATION_INSUFFICIENT = 'CORRELATION_INSUFFICIENT'
+CORRELATION_CONFLICT = 'CORRELATION_CONFLICT'      # review round 3 F20, KDEC-047
+RECONCILIATION_PRESERVED = 'LINEAGE_RELATIONSHIP_PRESERVED'
+
+
+def _same(a, b):
+    """True / False when both sides recorded the value; None when either did not."""
+    a, b = str(a or '').strip(), str(b or '').strip()
+    if not a or not b:
+        return None
+    return a == b
+
+
+def correlation_tier(seen, m):
+    """-> (tier, evidence) for one ticket-ledger member record `seen` (ledger_members) against one
+    newcomer finding `m` (a findings.json observation). Only fields both sides actually carry.
+
+        UNRELATED     contradicting identity evidence: another finding subject, disjoint advisory
+                      ids WITHOUT a shared subject and locus, or the same scanner reporting a
+                      different rule with no shared locus
+        CONFLICT      (review round 3 F20, KDEC-047) the same subject AND the same locus, with both
+                      advisory id sets present and disjoint: contradictory evidence, held
+                      LINEAGE_RECONCILIATION_UNRESOLVED on ADVISORY_ID_CONFLICT for a person --
+                      disjoint ids are not proof of unrelatedness (another namespace, a replaced
+                      advisory)
+        STRONG        the same asset (finding subject) AND the same component/locus (`where`:
+                      purl, path + symbol) or a shared advisory id
+        PLAUSIBLE     the same scanner and rule plus at least one weaker shared attribute (the
+                      matched construct, the file, the file name, the symbol, the line), or the
+                      same scanner with the rule NOT recorded in the ticket ledger
+        INSUFFICIENT  anything else: no relationship is invented; `evidence` names the gap when the
+                      pair shares a scanner or a rule (otherwise it is empty -- nothing to say)
+    """
+    subj = _same(seen.get('subject'), m.get('finding_subject'))
+    where = _same(seen.get('where'), m.get('where'))
+    sa = set(seen.get('aliases') or [])
+    ma = set(str(x) for x in m.get('what_aliases') or [] if x)
+    adv = (bool(sa & ma) if (sa and ma) else None)
+    scanner = _same(seen.get('scanner'), m.get('scanner'))
+    rule = _same(seen.get('rule'), m.get('rule') or m.get('rule_id'))
+    if subj is False:
+        return CORRELATION_UNRELATED, ['finding subject %s vs %s' % (seen.get('subject'),
+                                                                     m.get('finding_subject'))]
+    if adv is False:
+        # Review round 3 F20: decided AFTER subject and locus. Shared subject and locus with
+        # disjoint ids is a named conflict; only without them do disjoint ids read as unrelated.
+        if subj and where:
+            return CORRELATION_CONFLICT, ['%s: same finding subject %s and same locus (where), '
+                                          'disjoint advisory ids %s vs %s'
+                                          % (HOLD_ADVISORY_CONFLICT, seen.get('subject'),
+                                             sorted(sa), sorted(ma))]
+        return CORRELATION_UNRELATED, ['disjoint advisory ids %s vs %s' % (sorted(sa), sorted(ma))]
+    if subj and (where or adv):
+        return CORRELATION_STRONG, ['same finding subject %s' % seen.get('subject')] + (
+            ['same locus (where)'] if where else []) + (
+            ['shared advisory id %s' % ', '.join(sorted(sa & ma))] if adv else [])
+    if scanner and rule is False:
+        return CORRELATION_UNRELATED, ['same scanner, rule %s vs %s, no shared locus'
+                                       % (seen.get('rule'), m.get('rule') or m.get('rule_id'))]
+    path_a = str(seen.get('path') or '')
+    path_b = str(m.get('uri') or m.get('canonical_path') or '')
+    weak = []
+    if _same(seen.get('content'), m.get('content')):
+        weak.append('same matched construct')
+    if _same(path_a, path_b):
+        weak.append('same file')
+    elif _same(path_a.replace('\\', '/').rsplit('/', 1)[-1], path_b.replace('\\', '/').rsplit('/', 1)[-1]):
+        weak.append('same file name')
+    if _same(seen.get('symbol'), m.get('symbol_path')):
+        weak.append('same symbol')
+    if seen.get('line') is not None and seen.get('line') == m.get('line'):
+        weak.append('same line')
+    if scanner and rule and weak:
+        return CORRELATION_PLAUSIBLE, ['same scanner and rule'] + weak
+    if scanner and rule is None and not seen.get('rule'):
+        return CORRELATION_PLAUSIBLE, ['same scanner; %s: the ticket ledger did not record the rule'
+                                       % HOLD_RULE_NOT_RECORDED] + weak
+    if scanner or rule:
+        return CORRELATION_INSUFFICIENT, [
+            'shares only %s; no locus, advisory or weaker shared attribute, so no relationship is '
+            'assumed' % ('the scanner and rule' if scanner and rule else
+                         'the scanner' if scanner else 'the rule')]
+    return CORRELATION_INSUFFICIENT, []
+
+
+# Review round 2 (2026-11-09) F17, the alias policy (assurance-taxonomy.yaml : alias_continuity).
+# The finding a held reconciliation names IS reported this run: its state is ACTIVE, kept apart
+# from the ticket's reconciliation state.
+FINDING_ACTIVE = 'ACTIVE'
+
+
+def alias_decisions(entry, members):
+    """-> [finding_lineage.alias_continuity decision] for each (ticket-ledger member A, incoming
+    member B) pair, same scanner, whose records differ ONLY in the advisory alias set. B already
+    recorded on the entry is not re-decided. THE SAME FUNCTION THE REPORT CALLS
+    (scan_report.lineage_disposition via finding_lineage.alias_predecessors), so a verified
+    decision carries the same decision_id on both sides."""
+    recorded = (entry or {}).get('members') or {}
+    out, seen_ids = [], set()
+    for m in members or []:
+        mi = str(m.get('identity') or '')
+        if not mi or mi in recorded:
+            continue
+        for ident in sorted(recorded):
+            if ident == mi:
+                continue
+            for seen in recorded.get(ident) or []:
+                if not isinstance(seen, dict) or seen.get('scanner') != m.get('scanner'):
+                    continue
+                d = fl.alias_continuity({'identity': ident, 'subject': seen.get('subject'),
+                                         'aliases': seen.get('aliases'), 'where': seen.get('where'),
+                                         'content': seen.get('content')}, m)
+                key = (d['from_identity'], d['to_identity'], d['state'])
+                if d['state'] in fl.ALIAS_DECIDED_STATES and key not in seen_ids:
+                    seen_ids.add(key)
+                    out.append(dict(d, scanner=m.get('scanner') or ''))
+    return out
+
+
+def alias_hold(key, ref, decisions, finding_state, related=()):
+    """-> the held reconciliation an UNRESOLVED alias decision imposes (F8 policy: a plausible
+    relationship without established continuity holds automatic clearance, keeps both
+    references and needs a person), or None when every decision is verified."""
+    bad = [d for d in decisions if d['state'] in fl.ALIAS_UNRESOLVED_STATES]
+    if not bad:
+        return None
+    return {'cluster_key': key, 'ref': ref,
+            'members': sorted(set(d['from_identity'] for d in bad)),
+            'why': ['%s (%s): ticket-ledger member %s (%s) and %s reported this run differ only in '
+                    'their advisory aliases. %s NOT continued silently and NOT closed: a person '
+                    'resolves it (--resolve-reconciliation, a triager and a second person who '
+                    'approves), or records the lineage event.'
+                    % (CLEARANCE_HOLD_LINEAGE, d['state'], d['from_identity'][:12],
+                       ', '.join(d['old_aliases']), d['to_identity'][:12], d['why'])
+                    for d in bad[:5]],
+            'state': CLEARANCE_HOLD_LINEAGE, 'basis': bad[0]['state'],
+            'newcomers': sorted(set(d['to_identity'] for d in bad)),
+            'tier': CORRELATION_PLAUSIBLE, 'finding_state': finding_state,
+            'reaffirmation_required': False, 'related': sorted(set(related)),
+            'alias_decisions': [dict((k, d[k]) for k in ('state', 'from_identity', 'to_identity',
+                                                         'old_aliases', 'new_aliases'))
+                                for d in bad]}
+
+
+def alias_clearance_hold(entry, newcomers, created=None):
+    """-> the hold for an entry NOT reported this run whose member reappears in a NEW cluster with
+    only its advisory aliases changed (a replacement or a contradiction moves the cluster key).
+    Without it, coverage over the locus would close A's ticket as a VERIFIED CLEARANCE while the
+    same finding opened a second ticket under a changed alias set."""
+    created = created or {}
+    decisions, related = [], []
+    for c in newcomers or []:
+        ds = alias_decisions(entry, c.get('members') or [])
+        if any(d['state'] in fl.ALIAS_UNRESOLVED_STATES for d in ds):
+            related.append(c['cluster_key'])
+        decisions.extend(ds)
+    held = alias_hold('', '', decisions, FINDING_POTENTIALLY_ABSENT, related)
+    if held:
+        held['newcomers'] = ['%s%s' % (k, (' (ticket %s)' % created[k]) if created.get(k) else '')
+                             for k in related]
+    return held
+
+
+# Review round 2 (2026-11-09) F14 (assurance-taxonomy.yaml : ticket_clearance_hold).
+CLEARANCE_PROVISIONAL = 'CLEARANCE_PROVISIONAL'
+POPULATION_INCOMPLETE = 'RECONCILIATION_POPULATION_INCOMPLETE'
+
+# Review round 3 (2026-11-10) F19 (assurance-taxonomy.yaml : reconciliation_population): the
+# DENOMINATOR is the kit's declared, versioned scanner inventory (scanner-registry.yaml, the list
+# every job of reusable-security.yml is checked against), never whatever happened to run.
+SCANNER_INVENTORY_FILE = os.path.join(ROOT, 'scanner-registry.yaml')
+INVENTORY_ESTABLISHED = 'SCANNER_INVENTORY_ESTABLISHED'
+INVENTORY_NOT_ESTABLISHED = 'SCANNER_INVENTORY_NOT_ESTABLISHED'
+APPLICABILITY_NOT_ESTABLISHED = 'APPLICABILITY_NOT_ESTABLISHED'
+# The applicability evidence the report job's state builder writes (reusable-security.yml add()):
+# discovery:<the discovery state> or input:<the input that was not set>.
+APPLICABILITY_DISCOVERY_COMPLETE = 'discovery:COMPLETE'
+
+
+def load_scanner_inventory(path=None):
+    """-> the declared scanner inventory: {state, source, sha256, jobs {job: applies}, note}.
+
+    Stdlib only (the reconciler's runner has no YAML library): the registry's `jobs:` rows are
+    one flow mapping per line, and only `class` and `applies` are read. Anything that does not
+    yield at least one scanner job is SCANNER_INVENTORY_NOT_ESTABLISHED -- never an empty
+    denominator that every run satisfies."""
+    import hashlib
+    path = path or SCANNER_INVENTORY_FILE
+    out = {'state': INVENTORY_NOT_ESTABLISHED, 'source': os.path.basename(path), 'sha256': '',
+           'jobs': {}, 'note': ''}
+    try:
+        raw = io.open(path, 'rb').read()
+    except (IOError, OSError) as exc:
+        out['note'] = 'the declared scanner inventory %s could not be read (%s)' % (path, exc)
+        return out
+    out['sha256'] = hashlib.sha256(raw).hexdigest()
+    in_jobs = False
+    unread, caps = [], {}
+    for line in raw.decode('utf-8', 'replace').splitlines():
+        if re.match(r'^[A-Za-z_]', line):
+            in_jobs = line.split(':', 1)[0].strip() == 'jobs'
+            continue
+        m = in_jobs and re.match(r'^  ([A-Za-z0-9_-]+):\s*\{(.*)\}\s*(#.*)?$', line)
+        if not m:
+            # KE-06 (1): a row this reader cannot read (a block mapping, a flow mapping split over
+            # lines) is NOT a row that does not exist. Fail closed on the shape, never drop it.
+            k = in_jobs and re.match(r'^  ([A-Za-z0-9_"\'-]+)\s*:', line)
+            if k:
+                unread.append(k.group(1))
+            continue
+        cls = re.search(r'\bclass:\s*([\w-]+)', m.group(2))
+        if cls and cls.group(1) == 'scanner':
+            app = re.search(r'\bapplies:\s*([^,}]+)', m.group(2))
+            out['jobs'][m.group(1)] = (app.group(1).strip() if app else '')
+            cap = re.search(r'\bcapability:\s*([^,}\s]+)', m.group(2))
+            caps[m.group(1)] = cap.group(1) if cap else ''
+    if unread:
+        out['jobs'] = {}
+        out['note'] = ('the declared scanner inventory %s has job row(s) %s in a shape this reader cannot '
+                       'read (one flow mapping per line): a row not read is not a row absent'
+                       % (path, ', '.join(unread)))
+        return out
+    if not out['jobs']:
+        out['note'] = 'the declared scanner inventory %s names no scanner job' % path
+        return out
+    # KE-06 (2): the denominator is bound to the protected floor beside it. Every floor capability
+    # must be a declared scanner job's capability, so a registry row deleted is a population that
+    # shrank, named, never a smaller denominator every run satisfies.
+    floor_path = os.path.join(os.path.dirname(os.path.abspath(path)), 'capability-floor.json')
+    try:
+        fdoc = json.loads(io.open(floor_path, encoding='utf-8').read())
+        floor_caps = [str(e.get('capability')) for e in fdoc.get('floor') or []]
+        out['gap_tombstones'] = sorted(str(t.get('capability')) for t in fdoc.get('tombstones') or []
+                                       if not t.get('replacement') and t.get('capability') not in floor_caps)
+    except (IOError, OSError, ValueError, AttributeError, TypeError) as exc:
+        out['jobs'] = {}
+        out['note'] = ('the protected floor %s beside the inventory could not be read (%s), so the '
+                       'denominator cannot be bound to it' % (floor_path, exc))
+        return out
+    lost = sorted(c for c in floor_caps if c not in set(caps.values()))
+    if not floor_caps or lost:
+        out['jobs'] = {}
+        out['note'] = ('the declared scanner inventory %s lacks the floor capability(ies) %s: the '
+                       'population shrank below the protected floor' % (path, ', '.join(lost) or '(empty floor)'))
+        return out
+    out['state'] = INVENTORY_ESTABLISHED
+    out['note'] = '%d declared scanner job(s), sha256 %s, bound to %d floor capabilities' % (
+        len(out['jobs']), out['sha256'][:12], len(floor_caps))
+    return out
+
+
+def inventory_summary(inventory):
+    """-> what the run record states about the denominator it used (no job list: the hash names it)."""
+    inv = inventory if isinstance(inventory, dict) else {}
+    return {'state': inv.get('state') or INVENTORY_NOT_ESTABLISHED, 'source': inv.get('source') or '',
+            'sha256': inv.get('sha256') or '', 'scanner_jobs': len(inv.get('jobs') or {}),
+            'note': inv.get('note') or 'no declared scanner inventory was available to this run'}
+
+
+def not_applicable_validated(row, inventory):
+    """-> True only when the kit's OWN applicability evidence backs a NOT_APPLICABLE row: the job is
+    declared conditional in the inventory (never `applies: always`), and the row carries the basis
+    the state builder writes -- a COMPLETE discovery for a discover.* condition, the named unset
+    input for an input.* condition. Anything else is APPLICABILITY_NOT_ESTABLISHED."""
+    jobs = (inventory or {}).get('jobs') or {}
+    applies = jobs.get(str(row.get('job') or ''))
+    basis = str(row.get('applicability_basis') or '')
+    if not applies or applies == 'always':
+        return False
+    if applies.startswith('discover.'):
+        return basis == APPLICABILITY_DISCOVERY_COMPLETE
+    if applies.startswith('input.'):
+        return basis == 'input:' + applies[len('input.'):]
+    return False
+
+
+def population_gaps(entry, ledger, lineage, coverage, withheld, sweep_complete, inventory=None):
+    """-> [] when this run's reconciliation population is VERIFIED COMPLETE for the scope that
+    matters to `entry`'s clearance, else why not.
+
+    Review round 2 F14. A and X merge into B; a run that saw only part of the population (a
+    scheduled run over one directory, a scanner that failed or never reported, a ticket sweep
+    that hit its page cap) cleared A because A's own file was covered -- and the run that later saw
+    B could no longer reconstruct A's obligation. "Normal use is whole-repo" is not a control.
+
+    The scope that matters: when a lineage ledger is consulted and it either records a successor
+    for one of A's identities (A moved, split or merged into something) or cannot be trusted
+    (absent, tampered, unparseable: nothing can say A did not move), the successor may be ANYWHERE.
+    Then an automatic clearance needs: the ticket sweep complete; no finding withheld for want of
+    an identity; and every scanner this repository is known to run (the coverage rows and every
+    scanner the ticket ledger has recorded) ESTABLISHED over the whole repository.
+
+    Review round 3 F19: the sweep must be affirmatively complete (`is True`; unknown is a gap);
+    every scanner job the declared, versioned inventory names (`inventory`, load_scanner_inventory)
+    must have a coverage row, and a row whose job the inventory does not name is a gap -- no
+    inventory is SCANNER_INVENTORY_NOT_ESTABLISHED, a gap, never a silently complete population;
+    and NOT_APPLICABLE counts only where not_applicable_validated backs it. Without a
+    lineage ledger, or with an intact one that records no successor for A, A's own coverage is the
+    scope and clearance_gaps already decides it.
+    """
+    if lineage is None:
+        return []
+    state = lineage.get('integrity')
+    ids = set(entry.get('member_identities') or [])
+    succ = fl._successor_map(lineage.get('events') or [])
+    moved = sorted(i for i in ids if succ.get(i))
+    if state in fl.RESOLVABLE and not moved:
+        return []
+    scope = ('the lineage ledger records a successor of %s (%s)'
+             % (', '.join(i[:12] for i in moved), ', '.join(sorted(set(t[:12] for i in moved for t in succ[i]))))
+             if moved else 'the lineage ledger is %s, so whether this finding moved is not known' % state)
+    gaps = []
+    # Review round 3 F19 (a): AFFIRMATIVE completeness only. `is False` let None (unknown) and any
+    # other non-True value through as complete.
+    if sweep_complete is not True:
+        gaps.append('the ticket sweep was not affirmatively complete (%r): PARTIAL (paged or '
+                    'capped) or unknown, so the ticket population is a floor' % (sweep_complete,))
+    if withheld:
+        gaps.append('%d finding(s) this run had no durable identity; any of them may be the successor'
+                    % len(withheld))
+    # Review round 3 F19 (b): the denominator is the declared, versioned inventory.
+    inv = inventory if isinstance(inventory, dict) else {}
+    declared = dict(inv.get('jobs') or {}) if inv.get('state') == INVENTORY_ESTABLISHED else {}
+    if not declared:
+        gaps.append('%s: %s, so the expected scanner population (the denominator) is not '
+                    'established' % (INVENTORY_NOT_ESTABLISHED, inventory_summary(inv)['note']))
+    # KE-06 (3): a capability tombstoned out of the floor under a GAP decision (no replacement) is a
+    # population that used to be observed and no longer is: no clearance on its absence.
+    for cap in inv.get('gap_tombstones') or []:
+        gaps.append('floor capability %s was removed under a gap decision (no replacement): the part of '
+                    'the population it observed is not observed now' % cap)
+    if coverage is None:
+        gaps.append('no coverage record was supplied')
+        return ['%s: %s, and this run did not see the whole population: %s'
+                % (POPULATION_INCOMPLETE, scope, '; '.join(gaps))]
+    if declared:
+        jobs_seen = set(str((r or {}).get('job') or '') for r in coverage.values())
+        for job in sorted(declared):
+            if job not in jobs_seen:
+                gaps.append('declared scanner job %s (%s sha256 %s) has no coverage row this run '
+                            '(interrupted, not run or not wired)' % (job, inv.get('source'),
+                                                                      (inv.get('sha256') or '')[:12]))
+    expected = set(coverage)
+    for e in (ledger or {}).values():
+        if isinstance(e, dict):
+            for v in (e.get('members') or {}).values():
+                expected |= set(str(x.get('scanner')) for x in v or [] if isinstance(x, dict)
+                                and x.get('scanner'))
+    for s in sorted(expected):
+        row = coverage.get(s)
+        if not row:
+            gaps.append('%s, which this repository runs, has no coverage row this run (interrupted '
+                        'or not run)' % s)
+            continue
+        if declared and str(row.get('job') or '') not in declared:
+            gaps.append('%s (job %r) is not in the declared scanner inventory, so its population '
+                        'cannot be bound to the denominator' % (s, row.get('job') or ''))
+        elif str(row.get('applicability') or '').upper() == 'NOT_APPLICABLE':
+            if not not_applicable_validated(row, inv):
+                gaps.append('%s declared NOT_APPLICABLE without applicability evidence the kit '
+                            'validates (basis %r, declared applies %r): %s'
+                            % (s, row.get('applicability_basis') or '', declared.get(
+                                str(row.get('job') or ''), ''), APPLICABILITY_NOT_ESTABLISHED))
+            continue
+        elif not row_established(row):
+            gaps.append('%s did not establish its row (gate %s, execution %s)'
+                        % (s, row.get('gate'), row.get('execution')))
+        elif not scope_covers(row.get('scope'), ''):
+            gaps.append('%s scanned %s, not the whole repository' % (s, row.get('scope')))
+    if not gaps:
+        return []
+    return ['%s: %s, and this run did not see the whole population: %s'
+            % (POPULATION_INCOMPLETE, scope, '; '.join(gaps[:8]))]
+
+
+# The FINDING's state beside a held ticket (never an active finding: it was not reported this run).
+FINDING_VERIFIED_ABSENT = 'VERIFIED_ABSENT'
+FINDING_POTENTIALLY_ABSENT = 'POTENTIALLY_ABSENT'
+FINDING_VERIFIED_ABSENT_IN_SCOPE = 'VERIFIED_ABSENT_IN_OWN_SCOPE'
+RECONCILIATION_SAME = 'same'
+RECONCILIATION_SEPARATE = 'separate'
+
+
+def prior_reconciliation_hold(entry, ledger, observed, sweep_map, closed_now=()):
+    """-> the hold a PERSISTED reconciliation still imposes, or None.
+
+    The newcomer is NEW only in the run that first reports it; on the next run it is bound to its
+    own ticket and is no longer a newcomer. Without this, a PLAUSIBLE hold lasted one run and the
+    second run cleared A -- two separate runs discharging A (review round 2, F14/F15). So:
+      PLAUSIBLE (LINEAGE_RECONCILIATION_UNRESOLVED) holds until a person resolves it;
+      STRONG (LINEAGE_RELATIONSHIP_PRESERVED), or a person's `same`, holds while any related
+      obligation is still open (reported this run, or its ticket open in the sweep);
+      a person's `separate` releases it: A's normal clearance policy applies.
+    """
+    rec = entry.get('reconciliation') if isinstance(entry, dict) else None
+    if not isinstance(rec, dict) or rec.get('state') not in (CLEARANCE_HOLD_LINEAGE,
+                                                             RECONCILIATION_PRESERVED):
+        return None
+    res = rec.get('resolution') or {}
+    decision = res.get('decision')
+    if decision == RECONCILIATION_SEPARATE:
+        return None
+    base = {'basis': rec.get('basis') or '', 'tier': rec.get('tier') or '',
+            'newcomers': list(rec.get('newcomers') or []), 'related': list(rec.get('related') or []),
+            'reaffirmation_required': bool(rec.get('reaffirmation_required'))}
+    if rec.get('state') == CLEARANCE_HOLD_LINEAGE and decision != RECONCILIATION_SAME:
+        return dict(base, state=CLEARANCE_HOLD_LINEAGE, why=[
+            '%s (correlation %s): held since %s (run %s) against %s; it stays held until a person '
+            'resolves it (--resolve-reconciliation: a triager decides same or separate and a second '
+            'person approves) or the lineage event is recorded. NOT closed.'
+            % (CLEARANCE_HOLD_LINEAGE, rec.get('tier'), rec.get('since'), rec.get('run') or '?',
+               ', '.join(rec.get('newcomers') or []) or '?')])
+    open_ = []
+    for k in rec.get('related') or []:
+        e = (ledger or {}).get(k) or {}
+        hits = [h for h in (sweep_map or {}).get(k) or [] if str(h.get('ref')) == str(e.get('ref'))]
+        if k in closed_now:
+            continue
+        if k in observed or (hits and hits[0].get('state') != 'closed') or (e.get('ref') and not hits):
+            open_.append('%s%s' % (k[:12], (' (ticket %s)' % e['ref']) if e.get('ref') else ''))
+    if not open_:
+        return None
+    return dict(base, state=RECONCILIATION_PRESERVED, why=[
+        '%s (correlation %s%s): the related obligation %s is still open, so this ticket stays open '
+        'beside it; it clears when that does. Any approval it carried must be reaffirmed on the new '
+        'identity. NOT closed.' % (RECONCILIATION_PRESERVED, rec.get('tier'),
+                                   (', resolved same by %s, approved by %s' % (res.get('triaged_by'),
+                                                                               res.get('approved_by')))
+                                   if decision == RECONCILIATION_SAME else '', ', '.join(open_))])
+
+
+def persist_reconciliation(entry, held, backend, ref, today, run_url):
+    """Record a FRESH hold on the ticket ledger entry, and say it on the ticket once (a comment
+    only when the state, tier or related set changed: a re-run writes nothing new)."""
+    entry = dict(entry)
+    prior = entry.get('reconciliation') if isinstance(entry.get('reconciliation'), dict) else {}
+    rec = {'state': held['state'], 'tier': held['tier'], 'basis': held['basis'],
+           'related': sorted(held.get('related') or []), 'newcomers': list(held['newcomers']),
+           'reaffirmation_required': held['reaffirmation_required'],
+           'since': prior.get('since') or today, 'run': run_url or '',
+           'resolution': None}
+    if held.get('alias_decisions'):
+        rec['alias_decisions'] = list(held['alias_decisions'])   # F17: which alias change, why
+    same = all(prior.get(k) == rec[k] for k in ('state', 'tier', 'related'))
+    if same and prior.get('resolution'):
+        rec['resolution'] = prior['resolution']
+    rec['commented'] = bool(prior.get('commented')) if same else False
+    if not rec['commented'] and backend is not None:
+        ok, _d = backend.comment(ref, 'RECONCILIATION HELD (secure-cicd-kit): %s, correlation %s, '
+                                      'finding state %s. %s'
+                                 % (rec['state'], rec['tier'], held.get('finding_state'),
+                                    (held.get('why') or [''])[0]))
+        rec['commented'] = bool(ok)
+    entry['reconciliation'] = rec
+    return entry
+
+
+def resolve_reconciliation(ledger, key, decision, triaged_by, approval, today):
+    """THE HUMAN RESOLUTION of a held reconciliation. -> (error or '', the reconciliation record).
+
+    The kit's own triage rule (ticket_model 'ticket.triage_merge': "a person's decision that a
+    possible duplicate is the same finding (merge) or not (separate), approved by a concurrer who is
+    not the triager") and its separation of duties (separation_of_duties: nobody approves their own
+    work). `same`: the relationship is preserved -- A stays open while the related obligation is
+    open. `separate`: the hold is released and A's normal clearance policy applies (a rescan that
+    proves it absent closes it). Recorded on the ledger entry with who triaged, who approved, why
+    and when. A refusal changes nothing.
+    """
+    import separation_of_duties as sod
+    found = None
+    for k in sorted(ledger or {}):
+        e = ledger[k]
+        if isinstance(e, dict) and (k == key or str(e.get('ref')) == str(key)):
+            found = (k, e)
+            break
+    if found is None:
+        return 'REFUSED: no ticket ledger entry for %r' % key, None
+    k, e = found
+    rec = e.get('reconciliation')
+    if not isinstance(rec, dict) or rec.get('state') not in (CLEARANCE_HOLD_LINEAGE,
+                                                             RECONCILIATION_PRESERVED):
+        return 'REFUSED: %s has no held reconciliation' % key, None
+    if decision not in (RECONCILIATION_SAME, RECONCILIATION_SEPARATE):
+        return 'REFUSED: the decision must be %s or %s' % (RECONCILIATION_SAME,
+                                                          RECONCILIATION_SEPARATE), None
+    if not (triaged_by or '').strip():
+        return 'REFUSED: --triaged-by names who decided; an anonymous resolution is not auditable', None
+    err = tm.authorise('ticket.triage_merge', approval)
+    if err:
+        return err, None
+    viol = sod.violations({'triager': triaged_by}, approval.actor)
+    if viol:
+        return 'REFUSED (%s): %s -- nobody approves their own work' % (sod.SOD_SELF_APPROVAL,
+                                                                      sod.describe(viol)), None
+    rec = dict(rec, resolution={'decision': decision, 'triaged_by': triaged_by.strip(),
+                                'approved_by': approval.actor, 'reason': approval.reason,
+                                'on': today or ''})
+    ledger[k] = dict(e, reconciliation=rec)
+    return '', rec
+
+
+def lineage_conflict_hold(key, entry, conflicts, lineage):
+    """-> None, or {state, basis, why, newcomers} when a clearance of `entry` (ticket obligation
+    `key`) must be HELD because its identity is an ANCESTOR in a lineage conflict this run.
+
+    R03 acceptance (r03e): "Splits, merges, cycles ... must preserve unresolved obligations". With
+    an INTACT ledger recording A -> B and C (split), A and X -> B (merge) or A -> B -> A (cycle),
+    the product that remains is held BINDING_AMBIGUOUS for a person, yet A (gone this run) used to
+    close as a verified clearance: the obligation the lineage carries was dropped. So a cluster held
+    on a lineage conflict whose ancestry reaches one of A's identities (or whose binding conflict
+    names A's obligation) holds A's clearance, same state as the other lineage holds, basis
+    LINEAGE_CONFLICT_UNRESOLVED. Nothing closes, nothing merges; a person decides.
+    """
+    ids = set(entry.get('member_identities') or [])
+    events = (lineage or {}).get('events') or []
+    hits = []
+    for c in conflicts or []:
+        reach = set()
+        for i in c.get('member_identities') or []:
+            chain, _cycle = fl.ancestors(events, i)
+            reach |= set(chain)
+        via = sorted(ids & reach)
+        if via or key in (c.get('binding_conflict') or []):
+            hits.append((c, via))
+    if not hits:
+        return None
+    why = ['%s: the identity %s of this ticket is an ancestor in a lineage conflict this run: cluster %s '
+           'is held for a person (%s). The obligation the lineage carries is unresolved, so the '
+           'ticket is NOT closed as a verified clearance and NOT merged. A person records the '
+           'decision, or a second person closes this ticket after confirming the finding is fixed.'
+           % (CLEARANCE_HOLD_LINEAGE, (via[0][:12] if via else '(by binding)'),
+              c['cluster_key'][:12], str(c.get('lineage_conflict') or '')[:200])
+           for c, via in hits[:5]]
+    return {'state': CLEARANCE_HOLD_LINEAGE, 'basis': HOLD_CONFLICT, 'why': why,
+            'newcomers': sorted(set(c['cluster_key'] for c, _v in hits))}
+
+
+def clearance_record(entry, evidence, run_url, commit, today, now):
+    """The owner's terms for an automatic close (2026-10-23: "proven and which commit fixed it and
+    the date and everything"). -> the ledger's clearance record, which the comment renders.
+
+        fixed_by             the FIRST commit at which every member's scanner proved it absent
+        last_present_commit  the LAST commit at which it was seen -- or UNKNOWN, said, never omitted
+        at                   the date and time, UTC
+        run                  the run link
+        scanners             each scanner that verified absence, with its version
+        members              each finding identity and its file"""
+    last = entry.get('last_seen_commit')
+    if not last:
+        seen = set(x.get('last_seen_commit') for v in (entry.get('members') or {}).values()
+                   for x in v if isinstance(x, dict) and x.get('last_seen_commit'))
+        last = seen.pop() if len(seen) == 1 else None
+    scanners = sorted(set('%s %s' % (e.get('scanner'), e.get('verified_version') or
+                                     '(version not recorded by the report)') for e in evidence))
+    return {'on': today, 'at': now, 'run': run_url or '', 'commit': commit or '',
+            'fixed_by': commit or '', 'last_present_commit': last or 'UNKNOWN',
+            'scanners': scanners,
+            'members': sorted(set('%s in %s:%s' % (e.get('identity'), e.get('path'),
+                                                   e.get('line') or '?') for e in evidence)),
+            'evidence': ['%s:%s' % (e['scanner'], e['identity']) for e in evidence]}
+
+
+def clearance_comment_full(rec):
+    return ('Closed by secure-cicd-kit at %s: VERIFIED ABSENT and closed: fixed by %s (the first '
+            'commit at which every member scanner proved it absent); last present at %s; so the '
+            'fix lies in (%s, %s]. Run: %s. Verified by: %s -- each re-scanned, its row established '
+            'and its scope covering the file. Finding: %s. This is the recorded consequence of the '
+            'scanners no longer reproducing it, not a disposition; if it is detected again this '
+            'ticket reopens as RECURRED.'
+            % (rec['at'], rec['fixed_by'] or '(no commit supplied)',
+               rec['last_present_commit'] + (' (no earlier run recorded it)'
+                                             if rec['last_present_commit'] == 'UNKNOWN' else ''),
+               rec['last_present_commit'], rec['fixed_by'] or '?',
+               rec['run'] or '(no run URL supplied)', '; '.join(rec['scanners']),
+               '; '.join(rec['members'])))
+
+
+def clearance_comment(evidence, run_url, commit, today):
+    return ('Closed by secure-cicd-kit (run date %s): every member of this finding was VERIFIED '
+            'ABSENT -- re-scanned, the scanner\'s row established, its scope covering the file, '
+            'and not reproduced -- in run %s at commit %s. Evidence: %s. This is the recorded '
+            'consequence of the scanner no longer reproducing it, not a disposition; if it is '
+            'detected again this ticket reopens as RECURRED.'
+            % (today, run_url or '(no run URL supplied)', commit or '(no commit supplied)',
+               '; '.join('%s saw %s at %s:%s' % (e.get('scanner'), e.get('identity'),
+                                                  e.get('path'), e.get('line') or '?')
+                         for e in evidence)))
+
+
+def recurred_comment(clearance, today, run_url, commit):
+    return ('Reopened by secure-cicd-kit (run date %s): RECURRED. This finding was verified '
+            'absent on %s (run %s, commit %s) and is detected again in run %s at commit %s: a fix '
+            'did not hold -- a revert, a merge, a dependency bump, or a fix that never worked. The '
+            'earlier clearance is CONTEXT, never an inherited suppression.'
+            % (today, (clearance or {}).get('on'), (clearance or {}).get('run'),
+               (clearance or {}).get('commit'), run_url or '(no run URL supplied)',
+               commit or '(no commit supplied)'))
+
+
+def merge_plan(clusters, ledger, sweep_map):
+    """D4: which clusters merge tickets already raised separately for one finding.
+
+    A cluster whose members are bound to SEVERAL existing obligations, none of which another
+    cluster this run also claims, is one finding that was ticketed more than once -- typically a
+    second scanner whose advisory data now shares the first one's identifier. The OLDEST ticket
+    survives: the lowest tracker id, which every backend allocates in creation order. That is a
+    stated rule, not a pick by pagination (TC 4.4). Anything else (a split, a key without exactly
+    one ticket) stays a BINDING_AMBIGUOUS for a person."""
+    claimed = {}
+    for c in clusters:
+        for k in c.get('bound_keys') or [c['cluster_key']]:
+            claimed.setdefault(k, set()).add(id(c))
+    for c in clusters:
+        keys = c.get('bound_keys') or []
+        if len(keys) < 2 or any(len(claimed.get(k, ())) > 1 for k in keys):
+            continue
+        refs = {}
+        for k in keys:
+            entry = ledger.get(k) if isinstance(ledger.get(k), dict) else {}
+            hits = sweep_map.get(k) or []
+            ref = entry.get('ref') or (hits[0].get('ref') if len(hits) == 1 else None)
+            if not ref or len(hits) > 1 or not any(str(h.get('ref')) == str(ref) for h in hits):
+                refs = None
+                break
+            refs[k] = str(ref)
+        if not refs:
+            continue
+
+        def age(k):
+            r = refs[k]
+            return (0, int(r), k) if r.isdigit() else (1, 0, r)
+        order = sorted(keys, key=age)
+        c['cluster_key'] = order[0]
+        c['merge_absorb'] = [(k, refs[k]) for k in order[1:]]
+        c.pop('binding_conflict', None)
+    return clusters
+
+
+def finish_state(result, backend):
+    """TICKETING_AVAILABLE | TICKETING_UNAVAILABLE | TICKETING_NOT_CONFIGURED, from what the run
+    established. UNAVAILABLE whenever the tracker could not be read or written -- reported in the
+    record, the summary and the exit code (3), and NEVER fed to the security gate."""
+    if backend is None:
+        return TICKETING_NOT_CONFIGURED
+    if (result.get('shape') or {}).get('established') is False or \
+            result['outcomes'].get(BINDING_UNESTABLISHED) or result.get('create_failed') or \
+            result.get('update_unestablished') or result.get('update_failed') or \
+            getattr(backend, 'budget_exhausted', False) or result.get('sweep_complete') is False:
+        return TICKETING_UNAVAILABLE
+    return TICKETING_AVAILABLE
+
+
+TEST_LEDGER_PREFIX = 'test:'
+
+
 def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None, today=None,
-              backend_note=''):
+              backend_note='', context=None):
+    """KDEC-028: THE LEDGER IS PARTITIONED BY TICKETING MODE. A test run (not the default branch,
+    the sandbox project) sees only the bindings test runs made, and a real run never sees those:
+    a test run binding to a REAL ticket would comment on it, and a real run binding to a TEST
+    ticket would think the work was ticketed. Test bindings live under `test:<cluster key>`."""
+    test = bool(getattr(backend, 'test_mode', False))
+    if not isinstance(ledger, dict):
+        return _reconcile(clusters, withheld, backend, ledger, apply_changes, approval, today,
+                          backend_note, context)
+    view = {}
+    for k, v in ledger.items():
+        is_test = str(k).startswith(TEST_LEDGER_PREFIX)
+        if is_test == test:
+            view[k[len(TEST_LEDGER_PREFIX):] if is_test else k] = v
+    result = _reconcile(clusters, withheld, backend, view, apply_changes, approval, today,
+                        backend_note, context)
+    for k in [k for k in ledger if str(k).startswith(TEST_LEDGER_PREFIX) == test]:
+        del ledger[k]
+    for k, v in view.items():
+        if test and isinstance(v, dict):
+            v['test'] = True
+        ledger[(TEST_LEDGER_PREFIX + k) if test else k] = v
+    result['ticketing_mode'] = 'test' if test else 'real'
+    return result
+
+
+def _reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None, today=None,
+              backend_note='', context=None):
     """-> result dict. Routine reconciliation runs UNATTENDED under `apply_changes` alone.
 
     THE CORRECTION THIS FUNCTION CARRIES, NAMED.
@@ -2166,7 +4519,22 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
     `today` is the reference date for the past-due deferral sweep. Absent, the sweep reports
     DEFERRAL_TERM_UNKNOWN rather than silence -- a run that did not establish today established
     nothing about whether an acceptance is still in force.
+
+    `context` (KDEC-024) carries what this run knows beyond its findings: `run_url` and `commit`
+    (linked on the ticket and cited when one closes), `coverage` (the report's per-scanner record;
+    None means no ticket may close on absence), `numbers` (the register's; None means SLA is not
+    evaluated, and the run says so) and `exceptions` ({finding fp: exception ticket}).
     """
+    context = context if isinstance(context, dict) else {}
+    coverage = context.get('coverage')
+    # Review round 3 F19: the declared scanner inventory (the population denominator). The kit's
+    # own scanner-registry.yaml unless the caller names another; None is NOT_ESTABLISHED.
+    inventory = (context['scanner_inventory'] if 'scanner_inventory' in context
+                 else load_scanner_inventory())
+    numbers = context.get('numbers')
+    run_url = context.get('run_url') or ''
+    commit = context.get('commit') or ''
+    exceptions = context.get('exceptions') or {}
     result = {
         'backend': backend.name if backend else None,
         'apply': bool(apply_changes),
@@ -2198,10 +4566,30 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
         'compliance': {},
         'confidence': {},
         'sweep_complete': None,
+        # Review round 3 F19: which declared inventory (source, sha256) bounded the population.
+        'population_inventory': inventory_summary(inventory),
         'probe': None,
         'clusters': len(clusters),
         'today': today,
         'notes': [],
+        # KDEC-024: the lifecycle, each its own key so no outcome hides inside another.
+        'cleared': [],
+        'potentially_absent': [],
+        # Review round 2: the TICKET's reconciliation state (held, preserved, provisional), kept
+        # apart from the finding-state list above, and the correlation evidence gaps.
+        'reconciliation_held': [],
+        'reconciliation_gaps': [],
+        'merged': [],
+        # R03: bindings the lineage ledger carried to a new identity, each with its event(s).
+        'carried_by_lineage': [],
+        'disagreements': [],
+        'escalations': [],
+        'triggers': {},
+        'ticketing_state': None,
+        'run_url': run_url,
+        'commit': commit,
+        'coverage_supplied': coverage is not None,
+        'sla_evaluated': numbers is not None,
     }
 
     # ── THE PAST-DUE DEFERRAL SWEEP, BEFORE ANYTHING ELSE AND WITHOUT BEING ASKED. ──
@@ -2212,6 +4600,7 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
     # runs before the backend check, so an unconfigured tracker does not take the review
     # obligation down with it.
     result['past_due'] = sweep_past_due(ledger, today)
+    area_sweep(result, ledger, today)
     if result['past_due']:
         result['outcomes'][tm.DEFERRAL_PAST_DUE] = sum(
             1 for p in result['past_due'] if p['state'] == tm.DEFERRAL_PAST_DUE)
@@ -2238,6 +4627,18 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
                                           'cause': backend_note or 'no backend configured'})
         return finish_claim(result, backend_note, backend)
 
+    # KDEC-028: ROUTING, before run-start validation, so every project a ticket may be created in
+    # is established before anything is written, and the sweep covers every project a ticket of
+    # this repository can be in (the routing's and the ledger's).
+    if hasattr(backend, 'set_routing'):
+        backend.set_routing(context.get('routing'), context.get('repository') or '',
+                            sorted(set(str(e.get('project')) for e in (ledger or {}).values()
+                                       if isinstance(e, dict) and e.get('project'))))
+        if getattr(backend, 'routing', None):
+            result['routing'] = {'chain': list(backend.routing.get('chain') or []),
+                                 'projects': backend.projects()}
+    result['not_ticketed_by_routing'] = []
+
     # RUN START: the site's shape, before any read that could lead to a write (J-7).
     if hasattr(backend, 'validate'):
         shape_ok, shape_detail = backend.validate()
@@ -2261,7 +4662,10 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
     known_refs = sorted(set(str(e.get('ref')) for e in (ledger or {}).values()
                             if isinstance(e, dict) and e.get('ref')))
     sweep_map, sweep_complete, sweep_detail = backend.sweep(known_refs=known_refs)
-    result['sweep_complete'] = bool(sweep_complete)
+    # Review round 3 F19: complete only when the backend AFFIRMS it (True); bool() read any truthy
+    # value ('PARTIAL', 1) as complete.
+    sweep_complete = sweep_complete is True
+    result['sweep_complete'] = sweep_complete
     result['notes'].append('sweep: %s' % sweep_detail)
     if not sweep_complete:
         result['notes'].append(
@@ -2271,7 +4675,17 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
             'soften a finding.' % (PUBLICATION_DEGRADED, EVIDENCE_UNTRUSTED))
 
     # The stamp, once set, does not move when membership does (T2). Before classification.
-    rebind(clusters, identity_bindings(ledger, sweep_map))
+    lineage = context.get('lineage')
+    if lineage is not None:
+        result['notes'].append('lineage ledger `%s`: %s -- %s'
+                               % (lineage.get('path'), lineage.get('integrity'),
+                                  '; '.join(lineage.get('notes') or [])[:300]))
+    rebind(clusters, identity_bindings(ledger, sweep_map), lineage=lineage)
+    # D4: one finding ticketed more than once is merged into its oldest ticket, by a stated rule.
+    merge_plan(clusters, ledger, sweep_map)
+    # FW-3a, LINK: confidence, disagreement and exception links, from evidence only.
+    for c in clusters:
+        annotate(c, coverage, exceptions)
 
     # CONSEQUENCE ORDER (TC 6.5): the most severe first, so a creation ceiling delays the cheapest
     # work rather than the most urgent. Stable, so equal severities keep discovery order.
@@ -2279,9 +4693,17 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
                       if c.get('severity') in _SEV_ORDER else len(_SEV_ORDER))
     ceiling = getattr(backend, 'create_ceiling', None)
 
+    newcomers = []      # clusters NEW this run (BINDING_ABSENT), for lineage_clearance_hold
+    conflicts = []      # clusters held on a lineage conflict, for lineage_conflict_hold
     for n, cluster in enumerate(clusters, 1):
         outcome, refs, detail = classify(cluster, ledger, sweep_map, sweep_complete, observable)
         result['outcomes'][outcome] = result['outcomes'].get(outcome, 0) + 1
+        if outcome == BINDING_ABSENT or (
+                outcome == BINDING_AMBIGUOUS and cluster.get('lineage_conflict')
+                and (lineage or {}).get('integrity') not in fl.RESOLVABLE):
+            newcomers.append(cluster)
+        if outcome == BINDING_AMBIGUOUS and cluster.get('lineage_conflict'):
+            conflicts.append(cluster)
 
         if outcome == BINDING_UNESTABLISHED:
             # CREATE NOTHING, CLEAR NOTHING, RECORD THE OBLIGATION WITH ITS CAUSE (TC 4.1). The
@@ -2341,15 +4763,46 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
                   % (n, len(clusters), outcome, cluster['cluster_key'][:12]), file=sys.stderr)
             continue
 
+        if outcome == BINDING_ABSENT and hasattr(backend, 'target_for'):
+            # KDEC-028: WHERE this ticket would be created. A rule or default of "none" means no
+            # ticket for this cluster -- recorded by name, never silent -- and never for a secret,
+            # KEV or malicious finding (ticket_routing.route skips such a rule, with a note).
+            tgt = backend.target_for(cluster)
+            for n in tgt.get('notes') or []:
+                if n not in result['notes']:
+                    result['notes'].append(n)
+            if not tgt.get('project'):
+                result['not_ticketed_by_routing'].append({
+                    'cluster_key': cluster['cluster_key'], 'rule': tgt.get('rule'),
+                    'source': tgt.get('source')})
+                continue
+            # KDEC-043 rule 3: routing is configured and nothing in it gave this finding an owning area.
+            unres = tg.area_resolution(tgt, getattr(backend, 'routing', None))
+            if unres:
+                cluster['area'] = tg.area_record(unres, today)
         if outcome == BINDING_ABSENT:
             # THE PARENT AND ITS CHILDREN ARE BUILT WHETHER OR NOT ANYTHING IS WRITTEN. Building
             # is not mutating: the plan is what a reviewer reads before approving, and a dry run
             # that could not show the child tasks would be asking for approval of something
             # nobody can see.
             cluster['title'] = render_title(cluster)
+            # D5: a fingerprint never seen before is NEW -- nobody has decided about it yet.
+            cluster['raised_as'] = TRIGGER_NEW
+            cluster['raised_run'], cluster['raised_commit'] = run_url, commit
+            cluster['sla'] = sla_for(cluster.get('severity'), numbers, today, None, today)
+            cluster['extra_labels'] = sorted(set(cluster.get('template_labels') or []) | (
+                set([_label(backend, 'disagreement')]) if cluster.get('contested_by') else set()))
+            cluster['extra_labels'] = urgent_labels(backend, cluster)
+            if isinstance(cluster.get('area'), dict):
+                cluster['extra_labels'] = sorted(set(cluster['extra_labels']) | set(
+                    tg.area_labels(getattr(backend, 'stamp_label', '') or DEFAULT_STAMP_LABEL, cluster['area'])))
             ticket, tasks = tm.build_ticket(
                 cluster, 'ticket-%s' % cluster['cluster_key'][:12],
                 channel_degraded=not sweep_complete)
+            if cluster.get('confidence') == CONTESTED_ANCHORED:
+                # The model's label counts contributors; the contest is evidence it cannot see.
+                ticket.confidence = cluster['confidence']
+                ticket.confidence_basis = cluster['confidence_basis']
             result['tickets'].append({'ticket': ticket.as_dict(),
                                       'tasks': [t.as_dict() for t in tasks],
                                       'progress': tm.compute_progress(tasks)})
@@ -2390,6 +4843,7 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
                     'cluster_key': cluster['cluster_key'], 'outcome': outcome,
                     'cause': 'creation ceiling %s reached; carried at position %d'
                              % (ceiling, pos)})
+                ceiling_overflow(result, 'ticket_create_ceiling', ceiling, cluster['cluster_key'])
                 continue
 
             if apply_changes:
@@ -2397,10 +4851,20 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
                 if ref:
                     result['created'].append({'cluster_key': cluster['cluster_key'], 'ref': ref,
                                               'title': title,
+                                              'project': (cluster.get('route') or {}).get(
+                                                  'project'),
                                               'children': len(tasks),
                                               'ticket_class': ticket_class,
                                               'compliance_review': ticket.compliance_review,
-                                              'confidence': ticket.confidence})
+                                              'confidence': ticket.confidence,
+                                              'trigger': TRIGGER_NEW})
+                    result['triggers'][TRIGGER_NEW] = result['triggers'].get(TRIGGER_NEW, 0) + 1
+                    if cluster.get('contested_by'):
+                        result['disagreements'].append({
+                            'cluster_key': cluster['cluster_key'], 'ref': ref,
+                            'contested_by': cluster['contested_by'],
+                            'detail': cluster['confidence_basis']})
+                    prior_obs = (ledger.get(cluster['cluster_key']) or {}).get('evidence_observations')
                     ledger[cluster['cluster_key']] = {
                         'ref': ref, 'backend': backend.name,
                         'member_identities': cluster['member_identities'],
@@ -2415,14 +4879,33 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
                             'deferrals') or {},
                         # What the block says, so the next run's delta costs nothing (T-13).
                         'rendered': rendered_facts(cluster),
-                        'last_seen': today}
+                        'last_seen': today,
+                        # KDEC-024: the lifecycle's ledger half.
+                        'key': getattr(backend, 'last_key', None) or ref,
+                        'raised_as': TRIGGER_NEW, 'first_seen': today,
+                        'raised_run': run_url, 'raised_commit': commit,
+                        'severity': cluster.get('severity'),
+                        'sla': cluster.get('sla'),
+                        'disagreement': cluster.get('contested_by') or None,
+                        # KDEC-028: where the ticket IS. The sweep covers it after a rule change.
+                        'project': (cluster.get('route') or {}).get('project'),
+                        'route_rule': (cluster.get('route') or {}).get('rule')}
+                    if prior_obs:
+                        # KDEC-049 R3: the structured evidence record survives a re-bind, like the
+                        # deferrals: it is what proves a transfer before a duplicate is closed (R4).
+                        ledger[cluster['cluster_key']]['evidence_observations'] = list(prior_obs)
+                    if isinstance(cluster.get('area'), dict):
+                        ledger[cluster['cluster_key']]['area'] = dict(cluster['area'])
+                    ledger_members(ledger[cluster['cluster_key']], cluster, commit, coverage=coverage)
+                    write_fix_availability(ledger[cluster['cluster_key']], cluster, today)
                     # TIER -1: one instance per observation, under the tier-0 item, up to the
                     # owner's per-class threshold; above it the class carries a COUNT, recorded
                     # rather than dropped (TICKETING_BACKENDS.md 2; J-8). `ticket.child_link`.
                     if not tm.authorise('ticket.child_link', approval):
                         inst = {}
                         limit = max(0, int(getattr(backend, 'instance_threshold', 0) or 0))
-                        for m in cluster['members'][:limit]:
+                        # A REPEATED finding only (KREQ-676): one place is the ticket itself, not a child of it.
+                        for m in (cluster['members'][:limit] if len(cluster['members']) > 1 else []):
                             i_ref, i_d = backend.create_instance(
                                 ref, m, instance_body(ref, m), instance_title(cluster, m))
                             if i_ref:
@@ -2433,6 +4916,15 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
                         entry_i = ledger[cluster['cluster_key']]
                         entry_i['instances'] = inst
                         entry_i['instances_not_itemised'] = len(cluster['members']) - len(inst)
+                        if 0 < limit < len(cluster['members']):
+                            # KDEC-062 (owner 2026-11-16, closing the KDEC-060 M4 contradiction): ESCALATED. The
+                            # threshold caps child CREATION only; every instance and its evidence is on the ledger
+                            # (member_identities, members) and the ones not itemised are NAMED, never truncated.
+                            over = [m['identity'] for m in cluster['members'][limit:] if m.get('identity')]
+                            entry_i['instances_overflow'] = over
+                            ceiling_overflow(result, 'ticket_instance_threshold', limit, cluster['cluster_key'],
+                                             len(cluster['members']) - limit, escalate=True, identities=over,
+                                             total=len(cluster['members']))
                 else:
                     # NOT A NOTE: an obligation that owes a ticket the run could not write. It is
                     # carried with its cause and it makes the claim untrusted (TC 4.1).
@@ -2452,7 +4944,13 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
                                           'children': len(tasks),
                                           'ticket_class': ticket_class,
                                           'compliance_review': ticket.compliance_review,
-                                          'confidence': ticket.confidence})
+                                          'confidence': ticket.confidence,
+                                          'trigger': TRIGGER_NEW})
+                if cluster.get('contested_by'):
+                    result['disagreements'].append({
+                        'cluster_key': cluster['cluster_key'], 'ref': None, 'planned': True,
+                        'contested_by': cluster['contested_by'],
+                        'detail': cluster['confidence_basis']})
 
         elif outcome in (LEDGER_BOUND, BACKEND_BOUND):
             # The steady state. Nothing is read or written unless something in the updatable set
@@ -2470,6 +4968,47 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
                 result['updated'].append({'cluster_key': cluster['cluster_key'],
                                           'ref': hit.get('ref'),
                                           'repair': 'ledger owes an entry for this ticket'})
+            # D4: the obligations this cluster absorbs are merged into it -- their members join
+            # this ticket, which is then the one that names every scanner.
+            absorbed = list(cluster.get('merge_absorb') or [])
+            for a_key, _a_ref in absorbed:
+                a_entry = ledger.get(a_key) if isinstance(ledger.get(a_key), dict) else {}
+                known_absorbed = set(a_entry.get('member_identities') or [])
+                current |= (known_absorbed & set(cluster['member_identities']))
+            # SLA (KDEC-024): from the ledger's record, re-scored only ever earlier.
+            sla_now = sla_for(cluster.get('severity'), numbers, entry.get('first_seen') or today,
+                              entry.get('sla'), today)
+            if sla_now is not None:
+                cluster['sla'] = sla_now
+            cluster['raised_as'] = entry.get('raised_as')
+            # Review round 2 F17 (the alias policy): an incoming member that differs from a ledger
+            # member ONLY in its advisory aliases. SCANNER-ATTESTED ADDITIVE: continuity is established and
+            # recorded as carried by lineage with the decision both consumers share. Anything else
+            # (contradictory, removed, replaced, unverified): the ticket does NOT continue silently;
+            # the reconciliation is HELD for a person.
+            a_dec = alias_decisions(entry, cluster.get('members') or [])
+            alias_held = alias_hold(cluster['cluster_key'], hit.get('ref'), a_dec, FINDING_ACTIVE)
+            for d in a_dec:
+                if d['state'] == fl.SCANNER_ATTESTED_ALIAS_CONTINUITY:
+                    # Review round 3 F21: scanner-attested, with its provenance, never "verified".
+                    cluster.setdefault('carried_by_lineage', []).append({
+                        'identity': d['to_identity'], 'carried_from': [d['from_identity']],
+                        'events': [d['decision_id']], 'cause': fl.ADVISORY_ALIAS_ADDED,
+                        'alias_decision': d['decision_id'], 'basis': d['state'],
+                        'assurance': d.get('assurance'), 'corroboration': d.get('corroboration'),
+                        'provenance': d.get('provenance')})
+            if alias_held:
+                result['reconciliation_held'].append(alias_held)
+                result['notes'].append(alias_held['why'][0])
+            for rec in cluster.get('carried_by_lineage') or []:
+                result['carried_by_lineage'].append(dict(rec, cluster_key=cluster['cluster_key'],
+                                                         ref=hit.get('ref')))
+                result['notes'].append('%s bound to ticket %s, carried by lineage from %s '
+                                       '(event %s)' % (rec['identity'][:12], hit.get('ref'),
+                                                       ', '.join(a[:12] for a in rec['carried_from']),
+                                                       ', '.join(e[:16] for e in rec['events'])))
+            cluster['raised_run'] = entry.get('raised_run')
+            cluster['raised_commit'] = entry.get('raised_commit')
             if apply_changes and not tm.authorise('ledger.bind', approval):
                 # The binding is the idempotency itself (`ledger.bind`, routine). Membership is
                 # APPEND-ONLY here: a member that left is POTENTIALLY_ABSENT, not forgotten, so a
@@ -2477,14 +5016,57 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
                 entry = dict(entry)
                 entry.setdefault('ref', hit.get('ref'))
                 entry.setdefault('backend', backend.name)
+                entry.setdefault('key', hit.get('key') or hit.get('ref'))
+                entry.setdefault('first_seen', today)
+                entry['severity'] = cluster.get('severity')
+                if sla_now is not None:
+                    entry['sla'] = sla_now
+                ledger_members(entry, cluster, commit, coverage=coverage)
+                write_fix_availability(entry, cluster, today)
                 entry['member_identities'] = sorted(known | current)
+                if cluster.get('carried_by_lineage'):
+                    prior = list(entry.get('carried_by_lineage') or [])
+                    prior.extend(r for r in cluster['carried_by_lineage'] if r not in prior)
+                    entry['carried_by_lineage'] = prior
                 # THE LOOKUP ESTABLISHED THE BINDING, so a lookup this entry was owed is
                 # discharged and the degraded streak ends (T-06). An owed UPDATE is not: it
                 # clears only when that update is written.
                 if isinstance(entry.get('owed'), dict) and \
                         entry['owed'].get('update_owed') is None:
                     entry.pop('owed')
+                if alias_held:
+                    entry = persist_reconciliation(entry, alias_held, backend, hit.get('ref'),
+                                                   today, run_url)
                 ledger[cluster['cluster_key']] = entry
+            # KDEC-028: A RULE CHANGE NEVER MOVES OR DUPLICATES A TICKET. The ticket stays where
+            # it is; once per new route it is told that routing now names another project.
+            if apply_changes and getattr(backend, 'routing', None) and \
+                    hasattr(backend, 'target_for') and hit.get('ref'):
+                r_entry = ledger.get(cluster['cluster_key']) if isinstance(
+                    ledger.get(cluster['cluster_key']), dict) else {}
+                where_now = r_entry.get('project') or _project_of_key(
+                    r_entry.get('key') or hit.get('key') or '')
+                want = (backend.target_for(cluster) or {}).get('project')
+                if where_now and want and want != where_now and \
+                        r_entry.get('route_noted') != want:
+                    ok_n, _d_n = backend.comment(hit['ref'], (
+                        'Ticket routing now names project %s for findings like this one (rule %s, '
+                        '%s). This ticket stays in %s: a routing change never moves or duplicates '
+                        'a ticket. Move it by hand if it should live there.'
+                        % (want, cluster['route'].get('rule'), cluster['route'].get('source'),
+                           where_now)))
+                    if ok_n:
+                        r_entry = dict(r_entry, project=where_now, route_noted=want)
+                        ledger[cluster['cluster_key']] = r_entry
+                # KDEC-043 rule 3: an unresolved area LEAVES the triage state when the routing now gives it
+                # one (the owner role's fix is a routing rule), recorded with the rule and the date.
+                if isinstance(r_entry.get('area'), dict) and r_entry['area'].get('state') == tg.AREA_UNRESOLVED                         and not tg.area_resolution(backend.target_for(cluster), backend.routing):
+                    r_entry = dict(r_entry, area=dict(r_entry['area'], state=tg.AREA_RESOLVED, resolved_on=today,
+                                                      resolved_by_rule=(cluster.get('route') or {}).get('rule')))
+                    ledger[cluster['cluster_key']] = r_entry
+                    backend.comment(hit['ref'], 'AREA RESOLVED (secure-cicd-kit, %s): ticket routing now gives this '
+                                    'finding an owning area (rule %s); it leaves the area-unresolved triage state.'
+                                    % (today, (cluster.get('route') or {}).get('rule')))
             # THE DELTA (TC 5.1, 6.1; T-13). What the block last said, from the ledger for free:
             # effective severity, the contributing scanners, those that STOPPED (named, never
             # omitted) and members not observed this run (POTENTIALLY_ABSENT, never "fixed").
@@ -2495,16 +5077,21 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
             def facts_wanted(prev_scanners, known_ids):
                 return {'severity': cluster['severity'], 'scanners': sorted(cur_scanners),
                         'stopped': sorted(set(prev_scanners) - cur_scanners),
-                        'absent': sorted(set(known_ids) - current)}
+                        'absent': sorted(set(known_ids) - current),
+                        'sla_due': (cluster.get('sla') or {}).get('deadline'),
+                        'confidence': cluster.get('confidence'),
+                        'exceptions': sorted(cluster.get('exception_links') or [])}
             if rendered is None:
                 # NOT RECORDED is not UNCHANGED: the ledger never saw this ticket's block (a
                 # ledger that is not persisted, T-20, or a ticket an older run wrote). Read it.
                 facts_changed = True
             else:
-                facts_changed = facts_wanted(
+                compared = BASE_FACTS + tuple(k for k in LIFECYCLE_FACTS if k in rendered)
+                w0 = facts_wanted(
                     set(rendered.get('scanners') or []) | set(rendered.get('stopped') or []),
-                    known) != dict((k, rendered.get(k)) for k in (
-                        'severity', 'scanners', 'stopped', 'absent'))
+                    known)
+                facts_changed = dict((k, w0[k]) for k in compared) != dict(
+                    (k, rendered.get(k)) for k in compared)
             members_added = False
             if not current <= known and hit.get('ref'):
                 # MEMBERS ADDED: an allowed update (TICKETING_CONTRACT.md 5.1).
@@ -2545,8 +5132,9 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
                         set(on_ticket['scanners']) | set(on_ticket['stopped'])
                         | set((rendered or {}).get('scanners') or [])
                         | set((rendered or {}).get('stopped') or []), known)
-                    changed = [k for k in ('severity', 'scanners', 'stopped', 'absent')
-                               if on_ticket[k] != want[k]]
+                    compared = BASE_FACTS + tuple(
+                        k for k in LIFECYCLE_FACTS if rendered is None or k in rendered)
+                    changed = [k for k in compared if on_ticket[k] != want[k]]
                     if current <= known and not changed and apply_changes:
                         # The ticket is already right. Record that, so the next run is free.
                         entry_r = dict(ledger.get(cluster['cluster_key']) or {})
@@ -2555,7 +5143,8 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
                 if read_ok and (not current <= known or changed):
                     shown = dict(cluster, member_identities=sorted(known | current),
                                  scanners_stopped=want['stopped'], members_absent=want['absent'],
-                                 last_seen=today)
+                                 last_seen=today,
+                                 absorbed=[a_ref for _k, a_ref in absorbed])
                     new_desc, intact = backend.splice_description(desc, render_body(shown))
                     if not intact:
                         result['notes'].append(
@@ -2595,13 +5184,102 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
                 # when something else is being written (TC 6.1).
                 ledger[cluster['cluster_key']]['last_seen'] = today
 
+            # D4: CLOSE THE ABSORBED TICKETS AS SUPERSEDED, each saying by what. Nothing deleted;
+            # the absorbed ledger entry stays, pointing at the survivor (history is the artefact).
+            for a_key, a_ref in absorbed:
+                rec_m = {'survivor': cluster['cluster_key'], 'survivor_ref': hit.get('ref'),
+                         'absorbed': a_key, 'absorbed_ref': a_ref, 'planned': not apply_changes}
+                if apply_changes and not tm.authorise('ticket.merge_supersede', approval):
+                    text = ('Superseded by %s (secure-cicd-kit, run date %s): the same finding, '
+                            'reported by another scanner, now anchors to one identity, so ONE '
+                            'ticket tracks it (cross-scanner merge, D4). %s names every scanner '
+                            'and every member; this ticket is closed as superseded and nothing '
+                            'was deleted.' % (hit.get('key') or hit.get('ref'), today,
+                                              hit.get('key') or hit.get('ref')))
+                    ok_c, _dc = backend.comment(a_ref, text)
+                    ok_m, _dm, _ap = backend.mark(a_ref, labels=[_label(backend, 'superseded')])
+                    ok_x, d_x = backend.close(a_ref)
+                    rec_m.update(commented=ok_c, labelled=ok_m, closed=ok_x)
+                    a_entry = dict(ledger.get(a_key) or {})
+                    a_entry['merged_into'] = cluster['cluster_key']
+                    a_entry['merged_on'] = today
+                    ledger[a_key] = a_entry
+                    s_entry = dict(ledger.get(cluster['cluster_key']) or {})
+                    s_entry['absorbed'] = sorted(set(list(s_entry.get('absorbed') or [])
+                                                     + [a_key]))
+                    for ident, seen in (a_entry.get('members') or {}).items():
+                        s_entry.setdefault('members', {}).setdefault(ident, seen)
+                    ledger[cluster['cluster_key']] = s_entry
+                    if not ok_x:
+                        result['update_failed'] = result.get('update_failed', 0) + 1
+                        result['notes'].append('the superseded ticket %s could not be closed: %s'
+                                               % (a_ref, d_x))
+                result['merged'].append(rec_m)
+
+            # FW-3a: a disagreement that is NEW or CHANGED is labelled and routed to a person,
+            # once. An unchanged one is already on the ticket and costs nothing.
+            entry_d = ledger.get(cluster['cluster_key']) if isinstance(
+                ledger.get(cluster['cluster_key']), dict) else {}
+            if cluster.get('contested_by') and \
+                    (entry_d.get('disagreement') or []) != cluster['contested_by']:
+                result['disagreements'].append({
+                    'cluster_key': cluster['cluster_key'], 'ref': hit.get('ref'),
+                    'contested_by': cluster['contested_by'], 'planned': not apply_changes,
+                    'detail': cluster['confidence_basis']})
+                if apply_changes and hit.get('ref') and \
+                        not tm.authorise('ticket.disagreement_label', approval):
+                    if _label(backend, 'disagreement') not in (hit.get('labels') or ()):
+                        backend.mark(hit['ref'], labels=[_label(backend, 'disagreement')])
+                    entry_d = dict(entry_d)
+                    entry_d['disagreement'] = cluster['contested_by']
+                    ledger[cluster['cluster_key']] = entry_d
+            elif not cluster.get('contested_by') and entry_d.get('disagreement') and apply_changes:
+                entry_d = dict(entry_d)
+                entry_d['disagreement'] = None
+                ledger[cluster['cluster_key']] = entry_d
+
+            # SLA: an open ticket past its due date is escalated, once per deadline.
+            if hit.get('ref') and hit.get('state') != 'closed' and \
+                    isinstance(ledger.get(cluster['cluster_key']), dict):
+                escalate_overdue(result, backend, cluster['cluster_key'],
+                                 ledger[cluster['cluster_key']], hit['ref'], today, apply_changes,
+                                 approval, hit_labels=hit.get('labels') or ())
+
+            # D5 RECURRED: verified absent once (T-09), detected again. A fix did not hold.
+            clearance = (ledger.get(cluster['cluster_key']) or {}).get('clearance') if isinstance(
+                ledger.get(cluster['cluster_key']), dict) else None
+            if isinstance(clearance, dict) and hit.get('ref') and hit.get('state') != 'closed':
+                # The ticket is open already (a person reopened it, or its close failed): the
+                # recurrence is still an event, said once on the ticket and in the ledger.
+                result['recurred'] = result.get('recurred', []) + [{
+                    'cluster_key': cluster['cluster_key'], 'ref': hit['ref'],
+                    'planned': not apply_changes}]
+                if apply_changes and not tm.authorise('ticket.reopen', approval):
+                    backend.comment(hit['ref'], recurred_comment(clearance, today, run_url,
+                                                                 commit))
+                    entry_c = dict(ledger[cluster['cluster_key']])
+                    entry_c['recurrences'] = list(entry_c.get('recurrences') or []) + [{
+                        'cleared': clearance, 'recurred_on': today, 'run': run_url,
+                        'commit': commit, 'reopened': False}]
+                    entry_c.pop('clearance', None)
+                    ledger[cluster['cluster_key']] = entry_c
+                result['triggers'][REOPEN_RECURRED] = \
+                    result['triggers'].get(REOPEN_RECURRED, 0) + 1
+
             # A CLOSED TICKET BESIDE A FINDING THE SCANNER STILL REPRODUCES (TC 4.2; J-6, T-7).
             if hit.get('state') == 'closed' and hit.get('ref'):
-                backing = closure_backing(cluster, today)
+                backing = 'unbacked' if isinstance(clearance, dict) else \
+                    closure_backing(cluster, today)
                 if backing == 'backed':
                     # An unexpired approved disposition stands: the ticket STAYS closed. Reopening
-                    # it every run teaches the team the bridge is broken (TC 5.2).
-                    pass
+                    # it every run teaches the team the bridge is broken (TC 5.2). What backs it
+                    # is RECORDED, so the calendar can reopen it the day it lapses with no scan
+                    # (resurface: REOPENED_BY_LAPSE comes from the clock, not a diff -- D5).
+                    if apply_changes and isinstance(ledger.get(cluster['cluster_key']), dict):
+                        b = backing_record(cluster, today)
+                        if b and ledger[cluster['cluster_key']].get('backing', {}).get(
+                                'expires') != b.get('expires'):
+                            ledger[cluster['cluster_key']]['backing'] = b
                 elif backing == 'unknown':
                     result['notes'].append(
                         'ticket %s is closed and an approved disposition exists whose expiry '
@@ -2610,17 +5288,30 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
                 elif not apply_changes:
                     result['reopened'].append({
                         'cluster_key': cluster['cluster_key'], 'ref': hit['ref'], 'planned': True,
-                        'classification': reopen_classification(cluster, today)})
+                        'classification': REOPEN_RECURRED if isinstance(clearance, dict)
+                        else reopen_classification(cluster, today)})
                 elif not tm.authorise('ticket.reopen', approval):
                     # T-08: WHY it is reopened travels with the reopen -- in the run record, the
                     # ledger's append-only history, and one comment on the ticket (TC 4.2, 5.1).
-                    cls_r = reopen_classification(cluster, today)
-                    ok_r, why = backend.reopen(hit['ref'])
+                    # RECURRED (KDEC-024) is its own class: the KIT closed this on a verified
+                    # clearance, so it is neither a falsified REMEDIATED nor an unbacked closure.
+                    cls_r = REOPEN_RECURRED if isinstance(clearance, dict) else \
+                        reopen_classification(cluster, today)
+                    # KDEC-062: a FINAL (level 2) record is never reopened: a new linked recurrence ticket.
+                    rplan = tc.plan_recurrence(ledger.get(cluster['cluster_key']) or {}, run_url, commit)
+                    if rplan:
+                        ok_r, why = False, ('%s: the ticket is final (level 2); recurrence %d gets a new ticket '
+                                            'linked to it' % (tc.RECURRENCE_LINKED_TICKET, rplan['number']))
+                    else:
+                        ok_r, why = backend.reopen(hit['ref'])
                     if ok_r:
                         result['reopened'].append({'cluster_key': cluster['cluster_key'],
                                                    'ref': hit['ref'], 'detail': why,
                                                    'classification': cls_r})
-                        ok_c, d_c = backend.comment(hit['ref'], reopen_comment(cls_r, today))
+                        result['triggers'][cls_r] = result['triggers'].get(cls_r, 0) + 1
+                        ok_c, d_c = backend.comment(
+                            hit['ref'], recurred_comment(clearance, today, run_url, commit)
+                            if cls_r == REOPEN_RECURRED else reopen_comment(cls_r, today))
                         if not ok_c:
                             result['notes'].append('ticket %s was reopened (%s) but the comment '
                                                    'saying why failed: %s' % (hit['ref'], cls_r,
@@ -2629,6 +5320,11 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
                         entry['reopens'] = list(entry.get('reopens') or []) + [{
                             'ref': str(hit['ref']), 'classification': cls_r, 'on': today,
                             'commented': bool(ok_c)}]
+                        if cls_r == REOPEN_RECURRED:
+                            entry['recurrences'] = list(entry.get('recurrences') or []) + [{
+                                'cleared': clearance, 'recurred_on': today, 'run': run_url,
+                                'commit': commit, 'reopened': True}]
+                            entry.pop('clearance', None)
                         ledger[cluster['cluster_key']] = entry
                     elif not tm.authorise('ticket.successor', approval):
                         # REOPEN REFUSED: a SUCCESSOR that references the predecessor; the
@@ -2638,6 +5334,12 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
                         succ['title'] = render_title(cluster)
                         ref_s, d_s = backend.create(succ, render_body(succ), succ['title'])
                         if ref_s:
+                            # KDEC-062: a person's labels on the predecessor travel to the successor.
+                            carry = tc.user_labels(hit.get('labels'), getattr(backend, 'stamp_label', '')
+                                                   or DEFAULT_STAMP_LABEL)
+                            if carry:
+                                backend.mark(ref_s, labels=carry)
+                            new_key = getattr(backend, 'last_key', None) or ref_s
                             entry = dict(ledger.get(cluster['cluster_key']) or {})
                             entry['predecessors'] = sorted(set(
                                 [str(p) for p in entry.get('predecessors') or []]
@@ -2650,6 +5352,20 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
                             entry['reopens'] = list(entry.get('reopens') or []) + [{
                                 'ref': str(hit['ref']), 'classification': cls_r, 'on': today,
                                 'successor': ref_s}]
+                            if rplan:
+                                entry = tc.apply_recurrence(entry, rplan, ref_s, new_key, today)
+                                entry.pop('clearance', None)
+                                result.setdefault('recurrences_after_final', []).append({
+                                    'cluster_key': cluster['cluster_key'], 'ref': ref_s,
+                                    'predecessor': hit['ref'], 'number': rplan['number']})
+                            elif cls_r == REOPEN_RECURRED:
+                                # The successor carries the recurrence; the clearance it
+                                # contradicts moves into the history, as on the reopen path.
+                                entry['recurrences'] = list(entry.get('recurrences') or []) + [{
+                                    'cleared': clearance, 'recurred_on': today, 'run': run_url,
+                                    'commit': commit, 'reopened': False, 'successor': ref_s}]
+                                entry.pop('clearance', None)
+                            result['triggers'][cls_r] = result['triggers'].get(cls_r, 0) + 1
                             ledger[cluster['cluster_key']] = entry
                             result['successors'].append({
                                 'cluster_key': cluster['cluster_key'], 'ref': ref_s,
@@ -2671,7 +5387,222 @@ def reconcile(clusters, withheld, backend, ledger, apply_changes, approval=None,
         print('  [%d/%d] %-24s %s' % (n, len(clusters), outcome, cluster['cluster_key'][:12]),
               file=sys.stderr)
 
+    clearance_pass(result, clusters, withheld, ledger, sweep_map, coverage, backend,
+                   apply_changes, approval, today, run_url, commit,
+                   lineage=lineage, newcomers=newcomers, conflicts=conflicts,
+                   inventory=inventory)
     return finish_claim(result, backend_note, backend)
+
+
+def clearance_pass(result, clusters, withheld, ledger, sweep_map, coverage, backend, apply_changes,
+                   approval, today, run_url, commit, lineage=None, newcomers=None, conflicts=None,
+                   inventory=None):
+    """T-09: CLOSE A TICKET WHOSE FINDING CLEARED -- on positive evidence, and only then.
+
+    An obligation in the ledger none of whose members was reported this run is, by default,
+    POTENTIALLY_ABSENT: "establish coverage before calling it fixed -- absence of the scope is not
+    absence of the thing". It is a CLEARANCE only when every member's scanner ran this run,
+    ESTABLISHED its row (not PARTIAL, not failed), declared a scope covering the member's file,
+    and reported nothing there that lacked an identity. Then every member is VALIDATED on that
+    evidence (ticket_model.check_validation_evidence) and the parent closes under
+    ALL_CHILDREN_RESOLVED -- the routine, evidenced closure -- with a comment citing the run and
+    the commit that proved it absent. Anything less closes nothing and is reported.
+
+    It acts on OPEN tickets only, so a cleared ticket costs nothing on later runs, and a ticket a
+    person closed is left as they left it."""
+    observed = set(c['cluster_key'] for c in clusters)
+    present = set(i for c in clusters for i in c.get('member_identities') or [])
+    for p in getattr(clusters, 'proposals', None) or []:
+        present |= set(p.get('member_identities') or [])
+    withheld_recs = [w[0] for w in withheld or []]
+    # Entries carrying a persisted reconciliation go LAST, so a related obligation that clears this
+    # run is already known closed when the preserved one beside it is considered.
+    order = sorted(ledger or {}, key=lambda k: (bool(isinstance(ledger[k], dict)
+                                                     and ledger[k].get('reconciliation')), k))
+    for key in order:
+        entry = ledger[key]
+        if not isinstance(entry, dict) or not entry.get('ref') or entry.get('merged_into') \
+                or key in observed:
+            continue
+        ids = list(entry.get('member_identities') or [])
+        if not ids or any(i in present for i in ids):
+            continue
+        hits = [h for h in sweep_map.get(key) or [] if str(h.get('ref')) == str(entry['ref'])]
+        if not hits or hits[0].get('state') == 'closed':
+            # Not swept (a dangling or partial read establishes nothing), or already closed --
+            # by an earlier clearance or by a person. Either way nothing is owed here.
+            continue
+        ref = str(entry['ref'])
+        # ROUTINE FINDING TICKETS ONLY (owner 2026-10-23). Never the product epic or the
+        # calibration ticket, and never a request-class ticket (an accepted-risk, false-positive,
+        # mitigation or grandfather request is a governance item a person closes).
+        if ref in (str(getattr(backend, 'epic_id', '') or ''),
+                   str(getattr(backend, 'calibration', '') or '')) or \
+                entry.get('ticket_class') not in (None, '', DEFAULT_CLASS):
+            continue
+        evidence, gaps = clearance_gaps(entry, coverage, withheld_recs)
+        if secret_absence_gap(entry):
+            gaps = list(gaps) + [secret_absence_gap(entry)]
+        # Finding 8: with the lineage ledger absent, a same-scanner same-rule newcomer holds it.
+        created = dict((str(c.get('cluster_key')), c.get('ref'))
+                       for c in result.get('created') or [] if c.get('ref'))
+        hold = lineage_clearance_hold(entry, newcomers, lineage, created)
+        corr_gaps, fresh = [], bool(hold and hold.get('state'))
+        if hold and not hold.get('state'):
+            # Review round 2 F15: UNRELATED / INSUFFICIENT -- nothing is held, the gap is kept.
+            corr_gaps, hold = list(hold.get('gaps') or []), None
+        if not hold:
+            # Review round 2 F17: an unresolved alias change (replacement, contradiction) that
+            # moved the cluster key holds A's clearance -- with any ledger state.
+            hold = alias_clearance_hold(entry, newcomers, created)
+            fresh = bool(hold)
+        hold = hold or lineage_conflict_hold(key, entry, conflicts, lineage) \
+            or prior_reconciliation_hold(entry, ledger, observed, sweep_map,
+                                         closed_now=set(c['cluster_key'] for c in result['cleared']
+                                                        if c.get('closed')))
+        # Review round 2 (F8 policy): the TICKET's reconciliation state is a separate fact from the
+        # FINDING's state. A held reconciliation is not an active finding: its finding was not
+        # reported this run, and coverage either proves it absent (VERIFIED_ABSENT) or does not
+        # (POTENTIALLY_ABSENT, which is also listed there -- the finding-state list).
+        finding_state = FINDING_POTENTIALLY_ABSENT if gaps else FINDING_VERIFIED_ABSENT
+        if hold:
+            held = {'cluster_key': key, 'ref': ref, 'members': ids,
+                    'why': list(hold['why']) + list(gaps), 'state': hold['state'],
+                    'basis': hold['basis'], 'newcomers': hold['newcomers'],
+                    'tier': hold.get('tier') or '', 'finding_state': finding_state,
+                    'reaffirmation_required': bool(hold.get('reaffirmation_required')),
+                    'related': list(hold.get('related') or [])}
+            if hold.get('alias_decisions'):
+                held['alias_decisions'] = list(hold['alias_decisions'])
+            result['reconciliation_held'].append(held)
+            if gaps:
+                result['potentially_absent'].append({'cluster_key': key, 'ref': ref,
+                                                     'members': ids, 'why': gaps})
+            if fresh and apply_changes:
+                ledger[key] = persist_reconciliation(entry, held, backend, ref, today, run_url)
+            continue
+        if corr_gaps:
+            result['reconciliation_gaps'].append({'cluster_key': key, 'ref': ref,
+                                                  'tier': CORRELATION_INSUFFICIENT,
+                                                  'gaps': corr_gaps})
+        if gaps:
+            result['potentially_absent'].append({'cluster_key': key, 'ref': ref, 'members': ids,
+                                                 'why': gaps})
+            continue
+        # Review round 2 F14: an automatic clearance needs a VERIFIED COMPLETE population for the
+        # scope that matters; otherwise it is PROVISIONAL and the ticket stays open.
+        pop = population_gaps(entry, ledger, lineage, coverage, withheld_recs,
+                              result.get('sweep_complete'), inventory=inventory)
+        if pop:
+            result['reconciliation_held'].append({
+                'cluster_key': key, 'ref': ref, 'members': ids, 'why': pop,
+                'state': CLEARANCE_PROVISIONAL, 'basis': POPULATION_INCOMPLETE, 'newcomers': [],
+                'tier': '', 'finding_state': FINDING_VERIFIED_ABSENT_IN_SCOPE,
+                'reaffirmation_required': False, 'related': [],
+                'inventory': inventory_summary(inventory)})
+            continue
+        # KDEC-062 (owner 2026-11-16): ABSENCE IS NOT REMEDIATION when the affected file was deleted, is newly
+        # excluded, left the scanner's scope, or the scanner's scope or configuration changed. Those close
+        # nothing. A rescan that cannot show the file still exists closes as before but is NOT finalised.
+        verdict = tc.qualify_rescan(entry, present, None if coverage is None else {
+            'rows': list(coverage.values()), 'path_inventory': getattr(coverage, 'path_inventory', None)},
+            withheld_recs, run_url, commit)
+        stop = [r for r in verdict['reasons'] if r['reason'] in CLEARANCE_BLOCKING_RESCAN]
+        if stop:
+            result['potentially_absent'].append({'cluster_key': key, 'ref': ref, 'members': ids,
+                                                 'why': ['%s: %s' % (r['reason'], r['detail']) for r in stop]})
+            continue
+        ticket = tm.Ticket(ticket_id=ref, cluster_key=key, title='', severity='')
+        tasks = []
+        for ev in evidence:
+            t = tm.Task(task_id='%s/%s/%s' % (ref, ev['identity'], ev['scanner']),
+                        parent_ticket_id=ref, cluster_key=key, identity=ev['identity'],
+                        scanner=ev['scanner'], rule='', uri=ev.get('path') or '',
+                        line=ev.get('line'))
+            bad = tm.check_validation_evidence(t, {'scanner': ev['scanner'],
+                                                   'run': run_url or 'run of %s' % today,
+                                                   'reproduced': False, 'scope_covered': True})
+            if not bad:
+                t.record(tm.OPEN, tm.VALIDATED, tm.ROUTINE_ACTOR,
+                         '%s: verified absent in %s' % (tm.ROUTINE_RECONCILIATION,
+                                                        run_url or today))
+                t.state = tm.VALIDATED
+            tasks.append(t)
+        satisfied, blockers = tm.evaluate_closure(ticket, tasks, today=today)
+        if not satisfied:
+            result['potentially_absent'].append({'cluster_key': key, 'ref': ref, 'members': ids,
+                                                 'why': blockers})
+            continue
+        rec = {'cluster_key': key, 'ref': ref, 'run': run_url, 'commit': commit,
+               'evidence': evidence, 'planned': not apply_changes}
+        prior = entry.get('reconciliation') if isinstance(entry.get('reconciliation'), dict) else None
+        if prior or corr_gaps:
+            # The correlation decision this clearance rests on, on the run record and the ticket.
+            rec['reconciliation_tier'] = (prior or {}).get('tier') or CORRELATION_INSUFFICIENT
+            rec['reconciliation_resolution'] = (prior or {}).get('resolution') or None
+        gate = tm.authorise('ticket.close.' + tm.ALL_CHILDREN_RESOLVED, approval)
+        if apply_changes and not gate:
+            ok_x, d_x = backend.close(ref)
+            if not ok_x:
+                result['update_failed'] = result.get('update_failed', 0) + 1
+                result['notes'].append('ticket %s cleared but could not be closed: %s'
+                                       % (ref, d_x))
+                rec['closed'] = False
+                result['cleared'].append(rec)
+                continue
+            import datetime as _dt
+            now = _dt.datetime.now(_dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            crec = clearance_record(entry, evidence, run_url, commit, today, now)
+            text = clearance_comment_full(crec)
+            if rec.get('reconciliation_tier'):
+                res_ = rec.get('reconciliation_resolution') or {}
+                text += (' Reconciliation: correlation %s%s.' % (
+                    rec['reconciliation_tier'],
+                    (', resolved %s by %s, approved by %s' % (res_.get('decision'), res_.get('triaged_by'),
+                                                             res_.get('approved_by'))) if res_ else ''))
+            ok_c, d_c = backend.comment(ref, text)
+            if not ok_c:
+                result['notes'].append('ticket %s was closed but the comment citing the run that '
+                                       'proved it absent failed: %s' % (ref, d_c))
+            entry = dict(entry)
+            entry['clearance'] = dict(crec, commented=bool(ok_c))
+            rec.update(fixed_by=crec['fixed_by'], last_present_commit=crec['last_present_commit'],
+                       at=crec['at'], scanners=crec['scanners'])
+            entry.pop('potentially_absent', None)
+            if entry.get('reconciliation'):
+                entry['reconciliation_history'] = list(entry.get('reconciliation_history') or []) + [
+                    dict(entry.pop('reconciliation'), released_on=today, released_by_run=run_url or '')]
+            # KDEC-062: level 2 (final) by the kit's rescan only when it QUALIFIES; otherwise the reasons are kept.
+            refusal2, entry = tc.set_level2(entry, 'rescan', today, rescan=verdict)
+            entry['completion_rescan'] = {'verdict': verdict['verdict'], 'reasons': verdict['reasons'],
+                                          'limits': verdict['limits'], 'on': today, 'run': run_url or ''}
+            rec['completion'] = tc.level_of(entry)
+            if refusal2:
+                rec['completion_refusal'] = refusal2['state']
+            ledger[key] = entry
+            rec['closed'] = True
+        result['cleared'].append(rec)
+
+
+def backing_record(cluster, today):
+    """-> {disposition_type, expires} of the unexpired, approved, non-REMEDIATED disposition that
+    backs a closed ticket, for the calendar to reopen on lapse (D5). None when there is none."""
+    best = None
+    now = tm.iso_date(today)
+    for m in cluster.get('members') or []:
+        d = m.get('disposition')
+        if not isinstance(d, dict) or str(d.get('state') or '').lower() != 'approved':
+            continue
+        if str(d.get('disposition_type') or '').upper() == 'REMEDIATED':
+            continue
+        until = tm.iso_date(d.get('expires'))
+        if until is None or now is None or until < now:
+            continue
+        if best is None or until < tm.iso_date(best['expires']):
+            # The EARLIEST expiry backs it: the day the first approval lapses, it is unbacked.
+            best = {'disposition_type': str(d.get('disposition_type') or '').upper(),
+                    'expires': d.get('expires')}
+    return best
 
 
 # ═════════════════════════════════════════════════════════════════════════════════════
@@ -2711,9 +5642,9 @@ def common_config_problem(env):
         return '%s %r contains whitespace; the umbrella stamp must be one token' % (
             ENV_STAMP_LABEL, label)
     ceiling = (env.get('TICKET_CREATE_CEILING') or '').strip()
-    if not ceiling.isdigit() or int(ceiling) < 1:
-        return ('TICKET_CREATE_CEILING is %s; it must be a positive integer from the policy file. '
-                'No default exists in code (TC 11.4)' % (repr(ceiling) if ceiling else 'unset'))
+    if ceiling and (not ceiling.isdigit() or int(ceiling) < 1):
+        return ('TICKET_CREATE_CEILING is %r; it must be a positive integer. Unset means the governed value '
+                '(the central register, else the kit default of 25; KDEC-052 item 7)' % ceiling)
     return ''
 
 
@@ -2722,6 +5653,24 @@ def jira_config_problem(env):
     bad = https_origin_problem('JIRA_HOST', env.get('JIRA_HOST'))
     if bad:
         return bad
+    cid = (env.get('JIRA_CLOUD_ID') or '').strip()
+    if cid and not CLOUD_ID_RE.match(cid):
+        return ('JIRA_CLOUD_ID %r is not a cloud id (a UUID; https://<site>/_edge/tenant_info '
+                'returns it)' % cid[:40])
+    mode = (env.get('TICKETING_MODE') or '').strip().lower()
+    if mode not in ('', 'real', 'test'):
+        return 'TICKETING_MODE is %r; it must be real or test (derived from the ref)' % mode
+    if mode == 'test':
+        real = [x.strip() for x in (env.get('JIRA_REAL_PROJECTS') or '').split(',') if x.strip()]
+        if not real:
+            return ('%s: this is a TEST run and JIRA_REAL_PROJECTS is unset, so it cannot be shown '
+                    'that JIRA_PROJECT %s is not a real project; set JIRA_REAL_PROJECTS (an org or '
+                    'repository variable) to the real project keys'
+                    % (TICKETING_TEST_TARGETS_REAL_PROJECT, env.get('JIRA_PROJECT')))
+        if (env.get('JIRA_PROJECT') or '').strip() in real:
+            return ('%s: this is a TEST run (not the default branch) and JIRA_PROJECT %s is one of '
+                    'JIRA_REAL_PROJECTS; the ticketing-test environment must point at a sandbox '
+                    'project' % (TICKETING_TEST_TARGETS_REAL_PROJECT, env.get('JIRA_PROJECT')))
     if not re.match(r'^customfield_\d+$', (env.get(ENV_JIRA_FIELD) or '').strip()):
         return ('%s must be customfield_<numeric id> of a single-line text field provisioned '
                 'once by a human' % ENV_JIRA_FIELD)
@@ -2767,21 +5716,73 @@ def azdo_config_problem(env, org_url):
     return common_config_problem(env)
 
 
-def choose_backend(env=None):
+JIRA_GATEWAY = 'https://api.atlassian.com/ex/jira'
+CLOUD_ID_RE = __import__('re').compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-'
+                                       r'[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+JIRA_AUTH_MODES = ('basic', 'bearer')
+# KDEC-028 test ticketing: chosen by the ref, never by a variable someone has to put back.
+TICKETING_TEST_TARGETS_REAL_PROJECT = 'TICKETING_TEST_TARGETS_REAL_PROJECT'
+TEST_LABEL = 'kit-test'
+TEST_PREFIX = '[TEST]'
+
+
+def jira_auth_mode(env):
+    """-> (mode or None, note). KDEC-028: basic is the default and is used whenever JIRA_EMAIL is
+    set; JIRA_AUTH_MODE=bearer uses JIRA_TOKEN alone. An unknown mode is refused by name."""
+    raw = (env.get('JIRA_AUTH_MODE') or '').strip().lower()
+    if raw and raw not in JIRA_AUTH_MODES:
+        return None, ('JIRA_AUTH_MODE is %r; it must be basic or bearer' % raw)
+    if env.get('JIRA_EMAIL'):
+        if raw == 'bearer':
+            return 'basic', ('basic auth: JIRA_EMAIL is set, and basic is used whenever it is -- '
+                             'JIRA_AUTH_MODE=bearer is not honoured while JIRA_EMAIL is present; '
+                             'remove JIRA_EMAIL to use bearer')
+        return 'basic', 'basic auth (JIRA_EMAIL + JIRA_TOKEN)'
+    if raw == 'bearer':
+        return 'bearer', ('bearer auth (JIRA_TOKEN alone, through %s/<cloudId>)' % JIRA_GATEWAY)
+    return 'basic', 'basic auth (JIRA_EMAIL + JIRA_TOKEN)'
+
+
+def jira_origin(value):
+    """JIRA_HOST in either form -> the https origin the reconciler talks to (2026-11-06).
+
+    The Jira reference gate reads the bare host (`<site>.atlassian.net`) and the reconciler the
+    https origin; one value now serves both. A value with no scheme at all gets `https://`; one
+    with a scheme is left as written, so `http://`, another scheme, a path or credentials are still
+    refused by https_origin_problem. A trailing slash and surrounding spaces are dropped."""
+    v = (value or '').strip()
+    if v and '://' not in v:
+        v = 'https://' + v
+    return v.rstrip('/')
+
+
+def choose_backend(env=None, settings=None):
     """-> (backend or None, note). Credentials are read from the environment and nowhere else.
+
+    `settings` (scripts/ticket_settings.resolve) carries the creation ceiling and the instance threshold with
+    the level each came from; without it they resolve from the kit defaults and the GitHub variables alone.
 
     No token is ever written to a file, a summary, a ledger or a log. They are read here, held on
     the backend instance, and used only as a request header.
     """
     env = env if env is not None else os.environ
+    if env.get('JIRA_HOST'):
+        # Either form (jira_origin): a copy, never the caller's mapping or os.environ.
+        env = dict(env, JIRA_HOST=jira_origin(env.get('JIRA_HOST')))
     want = (env.get(ENV_BACKEND) or '').strip().lower()
 
     gh_ready = bool(env.get('GH_TOKEN') or env.get('GITHUB_TOKEN')) and bool(env.get(ENV_REPO))
-    jira_ready = all(bool(env.get(k)) for k in ('JIRA_HOST', 'JIRA_EMAIL', 'JIRA_TOKEN',
-                                                'JIRA_PROJECT'))
+    # KDEC-028: basic needs JIRA_EMAIL; bearer (JIRA_AUTH_MODE=bearer) needs only JIRA_TOKEN.
+    jira_mode, _jira_mode_note = jira_auth_mode(env)
+    jira_ready = jira_mode is not None and all(
+        bool(env.get(k)) for k in ('JIRA_HOST', 'JIRA_TOKEN', 'JIRA_PROJECT')) and \
+        (jira_mode == 'bearer' or bool(env.get('JIRA_EMAIL')))
     azdo_org = (env.get('AZDO_ORG_URL') or env.get('AZDO_ORG') or '').strip()
     azdo_ready = bool(azdo_org) and bool(env.get('AZDO_PAT')) and bool(env.get('AZDO_PROJECT'))
-    ready = [n for n, r in (('github', gh_ready), ('jira', jira_ready), ('azdo', azdo_ready)) if r]
+    # KDEC-043: Freshservice, the fourth backend, to the same contract (scripts/tracker_freshservice.py).
+    fs_ready = bool(env.get('FRESHSERVICE_HOST')) and bool(env.get('FRESHSERVICE_API_KEY'))
+    ready = [n for n, r in (('github', gh_ready), ('jira', jira_ready), ('azdo', azdo_ready),
+                            ('freshservice', fs_ready)) if r]
 
     # TWO BACKENDS CONFIGURED AT ONCE IS A CONFIGURATION DEFECT, refused by name (TC 4.6; C-2).
     # Not "create in both"; not "prefer whichever is listed first" -- and, since KDEC-004, not
@@ -2804,14 +5805,23 @@ def choose_backend(env=None):
     raw_ceiling = (env.get('TICKET_RETRY_CEILING') or '').strip()
     if raw_ceiling and not raw_ceiling.isdigit():
         return None, ('TICKET_RETRY_CEILING is %r; it must be a non-negative integer (the owner '
-                      'sets it in the policy file; unset means no retries)' % raw_ceiling)
-    retry_ceiling = int(raw_ceiling or 0)
+                      'sets it in the policy file; unset means the kit default of %d)'
+                      % (raw_ceiling, DEFAULT_RETRY_CEILING))
+    # KDEC-024: unset is the kit default, not zero -- "bounded API calls per run, with backoff".
+    retry_ceiling = int(raw_ceiling) if raw_ceiling else DEFAULT_RETRY_CEILING
+    raw_budget = (env.get('TICKET_CALL_BUDGET') or '').strip()
+    if raw_budget and (not raw_budget.isdigit() or int(raw_budget) < 1):
+        return None, ('TICKET_CALL_BUDGET is %r; it must be a positive integer (unset means the '
+                      'kit default of %d calls per run)' % (raw_budget, DEFAULT_CALL_BUDGET))
+    call_budget = int(raw_budget) if raw_budget else DEFAULT_CALL_BUDGET
     raw_threshold = (env.get('TICKET_INSTANCE_THRESHOLD') or '').strip()
     if raw_threshold and not raw_threshold.isdigit():
         return None, ('TICKET_INSTANCE_THRESHOLD is %r; it must be a non-negative integer (unset '
                       'means no instances are itemised and the class carries a count)'
                       % raw_threshold)
-    instance_threshold = int(raw_threshold or 0)
+    if settings is None:
+        settings = ticket_settings.resolve(None, None, (env.get('TICKET_SETTINGS_ENVIRONMENT') or '').strip(), env)
+    instance_threshold = settings['numbers']['ticket_instance_threshold']
     raw_degraded = (env.get('TICKET_DEGRADED_RUN_THRESHOLD') or '').strip()
     if raw_degraded and not raw_degraded.isdigit():
         return None, ('TICKET_DEGRADED_RUN_THRESHOLD is %r; it must be a non-negative integer '
@@ -2821,7 +5831,14 @@ def choose_backend(env=None):
     built = _build_backend(want, env, gh_ready, jira_ready, azdo_ready, azdo_org, retry_ceiling,
                            instance_threshold)
     if built[0] is not None:
+        # KDEC-052 item 7: the governed ceilings on EVERY backend, and the record of where they came from.
+        built[0].create_ceiling = settings['numbers']['ticket_create_ceiling']
+        built[0].instance_threshold = instance_threshold
+        built[0].ticket_settings = settings
         built[0].degraded_threshold = degraded_threshold
+        # Every configured run is bounded (KDEC-024). Set here, the one entry point, so no
+        # backend can be configured without it.
+        built[0].call_budget = call_budget
     return built
 
 
@@ -2841,16 +5858,27 @@ def _build_backend(want, env, gh_ready, jira_ready, azdo_ready, azdo_org, retry_
                           'cluster look absent.' % ENV_STAMP_LABEL)
         return GitHubIssues(env.get(ENV_REPO), env.get('GH_TOKEN') or env.get('GITHUB_TOKEN'),
                             label, calibration=env.get('TICKET_CALIBRATION_REF') or '',
-                            retry_ceiling=retry_ceiling), \
+                            retry_ceiling=retry_ceiling,
+                            api_url=env.get('GITHUB_API_URL') or ''), \
             'github backend configured'
 
     if want == 'jira':
+        mode, mode_note = jira_auth_mode(env)
+        if mode is None:
+            return None, 'CONFIGURATION REFUSED: %s' % mode_note
         if not jira_ready:
-            return None, '%s names jira, and the credential set is incomplete' % ENV_BACKEND
+            missing = [k for k in ('JIRA_HOST', 'JIRA_TOKEN', 'JIRA_PROJECT') if not env.get(k)]
+            if mode == 'basic' and not env.get('JIRA_EMAIL'):
+                missing.append('JIRA_EMAIL (basic auth; or set JIRA_AUTH_MODE=bearer for a '
+                               'service account token)')
+            return None, ('%s names jira, and the credential set is incomplete: %s missing'
+                          % (ENV_BACKEND, ', '.join(missing) or 'a value'))
         bad = jira_config_problem(env)
         if bad:
             return None, 'CONFIGURATION REFUSED: %s' % bad
-        jb = Jira(env.get('JIRA_HOST'), env.get('JIRA_EMAIL'), env.get('JIRA_TOKEN'),
+        test_mode = (env.get('TICKETING_MODE') or '').strip().lower() == 'test'
+        jb = Jira(env.get('JIRA_HOST'), env.get('JIRA_EMAIL') if mode == 'basic' else '',
+                  env.get('JIRA_TOKEN'),
                   env.get('JIRA_PROJECT'), (env.get(ENV_JIRA_FIELD) or '').strip(),
                   calibration=env.get('JIRA_CALIBRATION_ISSUE') or '',
                   retry_ceiling=retry_ceiling,
@@ -2858,10 +5886,17 @@ def _build_backend(want, env, gh_ready, jira_ready, azdo_ready, azdo_org, retry_
                   type_cluster=(env.get('JIRA_TYPE_CLUSTER') or '').strip(),
                   type_instance=(env.get('JIRA_TYPE_INSTANCE') or '').strip(),
                   epic_id=(env.get('JIRA_EPIC_ID') or '').strip(),
-                  transition_reopen=(env.get('JIRA_TRANSITION_REOPEN') or '').strip())
+                  transition_reopen=(env.get('JIRA_TRANSITION_REOPEN') or '').strip(),
+                  transition_done=(env.get('JIRA_TRANSITION_DONE') or '').strip(),
+                  priority_ladder=(env.get('JIRA_PRIORITY_LADDER') or '').strip(),
+                  auth_mode=mode, cloud_id=(env.get('JIRA_CLOUD_ID') or '').strip(),
+                  test_mode=test_mode,
+                  real_projects=[x.strip() for x in (env.get('JIRA_REAL_PROJECTS') or '').split(',')
+                                 if x.strip()])
         jb.instance_threshold = instance_threshold
-        jb.create_ceiling = int(env.get('TICKET_CREATE_CEILING'))
-        return jb, 'jira backend configured'
+        return jb, 'jira backend configured (%s%s)' % (
+            mode_note, '; TEST MODE: sandbox project %s, label %s, summary prefix %s'
+            % (env.get('JIRA_PROJECT'), TEST_LABEL, TEST_PREFIX) if test_mode else '')
 
     if want == 'azdo':
         if not azdo_ready:
@@ -2881,12 +5916,20 @@ def _build_backend(want, env, gh_ready, jira_ready, azdo_ready, azdo_org, retry_
                          type_instance=(env.get('AZDO_TYPE_INSTANCE') or '').strip(),
                          state_reopen=(env.get('AZDO_STATE_REOPEN') or '').strip(),
                          state_done=(env.get('AZDO_STATE_DONE') or '').strip(),
-                         retry_ceiling=retry_ceiling,
-                         create_ceiling=int(env.get('TICKET_CREATE_CEILING')))
+                         retry_ceiling=retry_ceiling)
         ab.instance_threshold = instance_threshold
         return ab, 'azdo backend configured'
 
-    return None, 'unrecognised %s value %r; expected jira, azdo or github' % (ENV_BACKEND, want)
+    if want == 'freshservice':
+        if not (env.get('FRESHSERVICE_HOST') and env.get('FRESHSERVICE_API_KEY')):
+            missing = [k for k in ('FRESHSERVICE_HOST', 'FRESHSERVICE_API_KEY') if not env.get(k)]
+            return None, ('CONFIGURATION REFUSED: %s names freshservice and %s is missing'
+                          % (ENV_BACKEND, ', '.join(missing)))
+        import tracker_freshservice as tfs
+        return tfs.build(env, retry_ceiling)
+
+    return None, ('unrecognised %s value %r; expected jira, azdo, github or freshservice'
+                  % (ENV_BACKEND, want))
 
 
 def load_ledger(path):
@@ -2924,20 +5967,77 @@ def render_summary(result):
     if not result['apply']:
         L.append('**DRY RUN.** Nothing was written. `--apply` performs it.')
         L.append('')
+    state = result.get('ticketing_state')
+    if state == TICKETING_UNAVAILABLE:
+        L.append('**%s.** The tracker could not be read or written this run; the obligations '
+                 'below are CARRIED, not concluded. This is never a clean result -- and it never '
+                 'reaches the security gate, which ran before ticketing and does not wait for it.'
+                 % TICKETING_UNAVAILABLE)
+        L.append('')
     L.append('| field | value |')
     L.append('|---|---|')
     L.append('| backend | %s |' % (result['backend'] or 'NONE -- the control is off'))
+    L.append('| ticketing | %s |' % (state or 'NOT COMPUTED'))
     claim = result.get('ticketing_claim') or {}
     L.append('| ticketing claim | **%s**%s |' % (
         claim.get('routing_result') or 'NOT COMPUTED',
         (' / %s -- %s' % (claim.get('publication_state'), '; '.join(claim.get('causes') or []))
          if claim.get('routing_result') == EVIDENCE_UNTRUSTED else '')))
     thr = result.get('throttles') or []
-    L.append('| calls spent | %s; throttled %d time(s)%s |' % (
+    L.append('| calls spent | %s%s; throttled %d time(s)%s |' % (
         result.get('calls') if result.get('calls') is not None else 'not counted (in-memory)',
+        (' of a budget of %s' % result['call_budget']) if result.get('call_budget') else '',
         len(thr), (' -- ' + ', '.join('%s %s (Retry-After %s)' % (t['status'], t['method'],
                                                                 t['retry_after'])
                                       for t in thr[:10])) if thr else ''))
+    trig = result.get('triggers') or {}
+    if trig:
+        L.append('| raised or reopened, by trigger | %s |' % ', '.join(
+            '%s %d' % (k, trig[k]) for k in sorted(trig)))
+    if result.get('cleared'):
+        L.append('| closed on verified clearance | %d%s -- each cites the run and commit that '
+                 'proved it absent |' % (len(result['cleared']),
+                                         ' (planned)' if not result['apply'] else ''))
+    if result.get('potentially_absent'):
+        L.append('| POTENTIALLY_ABSENT | %d ticket(s) whose finding was not reported, without '
+                 'positive coverage -- NOT closed (first reason: %s) |'
+                 % (len(result['potentially_absent']),
+                    (result['potentially_absent'][0].get('why') or ['?'])[0]))
+    if result.get('reconciliation_held'):
+        # Review round 2 (F8 policy): a TICKET state, never a finding count. These tickets' findings
+        # were not reported this run; none of them is an active finding.
+        held = result['reconciliation_held']
+        by = {}
+        for h in held:
+            by[h.get('state')] = by.get(h.get('state'), 0) + 1
+        fs = {}
+        for h in held:
+            fs[h.get('finding_state')] = fs.get(h.get('finding_state'), 0) + 1
+        L.append('| ticket reconciliation held | %d ticket(s) NOT closed -- %s. A ticket state, not '
+                 'an active finding: finding state %s |'
+                 % (len(held), ', '.join('%s %d' % (k, by[k]) for k in sorted(by)),
+                    ', '.join('%s %d' % (k, fs[k]) for k in sorted(fs))))
+    if result.get('reconciliation_gaps'):
+        L.append('| correlation evidence gaps | %d ticket(s): %s; no relationship assumed, normal '
+                 'clearance policy |' % (len(result['reconciliation_gaps']), CORRELATION_INSUFFICIENT))
+    if result.get('merged'):
+        L.append('| cross-scanner merges | %d ticket(s) superseded by the oldest ticket for the '
+                 'same finding |' % len(result['merged']))
+    if result.get('disagreements'):
+        L.append('| scanner disagreements | %d new -- %s, routed to a person (%s) |'
+                 % (len(result['disagreements']), CONTESTED_ANCHORED, DECISION_REQUIRED))
+    if result.get('escalations'):
+        L.append('| SLA overdue, escalated | %d (comment, priority, label) |'
+                 % len(result['escalations']))
+    if 'sla_evaluated' in result and not result.get('sla_evaluated'):
+        L.append('| SLA | not evaluated: no policy register was supplied (--registration, '
+                 '--central-registration) |')
+    for r in result.get('ceiling_overflow') or []:
+        L.append('| %s | %s %s reached for %s (over by %d); carried or counted, never dropped; a person decides |'
+                 % (r['state'], r['setting'], r['limit'], r['cluster_key'][:12], r['over_by']))
+    for r in (result.get('ticket_settings') or {}).get('refused') or []:
+        L.append('| %s | %s = %r at %s refused; the governed %s stands |'
+                 % (r['state'], r['setting'], r['value'], r['level'], r['governed']))
     if result.get('carried'):
         L.append('| carried past the creation ceiling | %d obligation(s) owe a ticket and are '
                  'carried in consequence order to the next run; their findings route exactly as '
@@ -3132,6 +6232,15 @@ def render_summary(result):
                                                        r['approval_reason']))
         L.append('')
 
+    if result.get('area_unresolved'):
+        late = [a for a in result['area_unresolved'] if a['overdue']]
+        L.append('### %d ticket(s) with no owning area (area-unresolved triage; %d past the deadline)'
+                 % (len(result['area_unresolved']), len(late)))
+        L.append('')
+        for a in result['area_unresolved']:
+            L.append('- %s `%s` owner role %s, due %s -- %s' % (a.get('key') or a.get('ref'), a['cluster_key'][:12],
+                                                               a['owner_role'], a['due'], a['state']))
+        L.append('')
     if result['needs_decision']:
         L.append('### %d cluster(s) need a human decision' % len(result['needs_decision']))
         L.append('')
@@ -4194,6 +7303,346 @@ def sweep_deferrals_cli(args):
     return 1 if result['past_due'] else 0
 
 
+def blank_result(backend, apply_changes, approval, today, mode):
+    """The run record's shape, for a run that has no findings (the scheduled clock)."""
+    return {'backend': backend.name if backend else None, 'apply': bool(apply_changes),
+            'approval': approval.state() if approval is not None else 'NOT SUPPLIED',
+            'outcomes': {}, 'created': [], 'updated': [], 'withheld_no_identity': [],
+            'needs_decision': [], 'refused_disposition': [], 'applied_disposition': [],
+            'past_due': [], 'obligations': [], 'reopened': [], 'successors': [], 'carried': [],
+            'proposals': [], 'ticketing_claim': None, 'tickets': [], 'compliance': {},
+            'confidence': {}, 'sweep_complete': None, 'probe': None, 'clusters': 0,
+            'today': today, 'notes': [], 'cleared': [], 'potentially_absent': [], 'merged': [],
+            'reconciliation_held': [], 'reconciliation_gaps': [],
+            'disagreements': [], 'escalations': [], 'triggers': {}, 'ticketing_state': None,
+            'run_url': '', 'commit': '', 'coverage_supplied': False, 'sla_evaluated': False,
+            'mode': mode}
+
+
+def resurface(ledger, backend, apply_changes, today, numbers=None, approval=None, **kw):
+    """KDEC-028: the clock sees only its own mode's ledger bindings (see reconcile)."""
+    test = bool(getattr(backend, 'test_mode', False))
+    if not isinstance(ledger, dict):
+        return _resurface(ledger, backend, apply_changes, today, numbers, approval, **kw)
+    view = dict((k[len(TEST_LEDGER_PREFIX):] if test else k, v) for k, v in ledger.items()
+                if str(k).startswith(TEST_LEDGER_PREFIX) == test)
+    result = _resurface(view, backend, apply_changes, today, numbers, approval, **kw)
+    for k in [k for k in ledger if str(k).startswith(TEST_LEDGER_PREFIX) == test]:
+        del ledger[k]
+    for k, v in view.items():
+        ledger[(TEST_LEDGER_PREFIX + k) if test else k] = v
+    return result
+
+
+def _resurface(ledger, backend, apply_changes, today, numbers=None, approval=None,
+              backend_note=''):
+    """T-17 / D5: THE SCHEDULED CLOCK, WITH WRITES. No findings, no scan -- one small job.
+
+    Two of D5's three triggers come from the scan; the third comes from the CALENDAR: "on the
+    day an acceptance expires, the scan is byte-identical to yesterday's". So on a schedule this
+    reads the LEDGER and the date, sweeps the tracker once for the tickets' states, and:
+
+        REOPENED_BY_LAPSE  a ticket left closed because an approved disposition backed it, whose
+                           expiry has now passed, is reopened with a comment saying so -- once
+                           per lapse (the ledger records it)
+        SLA overdue        an open ticket past its due date is escalated -- once per deadline
+        past due           elapsed deferrals are reported, exactly as the credential-free sweep
+                           reports them (TC 5.6: nothing reopens a deferral by itself)
+
+    Cost: one sweep (ceil(T/P) reads) plus one write group per lapse or breach. A steady day costs
+    the sweep alone."""
+    result = blank_result(backend, apply_changes, approval, today, 'resurface')
+    result['sla_evaluated'] = numbers is not None
+    result['past_due'] = sweep_past_due(ledger, today)
+    area_sweep(result, ledger, today)
+    if result['past_due']:
+        result['outcomes'][tm.DEFERRAL_PAST_DUE] = sum(
+            1 for x in result['past_due'] if x['state'] == tm.DEFERRAL_PAST_DUE)
+    if backend is None:
+        result['notes'].append('THE CONTROL IS OFF: no backend configured. Nothing was reopened '
+                               'or escalated; this is not "nothing was due".')
+        return finish_claim(result, backend_note, backend)
+    known_refs = sorted(set(str(e.get('ref')) for e in (ledger or {}).values()
+                            if isinstance(e, dict) and e.get('ref')))
+    sweep_map, complete, detail = backend.sweep(known_refs=known_refs)
+    result['sweep_complete'] = bool(complete)
+    result['notes'].append('sweep: %s' % detail)
+    if not complete:
+        result['outcomes'][BINDING_UNESTABLISHED] = 1
+    for key in sorted(ledger or {}):
+        entry = ledger[key]
+        if not isinstance(entry, dict) or not entry.get('ref') or entry.get('merged_into'):
+            continue
+        ref = str(entry['ref'])
+        hits = [h for h in sweep_map.get(key) or [] if str(h.get('ref')) == ref]
+        if not hits:
+            continue
+        hit = hits[0]
+        b = entry.get('backing')
+        if isinstance(b, dict) and hit.get('state') == 'closed':
+            until, now = tm.iso_date(b.get('expires')), tm.iso_date(today)
+            if until and now and until < now and b.get('lapse_reopened') != b.get('expires'):
+                rec = {'cluster_key': key, 'ref': ref, 'classification': REOPENED_BY_LAPSE,
+                       'expired': b.get('expires'), 'planned': not apply_changes}
+                if apply_changes and not tm.authorise('ticket.reopen', approval):
+                    ok_r, why = backend.reopen(ref)
+                    rec['detail'] = why
+                    if ok_r:
+                        text = '%s The %s that backed this closure expired on %s.' % (
+                            reopen_comment(REOPENED_BY_LAPSE, today),
+                            b.get('disposition_type') or 'disposition', b.get('expires'))
+                        ok_c, _d = backend.comment(ref, text)
+                        b = dict(b, lapse_reopened=b.get('expires'))
+                        entry['backing'] = b
+                        entry['reopens'] = list(entry.get('reopens') or []) + [{
+                            'ref': ref, 'classification': REOPENED_BY_LAPSE, 'on': today,
+                            'commented': bool(ok_c)}]
+                        result['triggers'][REOPENED_BY_LAPSE] = \
+                            result['triggers'].get(REOPENED_BY_LAPSE, 0) + 1
+                    else:
+                        # A refused reopen is a person's call (TC 4.2 successor path needs a
+                        # finding to describe; the clock has none), named, never silent.
+                        result['needs_decision'].append({
+                            'cluster_key': key, 'outcome': REOPENED_BY_LAPSE,
+                            'detail': 'the disposition backing ticket %s expired on %s and the '
+                                      'tracker refused the reopen: %s' % (ref, b.get('expires'),
+                                                                          why)})
+                        continue
+                result['reopened'].append(rec)
+                continue
+        if hit.get('state') != 'closed':
+            if numbers is not None and apply_changes and not entry.get('sla') and \
+                    entry.get('severity'):
+                entry['sla'] = sla_for(entry['severity'], numbers, entry.get('first_seen') or
+                                       today, None, today)
+            escalate_overdue(result, backend, key, entry, ref, today, apply_changes, approval,
+                             hit_labels=hit.get('labels') or ())
+    recheck_pass(result, backend, sweep_map, today, apply_changes, approval, numbers)
+    verification_pass(result, backend, sweep_map, today, apply_changes, approval, numbers)
+    try:
+        import ticket_submit as tsub
+        tsub.dedupe_pending_pass(result, backend, sweep_map, today, apply_changes)
+    except ImportError:
+        result['notes'].append('the pending-dedupe pass is not available in this copy of the kit')
+    return finish_claim(result, backend_note, backend)
+
+
+def clock_settings(numbers):
+    """The clock's numbers: the register's `numbers` over scripts/ticket_templates.py's defaults."""
+    import ticket_templates as tt
+    s = tt.settings_from({})[0]
+    for k in ('verification_reminder_days',):
+        if isinstance((numbers or {}).get(k), int):
+            s[k] = numbers[k]
+    return s
+
+
+def _clock_mark(result, backend, ref, text, labels, bump=False, kind='clock'):
+    ok_c, d_c = backend.comment(ref, text)
+    ok_m, d_m, _ap = backend.mark(ref, labels=list(labels), bump_priority=bump)
+    if not (ok_c and ok_m):
+        result['update_failed'] = result.get('update_failed', 0) + 1
+        result['notes'].append('the %s note on %s could not be written: %s; %s' % (kind, ref, d_c, d_m))
+    return bool(ok_c and ok_m)
+
+
+def nofix_exemption_expired(facts, today):
+    """True when the no-fix ticket's exemption (its `exempt until` row) has ended by `today`.
+
+    Review round 2, the owner's no-vendor-fix policy: an exception changes a vulnerability's
+    TREATMENT, never its existence, and an EXPIRED exception returns it to REVIEW. The exemption is
+    a short, ticket-level pause of the SLA clock (ticket_templates nofix-recheck, default 30 days) and
+    the re-check cycle is its own interval: an exemption shorter than the re-check used to lapse with
+    nothing saying so until the next re-check."""
+    end, now = tm.iso_date((facts or {}).get('exempt_until')), tm.iso_date(today)
+    return bool(end and now and now > end)
+
+
+def recheck_pass(result, backend, sweep_map, today, apply_changes, approval, numbers=None):
+    """KDEC-037 (O-37d, owner 2026-11-04): THE NO-FIX CLOCK. For every open ticket with the kit's no-fix label:
+    a vendor RE-CHECK every 30 days (`-recheck-<k>`), a no-fix REVIEW every 90 days (`-nofix-review-<k>`), and
+    at the severity's advisory day (critical/high 90 and escalated, medium 180, low none) the ADVISORY "this
+    has become something like a permanent risk acceptance; look for an alternative" (`-nofix-advisory`), each
+    ONCE -- the tracker's labels are the record. Nothing is closed, reopened or exempted further. The cycle
+    raised is the CURRENT one; a cycle the clock did not run for is named, not back-filled."""
+    import ticket_templates as tt
+    settings = clock_settings(numbers)
+    nofix = _label(backend, 'nofix')
+    for key in sorted(sweep_map or {}):
+        for hit in sweep_map[key]:
+            labels = set(hit.get('labels') or [])
+            if nofix not in labels or hit.get('state') == 'closed' or not hit.get('ref'):
+                continue
+            desc, ok, d_read = backend.read_description(hit['ref'])
+            if not ok:
+                result['notes'].append('the no-fix ticket %s could not be read (%s): its clock is not judged'
+                                       % (hit['ref'], d_read))
+                result['update_unestablished'] = result.get('update_unestablished', 0) + 1
+                continue
+            facts = block_facts(backend.description_text(desc))
+            st = tt.nofix_state(facts.get('nofix_since'), today, facts.get('severity'), numbers, settings,
+                                recheck_every=facts.get('recheck_every'))
+            rec = {'cluster_key': key, 'ref': hit['ref'], 'days': st['days'], 'planned': not apply_changes}
+            gate = tm.authorise('ticket.recheck_due', approval)
+            if nofix_exemption_expired(facts, today) and                     _label(backend, 'nofix-exemption-expired') not in labels:
+                # The finding stays ACTIVE; the ticket stays open. Nothing is closed or exempted.
+                rec['exemption_expired'] = facts.get('exempt_until')
+                if apply_changes and not gate:
+                    _clock_mark(result, backend, hit['ref'], (
+                        'NO-FIX EXEMPTION EXPIRED (secure-cicd-kit, run date %s): the exemption ended on %s. The '
+                        'finding is still ACTIVE (upstream has no fix) and this ticket RETURNS TO REVIEW: a person '
+                        'decides again -- an accepted risk with a named authority and an expiry, a mitigation, or '
+                        'removal of the exposure. Nothing was closed or exempted further.'
+                        % (today, facts.get('exempt_until'))),
+                        [_label(backend, 'nofix-exemption-expired')], kind='exemption-expired')
+            k = st['recheck']
+            if k >= 1 and _label(backend, 'recheck-%d' % k) not in labels:
+                skipped = [n for n in range(1, k) if _label(backend, 'recheck-%d' % n) not in labels]
+                rec['recheck'] = k
+                if apply_changes and not gate:
+                    _clock_mark(result, backend, hit['ref'], (
+                        'RE-CHECK DUE (secure-cicd-kit, run date %s): re-check %d. This finding had NO fix upstream %d '
+                        'day(s) ago; check with the vendor again. If a fix exists, submit the finding with fix_status '
+                        'FIX_AVAILABLE and this ticket reopens as remediation.%s'
+                        % (today, k, st['days'], (' (Cycle(s) %s were not raised: the clock did not run then.)'
+                                                  % ', '.join(map(str, skipped))) if skipped else '')),
+                        [_label(backend, 'recheck-%d' % k)], kind='re-check')
+            r = st['review']
+            if r >= 1 and _label(backend, 'nofix-review-%d' % r) not in labels:
+                rec['review'] = r
+                if apply_changes and not gate:
+                    _clock_mark(result, backend, hit['ref'], (
+                        'NO-FIX REVIEW DUE (secure-cicd-kit, run date %s): review %d, %d day(s) with no fix. A person '
+                        'reviews whether the exemption still stands.' % (today, r, st['days'])),
+                        [_label(backend, 'nofix-review-%d' % r)], kind='review')
+            if st['advisory'] and _label(backend, 'nofix-advisory') not in labels:
+                rec['advisory'] = True
+                if apply_changes and not gate:
+                    _clock_mark(result, backend, hit['ref'], (
+                        'NO-FIX ADVISORY (secure-cicd-kit, run date %s): %d day(s) with no fix -- this has become '
+                        'something like a permanent risk acceptance; look for an alternative.%s'
+                        % (today, st['days'], ' Escalated: the priority is raised one step.' if st['escalate'] else '')),
+                        [_label(backend, 'nofix-advisory')], bump=st['escalate'], kind='advisory')
+            if len(rec) > 4:
+                result.setdefault('rechecks', []).append(rec)
+
+
+def verification_pass(result, backend, sweep_map, today, apply_changes, approval, numbers=None):
+    """KDEC-037 (owner, 2026-11-04): A FIXER'S CLOSE IS PENDING, AND SOMEONE ELSE MUST COME BEHIND. Every open
+    ticket in resolved-pending-verification is REMINDED once after N days (default 7) and ESCALATED once after
+    2N (the priority raised), per pending cycle (`-pending-since-<date>`); a rejection after it ends the cycle."""
+    import ticket_templates as tt
+    n = clock_settings(numbers)['verification_reminder_days']
+    p = getattr(backend, 'stamp_label', '') or DEFAULT_STAMP_LABEL
+    for key in sorted(sweep_map or {}):
+        for hit in sweep_map[key]:
+            labels = set(hit.get('labels') or [])
+            if _label(backend, 'pending-verification') not in labels or hit.get('state') == 'closed' or                     _label(backend, 'verified') in labels or not hit.get('ref'):
+                continue
+            pend = tt.label_dates(labels, p, 'pending-since')
+            rej = tt.label_dates(labels, p, 'rejected')
+            if not pend or (rej and rej[-1] >= pend[-1]):
+                continue
+            days = (tm.iso_date(today) - tm.iso_date(pend[-1])).days if tm.iso_date(today) else 0
+            cyc = pend[-1].replace('-', '')
+            gate = tm.authorise('ticket.verify_reminder', approval)
+            if days >= 2 * n and _label(backend, 'verify-escalated-%s' % cyc) not in labels:
+                result.setdefault('verifications', []).append({'ref': hit['ref'], 'escalated': days})
+                if apply_changes and not gate:
+                    _clock_mark(result, backend, hit['ref'], (
+                        'VERIFICATION ESCALATED (secure-cicd-kit, run date %s): resolved %d day(s) ago (%s) and still '
+                        'not verified. Someone other than the fixer verifies it, or rejects it.' % (today, days, pend[-1])),
+                        [_label(backend, 'verify-escalated-%s' % cyc)], bump=True, kind='verification escalation')
+            elif days >= n and _label(backend, 'verify-reminder-%s' % cyc) not in labels:
+                result.setdefault('verifications', []).append({'ref': hit['ref'], 'reminded': days})
+                if apply_changes and not gate:
+                    _clock_mark(result, backend, hit['ref'], (
+                        'VERIFICATION REMINDER (secure-cicd-kit, run date %s): ready to close since %s -- please verify '
+                        '(the approver list; not the fixer).' % (today, pend[-1])),
+                        [_label(backend, 'verify-reminder-%s' % cyc)], kind='verification reminder')
+
+
+def resurface_cli(args):
+    """`--resurface`: the scheduled clock with tracker writes (mode resurface). -> exit code."""
+    if not args.ledger or not os.path.exists(args.ledger):
+        text = ('## Ticket clock (scheduled)\n\n**%s**: no ledger at %s, so NOTHING WAS CHECKED. '
+                'This is not "nothing was due".\n' % (EVIDENCE_UNTRUSTED, args.ledger or '<unset>'))
+        print(text)
+        if args.out:
+            io.open(args.out, 'a', encoding='utf-8').write(text + '\n')
+        return 3
+    ledger, note = load_ledger(args.ledger)
+    if ledger is None:
+        print('REFUSING: %s' % note, file=sys.stderr)
+        return 2
+    settings, n_note = settings_from_registrations(args.central_registration, args.registration,
+                                                   (os.environ.get('TICKET_SETTINGS_ENVIRONMENT') or '').strip())
+    numbers = settings['numbers']
+    backend, b_note = choose_backend(settings=settings)
+    print(b_note, file=sys.stderr)
+    approval = None
+    if args.approved_by or args.approval_reason:
+        approval = tm.Approval(actor=args.approved_by, reason=args.approval_reason)
+    result = resurface(ledger, backend, args.apply, args.today or None, numbers=numbers,
+                       approval=approval, backend_note=b_note if backend is None else '')
+    result['notes'][:0] = [b_note, note, 'SLA: %s' % n_note]
+    record_settings(result, settings)
+    text = render_summary(result)
+    print(text)
+    if args.out:
+        io.open(args.out, 'a', encoding='utf-8').write(text + '\n')
+    if args.apply and backend is not None:
+        save_ledger(args.ledger, ledger)
+    if args.record:
+        io.open(args.record, 'w', encoding='utf-8').write(
+            json.dumps(result, indent=2, sort_keys=True, default=str) + '\n')
+    return exit_code(result)
+
+
+def exit_code(result):
+    """3 untrusted (TICKETING_UNAVAILABLE among its causes) > 1 a decision owed > 0."""
+    if (result.get('ticketing_claim') or {}).get('routing_result') == EVIDENCE_UNTRUSTED:
+        if result.get('ticketing_state') == TICKETING_UNAVAILABLE:
+            # VISIBLE, never a silent pass -- and never a gate input: the security gate ran
+            # before this job and does not wait for it.
+            print('::error title=%s::the tracker could not be read or written; obligations are '
+                  'carried, nothing was concluded. The security gate is unaffected.'
+                  % TICKETING_UNAVAILABLE)
+        return 3
+    return 1 if (result['needs_decision'] or result['refused_disposition']
+                 or result['past_due'] or result.get('disagreements')) else 0
+
+
+def resolve_reconciliation_cli(args):
+    """--resolve-reconciliation: write a person's resolution of a held reconciliation to the
+    ticket ledger (resolve_reconciliation). -> 0 resolved, 1 refused (nothing changed), 2 unusable."""
+    if not args.ledger:
+        print('--resolve-reconciliation requires --ledger: the hold lives in it', file=sys.stderr)
+        return 2
+    ledger, note = load_ledger(args.ledger)
+    if ledger is None:
+        print('REFUSING: %s' % note, file=sys.stderr)
+        return 2
+    approval = None
+    if args.approved_by or args.approval_reason:
+        approval = tm.Approval(actor=args.approved_by, reason=args.approval_reason)
+    err, rec = resolve_reconciliation(ledger, args.resolve_reconciliation,
+                                      args.reconciliation_decision, args.triaged_by, approval,
+                                      args.today or '')
+    if err:
+        print('REFUSED: %s' % err)
+        print('The hold is UNCHANGED: a refused resolution loses nothing.')
+        return 1
+    save_ledger(args.ledger, ledger)
+    print('RESOLVED %s: %s (triaged by %s, approved by %s). %s'
+          % (args.resolve_reconciliation, rec['resolution']['decision'], rec['resolution']['triaged_by'],
+             rec['resolution']['approved_by'],
+             'The ticket stays open while the related obligation is open.'
+             if rec['resolution']['decision'] == RECONCILIATION_SAME else
+             'The hold is released; the next rescan that proves the finding absent closes it.'))
+    return 0
+
+
 def resolve_deferral_cli(args):
     """The authorised way out of DEFERRAL_PAST_DUE. -> exit code.
 
@@ -4326,6 +7775,38 @@ def main(argv):
     ap.add_argument('--deferral-reason', default='',
                     help='fresh reason for --resolution extend. The original is NOT carried '
                          'forward: renewal is a new decision.')
+    # Review round 2 (F15, the F8 policy): the human resolution of a held reconciliation.
+    ap.add_argument('--resolve-reconciliation', default='',
+                    help='ticket ref (or cluster key) whose held reconciliation a person resolves. A '
+                         'DISPOSITION (ticket.triage_merge): needs --reconciliation-decision, '
+                         '--triaged-by, and --approved-by (not the triager) with --approval-reason.')
+    ap.add_argument('--reconciliation-decision', default='', choices=['', 'same', 'separate'],
+                    help='same: the old and new findings are one obligation (kept open together); '
+                         'separate: they are not (the hold is released, the next rescan decides).')
+    ap.add_argument('--triaged-by', default='', help='the role that decided (never the approver).')
+    # KDEC-024 (lane L-TKT): what a run knows beyond its findings.
+    ap.add_argument('--coverage', default='',
+                    help='the report\'s findings-coverage.json. Default: beside --findings. '
+                         'Without it no ticket closes on absence.')
+    ap.add_argument('--run-url', default='',
+                    help='this run, linked on tickets and cited on closure. Default: from '
+                         'GITHUB_SERVER_URL, GITHUB_REPOSITORY and GITHUB_RUN_ID.')
+    ap.add_argument('--commit', default=os.environ.get('GITHUB_SHA', ''),
+                    help='the commit scanned. Default: GITHUB_SHA.')
+    ap.add_argument('--registration', default='',
+                    help='the repository\'s .security/policy-registration.json (numbers for SLA, '
+                         'secret exceptions for links).')
+    ap.add_argument('--scanner-inventory', default='',
+                    help='the declared scanner inventory bounding the reconciliation population '
+                         '(review round 3 F19); default: the scanner-registry.yaml of this kit')
+    ap.add_argument('--lineage', default='',
+                    help='the finding_lineage.py ledger (R03): a finding whose identity moved keeps '
+                         'its ticket; a split, merge, cycle or untrusted ledger is BINDING_AMBIGUOUS')
+    ap.add_argument('--central-registration', default='',
+                    help='the central register (the kit\'s policy/policy-registration.json).')
+    ap.add_argument('--resurface', action='store_true',
+                    help='the scheduled clock WITH writes: reopen lapsed dispositions '
+                         '(REOPENED_BY_LAPSE) and escalate overdue SLAs. Needs --ledger, --today.')
     ap.add_argument('--out', default=os.environ.get('GITHUB_STEP_SUMMARY', ''))
     ap.add_argument('--record', default='',
                     help='write the machine-readable run record (JSON) here.')
@@ -4341,8 +7822,12 @@ def main(argv):
 
     if args.resolve_deferral:
         return resolve_deferral_cli(args)
+    if args.resolve_reconciliation:
+        return resolve_reconciliation_cli(args)
     if args.sweep_deferrals:
         return sweep_deferrals_cli(args)
+    if args.resurface:
+        return resurface_cli(args)
 
     if not args.findings:
         print('--findings is required (or --self-test)', file=sys.stderr)
@@ -4358,6 +7843,19 @@ def main(argv):
         print('%s is not valid JSON: %s' % (args.findings, exc), file=sys.stderr)
         return 2
     records = doc if isinstance(doc, list) else (doc.get('findings') or [doc])
+    # THE UNKNOWNS LOG beside findings.json (owner ruling 2026-11-06, scripts/unknown_ids.py): each id the
+    # report could not read becomes ONE needs-mapping review item, keyed so the lookup below finds the
+    # item an earlier run made instead of creating another. An unreadable log is a refusal, not "none".
+    try:
+        import unknown_ids
+        unknowns = unknown_ids.load(os.path.join(os.path.dirname(os.path.abspath(args.findings)), unknown_ids.FILENAME))
+    except (IOError, ValueError) as exc:
+        print('REFUSING: the unknown-ids log beside the findings could not be read (%s); an unreadable log is '
+              'not an empty one' % exc, file=sys.stderr)
+        return 2
+    if unknowns:
+        records = list(records) + unknown_ids.review_records(unknowns)
+        print('%d unknown id(s) routed for a person to map (needs-mapping)' % len(unknowns), file=sys.stderr)
 
     ledger, ledger_note = load_ledger(args.ledger)
     if ledger is None:
@@ -4366,7 +7864,9 @@ def main(argv):
               'ticketed obligation as unbound and duplicate all of them.', file=sys.stderr)
         return 2
 
-    backend, note = choose_backend()
+    settings, n_note = settings_from_registrations(args.central_registration, args.registration,
+                                                   (os.environ.get('TICKET_SETTINGS_ENVIRONMENT') or '').strip())
+    backend, note = choose_backend(settings=settings)
     print('%s' % note, file=sys.stderr)
     print('%s' % ledger_note, file=sys.stderr)
 
@@ -4375,10 +7875,34 @@ def main(argv):
     if args.approved_by or args.approval_reason:
         approval = tm.Approval(actor=args.approved_by, reason=args.approval_reason)
 
+    cov_path = args.coverage or os.path.join(os.path.dirname(os.path.abspath(args.findings)),
+                                             'findings-coverage.json')
+    coverage, cov_note = load_coverage(cov_path)
+    numbers = settings['numbers']
+    run_url = args.run_url or (
+        '%s/%s/actions/runs/%s' % (os.environ['GITHUB_SERVER_URL'], os.environ['GITHUB_REPOSITORY'],
+                                   os.environ['GITHUB_RUN_ID'])
+        if all(os.environ.get(k) for k in ('GITHUB_SERVER_URL', 'GITHUB_REPOSITORY',
+                                           'GITHUB_RUN_ID')) else '')
+    repository = os.environ.get('GITHUB_REPOSITORY') or ''
+    routing, r_note = routing_from_registrations(args.central_registration, args.registration,
+                                                 repository)
+    context = {'coverage': coverage, 'numbers': numbers, 'run_url': run_url,
+               'commit': args.commit or '',
+               'exceptions': exceptions_from_registrations(args.central_registration,
+                                                           args.registration),
+               'routing': routing, 'repository': repository,
+               'lineage': fl.consumer_context(args.lineage) if args.lineage else None,
+               'scanner_inventory': load_scanner_inventory(args.scanner_inventory or None)}
     result = reconcile(clusters, withheld, backend, ledger, args.apply, approval=approval,
-                       today=args.today or None, backend_note=note if backend is None else '')
+                       today=args.today or None, backend_note=note if backend is None else '',
+                       context=context)
     result['notes'].insert(0, note)
     result['notes'].insert(1, ledger_note)
+    result['notes'].insert(2, 'coverage: %s' % cov_note)
+    result['notes'].insert(3, 'SLA: %s' % n_note)
+    result['notes'].insert(4, 'routing: %s' % r_note)
+    record_settings(result, settings)
 
     text = render_summary(result)
     print(text)
@@ -4396,16 +7920,13 @@ def main(argv):
     # a lookup that did not complete, or every finding withheld. Never 0 -- a run that checked
     # nothing must not read as a run with nothing to do -- and distinct from 1, which is a
     # decision owed. It outranks 1 the way EVIDENCE_UNTRUSTED outranks DECISION_REQUIRED.
-    if (result.get('ticketing_claim') or {}).get('routing_result') == EVIDENCE_UNTRUSTED:
-        return 3
-
+    #
     # A DECISION OWED TO A PERSON IS EXIT 1. Not a crash and not a pass: the run did its work and
-    # is waiting on a judgement. Three things land here and all three are judgements --
-    # an ambiguity or a dangling reference, a disposition nobody approved, and a deferral whose
-    # term has run out. A PAST-DUE DEFERRAL EXITS 1 EVEN WHEN EVERYTHING ELSE SUCCEEDED, because
-    # an elapsed acceptance that exits 0 is an elapsed acceptance nobody will chase.
-    return 1 if (result['needs_decision'] or result['refused_disposition']
-                 or result['past_due']) else 0
+    # is waiting on a judgement -- an ambiguity or a dangling reference, a disposition nobody
+    # approved, a deferral whose term has run out, or a NEW disagreement between scanners
+    # (KDEC-024). A PAST-DUE DEFERRAL EXITS 1 EVEN WHEN EVERYTHING ELSE SUCCEEDED, because an
+    # elapsed acceptance that exits 0 is an elapsed acceptance nobody will chase.
+    return exit_code(result)
 
 
 if __name__ == '__main__':

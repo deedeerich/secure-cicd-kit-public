@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/tickets/extension.schema.json",
+  "title": "ticket template: extension (template_version 2)",
+  "description": "Extend an EXISTING ticket's expiry. Default length 30 days (when new_expiry is not given). waiting_on fix (a fix is available): at most 2 extensions, each at most 90 days (EXTENSION_LIMIT_REACHED). waiting_on vendor: extensions continue until the vendor has a fix, and at the second extension or 180 days the developers are advised \"no fix after 6 months, consider an alternative\" (owner, 2026-11-04). The count is the ticket's own labels; extensions_used must equal it; the requester never approves it. KDEC-037.",
+  "x-template": "extension",
+  "x-template-version": 2,
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ref",
+    "reason",
+    "extensions_used",
+    "requested_by",
+    "evidence",
+    "waiting_on"
+  ],
+  "properties": {
+    "ref": {
+      "description": "The ticket: a Jira numeric id or key, an Azure DevOps or GitHub number.",
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}-[0-9]{1,12}$|^[0-9]{1,12}$"
+    },
+    "new_expiry": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+      "description": "Optional: default today + 30 days; at most 90 days away."
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 20,
+      "maxLength": 2000
+    },
+    "extensions_used": {
+      "description": "How many extensions the ticket has had before this one.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10
+    },
+    "requested_by": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9 @._+\\[\\]-]{1,100}$"
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "sha256"
+      ],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 500
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "receipt": {
+          "description": "A custody receipt for the evidence (a store's object id or signature).",
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 300
+        }
+      }
+    },
+    "waiting_on": {
+      "type": "string",
+      "enum": [
+        "fix",
+        "vendor"
+      ]
+    }
+  },
+  "x-enabled": true
+}

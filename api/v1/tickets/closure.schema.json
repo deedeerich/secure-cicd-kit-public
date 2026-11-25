@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/tickets/closure.schema.json",
+  "title": "ticket template: fix verified / closure request (template_version 2)",
+  "description": "Closure (owner, 2026-11-04). action resolve: the FIXER moves their own ticket to RESOLVED - PENDING VERIFICATION and the approver list is tapped (\"ready to close, please verify\"); no review needed. action verify: closed-verified ONLY by (a) the kit's rescan that no longer reports it -- on the branch mapped to the ticket's environment; a clean scan on another branch records \"fix observed on <branch>\" -- or (b) a finalized review whose concurrer is NOT the fixer (a fixer verifying their own fix stays pending, never final). action reject: the verifier sends it back and it reopens. An unverified pending ticket is reminded after 7 days and escalated after 14. KDEC-037.",
+  "x-template": "closure",
+  "x-template-version": 2,
+  "x-enabled": true,
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ref",
+    "action",
+    "requested_by",
+    "fixed_by",
+    "evidence",
+    "verification"
+  ],
+  "properties": {
+    "ref": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}-[0-9]{1,12}$|^[0-9]{1,12}$"
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "resolve",
+        "verify",
+        "reject"
+      ]
+    },
+    "requested_by": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9 @._+\\[\\]-]{1,100}$"
+    },
+    "fixed_by": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9 @._+\\[\\]-]{1,100}$"
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "sha256"
+      ],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 500
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "receipt": {
+          "description": "A custody receipt for the evidence (a store's object id or signature).",
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 300
+        }
+      }
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 1000
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "scan",
+            "reviewer"
+          ]
+        },
+        "run_id": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "lz.intake-manifest/v1",
+  "title": "Landing zone accepted intake manifest (envelope)",
+  "type": "object",
+  "required": [
+    "schema",
+    "request_id",
+    "accepted_at_utc",
+    "request"
+  ],
+  "properties": {
+    "schema": {
+      "const": "lz.intake-manifest/v1"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "request": {
+      "type": "object"
+    },
+    "accepted_at_utc": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

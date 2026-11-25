@@ -24,16 +24,16 @@ Duplication was never the requirement. REACHABILITY was. So the scripts are writ
 bootstrap job (`kit-scripts`), and published as a RUN-SCOPED ARTIFACT that every other job in the
 same run downloads into /tmp. Every call site still invokes `/tmp/<script>` exactly as before.
 
-WHY AN ARTIFACT AND NOT `$/`
+WHY AN ARTIFACT CAME FIRST, AND WHY `$/` NOW CARRIES THE JOB BODIES
 
-GitHub shipped self-repository `uses:` syntax (`$/.github/actions/...`) on 2026-07-30, documented
-as resolving to "the same repository at the running commit". The documentation does NOT state how
-it resolves inside a reusable workflow invoked from ANOTHER repository, which is the only case that
-matters here, and it is explicitly unavailable on GitHub Enterprise Server and requires runner
->= 2.336.0 -- neither of which this kit can assert about a consumer's estate. An unestablished
-mechanism is not a mechanism. A run-scoped artifact depends on nothing the workflow does not
-already use, and behaves identically for a cross-repo consumer because the artifact belongs to the
-RUN, not to a repository.
+GitHub shipped self-repository `uses:` syntax (`$/.github/actions/...`) on 2026-07-30. When this
+generator was written, how it resolved inside a reusable workflow called from ANOTHER repository was
+unestablished, so the bundle went out as a run-scoped artifact, which belongs to the RUN and needs
+nothing new. `$/` was then proven cross-repository (decomposition plan step 8; Level 2 runs
+38434823833, 38468728084) and discover, resolve, the report and, since ledger L64, scanner job
+bodies (COMPOSITES below) run through it. It needs github.com and runner >= 2.336.0, so no GitHub
+Enterprise Server (OD-8, ledger O-22, an open owner decision). The artifact remains while job bodies
+still call /tmp/<script>; it is retired when the last one has moved (ledger L64, B-01).
 
 WHAT IS STILL GENERATED, AND WHY IT IS STILL CHECKED
 
@@ -87,10 +87,24 @@ SCRIPTS = [
 
 TARGETS = ["reusable-security.yml"]
 
+# SCANNER COMPOSITES (completion ledger L64; decomposition plan section 7 step 12). A scanner job
+# whose body moved into `.github/actions/<name>/` keeps only the composite call and its Result
+# summary (which reads `job.status`, a JOB fact). The fetch + verify pair and every pre-upload
+# redaction move WITH the body, to the same positions relative to the same steps: the fetch is the
+# composite's first steps, and the redaction walk below runs over the composite's step list exactly
+# as it runs over a job's. The composite is the job's FIRST step, so "first step of the job" and
+# "first step of the composite" are the same moment on the runner.
+# tests/prove_composite_move_equivalence.py expands each call back into its job and compares it
+# with the job as it stood before the move.
+COMPOSITES = ["secret-scan", "sast-cpp", "iac-scan", "deps-scan", "sast-dotnet", "sast-java",
+              # lane L-SCAN-B (KDEC-026): born a composite, never inline.
+              "sast-mobile"]
+ACTIONS = os.path.join(ROOT, ".github", "actions")
+
 # The one job that materialises the scripts. It is excluded from the fetch step for the obvious
 # reason, and included in the redaction step for a less obvious one: it uploads an artifact, and
 # "every job that uploads redacts first" is a stronger invariant than one with a carve-out in it.
-BOOTSTRAP_JOB = "kit-scripts"
+BOOTSTRAP_JOB = "plan"   # G1 (KDEC-033): the kit-scripts part of the plan job
 ARTIFACT = "kit-scripts-${{ github.run_attempt }}"
 
 # Jobs that invoke at least one of the scripts. Anything here gets the download step as its FIRST
@@ -101,9 +115,12 @@ ARTIFACT = "kit-scripts-${{ github.run_attempt }}"
 # is the kit's founding defect (gosec pinned to a tag that never existed, `|| true`, "the scanner
 # could not be acquired" recorded as "the scanner found nothing").
 FETCH_JOBS = [
-    "secret-scan", "code-quality", "sast-semgrep", "sast-bandit", "codeql", "deps-scan",
-    "iac-scan", "sast-dotnet", "sast-java", "sast-go", "sast-cpp", "malicious-deps",
-    "sbom", "report",
+    # A job listed in COMPOSITES fetches INSIDE its composite (COMPOSITES above).
+    "code-quality", "sast-semgrep", "sast-bandit", "codeql", 
+    "sast-go", "malicious-deps",
+    "sbom",
+    # G3 (KDEC-033): the report is the first part of security-gate, so the gate job fetches.
+    "security-gate",
     # image-scan joined when its reports stopped dying with the runner (ledger L12): it now
     # redacts before uploading, and the redactor lives in this bundle.
     "image-scan",
@@ -130,6 +147,7 @@ STATUS_JOBS = [
      "terraform / bicep / docker"),
     ("sast-dotnet",   "SAST (.NET)",        "",                   "dotnet"),
     ("sast-java",     "SAST (Java)",        "",                   "java / kotlin"),
+    ("sast-mobile",   "SAST (mobile)",      "",                   "android / ios"),
     ("sast-go",       "SAST (Go)",          "",                   "go"),
     ("sast-cpp",      "SAST (C/C++)",       "",                   "c / c++"),
     ("malicious-deps", "Malicious packages", "",                  "dependency provenance"),
@@ -215,7 +233,7 @@ def drop_region(text, begin, end):
     return re.sub(r"(?ms)^[ ]*%s.*?^[ ]*%s[ ]*\n?" % (re.escape(begin), re.escape(end)), "", text)
 
 
-def fetch_step():
+def fetch_step(pad_n=6, where="the top of this file"):
     """Download the run-scoped script bundle AND verify it. FIRST steps of the job.
 
     THE DOWNLOAD AND THE VERIFICATION ARE ONE REGION ON PURPOSE. They are two steps because a
@@ -226,15 +244,16 @@ def fetch_step():
     while the workflow still read as protected.
     """
     begin, end = step_markers(FETCH_STEP_TOKEN)
-    pad = " " * 6
+    pad = " " * pad_n
     inner = pad + "    "
     return "\n".join([
         pad + begin,
         pad + "- name: Fetch the kit's own scripts",
         pad + "  # A RUN-SCOPED ARTIFACT, NOT `uses: ./` and NOT a copy per call site. Why, at",
-        pad + "  # length, in the `kit-scripts` job at the top of this file.",
+        pad + "  # length, in the `kit-scripts` job at %s." % where,
         pad + "  if: always()",
-        pad + "  uses: actions/download-artifact@v8",
+        # SHA-pinned like every remote `uses:` in the kit (ledger L82; tests/check_action_pins.py).
+        pad + "  uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2",
         pad + "  with:",
         pad + "    name: " + ARTIFACT,
         pad + "    path: /tmp",
@@ -438,10 +457,10 @@ def inject(text, canon_name, token, tag, dest):
         n += 1
 
 
-def redact_step():
+def redact_step(pad_n=6):
     """A generated step that scrubs every SARIF in the workspace before it becomes an artifact."""
     begin, end = step_markers(REDACT_STEP_TOKEN)
-    pad = " " * 6
+    pad = " " * pad_n
     inner = pad + "    "
     out = [pad + begin,
            pad + "- name: Redact credential material before upload",
@@ -512,6 +531,44 @@ def _publishes(step_text):
     return False
 
 
+def redaction_walk(seg, pad_n):
+    """The walk itself, over one step list whose items sit at `pad_n` spaces. -> (text, placed)."""
+    begin, end = step_markers(REDACT_STEP_TOKEN)
+    seg_clean = drop_region(seg, begin, end)
+    parts = re.split(r"(?m)^(?=%s- )" % (" " * pad_n), seg_clean)
+    out, tainted, placed = [parts[0]], True, 0
+    for part in parts[1:]:
+        if _publishes(part):
+            if tainted:
+                out.append(redact_step(pad_n) + "\n")
+                placed += 1
+                tainted = False
+        else:
+            tainted = True
+        out.append(part)
+    return ("".join(out), placed)
+
+
+def regenerate_composite(text):
+    """The generated regions of one scanner composite. -> (text, counts).
+
+    The composite's steps sit at 4 spaces under `runs: steps:`. The fetch pair goes FIRST, and the
+    redaction walk is the job walk at that indent: one rule, two step lists.
+    """
+    counts = {"fetch": 0, "redact": 0}
+    begin, end = step_markers(FETCH_STEP_TOKEN)
+    text = drop_region(text, begin, end)
+    mm = re.search(r"(?m)^  steps:[ ]*\n", text)
+    if not mm:
+        raise ValueError("composite has no `runs: steps:` list")
+    text = (text[:mm.end()] + fetch_step(4, "the top of .github/workflows/reusable-security.yml")
+            + "\n" + text[mm.end():])
+    counts["fetch"] = 1
+    head, steps = text[:mm.end()], text[mm.end():]
+    steps, counts["redact"] = redaction_walk(steps, 4)
+    return (head + steps, counts)
+
+
 def place_redaction_steps(text):
     """Insert the redactor before EVERY upload that follows a step which may have written output.
 
@@ -533,19 +590,7 @@ def place_redaction_steps(text):
         if not m:
             continue
         seg = m.group(0)
-        seg_clean = drop_region(seg, begin, end)
-        parts = re.split(r"(?m)^(?=      - )", seg_clean)
-        out, tainted, placed = [parts[0]], True, 0
-        for part in parts[1:]:
-            if _publishes(part):
-                if tainted:
-                    out.append(redact_step() + "\n")
-                    placed += 1
-                    tainted = False
-            else:
-                tainted = True
-            out.append(part)
-        new_seg = "".join(out)
+        new_seg, placed = redaction_walk(seg, 6)
         if new_seg != seg:
             text = text[:m.start()] + new_seg + text[m.end():]
         n += placed
@@ -649,11 +694,15 @@ def main(argv):
 
     for name in TARGETS:
         p = os.path.join(WF, name)
-        original = io.open(p, encoding="utf-8").read()
+        raw = io.open(p, "rb").read()
+        original = raw.decode("utf-8").replace("\r\n", "\n")
         new, counts = regenerate(original)
         if not check:
             if new != original:
-                io.open(p, "w", encoding="utf-8", newline="\n").write(new)
+                # The working tree's line endings are kept (CRLF under core.autocrlf on Windows);
+                # git stores LF either way.
+                nl = "\r\n" if b"\r\n" in raw else "\n"
+                io.open(p, "w", encoding="utf-8", newline=nl).write(new)
             for canon_name, token, tag, dest in SCRIPTS:
                 print("  %-20s %s: %d block(s) regenerated" % (canon_name, name,
                                                                counts[canon_name]))
@@ -698,6 +747,33 @@ def main(argv):
             print("  %-20s %s: %d inlined copy/copies, %s"
                   % (canon_name, name, len(copies),
                      "DRIFTED" if bad else "identical to canonical"))
+
+    for comp in COMPOSITES:
+        p = os.path.join(ACTIONS, comp, "action.yml")
+        rel = os.path.relpath(p, ROOT).replace(os.sep, "/")
+        if not os.path.isfile(p):
+            # A registered composite with no file is a job that fails on the runner.
+            missing.append("composite %s" % rel)
+            print("  %-20s %s: COMPOSITE MISSING" % (comp, rel))
+            continue
+        raw = io.open(p, "rb").read()
+        original = raw.decode("utf-8").replace("\r\n", "\n")
+        new, counts = regenerate_composite(original)
+        if not check:
+            if new != original:
+                nl = "\r\n" if b"\r\n" in raw else "\n"
+                io.open(p, "w", encoding="utf-8", newline=nl).write(new)
+            print("  %-20s %s: %d fetch + verify, %d pre-upload redaction step(s)"
+                  % (comp, rel, counts["fetch"], counts["redact"]))
+            continue
+        if new != original:
+            stale.append(rel)
+        for canon_name, token, tag, dest in SCRIPTS:
+            if extract(original, token, canon_name, tag):
+                extra.append("%s in %s (a composite fetches the bundle; it never inlines it)"
+                             % (canon_name, rel))
+        print("  %-20s %s: generated steps %s" % (comp, rel,
+                                                 "STALE" if new != original else "match"))
 
     if not check:
         return 0

@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "secure-cicd-kit/api/v1/params/tickets.write.schema.json",
+  "title": "params of tickets.write",
+  "description": "Create or update finding tickets THROUGH THE KIT'S RECONCILER, for findings the kit itself established in a default-branch security run. The same cluster stamp, lookup-before-create, routing and ledger as the pipeline's reconciliation, so an API-created ticket and a pipeline-created ticket for one finding are one ticket. No inline findings, no closure, no disposition.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id"
+      ],
+      "properties": {
+        "run_id": {
+          "description": "A completed run of the repository's security caller on the default branch, by id, or \"latest\" for the newest such run that kept its evidence.",
+          "type": [
+            "integer",
+            "string"
+          ],
+          "minimum": 1,
+          "pattern": "^latest$"
+        }
+      }
+    },
+    "select": {
+      "description": "Which of that run's findings to ticket. At least one list non-empty; at most 100 entries in all.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "identities": {
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16,128}$"
+          }
+        },
+        "cluster_keys": {
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16,128}$"
+          }
+        },
+        "fingerprints": {
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8,128}$"
+          }
+        }
+      }
+    },
+    "requested_disposition": {
+      "description": "Accepted by the schema only so that the refusal is named: a disposition request is never made through the API (API_DISPOSITION_NOT_VIA_API).",
+      "type": "string",
+      "maxLength": 40
+    }
+  },
+  "required": [
+    "source",
+    "select"
+  ]
+}

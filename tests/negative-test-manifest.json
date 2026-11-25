@@ -1,0 +1,2199 @@
+{
+ "schema": "kit-negative-test-manifest/1",
+ "_what": "Every intentional vulnerability in the kit's test fixtures and the finding it is expected to raise, so a known seed is told apart from a new alert without ignoring any directory (owner 2026-11-19). Checked by scripts/fixture_seeds.py check (tree) and classify (alerts); held in self-test. Change it only by a reviewed edit: scripts/fixture_seeds.py propose prints what a fresh scan implies and writes nothing.",
+ "_binds": [
+  "tests/consumer-fixture/SEED_PINS.json (content hashes and named seed pins)",
+  "tests/consumer-fixture/*/EXPECTED_SIGNALS.json (what a consumer run must detect)"
+ ],
+ "_scope": "every dependency manifest under tests/ (each pin is a seed or a declared non-seed pin) and every EXPECTED_SIGNALS entry. Out of scope, stated: tests/fixtures/ and tests/corpora/ test inputs that are not dependency manifests (SARIF samples, scanner corpora), which raise no repository alert.",
+ "_disposition": "This manifest says what is EXPECTED. It is not a dismissal: each organisation evaluates and records its own dispositions under its own governance, alert by alert, never by directory.",
+ "seeds": [
+  {
+   "id": "full-dotnet-fixture-csproj-newtonsoft-json",
+   "kind": "dependency",
+   "path": "tests/consumer-fixture/full/dotnet/Fixture.csproj",
+   "ecosystem": "Fixture.csproj",
+   "package": "Newtonsoft.Json",
+   "version": "9.0.1",
+   "signal": "deps:dotnet-vulnerable",
+   "expected": {
+    "scanners": [
+     "dotnet list package --vulnerable (sast-dotnet)",
+     "Dependabot alerts (repository)"
+    ],
+    "advisories": [],
+    "advisories_not_established": "trivy fs reads no NuGet pin from a .csproj without a lock file, so no advisory id was observed offline; every alert on this pin reads NEW until a reviewed edit records its ids"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py",
+    "tests/prove_nuget_audit.py"
+   ]
+  },
+  {
+   "id": "full-dotnet-fixture-csproj-system-text-encodings-web",
+   "kind": "dependency",
+   "path": "tests/consumer-fixture/full/dotnet/Fixture.csproj",
+   "ecosystem": "Fixture.csproj",
+   "package": "System.Text.Encodings.Web",
+   "version": "4.5.0",
+   "signal": "deps:dotnet-vulnerable",
+   "expected": {
+    "scanners": [
+     "dotnet list package --vulnerable (sast-dotnet)",
+     "Dependabot alerts (repository)"
+    ],
+    "advisories": [],
+    "advisories_not_established": "trivy fs reads no NuGet pin from a .csproj without a lock file, so no advisory id was observed offline; every alert on this pin reads NEW until a reviewed edit records its ids"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-go-go-mod-gopkg-in-yaml-v2",
+   "kind": "dependency",
+   "path": "tests/consumer-fixture/full/go/go.mod",
+   "ecosystem": "go.mod",
+   "package": "gopkg.in/yaml.v2",
+   "version": "v2.2.1",
+   "signal": "deps:go-cve",
+   "expected": {
+    "scanners": [
+     "trivy (deps-scan)",
+     "osv-scanner (malicious-deps, where run)",
+     "Dependabot alerts (repository)"
+    ],
+    "advisories": [
+     {
+      "id": "CVE-2019-11254",
+      "aliases": [
+       "GHSA-wxc4-f4m6-wwqv"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2021-4235",
+      "aliases": [
+       "GHSA-r88r-gmrh-7j83"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2022-3064",
+      "aliases": [
+       "GHSA-6q6q-88xp-6f2r"
+      ],
+      "severity": "HIGH"
+     }
+    ],
+    "advisories_source": "trivy 0.76.2 fs, offline, vulnerability DB of 2026-11-24T19:04Z; severities are Trivy's"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-java-pom-xml-org-apache-logging-log4j-log4j-core",
+   "kind": "dependency",
+   "path": "tests/consumer-fixture/full/java/pom.xml",
+   "ecosystem": "pom.xml",
+   "package": "org.apache.logging.log4j:log4j-core",
+   "version": "2.14.1",
+   "signal": "deps:java-cve",
+   "expected": {
+    "scanners": [
+     "trivy (deps-scan)",
+     "osv-scanner (malicious-deps, where run)",
+     "Dependabot alerts (repository)"
+    ],
+    "advisories": [
+     {
+      "id": "CVE-2021-44228",
+      "aliases": [
+       "GHSA-7rjr-3q55-vv33",
+       "GHSA-jfh8-c2jp-5v3q"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2021-44832",
+      "aliases": [
+       "GHSA-8489-44mv-ggj8"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2021-45046",
+      "aliases": [
+       "GHSA-7rjr-3q55-vv33"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2021-45105",
+      "aliases": [
+       "GHSA-p6xc-xr62-6r2g"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2025-68161",
+      "aliases": [
+       "GHSA-vc5p-v9hr-52mj"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-34477",
+      "aliases": [
+       "GHSA-6hg6-v5c8-fphq"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-34479",
+      "aliases": [
+       "GHSA-h383-gmxw-35v2"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-34480",
+      "aliases": [
+       "GHSA-3pxv-7cmr-fjr4"
+      ],
+      "severity": "MEDIUM"
+     }
+    ],
+    "advisories_source": "trivy 0.76.2 fs, offline, vulnerability DB of 2026-11-24T19:04Z; severities are Trivy's"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-node-package-lock-json-lodash",
+   "kind": "dependency",
+   "path": "tests/consumer-fixture/full/node/package-lock.json",
+   "ecosystem": "package-lock.json",
+   "package": "lodash",
+   "version": "4.17.11",
+   "signal": "deps:node-cve",
+   "expected": {
+    "scanners": [
+     "trivy (deps-scan)",
+     "osv-scanner (malicious-deps, where run)",
+     "Dependabot alerts (repository)"
+    ],
+    "advisories": [
+     {
+      "id": "CVE-2019-10744",
+      "aliases": [
+       "GHSA-jf85-cpcp-j695"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2020-28500",
+      "aliases": [
+       "GHSA-29mw-wpgm-hmr9"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2020-8203",
+      "aliases": [
+       "GHSA-p6mc-m468-83gw"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2021-23337",
+      "aliases": [
+       "GHSA-35jh-r3h4-6jhm"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2025-13465",
+      "aliases": [
+       "GHSA-xxjr-mmjv-4gpg"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-4800",
+      "aliases": [
+       "GHSA-35jh-r3h4-6jhm",
+       "GHSA-r5fr-rjxr-66jc"
+      ],
+      "severity": "HIGH"
+     }
+    ],
+    "advisories_source": "trivy 0.76.2 fs, offline, vulnerability DB of 2026-11-24T19:04Z; severities are Trivy's"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-node-package-lock-json-minimist",
+   "kind": "dependency",
+   "path": "tests/consumer-fixture/full/node/package-lock.json",
+   "ecosystem": "package-lock.json",
+   "package": "minimist",
+   "version": "0.0.8",
+   "signal": "deps:node-cve",
+   "expected": {
+    "scanners": [
+     "trivy (deps-scan)",
+     "osv-scanner (malicious-deps, where run)",
+     "Dependabot alerts (repository)"
+    ],
+    "advisories": [
+     {
+      "id": "CVE-2020-7598",
+      "aliases": [
+       "GHSA-vh95-rmgr-6w4m"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2021-44906",
+      "aliases": [
+       "GHSA-xvch-5gv4-984h"
+      ],
+      "severity": "CRITICAL"
+     }
+    ],
+    "advisories_source": "trivy 0.76.2 fs, offline, vulnerability DB of 2026-11-24T19:04Z; severities are Trivy's"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-node-package-lock-json-axios",
+   "kind": "dependency",
+   "path": "tests/consumer-fixture/full/node/package-lock.json",
+   "ecosystem": "package-lock.json",
+   "package": "axios",
+   "version": "0.18.0",
+   "signal": "deps:node-cve",
+   "expected": {
+    "scanners": [
+     "trivy (deps-scan)",
+     "osv-scanner (malicious-deps, where run)",
+     "Dependabot alerts (repository)"
+    ],
+    "advisories": [
+     {
+      "id": "CVE-2019-10742",
+      "aliases": [
+       "GHSA-42xw-2xvc-qx8m"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2020-28168",
+      "aliases": [
+       "GHSA-4w2v-q235-vp99"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2021-3749",
+      "aliases": [
+       "GHSA-cph5-m8f7-6c5x"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2023-45857",
+      "aliases": [
+       "GHSA-wf5p-g6vw-rhxx"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2025-27152",
+      "aliases": [
+       "GHSA-jr5f-v2jv-69x6"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2025-62718",
+      "aliases": [
+       "GHSA-3p68-rc4w-qgx5"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-25639",
+      "aliases": [
+       "GHSA-43fc-jf86-j433"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-40175",
+      "aliases": [
+       "GHSA-fvcv-3m26-pcqx"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-42033",
+      "aliases": [
+       "GHSA-pf86-5x62-jrwf"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-42034",
+      "aliases": [
+       "GHSA-5c9x-8gcm-mpgx"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-42035",
+      "aliases": [
+       "GHSA-6chq-wfr3-2hj9"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-42036",
+      "aliases": [
+       "GHSA-vf2m-468p-8v99"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-42038",
+      "aliases": [
+       "GHSA-m7pr-hjqh-92cm"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-42039",
+      "aliases": [
+       "GHSA-62hf-57xw-28j9"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-42040",
+      "aliases": [
+       "GHSA-xhjh-pmcv-23jw"
+      ],
+      "severity": "LOW"
+     },
+     {
+      "id": "CVE-2026-42041",
+      "aliases": [
+       "GHSA-w9j2-pvgh-6h63"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-42042",
+      "aliases": [
+       "GHSA-xx6v-rp6x-q39c"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-42043",
+      "aliases": [
+       "GHSA-pmwg-cvhr-8vh7"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-44486",
+      "aliases": [
+       "GHSA-j5f8-grm9-p9fc"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-44487",
+      "aliases": [
+       "GHSA-p92q-9vqr-4j8v"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-44490",
+      "aliases": [
+       "GHSA-898c-q2cr-xwhg"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-44492",
+      "aliases": [
+       "GHSA-pjwm-pj3p-43mv"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-44496",
+      "aliases": [
+       "GHSA-hfxv-24rg-xrqf"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-67316",
+      "aliases": [
+       "GHSA-mmx7-hfxf-jppx"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-67319",
+      "aliases": [
+       "GHSA-7q8q-rj6j-mhjq"
+      ],
+      "severity": "MEDIUM"
+     }
+    ],
+    "advisories_source": "trivy 0.76.2 fs, offline, vulnerability DB of 2026-11-24T19:04Z; severities are Trivy's"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-node-package-json-lodash",
+   "kind": "dependency",
+   "path": "tests/consumer-fixture/full/node/package.json",
+   "ecosystem": "package.json",
+   "package": "lodash",
+   "version": "4.17.11",
+   "signal": null,
+   "expected": {
+    "scanners": [
+     "trivy (deps-scan)",
+     "osv-scanner (malicious-deps, where run)",
+     "Dependabot alerts (repository)"
+    ],
+    "advisories": [
+     {
+      "id": "CVE-2019-10744",
+      "aliases": [
+       "GHSA-jf85-cpcp-j695"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2020-28500",
+      "aliases": [
+       "GHSA-29mw-wpgm-hmr9"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2020-8203",
+      "aliases": [
+       "GHSA-p6mc-m468-83gw"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2021-23337",
+      "aliases": [
+       "GHSA-35jh-r3h4-6jhm"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2025-13465",
+      "aliases": [
+       "GHSA-xxjr-mmjv-4gpg"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-4800",
+      "aliases": [
+       "GHSA-35jh-r3h4-6jhm",
+       "GHSA-r5fr-rjxr-66jc"
+      ],
+      "severity": "HIGH"
+     }
+    ],
+    "advisories_source": "trivy 0.76.2 fs, offline, vulnerability DB of 2026-11-24T19:04Z; severities are Trivy's"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-node-package-json-minimist",
+   "kind": "dependency",
+   "path": "tests/consumer-fixture/full/node/package.json",
+   "ecosystem": "package.json",
+   "package": "minimist",
+   "version": "0.0.8",
+   "signal": null,
+   "expected": {
+    "scanners": [
+     "trivy (deps-scan)",
+     "osv-scanner (malicious-deps, where run)",
+     "Dependabot alerts (repository)"
+    ],
+    "advisories": [
+     {
+      "id": "CVE-2020-7598",
+      "aliases": [
+       "GHSA-vh95-rmgr-6w4m"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2021-44906",
+      "aliases": [
+       "GHSA-xvch-5gv4-984h"
+      ],
+      "severity": "CRITICAL"
+     }
+    ],
+    "advisories_source": "trivy 0.76.2 fs, offline, vulnerability DB of 2026-11-24T19:04Z; severities are Trivy's"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-node-package-json-axios",
+   "kind": "dependency",
+   "path": "tests/consumer-fixture/full/node/package.json",
+   "ecosystem": "package.json",
+   "package": "axios",
+   "version": "0.18.0",
+   "signal": null,
+   "expected": {
+    "scanners": [
+     "trivy (deps-scan)",
+     "osv-scanner (malicious-deps, where run)",
+     "Dependabot alerts (repository)"
+    ],
+    "advisories": [
+     {
+      "id": "CVE-2019-10742",
+      "aliases": [
+       "GHSA-42xw-2xvc-qx8m"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2020-28168",
+      "aliases": [
+       "GHSA-4w2v-q235-vp99"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2021-3749",
+      "aliases": [
+       "GHSA-cph5-m8f7-6c5x"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2023-45857",
+      "aliases": [
+       "GHSA-wf5p-g6vw-rhxx"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2025-27152",
+      "aliases": [
+       "GHSA-jr5f-v2jv-69x6"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2025-62718",
+      "aliases": [
+       "GHSA-3p68-rc4w-qgx5"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-25639",
+      "aliases": [
+       "GHSA-43fc-jf86-j433"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-40175",
+      "aliases": [
+       "GHSA-fvcv-3m26-pcqx"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-42033",
+      "aliases": [
+       "GHSA-pf86-5x62-jrwf"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-42034",
+      "aliases": [
+       "GHSA-5c9x-8gcm-mpgx"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-42035",
+      "aliases": [
+       "GHSA-6chq-wfr3-2hj9"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-42036",
+      "aliases": [
+       "GHSA-vf2m-468p-8v99"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-42038",
+      "aliases": [
+       "GHSA-m7pr-hjqh-92cm"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-42039",
+      "aliases": [
+       "GHSA-62hf-57xw-28j9"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-42040",
+      "aliases": [
+       "GHSA-xhjh-pmcv-23jw"
+      ],
+      "severity": "LOW"
+     },
+     {
+      "id": "CVE-2026-42041",
+      "aliases": [
+       "GHSA-w9j2-pvgh-6h63"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-42042",
+      "aliases": [
+       "GHSA-xx6v-rp6x-q39c"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-42043",
+      "aliases": [
+       "GHSA-pmwg-cvhr-8vh7"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-44486",
+      "aliases": [
+       "GHSA-j5f8-grm9-p9fc"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-44487",
+      "aliases": [
+       "GHSA-p92q-9vqr-4j8v"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-44490",
+      "aliases": [
+       "GHSA-898c-q2cr-xwhg"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-44492",
+      "aliases": [
+       "GHSA-pjwm-pj3p-43mv"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-44496",
+      "aliases": [
+       "GHSA-hfxv-24rg-xrqf"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-67316",
+      "aliases": [
+       "GHSA-mmx7-hfxf-jppx"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-67319",
+      "aliases": [
+       "GHSA-7q8q-rj6j-mhjq"
+      ],
+      "severity": "MEDIUM"
+     }
+    ],
+    "advisories_source": "trivy 0.76.2 fs, offline, vulnerability DB of 2026-11-24T19:04Z; severities are Trivy's"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-php-composer-json-phpmailer-phpmailer",
+   "kind": "dependency",
+   "path": "tests/consumer-fixture/full/php/composer.json",
+   "ecosystem": "composer.json",
+   "package": "phpmailer/phpmailer",
+   "version": "5.2.18",
+   "signal": null,
+   "expected": {
+    "scanners": [
+     "trivy (deps-scan)",
+     "osv-scanner (malicious-deps, where run)",
+     "Dependabot alerts (repository)"
+    ],
+    "advisories": [
+     {
+      "id": "CVE-2016-10045",
+      "aliases": [
+       "GHSA-4pc3-96mx-wwc8"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2017-11503",
+      "aliases": [
+       "GHSA-58mj-pw57-4vm2"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2017-5223",
+      "aliases": [
+       "GHSA-4x5h-cr29-fhp6"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2018-19296",
+      "aliases": [
+       "GHSA-7w4p-72j7-v7c2"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2020-13625",
+      "aliases": [
+       "GHSA-f7hx-fqxw-rvvj"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2021-34551",
+      "aliases": [
+       "GHSA-7q44-r25x-wm4q"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2021-3603",
+      "aliases": [
+       "GHSA-77mr-wc79-m8j3"
+      ],
+      "severity": "HIGH"
+     }
+    ],
+    "advisories_source": "trivy 0.76.2 fs, offline, vulnerability DB of 2026-11-24T19:04Z; severities are Trivy's"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py",
+    "tests/prove_deps_scan_composer.py"
+   ]
+  },
+  {
+   "id": "full-php-composer-lock-phpmailer-phpmailer",
+   "kind": "dependency",
+   "path": "tests/consumer-fixture/full/php/composer.lock",
+   "ecosystem": "composer.lock",
+   "package": "phpmailer/phpmailer",
+   "version": "v5.2.18",
+   "signal": "deps:php-cve",
+   "expected": {
+    "scanners": [
+     "trivy (deps-scan)",
+     "osv-scanner (malicious-deps, where run)",
+     "Dependabot alerts (repository)"
+    ],
+    "advisories": [
+     {
+      "id": "CVE-2016-10045",
+      "aliases": [
+       "GHSA-4pc3-96mx-wwc8"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2017-11503",
+      "aliases": [
+       "GHSA-58mj-pw57-4vm2"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2017-5223",
+      "aliases": [
+       "GHSA-4x5h-cr29-fhp6"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2018-19296",
+      "aliases": [
+       "GHSA-7w4p-72j7-v7c2"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2020-13625",
+      "aliases": [
+       "GHSA-f7hx-fqxw-rvvj"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2021-34551",
+      "aliases": [
+       "GHSA-7q44-r25x-wm4q"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2021-3603",
+      "aliases": [
+       "GHSA-77mr-wc79-m8j3"
+      ],
+      "severity": "HIGH"
+     }
+    ],
+    "advisories_source": "trivy 0.76.2 fs, offline, vulnerability DB of 2026-11-24T19:04Z; severities are Trivy's"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py",
+    "tests/prove_deps_scan_composer.py"
+   ]
+  },
+  {
+   "id": "full-python-requirements-txt-requests",
+   "kind": "dependency",
+   "path": "tests/consumer-fixture/full/python/requirements.txt",
+   "ecosystem": "requirements.txt",
+   "package": "requests",
+   "version": "2.19.1",
+   "signal": "deps:python-cve",
+   "expected": {
+    "scanners": [
+     "trivy (deps-scan)",
+     "osv-scanner (malicious-deps, where run)",
+     "Dependabot alerts (repository)"
+    ],
+    "advisories": [
+     {
+      "id": "CVE-2018-18074",
+      "aliases": [
+       "GHSA-x84v-xcm2-53pg"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2023-32681",
+      "aliases": [
+       "GHSA-j8r2-6x86-q33q"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2024-35195",
+      "aliases": [
+       "GHSA-9wx4-h78v-vm56"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2024-47081",
+      "aliases": [
+       "GHSA-9hjg-9r4m-mvj7"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-25645",
+      "aliases": [
+       "GHSA-gc5v-m9x4-r6x2"
+      ],
+      "severity": "MEDIUM"
+     }
+    ],
+    "advisories_source": "trivy 0.76.2 fs, offline, vulnerability DB of 2026-11-24T19:04Z; severities are Trivy's"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-python-requirements-txt-pyyaml",
+   "kind": "dependency",
+   "path": "tests/consumer-fixture/full/python/requirements.txt",
+   "ecosystem": "requirements.txt",
+   "package": "pyyaml",
+   "version": "5.1",
+   "signal": "deps:python-cve",
+   "expected": {
+    "scanners": [
+     "trivy (deps-scan)",
+     "osv-scanner (malicious-deps, where run)",
+     "Dependabot alerts (repository)"
+    ],
+    "advisories": [
+     {
+      "id": "CVE-2019-20477",
+      "aliases": [
+       "GHSA-3pqx-4fqf-j49f"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2020-14343",
+      "aliases": [
+       "GHSA-8q59-q68h-6hv4"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2020-1747",
+      "aliases": [
+       "GHSA-6757-jp84-gxfx"
+      ],
+      "severity": "CRITICAL"
+     }
+    ],
+    "advisories_source": "trivy 0.76.2 fs, offline, vulnerability DB of 2026-11-24T19:04Z; severities are Trivy's"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-python-requirements-txt-jinja2",
+   "kind": "dependency",
+   "path": "tests/consumer-fixture/full/python/requirements.txt",
+   "ecosystem": "requirements.txt",
+   "package": "jinja2",
+   "version": "2.10",
+   "signal": "deps:python-cve",
+   "expected": {
+    "scanners": [
+     "trivy (deps-scan)",
+     "osv-scanner (malicious-deps, where run)",
+     "Dependabot alerts (repository)"
+    ],
+    "advisories": [
+     {
+      "id": "CVE-2019-10906",
+      "aliases": [
+       "GHSA-462w-v97r-4m45"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2020-28493",
+      "aliases": [
+       "GHSA-g3rq-g295-4j3m"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2024-22195",
+      "aliases": [
+       "GHSA-h5c8-rqwp-cp95"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2024-34064",
+      "aliases": [
+       "GHSA-h75v-3vvj-5mfj"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2024-56326",
+      "aliases": [
+       "GHSA-q2x7-8rv6-6q7h"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2025-27516",
+      "aliases": [
+       "GHSA-cpwx-vrp4-4pq7"
+      ],
+      "severity": "MEDIUM"
+     }
+    ],
+    "advisories_source": "trivy 0.76.2 fs, offline, vulnerability DB of 2026-11-24T19:04Z; severities are Trivy's"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-services-api-package-lock-json-handlebars",
+   "kind": "dependency",
+   "path": "tests/consumer-fixture/full/services/api/package-lock.json",
+   "ecosystem": "package-lock.json",
+   "package": "handlebars",
+   "version": "4.0.11",
+   "signal": "deps:node-cve-second-root",
+   "expected": {
+    "scanners": [
+     "trivy (deps-scan)",
+     "osv-scanner (malicious-deps, where run)",
+     "Dependabot alerts (repository)"
+    ],
+    "advisories": [
+     {
+      "id": "CVE-2019-19919",
+      "aliases": [
+       "GHSA-w457-6q6x-cgp9"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2019-20920",
+      "aliases": [
+       "GHSA-3cqr-58rm-57f8"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2019-20922",
+      "aliases": [
+       "GHSA-62gr-4qp9-h98f"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2021-23369",
+      "aliases": [
+       "GHSA-f2jv-r9rf-7988"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2021-23383",
+      "aliases": [
+       "GHSA-765h-qjxv-5f44"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2026-106444",
+      "aliases": [
+       "GHSA-xw65-4hp5-5hc7"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-106445",
+      "aliases": [
+       "GHSA-p8wg-vrv2-v86f"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2026-106446",
+      "aliases": [
+       "GHSA-8r5x-fm3f-whwj"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2026-33916",
+      "aliases": [
+       "GHSA-2qvq-rjwj-gvw9"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-33937",
+      "aliases": [
+       "GHSA-2w6w-674q-4c4q"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2026-33938",
+      "aliases": [
+       "GHSA-3mfm-83xf-c92r"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-33939",
+      "aliases": [
+       "GHSA-9cx6-37pm-9jff"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-33940",
+      "aliases": [
+       "GHSA-xhpv-hc6g-r9c6"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-33941",
+      "aliases": [
+       "GHSA-xjpj-3mr7-gcpf"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "GHSA-2cf5-4w76-r9qv",
+      "aliases": [],
+      "severity": "HIGH"
+     },
+     {
+      "id": "GHSA-442j-39wm-28r2",
+      "aliases": [],
+      "severity": "LOW"
+     },
+     {
+      "id": "GHSA-f52g-6jhx-586p",
+      "aliases": [],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "GHSA-g9r4-xpmj-mj65",
+      "aliases": [],
+      "severity": "HIGH"
+     },
+     {
+      "id": "GHSA-q2c6-c6pm-g3gh",
+      "aliases": [],
+      "severity": "HIGH"
+     },
+     {
+      "id": "GHSA-q42p-pg8m-cqh6",
+      "aliases": [],
+      "severity": "HIGH"
+     },
+     {
+      "id": "NSWG-ECO-519",
+      "aliases": [],
+      "severity": "MEDIUM"
+     }
+    ],
+    "advisories_source": "trivy 0.76.2 fs, offline, vulnerability DB of 2026-11-24T19:04Z; severities are Trivy's"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-services-api-package-json-handlebars",
+   "kind": "dependency",
+   "path": "tests/consumer-fixture/full/services/api/package.json",
+   "ecosystem": "package.json",
+   "package": "handlebars",
+   "version": "4.0.11",
+   "signal": null,
+   "expected": {
+    "scanners": [
+     "trivy (deps-scan)",
+     "osv-scanner (malicious-deps, where run)",
+     "Dependabot alerts (repository)"
+    ],
+    "advisories": [
+     {
+      "id": "CVE-2019-19919",
+      "aliases": [
+       "GHSA-w457-6q6x-cgp9"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2019-20920",
+      "aliases": [
+       "GHSA-3cqr-58rm-57f8"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2019-20922",
+      "aliases": [
+       "GHSA-62gr-4qp9-h98f"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2021-23369",
+      "aliases": [
+       "GHSA-f2jv-r9rf-7988"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2021-23383",
+      "aliases": [
+       "GHSA-765h-qjxv-5f44"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2026-106444",
+      "aliases": [
+       "GHSA-xw65-4hp5-5hc7"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-106445",
+      "aliases": [
+       "GHSA-p8wg-vrv2-v86f"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2026-106446",
+      "aliases": [
+       "GHSA-8r5x-fm3f-whwj"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2026-33916",
+      "aliases": [
+       "GHSA-2qvq-rjwj-gvw9"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-33937",
+      "aliases": [
+       "GHSA-2w6w-674q-4c4q"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2026-33938",
+      "aliases": [
+       "GHSA-3mfm-83xf-c92r"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-33939",
+      "aliases": [
+       "GHSA-9cx6-37pm-9jff"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-33940",
+      "aliases": [
+       "GHSA-xhpv-hc6g-r9c6"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-33941",
+      "aliases": [
+       "GHSA-xjpj-3mr7-gcpf"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "GHSA-2cf5-4w76-r9qv",
+      "aliases": [],
+      "severity": "HIGH"
+     },
+     {
+      "id": "GHSA-442j-39wm-28r2",
+      "aliases": [],
+      "severity": "LOW"
+     },
+     {
+      "id": "GHSA-f52g-6jhx-586p",
+      "aliases": [],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "GHSA-g9r4-xpmj-mj65",
+      "aliases": [],
+      "severity": "HIGH"
+     },
+     {
+      "id": "GHSA-q2c6-c6pm-g3gh",
+      "aliases": [],
+      "severity": "HIGH"
+     },
+     {
+      "id": "GHSA-q42p-pg8m-cqh6",
+      "aliases": [],
+      "severity": "HIGH"
+     },
+     {
+      "id": "NSWG-ECO-519",
+      "aliases": [],
+      "severity": "MEDIUM"
+     }
+    ],
+    "advisories_source": "trivy 0.76.2 fs, offline, vulnerability DB of 2026-11-24T19:04Z; severities are Trivy's"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "seeded-requirements-txt-pyyaml",
+   "kind": "dependency",
+   "path": "tests/consumer-fixture/seeded/requirements.txt",
+   "ecosystem": "requirements.txt",
+   "package": "PyYAML",
+   "version": "5.1",
+   "signal": null,
+   "expected": {
+    "scanners": [
+     "trivy (deps-scan)",
+     "osv-scanner (malicious-deps, where run)",
+     "Dependabot alerts (repository)"
+    ],
+    "advisories": [
+     {
+      "id": "CVE-2019-20477",
+      "aliases": [
+       "GHSA-3pqx-4fqf-j49f"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2020-14343",
+      "aliases": [
+       "GHSA-8q59-q68h-6hv4"
+      ],
+      "severity": "CRITICAL"
+     },
+     {
+      "id": "CVE-2020-1747",
+      "aliases": [
+       "GHSA-6757-jp84-gxfx"
+      ],
+      "severity": "CRITICAL"
+     }
+    ],
+    "advisories_source": "trivy 0.76.2 fs, offline, vulnerability DB of 2026-11-24T19:04Z; severities are Trivy's"
+   },
+   "why": "seed of the seeded consumer-path leg: pins with well-known HIGH/CRITICAL advisories (tests/consumer-fixture/README.md)",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/prove_scope_reaches_osv_and_syft.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "seeded-requirements-txt-urllib3",
+   "kind": "dependency",
+   "path": "tests/consumer-fixture/seeded/requirements.txt",
+   "ecosystem": "requirements.txt",
+   "package": "urllib3",
+   "version": "1.24.1",
+   "signal": null,
+   "expected": {
+    "scanners": [
+     "trivy (deps-scan)",
+     "osv-scanner (malicious-deps, where run)",
+     "Dependabot alerts (repository)"
+    ],
+    "advisories": [
+     {
+      "id": "CVE-2018-25091",
+      "aliases": [
+       "GHSA-gwvm-45gx-3cf8"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2019-11236",
+      "aliases": [
+       "GHSA-r64q-w8jr-g9qp"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2019-11324",
+      "aliases": [
+       "GHSA-mh33-7rrq-662w"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2020-26137",
+      "aliases": [
+       "GHSA-wqvq-5m8c-6g24"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2023-43804",
+      "aliases": [
+       "GHSA-v845-jxx5-vc9f"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2023-45803",
+      "aliases": [
+       "GHSA-g4mx-q9vg-27p4"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2024-37891",
+      "aliases": [
+       "GHSA-34jh-p97f-mpxf"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2025-50181",
+      "aliases": [
+       "GHSA-pq67-6m6q-mj2v"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2025-66418",
+      "aliases": [
+       "GHSA-gm62-xv2j-4w53"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2025-66471",
+      "aliases": [
+       "GHSA-2xpw-w6gg-jr37"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-21441",
+      "aliases": [
+       "GHSA-38jv-5279-wg99"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-44431",
+      "aliases": [
+       "GHSA-qccp-gfcp-xxvc"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2026-97689",
+      "aliases": [
+       "GHSA-vxq7-64xx-v4gw"
+      ],
+      "severity": "HIGH"
+     }
+    ],
+    "advisories_source": "trivy 0.76.2 fs, offline, vulnerability DB of 2026-11-24T19:04Z; severities are Trivy's"
+   },
+   "why": "seed of the seeded consumer-path leg: pins with well-known HIGH/CRITICAL advisories (tests/consumer-fixture/README.md)",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/prove_scope_reaches_osv_and_syft.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "seeded-requirements-txt-requests",
+   "kind": "dependency",
+   "path": "tests/consumer-fixture/seeded/requirements.txt",
+   "ecosystem": "requirements.txt",
+   "package": "requests",
+   "version": "2.19.1",
+   "signal": null,
+   "expected": {
+    "scanners": [
+     "trivy (deps-scan)",
+     "osv-scanner (malicious-deps, where run)",
+     "Dependabot alerts (repository)"
+    ],
+    "advisories": [
+     {
+      "id": "CVE-2018-18074",
+      "aliases": [
+       "GHSA-x84v-xcm2-53pg"
+      ],
+      "severity": "HIGH"
+     },
+     {
+      "id": "CVE-2023-32681",
+      "aliases": [
+       "GHSA-j8r2-6x86-q33q"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2024-35195",
+      "aliases": [
+       "GHSA-9wx4-h78v-vm56"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2024-47081",
+      "aliases": [
+       "GHSA-9hjg-9r4m-mvj7"
+      ],
+      "severity": "MEDIUM"
+     },
+     {
+      "id": "CVE-2026-25645",
+      "aliases": [
+       "GHSA-gc5v-m9x4-r6x2"
+      ],
+      "severity": "MEDIUM"
+     }
+    ],
+    "advisories_source": "trivy 0.76.2 fs, offline, vulnerability DB of 2026-11-24T19:04Z; severities are Trivy's"
+   },
+   "why": "seed of the seeded consumer-path leg: pins with well-known HIGH/CRITICAL advisories (tests/consumer-fixture/README.md)",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/prove_scope_reaches_osv_and_syft.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-cpp-vuln-c-cpp-cppcheck",
+   "kind": "sast",
+   "path": "tests/consumer-fixture/full/cpp/vuln.c",
+   "signal": "sast:cpp-cppcheck",
+   "expected": {
+    "signal": "sast:cpp-cppcheck",
+    "tools": [
+     "cppcheck"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-cpp-vuln-c-cpp-flawfinder",
+   "kind": "sast",
+   "path": "tests/consumer-fixture/full/cpp/vuln.c",
+   "signal": "sast:cpp-flawfinder",
+   "expected": {
+    "signal": "sast:cpp-flawfinder",
+    "tools": [
+     "flawfinder"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-dotnet-vuln-cs-dotnet-semgrep",
+   "kind": "sast",
+   "path": "tests/consumer-fixture/full/dotnet/Vuln.cs",
+   "signal": "sast:dotnet-semgrep",
+   "expected": {
+    "signal": "sast:dotnet-semgrep",
+    "tools": [
+     "semgrep"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-go-vuln-go-go-gosec",
+   "kind": "sast",
+   "path": "tests/consumer-fixture/full/go/vuln.go",
+   "signal": "sast:go-gosec",
+   "expected": {
+    "signal": "sast:go-gosec",
+    "tools": [
+     "gosec"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-infra-dockerfile-dockerfile",
+   "kind": "iac",
+   "path": "tests/consumer-fixture/full/infra/Dockerfile",
+   "signal": "iac:dockerfile",
+   "expected": {
+    "signal": "iac:dockerfile",
+    "tools": [
+     "trivy-iac"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-infra-main-tf-checkov",
+   "kind": "iac",
+   "path": "tests/consumer-fixture/full/infra/main.tf",
+   "signal": "iac:checkov",
+   "expected": {
+    "signal": "iac:checkov",
+    "tools": [
+     "checkov"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-java-vuln-java-java-semgrep",
+   "kind": "sast",
+   "path": "tests/consumer-fixture/full/java/Vuln.java",
+   "signal": "sast:java-semgrep",
+   "expected": {
+    "signal": "sast:java-semgrep",
+    "tools": [
+     "semgrep"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-node-vuln-js-node-semgrep",
+   "kind": "sast",
+   "path": "tests/consumer-fixture/full/node/vuln.js",
+   "signal": "sast:node-semgrep",
+   "expected": {
+    "signal": "sast:node-semgrep",
+    "tools": [
+     "semgrep"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-php-cmd-php-php-command-injection",
+   "kind": "sast",
+   "path": "tests/consumer-fixture/full/php/cmd.php",
+   "signal": "sast:php-command-injection",
+   "expected": {
+    "signal": "sast:php-command-injection",
+    "tools": [
+     "semgrep"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-php-sqli-php-php-sqli",
+   "kind": "sast",
+   "path": "tests/consumer-fixture/full/php/sqli.php",
+   "signal": "sast:php-sqli",
+   "expected": {
+    "signal": "sast:php-sqli",
+    "tools": [
+     "semgrep"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-php-xss-php-php-xss",
+   "kind": "sast",
+   "path": "tests/consumer-fixture/full/php/xss.php",
+   "signal": "sast:php-xss",
+   "expected": {
+    "signal": "sast:php-xss",
+    "tools": [
+     "semgrep"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-python-vuln-py-python-bandit",
+   "kind": "sast",
+   "path": "tests/consumer-fixture/full/python/vuln.py",
+   "signal": "sast:python-bandit",
+   "expected": {
+    "signal": "sast:python-bandit",
+    "tools": [
+     "bandit"
+    ],
+    "rules": [
+     "B105",
+     "B324",
+     "B404",
+     "B506",
+     "B602"
+    ],
+    "rules_source": "bandit 1.9.4, run locally on the file 2026-11-24"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-secrets-azure-storage-txt-azure-storage-connection-string",
+   "kind": "secret",
+   "path": "tests/consumer-fixture/full/secrets/azure_storage.txt",
+   "signal": "secret:azure-storage-connection-string",
+   "expected": {
+    "signal": "secret:azure-storage-connection-string",
+    "tools": [
+     "gitleaks"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it; the secret shape is assembled at generation time and never committed, so no secret-scanning alert is expected on the repository itself",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ],
+   "runtime_generated": true
+  },
+  {
+   "id": "full-secrets-entra-env-entra-client-secret",
+   "kind": "secret",
+   "path": "tests/consumer-fixture/full/secrets/entra.env",
+   "signal": "secret:entra-client-secret",
+   "expected": {
+    "signal": "secret:entra-client-secret",
+    "tools": [
+     "gitleaks"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it; the secret shape is assembled at generation time and never committed, so no secret-scanning alert is expected on the repository itself",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ],
+   "runtime_generated": true
+  },
+  {
+   "id": "full-secrets-negative-controls-md-no-false-positive",
+   "kind": "negative-control",
+   "path": "tests/consumer-fixture/full/secrets/negative_controls.md",
+   "signal": "negative:no-false-positive",
+   "expected": {
+    "signal": "negative:no-false-positive",
+    "tools": [
+     "gitleaks",
+     "detect-secrets"
+    ],
+    "finding": "NONE: documented near-misses must produce no finding"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it; the secret shape is assembled at generation time and never committed, so no secret-scanning alert is expected on the repository itself",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ],
+   "runtime_generated": true
+  },
+  {
+   "id": "full-secrets-servicebus-txt-azure-shared-access-key",
+   "kind": "secret",
+   "path": "tests/consumer-fixture/full/secrets/servicebus.txt",
+   "signal": "secret:azure-shared-access-key",
+   "expected": {
+    "signal": "secret:azure-shared-access-key",
+    "tools": [
+     "gitleaks"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it; the secret shape is assembled at generation time and never committed, so no secret-scanning alert is expected on the repository itself",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ],
+   "runtime_generated": true
+  },
+  {
+   "id": "full-services-api-vuln-js-node-semgrep-second-root",
+   "kind": "sast",
+   "path": "tests/consumer-fixture/full/services/api/vuln.js",
+   "signal": "sast:node-semgrep-second-root",
+   "expected": {
+    "signal": "sast:node-semgrep-second-root",
+    "tools": [
+     "semgrep"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "full-services-worker-vuln-go-go-gosec-second-root",
+   "kind": "sast",
+   "path": "tests/consumer-fixture/full/services/worker/vuln.go",
+   "signal": "sast:go-gosec-second-root",
+   "expected": {
+    "signal": "sast:go-gosec-second-root",
+    "tools": [
+     "gosec"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "seed of the full consumer-path fixture (tests/make_fixture.py): the scanners must detect it and the gate must block on it",
+   "proved_by": [
+    ".github/workflows/consumer-path-test.yml",
+    "tests/verify_expected_signals.py",
+    "tests/check_fixture_seed_pins.py"
+   ]
+  },
+  {
+   "id": "iac-heavy-modules-compute-main-tf-tf-vm-password-auth",
+   "kind": "iac",
+   "path": "tests/consumer-fixture/iac-heavy/modules/compute/main.tf",
+   "signal": "iac:tf-vm-password-auth",
+   "expected": {
+    "signal": "iac:tf-vm-password-auth",
+    "tools": [
+     "checkov",
+     "trivy-config"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "deliberate misconfiguration of the IaC-heavy fixture: the IaC scanners must report it",
+   "proved_by": [
+    ".github/workflows/consumer-path-negative.yml",
+    "tests/prove_negative_control_caller.py"
+   ]
+  },
+  {
+   "id": "iac-heavy-modules-database-main-tf-tf-sql-public",
+   "kind": "iac",
+   "path": "tests/consumer-fixture/iac-heavy/modules/database/main.tf",
+   "signal": "iac:tf-sql-public",
+   "expected": {
+    "signal": "iac:tf-sql-public",
+    "tools": [
+     "checkov",
+     "trivy-config"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "deliberate misconfiguration of the IaC-heavy fixture: the IaC scanners must report it",
+   "proved_by": [
+    ".github/workflows/consumer-path-negative.yml",
+    "tests/prove_negative_control_caller.py"
+   ]
+  },
+  {
+   "id": "iac-heavy-modules-keyvault-main-tf-tf-keyvault-purge-off",
+   "kind": "iac",
+   "path": "tests/consumer-fixture/iac-heavy/modules/keyvault/main.tf",
+   "signal": "iac:tf-keyvault-purge-off",
+   "expected": {
+    "signal": "iac:tf-keyvault-purge-off",
+    "tools": [
+     "checkov",
+     "trivy-config"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "deliberate misconfiguration of the IaC-heavy fixture: the IaC scanners must report it",
+   "proved_by": [
+    ".github/workflows/consumer-path-negative.yml",
+    "tests/prove_negative_control_caller.py"
+   ]
+  },
+  {
+   "id": "iac-heavy-modules-kubernetes-main-tf-tf-aks-rbac-off",
+   "kind": "iac",
+   "path": "tests/consumer-fixture/iac-heavy/modules/kubernetes/main.tf",
+   "signal": "iac:tf-aks-rbac-off",
+   "expected": {
+    "signal": "iac:tf-aks-rbac-off",
+    "tools": [
+     "trivy-iac"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "deliberate misconfiguration of the IaC-heavy fixture: the IaC scanners must report it",
+   "proved_by": [
+    ".github/workflows/consumer-path-negative.yml",
+    "tests/prove_negative_control_caller.py"
+   ]
+  },
+  {
+   "id": "iac-heavy-modules-network-main-tf-tf-nsg-open",
+   "kind": "iac",
+   "path": "tests/consumer-fixture/iac-heavy/modules/network/main.tf",
+   "signal": "iac:tf-nsg-open",
+   "expected": {
+    "signal": "iac:tf-nsg-open",
+    "tools": [
+     "checkov"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "deliberate misconfiguration of the IaC-heavy fixture: the IaC scanners must report it",
+   "proved_by": [
+    ".github/workflows/consumer-path-negative.yml",
+    "tests/prove_negative_control_caller.py"
+   ]
+  },
+  {
+   "id": "iac-heavy-modules-storage-main-tf-tf-storage-public",
+   "kind": "iac",
+   "path": "tests/consumer-fixture/iac-heavy/modules/storage/main.tf",
+   "signal": "iac:tf-storage-public",
+   "expected": {
+    "signal": "iac:tf-storage-public",
+    "tools": [
+     "checkov"
+    ],
+    "rules": [],
+    "rules_not_recorded": "the rule ids this seed raises were not measured here; a code-scanning alert on it reads NEW (RULE_NOT_RECORDED) until a reviewed edit records them"
+   },
+   "why": "deliberate misconfiguration of the IaC-heavy fixture: the IaC scanners must report it",
+   "proved_by": [
+    ".github/workflows/consumer-path-negative.yml",
+    "tests/prove_negative_control_caller.py"
+   ]
+  }
+ ],
+ "non_seed_pins": [
+  {
+   "path": "tests/consumer-fixture/clean/requirements.txt",
+   "package": "requests",
+   "version": "2.34.2",
+   "why": "the CLEAN control: current pins that must produce no finding; it is bumped when an advisory lands (tests/consumer-fixture/clean/requirements.txt header)"
+  },
+  {
+   "path": "tests/consumer-fixture/clean/requirements.txt",
+   "package": "PyYAML",
+   "version": "6.0.3",
+   "why": "the CLEAN control: current pins that must produce no finding; it is bumped when an advisory lands (tests/consumer-fixture/clean/requirements.txt header)"
+  },
+  {
+   "path": "tests/consumer-fixture/clean/requirements.txt",
+   "package": "urllib3",
+   "version": "2.8.0",
+   "why": "the CLEAN control: current pins that must produce no finding; it is bumped when an advisory lands (tests/consumer-fixture/clean/requirements.txt header)"
+  },
+  {
+   "path": "tests/consumer-fixture/full/dotnet/Fixture.csproj",
+   "package": "System.Data.SqlClient",
+   "version": "4.9.0",
+   "why": "not a seed: Vuln.cs needs it to compile, and CodeQL reads C# it cannot compile as a failed run (comment in the .csproj)"
+  },
+  {
+   "path": "tests/consumer-fixture/full/infra/Dockerfile",
+   "package": "ubuntu",
+   "version": "latest",
+   "why": "the base image of the Dockerfile lint seed (iac:dockerfile, DL3007 latest tag); this Dockerfile is never built"
+  },
+  {
+   "path": "tests/fixtures/deploy-probe/healthy-a/Dockerfile",
+   "package": "busybox",
+   "version": "1.36.1",
+   "why": "live deploy acceptance fixture image, pinned by digest; not a vulnerability seed"
+  },
+  {
+   "path": "tests/fixtures/deploy-probe/healthy-b/Dockerfile",
+   "package": "busybox",
+   "version": "1.36.1",
+   "why": "live deploy acceptance fixture image, pinned by digest; not a vulnerability seed"
+  },
+  {
+   "path": "tests/fixtures/deploy-probe/unhealthy/Dockerfile",
+   "package": "busybox",
+   "version": "1.36.1",
+   "why": "live deploy acceptance fixture image, pinned by digest; not a vulnerability seed"
+  }
+ ]
+}

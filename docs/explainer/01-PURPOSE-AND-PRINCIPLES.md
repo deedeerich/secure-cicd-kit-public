@@ -34,7 +34,12 @@ inherited backlog without being frozen by it; it is reported loudly on every run
 advisory mode is indistinguishable from no gate.
 
 **4. Secrets are outside advisory mode.** A leaked credential is live exposure, not debt. It blocks at
-every rung and in every mode: source, history, or inside a container image.
+every rung and in every mode: source, history, or inside a container image. Only a requested, ticketed
+exception for that one finding, with a named approver and an expiry, lets it through (part 05).
+
+**4a. Nothing is ever below crawl.** Crawl blocks a found secret, a known-malicious package (routed
+with the secret class) and a scan the kit could not run or could not trust; no rung, input or entry goes lower, and the highest authority's rung (enterprise, else org)
+is the floor for everything beneath it. Narrower scopes may only tighten (KDEC-017, KDEC-018).
 
 **5. Discovered, not declared.** What runs is decided by what discovery finds in the repository, not by
 what a caller says the repository is. A caller's selector may only narrow, and narrowing is recorded.
@@ -72,9 +77,13 @@ into the neutral core's main branch.
    registry vs the workflow's jobs, the validation registry vs the capabilities, the weakening record vs
    the declared inputs, the taxonomy vs the words the code branches on.
 2. **Separate detection from enforcement** — the scanner never fails its own job; a separate count step
-   produces a number (or `COLLECTION_FAILED`), and a separate enforce step decides.
+   produces a number (or `COLLECTION_FAILED`), and the **security gate**, the single enforcement point,
+   decides by the resolved policy. A scanner job fails only when it could not scan or could not trust
+   its own result.
 3. **Dated exceptions** — every deferral, exemption and weakening carries an owner and an expiry; an
-   expired one turns red and cannot be renewed by moving the date.
+   expired one turns red and cannot be renewed by moving the date. A policy exception is renewed only
+   as a new decision listing its prior grants (`renews`), under a renewal cap, and a weekly check
+   raises each one coming due back onto its ticket.
 
 ## What the kit deliberately does NOT do
 

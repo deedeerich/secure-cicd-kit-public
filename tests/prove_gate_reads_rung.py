@@ -107,7 +107,11 @@ def main():
         act = io.open(ACTION, encoding='utf-8').read()
         check('scripts/policy_registration.py' in act and '--github-output' in act,
               'the composite does not run scripts/policy_registration.py with --github-output')
-        check('git fetch' in act and 'FETCH_HEAD' in act, 'the composite does not read the registration from the fetched default branch')
+        # KDEC-022 item 2: cloned blob-less WITH history (the renewal counts come from git), read at
+        # the clone's HEAD -- the default branch, never the checkout.
+        check('git clone' in act and '--filter=blob:none' in act and '--branch "${DEFAULT_BRANCH}"' in act
+              and '--default-ref HEAD' in act,
+              'the composite does not read the registration from the fetched default branch')
     check("'action:resolve-policy'" in io.open(RV, encoding='utf-8').read().replace('"', "'"),
           'action:resolve-policy is not registered in tests/reconcile_validation.py')
 

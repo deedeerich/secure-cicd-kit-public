@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kit-evidence-export/1",
+  "title": "Kit evidence export",
+  "type": "object",
+  "required": [
+    "schema",
+    "repository",
+    "commit",
+    "sections"
+  ],
+  "properties": {
+    "schema": {
+      "const": "kit-evidence-export/1"
+    }
+  }
+}
